@@ -17,6 +17,21 @@ describe("formatVoiceName", () => {
     expect(formatVoiceName("zh-CN-XiaoxiaoNeural")).toBe("Xiaoxiao (zh-CN)");
   });
 
+  it("reads persona names with a digit or joined words", () => {
+    expect(formatVoiceName("en-US-Andrew2:DragonHDLatestNeural")).toBe("Andrew2 (en-US, Dragon HD)");
+    expect(formatVoiceName("en-US-Emma2:DragonHDLatestNeural")).toBe("Emma2 (en-US, Dragon HD)");
+    expect(formatVoiceName("en-US-AlloyTurboMultilingualNeural")).toBe(
+      "Alloy Turbo (en-US, Multilingual)",
+    );
+  });
+
+  it("gives every Speech catalog voice a readable name", () => {
+    for (const voice of voiceProviderCatalog.providers[1].capabilities.voices.options) {
+      expect(formatVoiceName(voice)).not.toBe(voice);
+      expect(formatVoiceName(voice)).toMatch(/^[A-Z][A-Za-z0-9 ]+ \(en-US(, [^)]+)?\)$/);
+    }
+  });
+
   it("leaves other voice names untouched", () => {
     for (const voice of ["alloy", "marin", "custom-endpoint:voice", "en-US", ""]) {
       expect(formatVoiceName(voice)).toBe(voice);

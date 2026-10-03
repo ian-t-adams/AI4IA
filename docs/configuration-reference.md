@@ -472,11 +472,16 @@ server-authoritative default). It routes
   catalog options listed for the session's managed-model profile, and an upstream
   refusal reaches the browser as an error, never a switch to another model.
   Voice/locale/VAD/noise/echo capabilities come from the generated voice provider
-  catalog (`infra/voice-providers.json`); only curated `azure-standard` built-in
-  voices are offered, including the public-preview MAI-Voice-2.1 and
-  MAI-Voice-2.1-Flash voices that `voices.previewOptions` marks, and no custom
-  endpoint, lexicon, or personal voice value is ever accepted. No setting gates the
-  preview options; they ship with the catalog.
+  catalog (`infra/voice-providers.json`); only curated en-US `azure-standard`
+  built-in voices are offered: GA Dragon HD (also listed in `voices.hdOptions`),
+  multilingual and classic neural voices, plus the public-preview MAI-Voice-2.1 and
+  MAI-Voice-2.1-Flash voices that `voices.previewOptions` marks. No custom
+  endpoint, lexicon, or personal voice value is ever accepted. The catalog's
+  `speakingRate` (0.5 to 1.5) and `hdVoiceTemperature` (0 to 1) bound the only
+  other voice fields a user may set. The relay clamps a numeric rate and sends it
+  as a decimal string, sends a voice temperature only with an `hdOptions` voice,
+  and sends neither when unset. `GET /api/voice/live/config` advertises both. No
+  setting gates the preview options or these fields; they ship with the catalog.
 - One opt-in session type leaves that pinned version. A photo avatar session
   whose owner chooses **Keep listening with precise echo cancellation (preview)**
   asks the relay for Live-Reference AEC with `echoRef=client`. Only then does the

@@ -11,13 +11,17 @@ import {
   AVATAR_LISTENING_MODES,
   effectiveAvatarListening,
   isAvatarListeningMode,
+  isSpeechHdVoice,
   PLAYBACK_BUFFER_MS,
   PLAYBACK_PROFILES,
   isSpeechVoiceProvider,
   resolveSpeechTranscriptionOption,
   speechEchoReference,
+  speechHdVoiceTemperatureRange,
   speechModelSupportsSampling,
+  speechSpeakingRateRange,
   speechTranscriptionOptions,
+  speechVoiceGroups,
   transcriptionOptionLabel,
   VAD_TYPES,
   type AvatarListeningMode,
@@ -197,6 +201,17 @@ export function VoiceSettingsPanel({
       ? `Temperature is not configurable with ${selectedSpeechModel.displayName}.`
       : null;
   const previewVoiceSelected = isSpeechProvider && isPreviewVoice(voice);
+  // Speech voices grouped by family from the server's catalog; Azure OpenAI
+  // voices stay one flat list.
+  const voiceGroups = speechProvider ? speechVoiceGroups(speechProvider) : [];
+  // Offered only where the server's catalog has them: an older API drops both.
+  const speakingRateRange = speechProvider ? speechSpeakingRateRange(speechProvider) : null;
+  const voiceTemperatureRange = speechProvider
+    ? speechHdVoiceTemperatureRange(speechProvider)
+    : null;
+  // Only a Dragon HD voice takes a voice temperature; the control keeps the
+  // saved value for the next HD voice.
+  const hdVoiceSelected = speechProvider ? isSpeechHdVoice(voice, speechProvider) : false;
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
   const showAvatarPicker = isSpeechProvider && (
@@ -383,11 +398,21 @@ export function VoiceSettingsPanel({
             onChange={(e) => onVoiceChange(e.target.value)}
             style={CONTROL_STYLE}
           >
-            {voiceOptions.map((v) => (
-              <option key={v} value={v}>
-                {formatVoiceName(v)}
-              </option>
-            ))}
+            {voiceGroups.length > 0
+              ? voiceGroups.map((group) => (
+                  <optgroup key={group.family} label={group.label}>
+                    {group.voices.map((v) => (
+                      <option key={v} value={v}>
+                        {formatVoiceName(v)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))
+              : voiceOptions.map((v) => (
+                  <option key={v} value={v}>
+                    {formatVoiceName(v)}
+                  </option>
+                ))}
           </select>
           {previewVoiceSelected && (
             <span id={`${idPrefix}-voice-description`} style={{ maxWidth: 260 }}>
@@ -520,6 +545,65 @@ export function VoiceSettingsPanel({
                 </span>
               )}
             </div>
+
+            {speakingRateRange && (
+              <div style={FIELD_STYLE}>
+                <label htmlFor={`${idPrefix}-speaking-rate`}>Speaking rate</label>
+                <input
+                  id={`${idPrefix}-speaking-rate`}
+                  aria-describedby={`${idPrefix}-speaking-rate-description`}
+                  type="number"
+                  min={speakingRateRange.min}
+                  max={speakingRateRange.max}
+                  step={0.05}
+                  value={speechSettings.speakingRate ?? ""}
+                  disabled={locked}
+                  placeholder="Voice default"
+                  onChange={(e) =>
+                    patchSpeechSettings({
+                      speakingRate: e.target.value === "" ? null : Number(e.target.value),
+                    })
+                  }
+                  style={CONTROL_STYLE}
+                />
+                <span id={`${idPrefix}-speaking-rate-description`} style={{ maxWidth: 240 }}>
+                  {`From ${speakingRateRange.min} (slower) to ${speakingRateRange.max} (faster).`}
+                  {previewVoiceSelected
+                    ? " Microsoft doesn't document a rate for preview voices."
+                    : ""}
+                </span>
+              </div>
+            )}
+
+            {voiceTemperatureRange && (
+              <div style={FIELD_STYLE}>
+                <label htmlFor={`${idPrefix}-voice-temperature`}>
+                  Voice variation (HD voices)
+                </label>
+                <input
+                  id={`${idPrefix}-voice-temperature`}
+                  aria-describedby={`${idPrefix}-voice-temperature-description`}
+                  type="number"
+                  min={voiceTemperatureRange.min}
+                  max={voiceTemperatureRange.max}
+                  step={0.1}
+                  value={hdVoiceSelected ? speechSettings.voiceTemperature ?? "" : ""}
+                  disabled={locked || !hdVoiceSelected}
+                  placeholder="Voice default"
+                  onChange={(e) =>
+                    patchSpeechSettings({
+                      voiceTemperature: e.target.value === "" ? null : Number(e.target.value),
+                    })
+                  }
+                  style={CONTROL_STYLE}
+                />
+                <span id={`${idPrefix}-voice-temperature-description`} style={{ maxWidth: 240 }}>
+                  {hdVoiceSelected
+                    ? `How much the voice varies its intonation, from ${voiceTemperatureRange.min} to ${voiceTemperatureRange.max}. It doesn't change the reply.`
+                    : "Only Dragon HD voices take a voice variation. Your saved value stays for them."}
+                </span>
+              </div>
+            )}
 
             <div style={FIELD_STYLE}>
               <label htmlFor={`${idPrefix}-playback-profile`}>Playback stability</label>

@@ -1,11 +1,13 @@
 // Display names for voice ids. Azure Speech ids carry a locale, a name and a
 // model family ("en-US-Ava:DragonHDLatestNeural", "en-US-AndrewNeural",
-// "en-US-Harper:MAI-Voice-2.1-Flash"); people read "Ava (en-US, Dragon HD)".
+// "en-US-Harper:MAI-Voice-2.1-Flash"); people read "Ava (en-US, Dragon HD)". A
+// name may end in a digit ("en-US-Emma2:DragonHDLatestNeural") or join words
+// ("en-US-AlloyTurboMultilingualNeural" reads "Alloy Turbo (en-US, Multilingual)").
 // The id itself is still what every request and saved preference uses. Anything
 // else (OpenAI voice names, custom voice ids) is shown as it is.
 import { voiceProviderCatalog } from "./data/voice_provider_catalog";
 
-const SPEECH_VOICE = /^([a-z]{2,3}-[A-Z][A-Za-z]{1,3})-([A-Z][A-Za-z]*?)(Multilingual)?(Neural)?(?::([A-Za-z0-9][A-Za-z0-9.-]*))?$/;
+const SPEECH_VOICE = /^([a-z]{2,3}-[A-Z][A-Za-z]{1,3})-([A-Z][A-Za-z0-9]*?)(Multilingual)?(Neural)?(?::([A-Za-z0-9][A-Za-z0-9.-]*))?$/;
 
 // Public-preview voices come from the catalog, never from the shape of an id.
 const PREVIEW_VOICES: ReadonlySet<string> = new Set(
@@ -44,5 +46,5 @@ export function formatVoiceName(voice: string): string {
     family(variant),
     preview ? "preview" : null,
   ].filter((part): part is string => Boolean(part));
-  return `${name} (${details.join(", ")})`;
+  return `${spaceWords(name)} (${details.join(", ")})`;
 }

@@ -495,11 +495,25 @@ def _speech_locale(provider: SpeechVoiceProvider, session: dict[str, Any]) -> st
     return default
 
 
+def _speech_rate_text(rate: float) -> str:
+    """A clamped speaking rate as the decimal string Voice Live takes, e.g. ``"1.2"``."""
+    text = f"{rate:.2f}".rstrip("0")
+    return f"{text}0" if text.endswith(".") else text
+
+
 def _speech_session_voice(
     provider: SpeechVoiceProvider, session: dict[str, Any], locale: str
 ) -> dict[str, Any]:
-    default_name = provider.capabilities.voices.default
-    allowed = set(provider.capabilities.voices.options)
+    """The catalog voice, plus a speaking rate and an HD voice temperature if set.
+
+    Only a number counts for either, clamped to the catalog's documented bounds.
+    The temperature reaches Voice Live only for a Dragon HD voice
+    (``voices.hdOptions``) and is not the model's sampling temperature. Without
+    them the voice is exactly ``{type, name, locale}``, as it always was.
+    """
+    capabilities = provider.capabilities
+    default_name = capabilities.voices.default
+    allowed = set(capabilities.voices.options)
     raw = session.get("voice")
     selected = default_name
     if isinstance(raw, str):
@@ -514,14 +528,22 @@ def _speech_session_voice(
         if (
             isinstance(candidate_name, str)
             and candidate_name in allowed
-            and (candidate_type in (None, provider.capabilities.voices.kind))
+            and (candidate_type in (None, capabilities.voices.kind))
         ):
             selected = candidate_name
-    return {
-        "type": provider.capabilities.voices.kind,
+    voice: dict[str, Any] = {
+        "type": capabilities.voices.kind,
         "name": selected,
         "locale": locale,
     }
+    if isinstance(raw, dict):
+        temperature = capabilities.hdVoiceTemperature.clamp(raw.get("temperature"))
+        if temperature is not None and selected in capabilities.voices.hdOptions:
+            voice["temperature"] = temperature
+        rate = capabilities.speakingRate.clamp(raw.get("rate"))
+        if rate is not None:
+            voice["rate"] = _speech_rate_text(rate)
+    return voice
 
 
 def _speech_turn_detection(
@@ -626,7 +648,9 @@ def normalize_speech_client_frame(
     The managed model's catalog owns its sampling and reasoning: a client
     ``temperature`` is omitted when the model has no sampling (the GPT-5.x
     reasoning models), and ``reasoning_effort`` is only ever the catalog's
-    value, never a client's. ``evidence`` records both, content-free.
+    value, never a client's. ``evidence`` records both, content-free. The
+    session voice may also carry a clamped speaking ``rate`` and, for a Dragon HD
+    voice only, a clamped voice ``temperature`` (see ``_speech_session_voice``).
 
     With ``echo_reference`` (an opted-in Live-Reference AEC session) every
     ``session.update`` carries the client reference fields, which Azure can't

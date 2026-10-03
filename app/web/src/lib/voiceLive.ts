@@ -265,6 +265,11 @@ export interface SpeechVoiceLiveSettings {
   transcriptionModel: string | null;
   // What the microphone does while a photo avatar speaks (AvatarListeningMode).
   avatarListening: AvatarListeningMode;
+  // The voice's speaking rate (catalog speakingRate), or null for its own pace.
+  speakingRate: number | null;
+  // A Dragon HD voice's own temperature (catalog hdVoiceTemperature), or null for
+  // the voice default. Sent only with an HD voice; not the model's temperature.
+  voiceTemperature: number | null;
 }
 
 export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
@@ -276,6 +281,8 @@ export const DEFAULT_SPEECH_VOICE_LIVE_SETTINGS: SpeechVoiceLiveSettings = {
   autoTruncate: false,
   transcriptionModel: null,
   avatarListening: DEFAULT_AVATAR_LISTENING_MODE,
+  speakingRate: null,
+  voiceTemperature: null,
 };
 
 export type LiveTurnRole = "user" | "assistant";
@@ -573,6 +580,120 @@ export function transcriptionOptionLabel(
   return option.preview ? `${option.displayName} (preview)` : option.displayName;
 }
 
+// The bounds of a numeric session voice parameter in a Speech catalog.
+export interface SpeechVoiceParameterRange {
+  min: number;
+  max: number;
+}
+
+function speechCapabilities(
+  provider: VoiceProvider | null | undefined,
+): Record<string, unknown> | null {
+  return provider?.id === "speech_voice_live"
+    ? (provider.capabilities as Record<string, unknown>)
+    : null;
+}
+
+function voiceParameterRange(value: unknown): SpeechVoiceParameterRange | null {
+  if (!value || typeof value !== "object") return null;
+  const { min, max } = value as { min?: unknown; max?: unknown };
+  return typeof min === "number" &&
+    typeof max === "number" &&
+    Number.isFinite(min) &&
+    Number.isFinite(max) &&
+    min < max
+    ? { min, max }
+    : null;
+}
+
+/**
+ * The speaking rate range a Speech provider offers, or null. Voice settings pass
+ * the server's advertised provider (an older API offers none, and its relay
+ * would drop a rate); a session reads the catalog bundled with this build.
+ */
+export function speechSpeakingRateRange(
+  provider: VoiceProvider | null = SPEECH_PROVIDER ?? null,
+): SpeechVoiceParameterRange | null {
+  return voiceParameterRange(speechCapabilities(provider)?.speakingRate);
+}
+
+/** The Dragon HD voice temperature range a Speech provider offers, or null. */
+export function speechHdVoiceTemperatureRange(
+  provider: VoiceProvider | null = SPEECH_PROVIDER ?? null,
+): SpeechVoiceParameterRange | null {
+  return voiceParameterRange(speechCapabilities(provider)?.hdVoiceTemperature);
+}
+
+// Whether the catalog lists ``voice`` as a Dragon HD voice: the only voices that
+// take a voice temperature. The relay applies the same list.
+export function isSpeechHdVoice(
+  voice: string,
+  provider: VoiceProvider | null = SPEECH_PROVIDER ?? null,
+): boolean {
+  const voices = speechCapabilities(provider)?.voices as
+    | { hdOptions?: readonly string[] }
+    | undefined;
+  return voices?.hdOptions?.includes(voice) ?? false;
+}
+
+/** A finite number clamped into ``range``; anything else, or no range, is null. */
+export function clampToRange(
+  value: unknown,
+  range: SpeechVoiceParameterRange | null,
+): number | null {
+  if (!range || typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.min(range.max, Math.max(range.min, value));
+}
+
+export type SpeechVoiceFamily = "hd" | "multilingual" | "neural" | "mai";
+
+export interface SpeechVoiceGroup {
+  family: SpeechVoiceFamily;
+  label: string;
+  voices: string[];
+}
+
+const SPEECH_VOICE_FAMILIES: readonly SpeechVoiceFamily[] = ["hd", "multilingual", "neural", "mai"];
+const SPEECH_VOICE_FAMILY_LABELS: Record<SpeechVoiceFamily, string> = {
+  hd: "Dragon HD",
+  multilingual: "Multilingual",
+  neural: "Neural",
+  mai: "MAI",
+};
+
+// A catalog voice's family: Dragon HD from the catalog's own list, the others by
+// the shape of the Azure voice name.
+export function speechVoiceFamily(
+  voice: string,
+  provider: VoiceProvider | null = SPEECH_PROVIDER ?? null,
+): SpeechVoiceFamily {
+  if (isSpeechHdVoice(voice, provider)) return "hd";
+  if (voice.includes(":MAI-Voice-")) return "mai";
+  if (voice.endsWith("MultilingualNeural")) return "multilingual";
+  return "neural";
+}
+
+/**
+ * A Speech provider's catalog voices by family (Dragon HD, Multilingual, Neural,
+ * MAI), in catalog order within each. A family of only preview voices says so.
+ */
+export function speechVoiceGroups(
+  provider: VoiceProvider | null = SPEECH_PROVIDER ?? null,
+): SpeechVoiceGroup[] {
+  const voices = speechCapabilities(provider)?.voices as
+    | { options?: readonly string[]; previewOptions?: readonly string[] }
+    | undefined;
+  const options = voices?.options ?? [];
+  const preview = new Set(voices?.previewOptions ?? []);
+  return SPEECH_VOICE_FAMILIES.flatMap((family) => {
+    const members = options.filter((voice) => speechVoiceFamily(voice, provider) === family);
+    if (members.length === 0) return [];
+    const allPreview = members.every((voice) => preview.has(voice));
+    const label = `${SPEECH_VOICE_FAMILY_LABELS[family]}${allPreview ? " (preview)" : ""}`;
+    return [{ family, label, voices: members }];
+  });
+}
+
 export function isVadType(value: string): value is VadType {
   return (VAD_TYPES as readonly string[]).includes(value);
 }
@@ -666,12 +787,24 @@ export function speechSessionUpdate(
     settings.transcriptionModel,
     provider,
   );
+  const speechVoice: Record<string, unknown> = {
+    type: provider?.capabilities.voices.kind ?? "azure-standard",
+    name: voice,
+    locale,
+  };
+  // Both are omitted unless set, which keeps the default frame unchanged. The
+  // relay clamps them again and sends a voice temperature only for an HD voice.
+  const voiceTemperature = isSpeechHdVoice(voice, provider ?? null)
+    ? clampToRange(settings.voiceTemperature, speechHdVoiceTemperatureRange(provider ?? null))
+    : null;
+  if (voiceTemperature !== null) speechVoice.temperature = voiceTemperature;
+  const speakingRate = clampToRange(
+    settings.speakingRate,
+    speechSpeakingRateRange(provider ?? null),
+  );
+  if (speakingRate !== null) speechVoice.rate = speakingRate;
   const session: Record<string, unknown> = {
-    voice: {
-      type: provider?.capabilities.voices.kind ?? "azure-standard",
-      name: voice,
-      locale,
-    },
+    voice: speechVoice,
     input_audio_transcription: {
       model:
         transcriptionOption?.model ??

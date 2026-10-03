@@ -169,8 +169,23 @@ Transcribe 2, public preview), which the pinned `2026-04-10` reference lists for
 `gpt-realtime`, `gpt-realtime-mini` and every other model. Microsoft has not yet
 confirmed it in East US 2: the standalone MAI-Transcribe-2-Streaming product lists
 that region as "coming soon".
-The voices include 14 public-preview MAI-Voice-2.1 and MAI-Voice-2.1-Flash voices,
-which Microsoft serves from East US 2 and Sweden Central among other regions.
+The voices are US English only. 15 Dragon HD, 28 multilingual and 2 classic
+neural voices are GA. The 14 MAI-Voice-2.1 and MAI-Voice-2.1-Flash voices are
+public preview, which Microsoft serves from East US 2 and Sweden Central among
+other regions. Microsoft's
+[text to speech regions table](https://learn.microsoft.com/azure/ai-services/speech-service/regions?tabs=tts),
+reviewed 2026-10-03, offers HD and MAI voices in East US 2 but none of its other
+preview voices. The catalog therefore leaves out the preview HD voices (the
+podcast and multi-talker voices and Dragon HD Omni) and the preview
+`en-US-AshTurboMultilingualNeural`, as well as Dragon HD Flash, which East US 2
+does not offer. `en-US-Bree` and `en-US-Jane` are GA Dragon HD voices in the
+language table but are missing from the
+[HD voices list](https://learn.microsoft.com/azure/ai-services/speech-service/high-definition-voices#supported-azure-speech-hd-voices)
+that Voice Live points to, so they are left out too. A user may set a speaking
+rate (0.5 to 1.5) for any voice and a voice temperature (0 to 1) for a Dragon HD
+voice. Microsoft documents the rate for standard voices only, so its effect on
+MAI voices is unverified, as is each added voice's acceptance by Voice Live,
+until a signed-in session.
 
 A photo avatar session that opts into precise echo cancellation (preview
 Live-Reference AEC, the catalog's `echoCancellation.clientReference`) connects at
