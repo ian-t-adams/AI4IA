@@ -14,7 +14,9 @@ step's instruction must contain the ``{input}`` placeholder.
 Unlike :class:`~ai4ia_api.agents.service.AgentService`, this service is not on the
 chat hot path, so reads do **not** fail open — a store error surfaces to the
 caller. The per-user cap count on create therefore fails *closed* (a store error
-aborts the create rather than letting the cap be bypassed).
+aborts the create rather than letting the cap be bypassed). Only an unrestricted
+admin's own workflows skip that cap; the caller decides it with
+``auth.identity.admin_is_unrestricted``.
 """
 from __future__ import annotations
 
@@ -114,19 +116,24 @@ class WorkflowService:
             return await self.get(user_id, key)
         return next((item for item in await self.available_for(user_id) if item.name == key), None)
 
-    async def create(self, user_id: str, req: WorkflowCreate) -> Workflow:
+    async def create(
+        self, user_id: str, req: WorkflowCreate, *, unrestricted: bool = False,
+    ) -> Workflow:
         name = (req.name or "").strip().lower()
         self._validate_name(name)
         # Fail closed: an existence/count read that errors aborts the create (the
         # error propagates) rather than letting the uniqueness or per-user cap be
-        # silently bypassed.
+        # silently bypassed. ``unrestricted`` skips only the per-user cap: the
+        # router sets it from ``admin_is_unrestricted`` for the authenticated
+        # caller's own workflows, and other callers stay capped.
         if await self._store.get(user_id, name) is not None:
             raise WorkflowConflictError(f"You already have a workflow named '{name}'.")
-        existing = await self._store.list(user_id)
-        if len(existing) >= MAX_WORKFLOWS_PER_USER:
-            raise WorkflowConflictError(
-                f"You have reached the maximum of {MAX_WORKFLOWS_PER_USER} workflows."
-            )
+        if not unrestricted:
+            existing = await self._store.list(user_id)
+            if len(existing) >= MAX_WORKFLOWS_PER_USER:
+                raise WorkflowConflictError(
+                    f"You have reached the maximum of {MAX_WORKFLOWS_PER_USER} workflows."
+                )
         workflow = self._build(
             user_id=user_id,
             name=name,

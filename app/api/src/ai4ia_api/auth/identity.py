@@ -57,8 +57,9 @@ def admin_is_unrestricted(user: AuthenticatedUser, settings: Settings) -> bool:
     ``AI4IA_ADMIN_SUBJECTS``, ``AI4IA_ADMIN_EMAILS`` or the ``admin`` app role,
     becomes unrestricted, so grant admin sparingly.
 
-    The exemption covers per-user soft entitlements and the per-user photo
-    avatar, live avatar minute and document caps. It grants no admin API access
+    The exemption covers per-user soft entitlements, the per-user photo avatar,
+    live avatar minute and document caps, and the per-user counts of saved
+    agents, workflows and MCP servers. It grants no admin API access
     (``auth.admin.require_admin`` still decides that, including its optional
     secret second factor) and waives no security control, provider or legal
     obligation, global feature prerequisite, technical bound, group-policy

@@ -28,6 +28,7 @@ from ..agents.mcp_servers import (
 from ..agents.mcp_service import McpServerService
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
+from ..auth.identity import admin_is_unrestricted
 
 router = APIRouter(prefix="/api/agents/mcp-servers", tags=["mcp-servers"])
 
@@ -63,7 +64,11 @@ async def create_server(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> UserMcpServer:
     try:
-        return await _service(request).create(user.internal_user_id, payload)
+        return await _service(request).create(
+            user.internal_user_id, payload,
+            # An unrestricted admin's own servers skip the per-user cap.
+            unrestricted=admin_is_unrestricted(user, request.app.state.settings),
+        )
     except McpValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

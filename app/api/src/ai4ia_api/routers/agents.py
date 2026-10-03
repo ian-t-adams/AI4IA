@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
+from ..auth.identity import admin_is_unrestricted
 from ..agents.agent_catalog import AgentCatalog, AgentSummary
 from ..agents.mcp_servers import namespaced_tool_name
 from ..agents.service import AgentService
@@ -127,6 +128,8 @@ async def create_my_agent(
             payload,
             reserved_names=reserved,
             mcp_tool_names=mcp_tools,
+            # An unrestricted admin's own agents skip the per-user cap.
+            unrestricted=admin_is_unrestricted(user, request.app.state.settings),
         )
     except AgentValidationError as exc:
         raise HTTPException(
