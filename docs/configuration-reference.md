@@ -399,7 +399,10 @@ usage, errors and unrelated events are not recursively rewritten.
 GA has no temperature parameter. The relay omits saved preview temperature,
 and `/api/voice/live/config` advertises only the safe `openaiRealtimeProtocol`
 selection so the UI disables that control with an explanation. The saved
-preference is retained for preview rollback; Speech temperature is unchanged.
+preference is retained for preview rollback. Speech temperature still reaches
+the realtime and GPT-4.1 managed models; the GPT-5.x Speech models have no
+sampling (catalog `samplingSupported: false`), so the relay omits it there too and
+sends only the catalog's server-owned `reasoningEffort`.
 There is no automatic retry, protocol downgrade or replay after a failed
 handshake, provider error or possibly accepted frame.
 

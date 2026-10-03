@@ -146,6 +146,14 @@ stay unverified until a signed-in session or the
 [authenticated canary](runbooks/deployment.md#4-apim-policy-changes-and-gateway-canaries)
 accepts each one.
 
+The catalog also pins each model's sampling and reasoning. The GPT-5.x models
+are reasoning models without sampling (`samplingSupported: false`, the rule HTTP
+chat applies), so the relay omits any temperature for them. `gpt-5.2`, `gpt-5.4`,
+`gpt-5.6-terra` and `gpt-5.6-luna` also get a server-owned `reasoningEffort` of
+`none`, which the generator requires to be in `infra/models.json`'s probed list
+for the same model. Whether Voice Live accepts it on these models is unverified
+until a signed-in session does.
+
 The newer realtime models keep the GPT realtime family's `gpt-4o-transcribe`
 default, with one documented gap. The pinned `2026-04-10` reference names only
 `gpt-realtime` and `gpt-realtime-mini` for OpenAI transcription models, and it

@@ -16,6 +16,7 @@ import {
   isSpeechVoiceProvider,
   resolveSpeechTranscriptionOption,
   speechEchoReference,
+  speechModelSupportsSampling,
   speechTranscriptionOptions,
   transcriptionOptionLabel,
   VAD_TYPES,
@@ -186,6 +187,15 @@ export function VoiceSettingsPanel({
   const defaultTranscriptionLabel = selectedSpeechModel
     ? managedTranscriptionLabel(selectedSpeechModel.inputTranscription.model)
     : "";
+  // Neither GA Realtime nor a Speech model without sampling takes a temperature.
+  // The control explains why and keeps the saved value for the next model.
+  const temperatureUnavailable = isGaRealtime
+    ? "Temperature is not configurable with GA Realtime."
+    : isSpeechProvider &&
+        selectedSpeechModel &&
+        !speechModelSupportsSampling(selectedSpeechModel)
+      ? `Temperature is not configurable with ${selectedSpeechModel.displayName}.`
+      : null;
   const previewVoiceSelected = isSpeechProvider && isPreviewVoice(voice);
   const turnDetectionOptions: readonly SpeechVoiceLiveSettings["turnDetection"][] =
     speechProvider?.capabilities.turnDetection.options ?? [];
@@ -477,17 +487,19 @@ export function VoiceSettingsPanel({
               <label htmlFor={`${idPrefix}-temperature`}>Temperature</label>
               <input
                 id={`${idPrefix}-temperature`}
-                aria-describedby={isGaRealtime ? `${idPrefix}-temperature-description` : undefined}
+                aria-describedby={
+                  temperatureUnavailable ? `${idPrefix}-temperature-description` : undefined
+                }
                 type="number"
                 min={TEMPERATURE_MIN}
                 max={TEMPERATURE_MAX}
                 step={0.1}
                 value={
-                  isGaRealtime ? "" : (isSpeechProvider
+                  temperatureUnavailable ? "" : (isSpeechProvider
                     ? speechSettings.temperature
                     : settings.temperature) ?? ""
                 }
-                disabled={locked || isGaRealtime}
+                disabled={locked || temperatureUnavailable !== null}
                 placeholder="Model default"
                 onChange={(e) =>
                   isSpeechProvider
@@ -502,9 +514,9 @@ export function VoiceSettingsPanel({
                 }
                 style={CONTROL_STYLE}
               />
-              {isGaRealtime && (
+              {temperatureUnavailable && (
                 <span id={`${idPrefix}-temperature-description`} style={{ maxWidth: 240 }}>
-                  Temperature is not configurable with GA Realtime.
+                  {temperatureUnavailable}
                 </span>
               )}
             </div>

@@ -42,6 +42,23 @@ ADDED_MODEL_IDS = (
     "gpt-5.6-terra",
     "gpt-5.6-luna",
 )
+# Each model's (samplingSupported, reasoningEffort); None means no effort is
+# sent. Spelled out so a generator typo cannot agree with itself.
+EXPECTED_PARAMETERS = {
+    "gpt-realtime": (True, None),
+    "gpt-realtime-mini": (True, None),
+    "gpt-realtime-1.5": (True, None),
+    "gpt-realtime-2.1": (True, None),
+    "gpt-realtime-2.1-mini": (True, None),
+    "gpt-4.1": (True, None),
+    "gpt-4.1-mini": (True, None),
+    "gpt-5-mini": (False, None),
+    "gpt-5.1": (False, None),
+    "gpt-5.2": (False, "none"),
+    "gpt-5.4": (False, "none"),
+    "gpt-5.6-terra": (False, "none"),
+    "gpt-5.6-luna": (False, "none"),
+}
 # Names the catalog must not accept: GPT-6/6.1 are not Voice Live models,
 # gpt-5.5 and gpt-5.4-mini/nano are bring-your-own-model only, azure-realtime
 # needs its own voice type, and Data Zone variants are separately named models.
@@ -174,6 +191,10 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             self.assertEqual(model["sampleRateHz"], 24000)
             self.assertTrue(model["displayName"])
             self.assertTrue(model["description"])
+            self.assertEqual(
+                (model["samplingSupported"], model.get("reasoningEffort")),
+                EXPECTED_PARAMETERS[model["id"]],
+            )
         self.assertEqual(
             speech["capabilities"]["voices"]["options"][0],
             "en-US-Ava:DragonHDLatestNeural",
@@ -456,6 +477,82 @@ class VoiceProviderCatalogTests(unittest.TestCase):
         mutated["providers"][1]["capabilities"]["customVoice"]["enabled"] = True
         self.assert_schema_rejects(mutated)
         self.assert_generator_rejects(mutated)
+
+    def test_schema_and_generator_pin_each_models_sampling_and_reasoning_effort(self) -> None:
+        jsonschema.validate(self.raw, self.schema)
+        self.gen.build_catalog(self.raw)
+
+        def mutation(model_id: str, change) -> dict:
+            mutated = copy.deepcopy(self.raw)
+            change(mutated["providers"][1]["managedModels"][self._model_index(model_id)])
+            return mutated
+
+        mutations = {
+            "sampling on a GPT-5.x model": mutation(
+                "gpt-5.6-terra", lambda m: m.update(samplingSupported=True)
+            ),
+            "no sampling on a realtime model": mutation(
+                "gpt-realtime", lambda m: m.update(samplingSupported=False)
+            ),
+            "no sampling on gpt-4.1": mutation(
+                "gpt-4.1", lambda m: m.update(samplingSupported=False)
+            ),
+            "missing sampling flag": mutation("gpt-5.1", lambda m: m.pop("samplingSupported")),
+            "integer sampling flag": mutation(
+                "gpt-5.1", lambda m: m.update(samplingSupported=0)
+            ),
+            "string sampling flag": mutation(
+                "gpt-4.1", lambda m: m.update(samplingSupported="true")
+            ),
+            "another documented effort": mutation(
+                "gpt-5.6-terra", lambda m: m.update(reasoningEffort="low")
+            ),
+            "effort outside the enum": mutation(
+                "gpt-5.6-terra", lambda m: m.update(reasoningEffort="max")
+            ),
+            "capitalized effort": mutation(
+                "gpt-5.4", lambda m: m.update(reasoningEffort="None")
+            ),
+            "missing effort": mutation("gpt-5.6-luna", lambda m: m.pop("reasoningEffort")),
+            "effort on gpt-5.1": mutation(
+                "gpt-5.1", lambda m: m.update(reasoningEffort="none")
+            ),
+            "effort on gpt-5-mini": mutation(
+                "gpt-5-mini", lambda m: m.update(reasoningEffort="none")
+            ),
+            "effort on a realtime model": mutation(
+                "gpt-realtime", lambda m: m.update(reasoningEffort="none")
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assert_schema_rejects(mutated)
+                self.assert_generator_rejects(mutated)
+
+    def test_generator_requires_each_effort_to_be_probed_in_models_json(self) -> None:
+        models = json.loads((REPO_ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        self.gen.build_catalog(self.raw, models)  # control: the real probes allow it
+
+        def without(change) -> dict:
+            changed = copy.deepcopy(models)
+            row = next(row for row in changed["catalog"] if row["name"] == "gpt-5.6-terra")
+            change(changed, row)
+            return changed
+
+        unprobed = without(lambda _, row: row.update(reasoningEffort=["low", "medium", "high"]))
+        with self.assertRaises(SystemExit) as refused:
+            self.gen.build_catalog(self.raw, unprobed)
+        self.assertIn(
+            "reasoningEffort 'none' must be in infra/models.json's probed reasoningEffort "
+            "for 'gpt-5.6-terra'",
+            str(refused.exception),
+        )
+        unrecorded = without(lambda _, row: row.pop("reasoningEffort"))
+        with self.assertRaises(SystemExit):
+            self.gen.build_catalog(self.raw, unrecorded)
+        # A managed model with no row of its name has nothing to compare against.
+        unlisted = without(lambda changed, row: changed["catalog"].remove(row))
+        self.gen.build_catalog(self.raw, unlisted)
 
     def test_generated_policy_is_current_and_catalog_driven(self) -> None:
         catalog = self.gen.build_catalog(self.raw)

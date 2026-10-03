@@ -278,6 +278,9 @@ def test_published_voice_rechecks_frames_and_keeps_server_source_receipt(publish
     assert event["executionReceipt"]["runtime"]["instructionSource"] == "agent"
     assert "voice_delivery_guidance_v1" in event["executionReceipt"]["notes"]
     assert "Voice delivery:" not in json.dumps(event["executionReceipt"])
+    # Every note reads as written: none is long enough for the redactor to mask.
+    assert "voice_model_params_not_recorded" in event["executionReceipt"]["notes"]
+    assert "***REDACTED***" not in event["executionReceipt"]["notes"]
 
     # Control: a session that never connected claims no delivered guidance.
     state.realtime_connector = FakeRealtimeConnector(fail=True)
@@ -296,6 +299,7 @@ def test_published_voice_rechecks_frames_and_keeps_server_source_receipt(publish
     assert len(receipts) == 2
     assert "voice_not_started" in receipts[-1]["notes"]
     assert "voice_delivery_guidance_v1" not in receipts[-1]["notes"]
+    assert "***REDACTED***" not in receipts[-1]["notes"]
 
 
 def test_explicit_empty_document_scope_records_supported_optional_narrowing(published_api):

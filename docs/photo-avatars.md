@@ -718,6 +718,34 @@ avatar byte stays on the existing governed path: browser → FastAPI
   - `avatar_verification_failed` becomes `avatar_unavailable` /
     `verification_failed`, and `mark_live_avatar_verification_failed` marks the
     record once.
+- **Model parameters (2026-10-03).** The voice catalog owns each Speech managed
+  model's sampling and reasoning, for avatar and voice-only sessions alike.
+  - The GPT-5.x models (`gpt-5-mini`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4`,
+    `gpt-5.6-terra`, `gpt-5.6-luna`) are reasoning models without sampling
+    (`samplingSupported: false`, the same rule HTTP chat applies). The relay omits
+    any client temperature for them, and Voice settings disables **Temperature**
+    with an explanation while keeping the saved value for other models.
+  - `gpt-5.2`, `gpt-5.4` and the GPT-5.6 models also get a server-owned
+    `reasoning_effort: none` on every `session.update`. It gives the lowest
+    spoken latency, matches gpt-5.1's documented default, and is the only effort
+    GPT-5.6 documents together with function tools. `gpt-5.1` and `gpt-5-mini`
+    send none. A client `reasoning_effort` is never forwarded, on any model.
+  - Every other frame is unchanged, so the realtime and GPT-4.1 models keep
+    their temperature.
+- **Refused replies.** A `response.done` whose status is `failed`, or
+  `incomplete` for a reason other than the owner's own turn or cancel (a content
+  filter, the output limit), shows a notice in the call bar with Azure's error
+  type, code and param and a bounded plain-text message, and suggests another
+  speech model or voice.
+  - The session stays connected. Nothing is retried, replayed or re-requested,
+    and the stage and its `AI-generated` label are untouched.
+  - The completion telemetry records the first failure's bounded error
+    identifiers and the relay's parameter choices
+    ([flow telemetry v2](runbooks/telemetry.md#voice-live-conversation-flow)).
+  - On 2026-10-03, every GPT-5.6 Terra avatar reply failed after transcription
+    while gpt-5.1 replied normally. The evidence could not separate a refused
+    temperature, tools without `reasoning_effort: none`, or the preview MAI voice
+    with a photo avatar; nothing recorded Azure's reason.
 - **Idle and session caps.** Avatar time bills while idle, so:
   - every avatar session is capped by the smaller of
     `realtime_max_session_seconds` and `AI4IA_PHOTO_AVATAR_LIVE_MAX_MINUTES_PER_SESSION`
@@ -927,6 +955,11 @@ avatar byte stays on the existing governed path: browser → FastAPI
     without the flag, while the API reference says to append it);
   - whether the avatar works over WebSocket at that version;
   - how well real echo is removed through real speakers.
+
+  The 2026-10-03 model parameters are also unverified until a signed-in
+  session: whether GPT-5.6 replies now succeed, whether Voice Live accepts
+  `reasoning_effort: none` on these models, and whether MAI voices work with
+  photo avatars.
 
   A local Chromium probe ran the shipped stereo worklet and confirmed sample
   order and alignment. It also confirmed that a same-origin MediaSource

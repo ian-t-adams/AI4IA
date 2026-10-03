@@ -131,6 +131,60 @@ describe("VoiceSettingsPanel", () => {
     expect(temperature).not.toHaveAttribute("aria-describedby");
   });
 
+  it("disables Temperature for a Speech model without sampling and keeps the saved value", async () => {
+    const speech = voiceProviderCatalog.providers[1];
+    const { user, rerender, onSpeechSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: speech,
+      voice: speech.capabilities.voices.default,
+      speechModel: "gpt-5.6-terra",
+      speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, temperature: 0.5 },
+    });
+    const temperature = screen.getByRole("spinbutton", { name: "Temperature" });
+    expect(temperature).toBeDisabled();
+    expect(temperature).toHaveValue(null);
+    expect(temperature).toHaveAccessibleDescription(
+      "Temperature is not configurable with GPT-5.6 Terra.",
+    );
+    await user.type(temperature, "0.7");
+    expect(onSpeechSettingsChange).not.toHaveBeenCalled();
+
+    // Control: a model with sampling shows the saved value and takes edits.
+    rerender({ speechModel: "gpt-realtime" });
+    expect(temperature).toBeEnabled();
+    expect(temperature).toHaveValue(0.5);
+    expect(temperature).not.toHaveAttribute("aria-describedby");
+    await user.clear(temperature);
+    expect(onSpeechSettingsChange).toHaveBeenCalledWith(
+      expect.objectContaining({ temperature: null }),
+    );
+  });
+
+  it.each(voiceProviderCatalog.providers[1].managedModels)(
+    "offers Temperature for $id only if the model has sampling",
+    (model) => {
+      const speech = voiceProviderCatalog.providers[1];
+      setup({
+        provider: "speech_voice_live",
+        activeProvider: speech,
+        voice: speech.capabilities.voices.default,
+        speechModel: model.id,
+        speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, temperature: 0.5 },
+      });
+      const temperature = screen.getByRole("spinbutton", { name: "Temperature" });
+      if (model.samplingSupported) {
+        expect(temperature).toBeEnabled();
+        expect(temperature).toHaveValue(0.5);
+        expect(temperature).not.toHaveAttribute("aria-describedby");
+      } else {
+        expect(temperature).toBeDisabled();
+        expect(temperature).toHaveAccessibleDescription(
+          `Temperature is not configurable with ${model.displayName}.`,
+        );
+      }
+    },
+  );
+
   it("renders controls directly without a nested disclosure or dialog", () => {
     setup();
     expect(screen.queryByRole("dialog")).toBeNull();

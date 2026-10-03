@@ -16,12 +16,19 @@ from starlette.websockets import WebSocketDisconnect
 from ai4ia_api import realtime_flow
 from ai4ia_api.realtime_flow import (
     CLIENT_FLOW_EVENTS,
+    REASONING_EFFORT_PROPERTY,
     RESPONSE_DONE_MAX_CHARS,
+    RESPONSE_FAILURE_FIELDS,
     RESPONSE_OUTCOMES,
+    TEMPERATURE_OMITTED_PROPERTY,
     UPSTREAM_FLOW_EVENTS,
+    bounded_identifier,
     event_properties,
+    failure_identifiers,
+    parse_response_done,
     response_outcome,
 )
+from ai4ia_api.realtime_avatar import PROVIDER_ID_PLACEHOLDER
 from ai4ia_api.routers.realtime import DEV_SUBPROTOCOL, UpstreamMessage, relay
 from tests.test_realtime_api import (
     ScriptedRealtimeConnector,
@@ -31,6 +38,7 @@ from tests.test_realtime_api import (
     _origin,
 )
 from tests.test_realtime_logic import (
+    AVATAR_PROVIDER_ID,
     _live_avatar,
     _relay_bridge,
     _RelayClient,
@@ -39,6 +47,8 @@ from tests.test_realtime_logic import (
 )
 
 SECRET = "PRIVATE-TRANSCRIPT-SENTINEL"
+# A provider error message is free text; it is never recorded.
+MESSAGE_SECRET = "PRIVATE-ERROR-MESSAGE-SENTINEL"
 
 
 def _done(status: object, reason: object = None, **extra) -> str:
@@ -51,6 +61,20 @@ def _done(status: object, reason: object = None, **extra) -> str:
     if reason is not None:
         response["status_details"] = {"type": status, "reason": reason}
     return json.dumps({"type": "response.done", "event_id": "evt_secret", "response": response})
+
+
+def _failed(error: object) -> str:
+    """A failed response.done whose status_details carry ``error``."""
+    return _done("failed", None, status_details={"type": "failed", "error": error})
+
+
+# The shape a failed Voice Live reply reports: identifiers plus free text.
+FAILURE = {
+    "type": "invalid_request_error",
+    "code": "unsupported_value",
+    "param": "session.temperature",
+    "message": MESSAGE_SECRET,
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -93,7 +117,10 @@ def test_response_outcome_skips_oversized_payloads():
 
 
 def test_property_names_are_unique_and_events_drop_unknown_keys_and_zeros():
-    names = [*CLIENT_FLOW_EVENTS.values(), *UPSTREAM_FLOW_EVENTS.values(), *RESPONSE_OUTCOMES.values()]
+    names = [
+        *CLIENT_FLOW_EVENTS.values(), *UPSTREAM_FLOW_EVENTS.values(), *RESPONSE_OUTCOMES.values(),
+        *RESPONSE_FAILURE_FIELDS.values(), REASONING_EFFORT_PROPERTY, TEMPERATURE_OMITTED_PROPERTY,
+    ]
     assert len(names) == len(set(names))
     assert "flowVersion" not in names
     properties = event_properties(
@@ -102,11 +129,110 @@ def test_property_names_are_unique_and_events_drop_unknown_keys_and_zeros():
         [("cancelled:turn_detected", 1), ("invented", 4)],
     )
     assert properties == {
-        "flowVersion": 1,
+        "flowVersion": 2,
         "clientResponseCancel": 2,
         "upSpeechStarted": 3,
         "responseCancelledTurnDetected": 1,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Version 2: why the first failure failed, and the relay's own parameters.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(("value", "recorded"), [
+    ("invalid_request_error", "invalid_request_error"),
+    ("session.temperature", "session.temperature"),
+    ("x", "x"),
+    ("a" + "b" * 63, "a" + "b" * 63),  # control: exactly the 64-character bound
+    ("a" + "b" * 64, "other"),
+    ("Invalid_Request", "other"),
+    ("1st_error", "other"),
+    ("_leading_underscore", "other"),
+    ("server-error", "other"),
+    ("has space", "other"),
+    ("code\n", "other"),
+    ("https://example.invalid/x", "other"),
+    ("", "other"),
+    (400, "other"),
+    (True, "other"),
+    (["unsupported_value"], "other"),
+])
+def test_bounded_identifier_admits_only_short_lowercase_identifiers(value, recorded):
+    assert bounded_identifier(value) == recorded
+
+
+def test_failure_identifiers_keep_type_code_and_param_only():
+    assert failure_identifiers(FAILURE) == (
+        ("type", "invalid_request_error"),
+        ("code", "unsupported_value"),
+        ("param", "session.temperature"),
+    )
+    # Absent and null fields are omitted, an unusable value is "other", and
+    # every other field (the message above all) is never read.
+    assert failure_identifiers({
+        "type": "Server Error", "param": None, "message": "invalid_request_error",
+        "event_id": "evt_1",
+    }) == (("type", "other"),)
+    for not_an_error in (None, "unsupported_value", ["code"], 7):
+        assert failure_identifiers(not_an_error) == ()
+
+
+@pytest.mark.parametrize("frame", [
+    _done("completed", None, status_details={"type": "completed", "error": FAILURE}),
+    _done("cancelled", "turn_detected"),
+    _done("incomplete", "content_filter"),
+    _done("in_progress", None, status_details={"error": FAILURE}),
+])
+def test_only_a_failed_response_yields_failure_identifiers(frame):
+    assert parse_response_done(frame).failure == ()
+    # Control: the same error on a failed response is read.
+    assert parse_response_done(_failed(FAILURE)).failure == failure_identifiers(FAILURE)
+
+
+def test_a_failure_without_an_error_object_still_counts_as_failed():
+    for frame in (_done("failed"), _failed(None), _failed("server unavailable")):
+        assert parse_response_done(frame) == realtime_flow.ResponseDone("failed", ())
+
+
+def test_an_oversized_failure_is_not_parsed_for_identifiers():
+    def padded(total: int) -> str:
+        base = _failed(FAILURE)
+        return base[:-2] + ',"pad":"' + "x" * (total - len(base) - 9) + '"}}'
+
+    below, above = padded(RESPONSE_DONE_MAX_CHARS), padded(RESPONSE_DONE_MAX_CHARS + 1)
+    assert len(below) == RESPONSE_DONE_MAX_CHARS and len(above) == RESPONSE_DONE_MAX_CHARS + 1
+    # Control: the same payload under the bound is read.
+    assert parse_response_done(below) == realtime_flow.ResponseDone(
+        "failed", failure_identifiers(FAILURE),
+    )
+    assert parse_response_done(above) == realtime_flow.ResponseDone("other", ())
+
+
+def test_event_properties_carry_only_bounded_failure_and_parameter_values():
+    properties = event_properties(
+        (), (), [("failed", 2)],
+        failure=[("type", "invalid_request_error"), ("code", "Not An Identifier"),
+                 ("message", MESSAGE_SECRET)],
+        reasoning_effort="none",
+        temperature_omitted=1,
+    )
+    assert properties == {
+        "flowVersion": 2,
+        "responseFailed": 2,
+        "responseFailedType": "invalid_request_error",
+        "responseFailedCode": "other",
+        "reasoningEffort": "none",
+        "clientTemperatureOmitted": 1,
+    }
+    # Nothing to record: no failure, no effort, no omitted temperature.
+    assert event_properties((), (), [("completed", 1)], temperature_omitted=0) == {
+        "flowVersion": 2, "responseCompleted": 1,
+    }
+    assert event_properties((), (), (), reasoning_effort="None Of These")[
+        "reasoningEffort"
+    ] == "other"
 
 
 # --------------------------------------------------------------------------- #
@@ -216,14 +342,15 @@ def test_frozen_counts_keep_only_allowlisted_keys_in_allowlist_order():
 @pytest.mark.parametrize("with_avatar", [False, True])
 def test_only_response_done_payloads_are_parsed_for_their_outcome(monkeypatch, with_avatar):
     seen: list[str] = []
-    real = realtime_flow.response_outcome
+    real = realtime_flow.parse_response_done
 
-    def spy(frame: str) -> str:
+    def spy(frame: str) -> realtime_flow.ResponseDone:
         seen.append(frame)
         return real(frame)
 
-    monkeypatch.setattr(realtime_flow, "response_outcome", spy)
-    done = _done("cancelled", "client_cancelled")
+    monkeypatch.setattr(realtime_flow, "parse_response_done", spy)
+    # Provider text can echo the avatar's provider id; it must be scrubbed first.
+    done = _failed({"code": "avatar_failed", "message": f"no {AVATAR_PROVIDER_ID}"})
     frames = [
         json.dumps({"type": "response.audio.delta", "delta": "AAAA"}),
         *([_video_frame(1024)] * 3 if with_avatar else []),
@@ -235,10 +362,58 @@ def test_only_response_done_payloads_are_parsed_for_their_outcome(monkeypatch, w
         upstream=[*[UpstreamMessage("text", text=f) for f in frames], UpstreamMessage("close", close_code=1000)],
         avatar=avatar,
     )
-    assert seen == [done]
-    assert dict(outcome.stats.response_outcomes) == {"cancelled:client_cancelled": 1}
+    assert len(seen) == 1
     if with_avatar:
         assert avatar is not None and avatar.video_frames == 3
+        # Inspected only after the provider id is scrubbed out of the frame.
+        assert AVATAR_PROVIDER_ID not in seen[0]
+        assert seen[0] == done.replace(AVATAR_PROVIDER_ID, PROVIDER_ID_PLACEHOLDER)
+    else:
+        # Control: outside avatar mode the frame is read as the provider sent it.
+        assert seen == [done]
+    assert dict(outcome.stats.response_outcomes) == {"failed": 1}
+    assert outcome.stats.response_failure == (("code", "avatar_failed"),)
+
+
+def test_relay_keeps_only_the_first_failure_and_never_its_message():
+    second = {"type": "server_error", "code": "rate_limited", "message": MESSAGE_SECRET}
+    frames = [
+        _done("completed"),
+        _failed(FAILURE),
+        _failed(second),
+        _done("failed"),
+        _done("cancelled", "turn_detected"),
+    ]
+    outcome = _run(upstream=[
+        *[UpstreamMessage("text", text=frame) for frame in frames],
+        UpstreamMessage("close", close_code=1000),
+    ])
+    assert dict(outcome.stats.response_outcomes) == {
+        "completed": 1, "cancelled:turn_detected": 1, "failed": 3,
+    }
+    assert outcome.stats.response_failure == failure_identifiers(FAILURE)
+    assert outcome.stats.as_log_dict()["responseFailure"] == {
+        "type": "invalid_request_error", "code": "unsupported_value", "param": "session.temperature",
+    }
+    assert MESSAGE_SECRET not in repr(outcome)
+    assert "rate_limited" not in repr(outcome)
+    # Control: when that later failure is the first, it is the one recorded.
+    later = _run(upstream=[
+        UpstreamMessage("text", text=_failed(second)),
+        UpstreamMessage("text", text=_failed(FAILURE)),
+        UpstreamMessage("close", close_code=1000),
+    ])
+    assert later.stats.response_failure == (("type", "server_error"), ("code", "rate_limited"))
+
+
+def test_a_first_failure_without_identifiers_still_fixes_the_first_failure():
+    outcome = _run(upstream=[
+        UpstreamMessage("text", text=_done("failed")),
+        UpstreamMessage("text", text=_failed(FAILURE)),
+        UpstreamMessage("close", close_code=1000),
+    ])
+    assert dict(outcome.stats.response_outcomes) == {"failed": 2}
+    assert outcome.stats.response_failure == ()
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +465,7 @@ def test_completion_log_and_custom_event_carry_bounded_numeric_flow(caplog, monk
             *RESPONSE_OUTCOMES.values(),
         }}
         assert flow == {
-            "flowVersion": 1,
+            "flowVersion": 2,
             "upSpeechStarted": 2,
             "upResponseDone": 2,
             "responseCancelledTurnDetected": 1,

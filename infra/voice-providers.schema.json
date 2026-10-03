@@ -464,6 +464,7 @@
         "description",
         "profile",
         "inputTranscription",
+        "samplingSupported",
         "apiVersion",
         "initialRegion",
         "audioFormat",
@@ -525,6 +526,21 @@
             }
           }
         },
+        "samplingSupported": {
+          "type": "boolean",
+          "description": "Named as in infra/models.json: whether the model honours temperature. False for the GPT-5.x reasoning models; the relay then omits any client temperature."
+        },
+        "reasoningEffort": {
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "description": "Server-owned Voice Live reasoning_effort (the pinned 2026-04-10 ReasoningEffort enum) the relay sends on every session.update. Absent: none is sent. A client value is never forwarded."
+        },
         "apiVersion": {
           "const": "2026-04-10"
         },
@@ -549,7 +565,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/openAiTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": true
+        },
+        "reasoningEffort": false
       }
     },
     "gptRealtimeMiniModel": {
@@ -562,7 +582,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/openAiTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": true
+        },
+        "reasoningEffort": false
       }
     },
     "gptRealtime15Model": {
@@ -575,7 +599,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/openAiTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": true
+        },
+        "reasoningEffort": false
       }
     },
     "gptRealtime21Model": {
@@ -588,7 +616,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/openAiTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": true
+        },
+        "reasoningEffort": false
       }
     },
     "gptRealtime21MiniModel": {
@@ -601,7 +633,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/openAiTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": true
+        },
+        "reasoningEffort": false
       }
     },
     "gpt41Model": {
@@ -614,7 +650,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": true
+        },
+        "reasoningEffort": false
       }
     },
     "gpt41MiniModel": {
@@ -627,7 +667,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": true
+        },
+        "reasoningEffort": false
       }
     },
     "gpt5MiniModel": {
@@ -640,7 +684,11 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": false
+        },
+        "reasoningEffort": false
       }
     },
     "gpt51Model": {
@@ -653,10 +701,17 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
-        }
+        },
+        "samplingSupported": {
+          "const": false
+        },
+        "reasoningEffort": false
       }
     },
     "gpt52Model": {
+      "required": [
+        "reasoningEffort"
+      ],
       "properties": {
         "id": {
           "const": "gpt-5.2"
@@ -666,10 +721,19 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
+        },
+        "samplingSupported": {
+          "const": false
+        },
+        "reasoningEffort": {
+          "const": "none"
         }
       }
     },
     "gpt54Model": {
+      "required": [
+        "reasoningEffort"
+      ],
       "properties": {
         "id": {
           "const": "gpt-5.4"
@@ -679,10 +743,19 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
+        },
+        "samplingSupported": {
+          "const": false
+        },
+        "reasoningEffort": {
+          "const": "none"
         }
       }
     },
     "gpt56TerraModel": {
+      "required": [
+        "reasoningEffort"
+      ],
       "properties": {
         "id": {
           "const": "gpt-5.6-terra"
@@ -692,10 +765,19 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
+        },
+        "samplingSupported": {
+          "const": false
+        },
+        "reasoningEffort": {
+          "const": "none"
         }
       }
     },
     "gpt56LunaModel": {
+      "required": [
+        "reasoningEffort"
+      ],
       "properties": {
         "id": {
           "const": "gpt-5.6-luna"
@@ -705,6 +787,12 @@
         },
         "inputTranscription": {
           "$ref": "#/definitions/azureSpeechTranscription"
+        },
+        "samplingSupported": {
+          "const": false
+        },
+        "reasoningEffort": {
+          "const": "none"
         }
       }
     },

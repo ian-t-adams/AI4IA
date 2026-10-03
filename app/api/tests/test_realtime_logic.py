@@ -2227,7 +2227,7 @@ def test_completion_log_and_event_never_carry_the_provider_id_in_any_field(monke
     )
     resolution = SimpleNamespace(
         provider=SimpleNamespace(id="speech_voice_live"), protocol="speech",
-        model_id="gpt-realtime", echo_reference=None,
+        model_id="gpt-realtime", echo_reference=None, parameter_evidence=None,
         usage_target=SimpleNamespace(
             provider="speech_voice_live", deployment=None, target="managed_voice_live",
             region="eastus2", dataZone=None,

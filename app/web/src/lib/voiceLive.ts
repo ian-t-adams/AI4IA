@@ -556,6 +556,16 @@ export function resolveSpeechTranscriptionOption(
   );
 }
 
+// Whether a Speech managed model honours temperature. The catalog says no for
+// the GPT-5.x reasoning models; the relay then omits any temperature, so the
+// browser neither offers nor sends one. A provider served by an older API has
+// no flag, which keeps the control.
+export function speechModelSupportsSampling(
+  managedModel: SpeechManagedModel | undefined,
+): boolean {
+  return managedModel?.samplingSupported !== false;
+}
+
 // "MAI Transcribe 2 (preview)": the catalog's own name plus its release stage.
 export function transcriptionOptionLabel(
   option: Pick<SpeechTranscriptionOption, "displayName" | "preview">,
@@ -684,7 +694,11 @@ export function speechSessionUpdate(
       ? { type: echoCancellation, reference_source: "client", channels: echoReference.channels }
       : { type: echoCancellation },
   };
-  if (typeof settings.temperature === "number" && Number.isFinite(settings.temperature)) {
+  if (
+    speechModelSupportsSampling(managedModel) &&
+    typeof settings.temperature === "number" &&
+    Number.isFinite(settings.temperature)
+  ) {
     session.temperature = Math.min(2, Math.max(0, settings.temperature));
   }
   return JSON.stringify({ type: "session.update", session });
@@ -1074,6 +1088,68 @@ export function transcriptionFailureNotice(
   let detail = formatVoiceProtocolError(parseVoiceProtocolError(error)).slice(0, room);
   if (!/[.!?]$/.test(detail)) detail += ".";
   return `${lead}${detail}${advice}`;
+}
+
+const RESPONSE_FAILURE_ADVICE = " Try another speech model or voice in Setup > Voice.";
+
+/**
+ * Explains a reply Azure ended with ``status: "failed"``: its error type, code
+ * and param, plus its message as bounded plain text (rendered as text, never
+ * HTML). The session stays connected, and nothing retries on the user's behalf.
+ */
+function responseFailureNotice(error: unknown): string {
+  const lead = "Azure couldn't complete the reply";
+  const record =
+    error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+  const parsed = parseVoiceProtocolError(record);
+  const message = sanitizeVoiceErrorValue(record.message);
+  const metadata = [
+    parsed.type ? `type: ${parsed.type}` : null,
+    parsed.code ? `code: ${parsed.code}` : null,
+    parsed.param ? `param: ${parsed.param}` : null,
+  ].filter(Boolean);
+  const suffix = metadata.length ? ` (${metadata.join("; ")})` : "";
+  // The message yields room first, so the error codes and guidance are never cut off.
+  const room = Math.max(
+    0,
+    MAX_SAFE_ERROR_CHARS - lead.length - suffix.length - RESPONSE_FAILURE_ADVICE.length - 3,
+  );
+  let detail = `${message ? `: ${message.slice(0, room)}` : ""}${suffix}`;
+  if (!/[.!?]$/.test(detail)) detail += ".";
+  return `${lead}${detail}${RESPONSE_FAILURE_ADVICE}`;
+}
+
+/**
+ * The notice for a ``response.done`` that did not complete, or null. A failed
+ * reply, or one Azure ended early for a reason other than the user's own turn
+ * or cancel (a content filter, the output limit), is explained; a barge-in or
+ * Interrupt needs no explanation.
+ */
+export function responseDoneNotice(response: unknown): string | null {
+  if (!response || typeof response !== "object") return null;
+  const { status, status_details: details } = response as {
+    status?: unknown;
+    status_details?: unknown;
+  };
+  const detail =
+    details && typeof details === "object" ? (details as Record<string, unknown>) : {};
+  if (status === "failed") return responseFailureNotice(detail.error);
+  if (status !== "incomplete") return null;
+  switch (detail.reason) {
+    case "turn_detected":
+    case "client_cancelled":
+      return null;
+    case "content_filter":
+      return "Azure's content filter stopped the reply.";
+    case "max_output_tokens":
+      return "The reply reached its length limit and was cut short.";
+    default: {
+      const reason = sanitizeVoiceErrorValue(detail.reason)?.slice(0, 96);
+      return reason
+        ? `Azure ended the reply early (reason: ${reason}).`
+        : "Azure ended the reply early.";
+    }
+  }
 }
 
 export function formatVoiceCloseError(
@@ -1655,6 +1731,8 @@ export function useVoiceLive(
       let responseAudioDurationMs = 0;
       let responsePlaybackGapMs = 0;
       let cancellationRequested = false;
+      // The notice explains a reply that failed; a later completed reply clears it.
+      let replyNoticeShown = false;
 
       const enqueuePlayback = (b64: string) => {
         const int16 = base64ToInt16(b64);
@@ -1946,7 +2024,7 @@ export function useVoiceLive(
           delta?: unknown;
           response_id?: unknown;
           id?: unknown;
-          response?: { id?: unknown };
+          response?: { id?: unknown; status?: unknown; status_details?: unknown };
           item_id?: unknown;
           item?: { id?: unknown };
           content_index?: unknown;
@@ -2117,8 +2195,11 @@ export function useVoiceLive(
             const trimmed = t.trim();
             if (mountedRef.current) {
               // A later transcript supersedes an earlier failure notice.
-              if (trimmed) setNotice(null);
-              if (trimmed) setUserTranscript((p) => (p ? `${p} ` : "") + trimmed);
+              if (trimmed) {
+                setNotice(null);
+                replyNoticeShown = false;
+                setUserTranscript((p) => (p ? `${p} ` : "") + trimmed);
+              }
               // Resolve the pending user bubble created on speech start, or push a
               // completed one if none is open. Empty transcripts drop the bubble.
               if (userTurnId) {
@@ -2150,6 +2231,7 @@ export function useVoiceLive(
             if (mountedRef.current) {
               if (userTurnId) dropTurn(userTurnId);
               setNotice(failure);
+              replyNoticeShown = false;
             }
             userTurnId = null;
             flushTyped();
@@ -2182,9 +2264,19 @@ export function useVoiceLive(
             // chain a second response into the same bubble) until the user speaks.
             // An avatar is still speaking its buffered video here; its own
             // switch_to_idle event ends the indicator instead.
+            // A reply Azure refused or cut short gets a notice; the session stays
+            // open, and nothing is retried, replayed or re-requested for it.
+            const replyNotice = responseDoneNotice(msg.response);
             if (mountedRef.current) {
               if (!avatarPlayerForSession) setSpeaking(false);
               if (assistantTurnId) patchTurn(assistantTurnId, (t) => ({ ...t, streaming: false }));
+              if (replyNotice) {
+                setNotice(replyNotice);
+                replyNoticeShown = true;
+              } else if (replyNoticeShown && msg.response?.status === "completed") {
+                setNotice(null);
+                replyNoticeShown = false;
+              }
             }
             activeResponseId = null;
             activeAssistantItemId = null;

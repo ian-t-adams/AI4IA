@@ -777,6 +777,101 @@ describe("useVoiceLive lifecycle", () => {
     expect(result.current.status).toBe("live");
   });
 
+  it("explains a failed reply without ending, retrying or re-requesting it", async () => {
+    auth.getToken.mockResolvedValue("token");
+    const track = new FakeMediaStreamTrack();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+    const onError = vi.fn();
+    const { result } = renderHook(() =>
+      useVoiceLive(CONFIG, "speech_voice_live", "gpt-5.6-terra", null, "unused", onError),
+    );
+    act(() => { result.current.start(); });
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const emit = (event: object) =>
+      socket.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
+    act(() => {
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.onopen?.();
+    });
+    socket.send.mockClear();
+    act(() => {
+      emit({ type: "input_audio_buffer.speech_started", item_id: "user_1" });
+      emit({ type: "input_audio_buffer.speech_stopped", item_id: "user_1" });
+      emit({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: "user_1",
+        transcript: "Hello",
+      });
+      emit({ type: "response.created", response: { id: "resp_1" } });
+    });
+    expect(result.current.notice).toBeNull();
+
+    act(() =>
+      emit({
+        type: "response.done",
+        response: {
+          id: "resp_1",
+          status: "failed",
+          status_details: {
+            type: "failed",
+            error: {
+              type: "invalid_request_error",
+              code: "unsupported_value",
+              message: "Unsupported value",
+            },
+          },
+        },
+      }),
+    );
+    expect(result.current.notice).toBe(
+      "Azure couldn't complete the reply: Unsupported value " +
+        "(type: invalid_request_error; code: unsupported_value). " +
+        "Try another speech model or voice in Setup > Voice.",
+    );
+    // The session stays up, and nothing is retried, replayed or re-requested.
+    expect(result.current.status).toBe("live");
+    expect(onError).not.toHaveBeenCalled();
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(socket.send).not.toHaveBeenCalled();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(socket.send).not.toHaveBeenCalled();
+
+    // Control: the user's own typed line still goes out as one new exchange.
+    act(() => {
+      expect(result.current.sendText("Try again")).toBe(true);
+    });
+    expect(
+      socket.send.mock.calls.map(([frame]) => JSON.parse(frame as string).type),
+    ).toEqual(["conversation.item.create", "response.create"]);
+
+    // A later completed reply clears the notice; a barge-in would not have set one.
+    act(() => {
+      emit({ type: "response.created", response: { id: "resp_2" } });
+      emit({
+        type: "response.done",
+        response: {
+          id: "resp_2",
+          status: "cancelled",
+          status_details: { type: "cancelled", reason: "turn_detected" },
+        },
+      });
+    });
+    expect(result.current.notice).not.toBeNull();
+    act(() => {
+      emit({ type: "response.created", response: { id: "resp_3" } });
+      emit({ type: "response.done", response: { id: "resp_3", status: "completed" } });
+    });
+    expect(result.current.notice).toBeNull();
+    expect(result.current.status).toBe("live");
+  });
+
   it("admits the exact microphone queue bound and stops rather than dropping or replaying overflow", async () => {
     auth.getToken.mockResolvedValue("token");
     const track = new FakeMediaStreamTrack();
@@ -2102,6 +2197,35 @@ describe("useVoiceLive live photo avatar", () => {
     expect(onError).toHaveBeenCalledWith(
       "The avatar service couldn't verify this avatar. Try again in 5 minutes.",
     );
+  });
+
+  it("explains a failed avatar reply and keeps the session, its video and its label", async () => {
+    const { result, socket, emit, onError } = await startSpeech(AVATAR);
+    const element = result.current.avatar?.element;
+    socket.send.mockClear();
+    act(() => {
+      emit({ type: "response.created", response: { id: "r1" } });
+      emit({
+        type: "response.done",
+        response: {
+          id: "r1",
+          status: "failed",
+          status_details: { type: "failed", error: { type: "server_error", code: "server_error" } },
+        },
+      });
+    });
+    expect(result.current.notice).toBe(
+      "Azure couldn't complete the reply (type: server_error; code: server_error). " +
+        "Try another speech model or voice in Setup > Voice.",
+    );
+    expect(result.current.status).toBe("live");
+    expect(onError).not.toHaveBeenCalled();
+    expect(socket.close).not.toHaveBeenCalled();
+    // No retry: neither a new response.create nor an avatar stop event.
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(result.current.avatar?.element).toBe(element);
+    expect(result.current.avatar?.label).toBe("AI-generated");
+    expect(result.current.avatar?.failure ?? null).toBeNull();
   });
 
   it("ends the session when the avatar stream cannot play", async () => {

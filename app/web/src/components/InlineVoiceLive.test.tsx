@@ -442,6 +442,46 @@ describe("inline Voice Live chat", () => {
     expect(screen.queryByText(notice)).toBeNull();
   });
 
+  it("explains a failed avatar reply in the call bar, away from the stage and its label", () => {
+    const notice =
+      "Azure couldn't complete the reply (code: server_error). " +
+      "Try another speech model or voice in Setup > Voice.";
+    const avatar = {
+      element: document.createElement("video"),
+      label: "AI-generated",
+      unsupported: false,
+      failure: null,
+      started: true,
+      speaking: false,
+      idleEndsAt: null,
+      sessionEndsAt: null,
+      playbackBlocked: false,
+      resume: vi.fn(),
+      micPaused: false,
+      interrupt: vi.fn(),
+    };
+    controller = makeController({ status: "live", active: true, avatar, notice });
+    const { rerender } = render(<Harness avatarName="Ava Marsh" />);
+    const hint = screen.getByText(notice);
+    expect(hint).toHaveClass("voice-call-hint");
+    expect(hint).toHaveAttribute("data-tone", "warn");
+    expect(hint.closest(".voice-call-bar")).not.toBeNull();
+    expect(
+      screen.queryByText("Speak or type to talk to the avatar. It answers out loud."),
+    ).toBeNull();
+    // Still live: no error tone, and typing still goes to the avatar.
+    expect(document.querySelector(".voice-call-bar")).not.toHaveAttribute("data-tone");
+    expect(screen.getByRole("radio", { name: "Ava Marsh" })).toHaveAttribute("aria-checked", "true");
+
+    // Control: without a notice the bar shows the avatar hint again.
+    controller = makeController({ status: "live", active: true, avatar });
+    rerender(<Harness avatarName="Ava Marsh" />);
+    expect(screen.queryByText(notice)).toBeNull();
+    expect(
+      screen.getByText("Speak or type to talk to the avatar. It answers out loud."),
+    ).toBeInTheDocument();
+  });
+
   it("offers no send target before a session starts", async () => {
     const onSend = vi.fn();
     render(<Harness onSend={onSend} />);

@@ -1712,8 +1712,10 @@ a new owner-approved exception.
   with `reference_source: client`, `channels: 2` and `parallel_tool_calls:
   false` (the tool bridge answers one call at a time). The generated APIM policy
   passes only that exact version/flag pair and refuses any other `features`.
-  Every other session keeps the pinned `2026-04-10` and its frames byte for
-  byte. The browser routes the avatar video's audio through the capture
+  Every other session keeps the pinned `2026-04-10`, and the reference changes
+  none of its frames; temperature and `reasoning_effort` follow the managed
+  model's catalog `samplingSupported`/`reasoningEffort`, never the client. The
+  browser routes the avatar video's audio through the capture
   AudioContext (one bus to the speakers and the stereo worklet's channel 1;
   channel 0 is the microphone, browser echo cancellation off). It starts the
   microphone at Azure's `session.updated` (bounded wait) and never pauses it.

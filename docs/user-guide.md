@@ -237,6 +237,13 @@ default. Preview options have no service-level agreement. If Azure refuses one,
 Voice Live shows Azure's error instead of switching to another model. A turn it
 can't transcribe is flagged in the call bar while the session continues.
 
+The GPT-5.x Azure Speech models ignore **Temperature**, so it is disabled for them
+(your saved value still applies to the other models). GPT-5.2, GPT-5.4 and the
+GPT-5.6 models also answer at the lowest reasoning effort, *none*, so spoken
+replies start quickly. If Azure refuses a reply, the call bar shows Azure's
+reason while the session stays connected; try another speech model or voice in
+**Setup > Voice**.
+
 With Azure Speech, **Turn detection** sets how Azure tells that you've finished
 speaking: **Semantic (English)** or **Semantic (multilingual)**. **Stop the reply
 when I start talking** lets you cut in by speaking, and **Let Azure trim
@@ -577,6 +584,7 @@ still apply and modality coverage remains incomplete.
 | The avatar interrupts itself or answers its own words | On speakers, keep **While the avatar talks** on **Pause my microphone**, or use headphones |
 | The avatar doesn't stop when I talk | While it speaks your microphone is paused: choose **Interrupt**, use headphones with **Keep listening**, or try **Keep listening with precise echo cancellation (preview)** on speakers |
 | An avatar session with precise echo cancellation ends at once | The preview isn't accepted there: choose **Pause my microphone** and start again |
+| Voice or the avatar hears you but never answers | The call bar shows Azure's reason for a refused reply. Try another speech model or voice in **Setup > Voice** |
 | Search or another tool fails | Its visible error/approval state; an enabled gate does not prove upstream entitlement |
 | An admin panel is unavailable | Resource wiring, API identity permissions, and source freshness |
 
