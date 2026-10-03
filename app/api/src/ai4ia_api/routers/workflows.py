@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
+from ..auth.identity import admin_is_unrestricted
 from ..agents.agent_catalog import AgentCatalog
 from ..agents.approvals import ApprovalPolicy
 from ..agents.consent import ToolConsentState, ToolConsentSummary, mint_consent
@@ -343,7 +344,11 @@ async def create_workflow(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Workflow:
     try:
-        return await _service(request).create(user.internal_user_id, payload)
+        return await _service(request).create(
+            user.internal_user_id, payload,
+            # An unrestricted admin's own workflows skip the per-user cap.
+            unrestricted=admin_is_unrestricted(user, request.app.state.settings),
+        )
     except WorkflowValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

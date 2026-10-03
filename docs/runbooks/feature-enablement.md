@@ -1873,6 +1873,14 @@ durable MCP secrets, and Entra auth. The API applies the SSRF guard, discovers
 remote tools, stores credentials in Key Vault, and projects selected tools into
 the same governed executor used by built-ins.
 
+Each user may register up to 20 servers. The API-only
+`AI4IA_CUSTOM_TOOLS_MAX_SERVERS_PER_USER` overrides that limit; its default `0`
+means the module default of 20, not no cap. Unrestricted admins (see
+[admin identities](../configuration-reference.md#required-deployment-ownership-values))
+skip the limit for their own servers, as they do the per-user limits of 50
+saved agents and 50 workflows. The SSRF guard, discovery, Key Vault secret
+storage and per-call approvals still apply to every server they register.
+
 ### Official MCP plane
 
 A curated, admin-defined set of MCP servers reached **through the shared active

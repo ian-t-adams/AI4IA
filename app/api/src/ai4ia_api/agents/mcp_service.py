@@ -1,8 +1,10 @@
 """Per-user MCP-server CRUD and discovery service.
 
 Owns validation, the SSRF egress check on every endpoint, tool discovery via an
-injected :class:`~ai4ia_api.agents.mcp_client.McpConnector`, the per-user cap,
-and the projection of a saved server's cached tools onto the governance seam.
+injected :class:`~ai4ia_api.agents.mcp_client.McpConnector`, the per-user cap
+(skipped only for an unrestricted admin's own servers, which the caller decides
+with ``auth.identity.admin_is_unrestricted``), and the projection of a saved
+server's cached tools onto the governance seam.
 
 Secrets are durable: an authenticated server's credential is supplied
 on the create/update/test request, used to connect, and — on success — persisted
@@ -119,16 +121,23 @@ class McpServerService:
 
     # --- Mutations ------------------------------------------------------------
 
-    async def create(self, user_id: str, req: UserMcpServerCreate) -> UserMcpServer:
+    async def create(
+        self, user_id: str, req: UserMcpServerCreate, *, unrestricted: bool = False,
+    ) -> UserMcpServer:
+        # ``unrestricted`` skips only the per-user cap. The router sets it from
+        # ``admin_is_unrestricted`` for the authenticated caller's own servers;
+        # validation, the SSRF egress check, discovery and secret storage still
+        # run, and other callers stay capped.
         name = _norm(req.name)
         self._validate_name(name)
         if await self._store.get(user_id, name) is not None:
             raise McpConflictError(f"You already have an MCP server named '{name}'.")
-        existing = await self._store.list(user_id)
-        if len(existing) >= self._max_servers:
-            raise McpConflictError(
-                f"You have reached the maximum of {self._max_servers} MCP servers."
-            )
+        if not unrestricted:
+            existing = await self._store.list(user_id)
+            if len(existing) >= self._max_servers:
+                raise McpConflictError(
+                    f"You have reached the maximum of {self._max_servers} MCP servers."
+                )
 
         display, desc, host, endpoint = await self._validate_fields(
             name=name,

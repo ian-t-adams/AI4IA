@@ -8,20 +8,35 @@ restrictions and hard quota still apply.
 Every exemption is paired on one fixture: the admin is exempt, an ordinary user
 still meets the cap, spoofable dev auth never exempts a named admin, and an
 ``admin`` app-role principal is exempt exactly like a subject-allowlisted one.
-Every identity, tenant and key here is synthetic.
+The saved agent, workflow and MCP server counts also show that unattended work
+never qualifies. Every identity, tenant and key here is synthetic.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import partial
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from ai4ia_api.agents.mcp_client import FakeMcpConnector
+from ai4ia_api.agents.mcp_secrets import InMemoryMcpSecretStore
+from ai4ia_api.agents.mcp_servers import (
+    MAX_MCP_SERVERS_PER_USER, DiscoveredTool, McpConflictError, UserMcpServerCreate,
+)
+from ai4ia_api.agents.mcp_service import McpServerService
+from ai4ia_api.agents.mcp_store import InMemoryUserMcpServerStore
+from ai4ia_api.agents.service import AgentService
+from ai4ia_api.agents.store import InMemoryUserAgentStore
+from ai4ia_api.agents.user_agents import MAX_AGENTS_PER_USER, AgentConflictError, UserAgentCreate
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.auth.entra import EntraAuthProvider
 from ai4ia_api.auth.identity import admin_is_unrestricted
@@ -35,13 +50,20 @@ from ai4ia_api.main import create_app
 from ai4ia_api.photo_avatars import service as avatar_service_module
 from ai4ia_api.photo_avatars.models import CreatePhotoAvatarRequest, PhotoAvatarError
 from ai4ia_api.photo_avatars.store import MAX_LISTED
-from ai4ia_api.policy.context import bind_authenticated, clear_policy_context
+from ai4ia_api.policy.context import (
+    bind_authenticated, clear_policy_context, unattended_policy_scope,
+)
 from ai4ia_api.policy.models import ADMIN_OPERATIONS
 from ai4ia_api.policy.routes import ADMIN_ROUTE_OPERATIONS
 from ai4ia_api.policy.service import PolicyService
 from ai4ia_api.realtime_avatar import LiveAvatarSession, open_live_avatar
 from ai4ia_api.routers.entitlements import EntitlementView
 from ai4ia_api.routers.library import document_retention_cap
+from ai4ia_api.workflows.models import (
+    MAX_WORKFLOWS_PER_USER, WorkflowConflictError, WorkflowCreate, WorkflowStep,
+)
+from ai4ia_api.workflows.service import WorkflowService
+from ai4ia_api.workflows.store import InMemoryWorkflowStore
 from tests.conftest import make_settings
 from tests.test_auth_entra import _new_keypair
 from tests.test_entitlement_service import CountingReader
@@ -115,7 +137,7 @@ def test_only_a_trustworthy_admin_identity_is_unrestricted(who, admin, auth, env
 class EntraApp:
     """The real app on Entra auth, optionally with the production-shaped policy."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, policy: bool) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, policy: bool, **settings: object) -> None:
         async def no_network(*_args, **_kwargs):
             pytest.fail("A synthetic control attempted a real HTTP transport.")
 
@@ -126,6 +148,7 @@ class EntraApp:
             applicationinsights_connection_string=None, admin_subjects=SUBJECT_ADMIN,
             group_policy_enabled=policy,
             group_policy_json=json.dumps(PRODUCTION_POLICY) if policy else None,
+            **settings,
         ))
         self.client = TestClient(self.app)
         self.client.__enter__()
@@ -566,3 +589,194 @@ def test_admins_skip_the_document_retention_cap():
 def test_an_admin_app_role_skips_the_document_cap_like_an_allowlisted_subject(roles, cap):
     settings = make_settings(document_max_per_user=1)
     assert document_retention_cap(settings, principal("documents", roles=roles)) == cap
+
+
+# --- saved agents, workflows and MCP servers --------------------------------
+
+MCP_ENDPOINT = "https://mcp.example.com/rpc"
+PRIVATE_MCP_HOST = "internal.example.com"
+
+
+def _resolve(host: str) -> list[str]:
+    """Synthetic DNS: one private host for the egress control, a public answer otherwise."""
+    return ["10.0.0.7"] if host == PRIVATE_MCP_HOST else ["93.184.216.34"]
+
+
+def _offline_mcp_service() -> McpServerService:
+    return McpServerService(
+        InMemoryUserMcpServerStore(),
+        connector=FakeMcpConnector([DiscoveredTool(name="lookup", description="Synthetic lookup")]),
+        secret_store=InMemoryMcpSecretStore(),
+        resolver=_resolve,
+    )
+
+
+async def _save_agent(state: Any, owner_id: str, name: str, *, unrestricted: bool = False) -> object:
+    return await state.agent_service.create(
+        owner_id, UserAgentCreate(name=name, systemPrompt="Synthetic."), reserved_names=set(),
+        unrestricted=unrestricted,
+    )
+
+
+async def _save_workflow(
+    state: Any, owner_id: str, name: str, *, unrestricted: bool = False,
+) -> object:
+    steps = [WorkflowStep(agent="helper", instruction="Do {input}")]
+    return await state.workflow_service.create(
+        owner_id, WorkflowCreate(name=name, steps=steps), unrestricted=unrestricted,
+    )
+
+
+async def _save_server(state: Any, owner_id: str, name: str, *, unrestricted: bool = False) -> object:
+    return await state.mcp_service.create(
+        owner_id, UserMcpServerCreate(name=name, endpoint=MCP_ENDPOINT), unrestricted=unrestricted,
+    )
+
+
+@dataclass(frozen=True)
+class SavedKind:
+    """One per-user count of saved definitions and its real create route."""
+
+    path: str
+    listing: str
+    key: str
+    cap: int
+    noun: str
+    body: dict[str, object]
+    # A body that a check *after* the cap refuses: the exemption skips the count only.
+    refused_after_cap: dict[str, object]
+    conflict: type[Exception]
+    save: Callable[..., Awaitable[object]]
+
+    @property
+    def refusal(self) -> str:
+        return f"You have reached the maximum of {self.cap} {self.noun}."
+
+
+SAVED = {
+    "agents": SavedKind(
+        "/api/agents", "/api/agents/mine", "agents", MAX_AGENTS_PER_USER, "agents",
+        {"systemPrompt": "Synthetic."},
+        {"systemPrompt": "Synthetic.", "tools": ["not_attachable"]},
+        AgentConflictError, _save_agent,
+    ),
+    "workflows": SavedKind(
+        "/api/workflows", "/api/workflows", "workflows", MAX_WORKFLOWS_PER_USER, "workflows",
+        {"steps": [{"agent": "helper", "instruction": "Do {input}"}]},
+        {"steps": [{"agent": "helper", "instruction": "No run input placeholder"}]},
+        WorkflowConflictError, _save_workflow,
+    ),
+    "mcp-servers": SavedKind(
+        "/api/agents/mcp-servers", "/api/agents/mcp-servers", "servers", MAX_MCP_SERVERS_PER_USER,
+        "MCP servers", {"endpoint": MCP_ENDPOINT}, {"endpoint": f"https://{PRIVATE_MCP_HOST}/rpc"},
+        McpConflictError, _save_server,
+    ),
+}
+
+
+def _fill(client: TestClient, saved: SavedKind, owner_id: str) -> None:
+    """Bring ``owner_id`` exactly to the cap through the service itself."""
+    for index in range(saved.cap):
+        client.portal.call(saved.save, client.app.state, owner_id, f"seed{index}")
+
+
+def _post(
+    client: TestClient, saved: SavedKind, headers: dict[str, str], name: str,
+    body: dict[str, object] | None = None,
+) -> httpx.Response:
+    payload = {"name": name, **(saved.body if body is None else body)}
+    return client.post(saved.path, json=payload, headers=headers)
+
+
+def _listed(client: TestClient, saved: SavedKind, headers: dict[str, str]) -> int:
+    response = client.get(saved.listing, headers=headers)
+    assert response.status_code == 200, response.text
+    return len(response.json()[saved.key])
+
+
+@pytest.mark.parametrize("policy", [False, True], ids=["policy-off", "production-policy"])
+@pytest.mark.parametrize("kind", sorted(SAVED))
+def test_admins_skip_the_saved_definition_caps_and_everyone_else_keeps_them(
+    monkeypatch, policy, kind,
+):
+    saved = SAVED[kind]
+    env = EntraApp(monkeypatch, policy=policy, custom_tools_enabled=True)
+    try:
+        env.app.state.mcp_service = _offline_mcp_service()
+        for headers, exempt in (
+            (env.headers(SUBJECT_ADMIN), True),
+            (env.headers(ROLE_ADMIN, "admin"), True),
+            (env.headers(ORDINARY), False),
+        ):
+            _fill(env.client, saved, env.owner_id(headers))
+            assert _listed(env.client, saved, headers) == saved.cap
+            boundary = _post(env.client, saved, headers, "boundary")
+            if exempt:
+                assert boundary.status_code == 201, boundary.text
+                assert _post(env.client, saved, headers, "beyond").status_code == 201
+                assert _listed(env.client, saved, headers) == saved.cap + 2
+                # Only the count is waived: validation and egress checks after it still refuse.
+                refused = _post(env.client, saved, headers, "refused", saved.refused_after_cap)
+                assert refused.status_code == 422, refused.text
+                assert _listed(env.client, saved, headers) == saved.cap + 2
+            else:
+                # The ordinary user keeps the existing refusal, after both admins went past it.
+                assert boundary.status_code == 409, boundary.text
+                assert boundary.json()["detail"] == saved.refusal
+                assert _listed(env.client, saved, headers) == saved.cap
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("kind", sorted(SAVED))
+def test_spoofable_dev_auth_keeps_the_saved_definition_caps_for_a_named_admin(kind):
+    saved = SAVED[kind]
+    client = TestClient(create_app(make_settings(admin_subjects="alice", custom_tools_enabled=True)))
+    client.__enter__()
+    try:
+        client.app.state.mcp_service = _offline_mcp_service()
+        alice = {"X-Dev-User": "alice"}
+        _fill(client, saved, client.get("/api/entitlement", headers=alice).json()["userId"])
+        settings = client.app.state.settings
+        settings.env = Environment.dev
+        assert settings.auth_provider_is_spoofable
+        refused = _post(client, saved, alice, "spoofed")
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"] == saved.refusal
+        # Control: the same admin on trustworthy auth.
+        settings.env = Environment.local
+        assert _post(client, saved, alice, "trusted").status_code == 201
+        assert _listed(client, saved, alice) == saved.cap + 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("kind", sorted(SAVED))
+async def test_only_the_routers_check_of_the_caller_lifts_a_saved_definition_cap(kind):
+    saved = SAVED[kind]
+    _, _, policy = _service()
+    state = SimpleNamespace(
+        agent_service=AgentService(
+            InMemoryUserAgentStore(), catalog=load_catalog(), attachable_tools=frozenset(),
+        ),
+        workflow_service=WorkflowService(InMemoryWorkflowStore()),
+        mcp_service=_offline_mcp_service(),
+    )
+    admin = principal(SUBJECT_ADMIN)
+    owner_id = admin.internal_user_id
+    for index in range(saved.cap):
+        await saved.save(state, owner_id, f"seed{index}")
+    refusal = re.escape(saved.refusal)
+    # Unattended work has no authenticated principal, so it stays capped.
+    with unattended_policy_scope(policy, owner_id):
+        with pytest.raises(saved.conflict, match=refusal):
+            await saved.save(state, owner_id, "unattended")
+    # Nor does the service infer the exemption from the admin's own binding.
+    bind_authenticated(policy, admin)
+    with pytest.raises(saved.conflict, match=refusal):
+        await saved.save(state, owner_id, "ambient")
+    # Control on the same fixture: the router's check of this caller lifts it.
+    assert admin_is_unrestricted(admin, policy.settings)
+    await saved.save(
+        state, owner_id, "explicit", unrestricted=admin_is_unrestricted(admin, policy.settings),
+    )

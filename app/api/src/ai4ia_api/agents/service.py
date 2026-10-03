@@ -11,9 +11,11 @@ take effect immediately.
 Safety: user agents can only reference an explicit allowlist of user-attachable
 tools (see :func:`~ai4ia_api.agents.tool_exec.attachable_tool_names`); names that
 collide with a curated agent (case-insensitively) are reserved; and a per-user
-cap bounds storage. The store is best-effort for *reads* — :meth:`catalog_for`
-fails open to the curated catalog if the store errors, so a Cosmos blip can never
-break chat — but *writes* surface errors to the caller.
+cap bounds storage, except for an unrestricted admin's own agents (the caller
+decides that with ``auth.identity.admin_is_unrestricted``). The store is
+best-effort for *reads* — :meth:`catalog_for` fails open to the curated catalog
+if the store errors, so a Cosmos blip can never break chat — but *writes*
+surface errors to the caller.
 """
 from __future__ import annotations
 
@@ -167,6 +169,7 @@ class AgentService:
         *,
         reserved_names: set[str],
         mcp_tool_names: Collection[str] | None = None,
+        unrestricted: bool = False,
     ) -> UserAgent:
         # Check-then-write: validate, then ensure the name is free and the per-user
         # cap isn't reached, then upsert. This is not transactional, so two
@@ -175,17 +178,22 @@ class AgentService:
         # radius is one user's own partition (never cross-user), the windows are
         # tiny, and the data stays well-formed. Harden with a conditional
         # create_item (If-None-Match) if real concurrent double-submits appear.
+        #
+        # ``unrestricted`` skips only the per-user cap. The router sets it from
+        # ``admin_is_unrestricted`` for the authenticated caller's own agents;
+        # every other check below still runs, and other callers stay capped.
         name = (req.name or "").strip().lower()
         self._validate_name(name)
         if name in {r.lower() for r in reserved_names}:
             raise AgentConflictError(f"'{name}' is a reserved agent name.")
         if await self._store.get(user_id, name) is not None:
             raise AgentConflictError(f"You already have an agent named '{name}'.")
-        existing = await self._store.list(user_id)
-        if len(existing) >= MAX_AGENTS_PER_USER:
-            raise AgentConflictError(
-                f"You have reached the maximum of {MAX_AGENTS_PER_USER} agents."
-            )
+        if not unrestricted:
+            existing = await self._store.list(user_id)
+            if len(existing) >= MAX_AGENTS_PER_USER:
+                raise AgentConflictError(
+                    f"You have reached the maximum of {MAX_AGENTS_PER_USER} agents."
+                )
 
         agent = self._build(
             user_id=user_id,
