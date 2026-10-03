@@ -1062,17 +1062,25 @@ def test_live_config_exposes_safe_provider_catalog():
         }
         assert "inputTranscription" not in providers["speech_voice_live"]["sessionDefaults"]
         for model in providers["speech_voice_live"]["managedModels"]:
+            # The server-owned reasoning effort is listed only where the catalog sets one.
+            effort = {"reasoningEffort"} if model["id"] in {
+                "gpt-5.2", "gpt-5.4", "gpt-5.6-terra", "gpt-5.6-luna",
+            } else set()
             assert set(model) == {
                 "id",
                 "displayName",
                 "description",
                 "profile",
                 "inputTranscription",
+                "samplingSupported",
                 "apiVersion",
                 "initialRegion",
                 "audioFormat",
                 "sampleRateHz",
+                *effort,
             }
+            assert model["samplingSupported"] is not model["id"].startswith("gpt-5")
+            assert model.get("reasoningEffort", "none") == "none"
     finally:
         c.__exit__(None, None, None)
 
@@ -2349,6 +2357,9 @@ def test_live_avatar_echo_reference_keeps_the_avatar_block_and_marks_the_receipt
         )["executionReceipt"]
         assert ("echo_reference_client" in receipt["notes"]) is opted_in
         assert "avatar_media_not_recorded" in receipt["notes"]
+        # Every note reads as written: none is long enough for the redactor to mask.
+        assert "voice_model_params_not_recorded" in receipt["notes"]
+        assert "***REDACTED***" not in receipt["notes"]
         live = [attrs for name, attrs in events if name == "voice_live_completion"]
         assert len(live) == 1
         assert live[0].get("echoReference") == ("client" if opted_in else None)

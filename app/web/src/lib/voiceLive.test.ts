@@ -20,12 +20,15 @@ import {
   realtimeModels,
   resolveAuthorizedVoiceProviders,
   resolveSpeechTranscriptionOption,
+  responseDoneNotice,
   sessionUpdate,
   speechEchoReference,
+  speechModelSupportsSampling,
   speechSessionUpdate,
   speechTranscriptionOptions,
   transcriptionFailureNotice,
   transcriptionOptionLabel,
+  type SpeechManagedModel,
   type VoiceProvider,
   type VoiceSessionSettings,
 } from "./voiceLive";
@@ -367,6 +370,38 @@ describe("speechSessionUpdate", () => {
   });
 
   it.each(voiceProviderCatalog.providers[1].managedModels)(
+    "sends a temperature for $id only if the model has sampling",
+    (model) => {
+      const session = JSON.parse(
+        speechSessionUpdate(model.id, { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, temperature: 0.5 }),
+      ).session;
+      expect(speechModelSupportsSampling(model)).toBe(model.samplingSupported);
+      if (model.samplingSupported) {
+        expect(session.temperature).toBe(0.5);
+      } else {
+        expect(session).not.toHaveProperty("temperature");
+      }
+      // The browser never chooses a reasoning effort; only the relay sets one.
+      expect(session).not.toHaveProperty("reasoning_effort");
+    },
+  );
+
+  it("marks exactly the GPT-5.x Speech models as without sampling", () => {
+    const models = voiceProviderCatalog.providers[1].managedModels;
+    expect(
+      models.filter((model) => !speechModelSupportsSampling(model)).map((model) => model.id),
+    ).toEqual(["gpt-5-mini", "gpt-5.1", "gpt-5.2", "gpt-5.4", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    // A provider served by an older API has no flag, which keeps the control.
+    const terra = models.find((model) => model.id === "gpt-5.6-terra");
+    expect(terra && speechModelSupportsSampling(terra)).toBe(false);
+    const legacy = Object.fromEntries(
+      Object.entries(terra ?? {}).filter(([key]) => key !== "samplingSupported"),
+    ) as unknown as SpeechManagedModel;
+    expect(speechModelSupportsSampling(legacy)).toBe(true);
+    expect(speechModelSupportsSampling(undefined)).toBe(true);
+  });
+
+  it.each(voiceProviderCatalog.providers[1].managedModels)(
     "uses the catalog transcription for $id ($profile)",
     (model) => {
       const transcription = JSON.parse(
@@ -493,6 +528,91 @@ describe("transcriptionFailureNotice", () => {
     );
     expect(long.length).toBeLessThanOrEqual(512);
     expect(long.endsWith("choose Model default transcription in Voice settings.")).toBe(true);
+  });
+});
+
+describe("responseDoneNotice", () => {
+  const failed = (error: unknown) => ({
+    id: "resp_1",
+    status: "failed",
+    status_details: { type: "failed", error },
+  });
+  const ADVICE = " Try another speech model or voice in Setup > Voice.";
+
+  it("explains a failed reply with Azure's type, code, param and message", () => {
+    expect(
+      responseDoneNotice(
+        failed({
+          type: "invalid_request_error",
+          code: "unsupported_value",
+          param: "session.temperature",
+          message: "Unsupported value api_key=supersecret",
+        }),
+      ),
+    ).toBe(
+      "Azure couldn't complete the reply: Unsupported value api_key=[REDACTED] " +
+        "(type: invalid_request_error; code: unsupported_value; param: session.temperature)." +
+        ADVICE,
+    );
+  });
+
+  it("explains a failed reply without an error, or without a message", () => {
+    expect(responseDoneNotice({ status: "failed" })).toBe(
+      `Azure couldn't complete the reply.${ADVICE}`,
+    );
+    expect(responseDoneNotice(failed({ code: "server_error" }))).toBe(
+      `Azure couldn't complete the reply (code: server_error).${ADVICE}`,
+    );
+  });
+
+  it("keeps the message plain, bounded text without cutting the codes or guidance", () => {
+    const notice = responseDoneNotice(
+      failed({
+        type: "t".repeat(200),
+        code: "c".repeat(200),
+        message: `<img src=x onerror=alert(1)>\u0000${"x".repeat(2_000)}`,
+      }),
+    );
+    expect(notice).not.toBeNull();
+    expect(notice!.length).toBeLessThanOrEqual(512);
+    expect(notice!.endsWith(`(type: ${"t".repeat(96)}; code: ${"c".repeat(96)}).${ADVICE}`)).toBe(
+      true,
+    );
+    // Markup stays literal text (the notice is rendered as text), and control
+    // characters are gone.
+    expect(notice).toContain("<img src=x onerror=alert(1)>");
+    expect(notice).not.toContain("\u0000");
+  });
+
+  it("explains a reply cut short by Azure but not one the user ended", () => {
+    const incomplete = (reason: unknown) => ({
+      status: "incomplete",
+      status_details: { type: "incomplete", reason },
+    });
+    expect(responseDoneNotice(incomplete("content_filter"))).toBe(
+      "Azure's content filter stopped the reply.",
+    );
+    expect(responseDoneNotice(incomplete("max_output_tokens"))).toBe(
+      "The reply reached its length limit and was cut short.",
+    );
+    expect(responseDoneNotice(incomplete("new_reason"))).toBe(
+      "Azure ended the reply early (reason: new_reason).",
+    );
+    expect(responseDoneNotice(incomplete(undefined))).toBe("Azure ended the reply early.");
+    expect(responseDoneNotice(incomplete("turn_detected"))).toBeNull();
+    expect(responseDoneNotice(incomplete("client_cancelled"))).toBeNull();
+  });
+
+  it.each([
+    { status: "completed" },
+    { status: "cancelled", status_details: { type: "cancelled", reason: "turn_detected" } },
+    { status: "cancelled", status_details: { type: "cancelled", reason: "client_cancelled" } },
+    { status: "in_progress" },
+    {},
+    null,
+    "failed",
+  ])("needs no notice for %j", (response) => {
+    expect(responseDoneNotice(response)).toBeNull();
   });
 });
 

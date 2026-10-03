@@ -254,6 +254,21 @@ def resolve_realtime_deployment(
     return model_id, deployment
 
 
+@dataclass(slots=True)
+class SpeechParameterEvidence:
+    """Content-free facts about the model parameters the Speech relay owns.
+
+    The Speech normalizer records them as it rebuilds each ``session.update``,
+    and the completion telemetry reads them once. Never a value a client chose.
+    """
+
+    # The catalog reasoning effort, once a rebuilt session.update carried it.
+    reasoning_effort: str | None = None
+    # Client session.update frames whose numeric temperature was omitted
+    # because the managed model has no sampling.
+    temperature_omitted: int = 0
+
+
 @dataclass(frozen=True)
 class LiveVoiceProviderResolution:
     provider: VoiceProvider
@@ -273,6 +288,8 @@ class LiveVoiceProviderResolution:
     # Set only for an opted-in Live-Reference AEC session (``?echoRef=client``).
     echo_reference: SpeechEchoClientReference | None = None
     features: str | None = None
+    # Speech Voice Live only: what the normalizer did with sampling and reasoning.
+    parameter_evidence: SpeechParameterEvidence | None = None
 
 
 class LiveVoiceProviderError(Exception):
@@ -355,9 +372,10 @@ def _resolve_live_voice_provider(
         raise LiveVoiceProviderError("Speech Voice Live model is not available.")
     if region is not None and region != managed.initialRegion:
         raise LiveVoiceProviderError("Speech Voice Live model is not available in that region.")
+    evidence = SpeechParameterEvidence()
 
     def rewrite_client_frame(frame: str) -> str | None:
-        return normalize_speech_client_frame(frame, provider, managed)
+        return normalize_speech_client_frame(frame, provider, managed, evidence=evidence)
 
     return LiveVoiceProviderResolution(
         provider=provider,
@@ -377,6 +395,7 @@ def _resolve_live_voice_provider(
         api_key=settings.speech_voice_live_gateway_api_key,
         rewrite_client_frame=rewrite_client_frame,
         protocol="speech",
+        parameter_evidence=evidence,
     )
 
 
@@ -401,9 +420,12 @@ def apply_echo_reference(resolution: LiveVoiceProviderResolution) -> LiveVoicePr
     reference = provider.capabilities.echoCancellation.clientReference
     if reference is None:
         raise LiveVoiceProviderError("Echo reference is not in the voice catalog.")
+    evidence = resolution.parameter_evidence
 
     def rewrite_client_frame(frame: str) -> str | None:
-        return normalize_speech_client_frame(frame, provider, managed, echo_reference=reference)
+        return normalize_speech_client_frame(
+            frame, provider, managed, echo_reference=reference, evidence=evidence,
+        )
 
     return replace(
         resolution,
@@ -591,6 +613,7 @@ def normalize_speech_client_frame(
     managed_model: VoiceProviderManagedModel | None = None,
     *,
     echo_reference: SpeechEchoClientReference | None = None,
+    evidence: SpeechParameterEvidence | None = None,
 ) -> str | None:
     """Parse and normalize every browser text frame for Voice Live Speech.
 
@@ -599,6 +622,11 @@ def normalize_speech_client_frame(
     allowlists, while response.create is reduced to a configuration-free trigger so
     per-response voices, tools, endpoint ids, and other overrides cannot reach Azure.
     Malformed/non-event JSON is rejected by returning ``None``.
+
+    The managed model's catalog owns its sampling and reasoning: a client
+    ``temperature`` is omitted when the model has no sampling (the GPT-5.x
+    reasoning models), and ``reasoning_effort`` is only ever the catalog's
+    value, never a client's. ``evidence`` records both, content-free.
 
     With ``echo_reference`` (an opted-in Live-Reference AEC session) every
     ``session.update`` carries the client reference fields, which Azure can't
@@ -645,7 +673,14 @@ def normalize_speech_client_frame(
         normalized["instructions"] = instructions
     temperature = session.get("temperature")
     if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
-        normalized["temperature"] = max(0.0, min(float(temperature), 2.0))
+        if selected_model.samplingSupported:
+            normalized["temperature"] = max(0.0, min(float(temperature), 2.0))
+        elif evidence is not None:
+            evidence.temperature_omitted += 1
+    if selected_model.reasoningEffort is not None:
+        normalized["reasoning_effort"] = selected_model.reasoningEffort
+        if evidence is not None:
+            evidence.reasoning_effort = selected_model.reasoningEffort
     normalized["input_audio_noise_reduction"] = {
         "type": _speech_simple_option(
             session.get("input_audio_noise_reduction"),
@@ -1382,12 +1417,15 @@ class RelayStats:
     upstream_to_client: RelayFrameStats = field(default_factory=RelayFrameStats)
     # How each response.done ended (realtime_flow.RESPONSE_OUTCOMES), non-zero only.
     response_outcomes: tuple[tuple[str, int], ...] = ()
+    # The first failed response's bounded error identifiers (realtime_flow).
+    response_failure: tuple[tuple[str, str], ...] = ()
 
     def as_log_dict(self) -> dict[str, object]:
         return {
             "clientToUpstream": self.client_to_upstream.as_log_dict(),
             "upstreamToClient": self.upstream_to_client.as_log_dict(),
             "responseOutcomes": dict(self.response_outcomes),
+            "responseFailure": dict(self.response_failure),
         }
 
 
@@ -1514,13 +1552,17 @@ class _RelayState:
         default_factory=lambda: _MutableFrameStats(flow_events=_flow.UPSTREAM_FLOW_EVENTS)
     )
     response_outcomes: dict[str, int] = field(default_factory=dict)
+    # None until a response fails; then that first failure's identifiers only.
+    response_failure: tuple[tuple[str, str], ...] | None = None
     protocol_error: ProtocolErrorMetadata | None = None
     termination: _RelayTermination | None = None
 
     def observe_response_done(self, frame: str) -> None:
-        """Count how one ``response.done`` ended; the label set is fixed."""
-        label = _flow.response_outcome(frame)
-        self.response_outcomes[label] = self.response_outcomes.get(label, 0) + 1
+        """Count how one ``response.done`` ended; keep why the first failure failed."""
+        done = _flow.parse_response_done(frame)
+        self.response_outcomes[done.outcome] = self.response_outcomes.get(done.outcome, 0) + 1
+        if done.outcome == "failed" and self.response_failure is None:
+            self.response_failure = done.failure
 
     def stop(self, termination: _RelayTermination) -> None:
         if self.termination is None:
@@ -1552,6 +1594,7 @@ class _RelayState:
                 response_outcomes=_flow.ordered_counts(
                     self.response_outcomes, _flow.RESPONSE_OUTCOMES,
                 ),
+                response_failure=self.response_failure or (),
             ),
         )
 
@@ -2195,6 +2238,14 @@ def _emit_relay_completion(
     }
     if resolution.echo_reference is not None:
         payload["echoReference"] = ECHO_REFERENCE_CLIENT
+    evidence = resolution.parameter_evidence
+    reasoning_effort = evidence.reasoning_effort if evidence is not None else None
+    temperature_omitted = evidence.temperature_omitted if evidence is not None else 0
+    # The relay's own parameter choices, as in the custom event (flow v2).
+    if reasoning_effort is not None:
+        payload[_flow.REASONING_EFFORT_PROPERTY] = _flow.bounded_identifier(reasoning_effort)
+    if temperature_omitted > 0:
+        payload[_flow.TEMPERATURE_OMITTED_PROPERTY] = temperature_omitted
     if usage_error is not None:
         payload["usageError"] = {
             "exceptionClass": usage_error[0],
@@ -2246,11 +2297,16 @@ def _emit_relay_completion(
         "durationMs": duration_ms,
         "deliveryGuidance": delivery_guidance,
         # Allowlisted flow counts and response outcomes as flat numbers; a key
-        # absent from an event that carries flowVersion means zero.
+        # absent from an event that carries flowVersion means zero. Version 2
+        # adds the first failure's bounded error identifiers and the relay's
+        # own parameter choices.
         **_flow.event_properties(
             outcome.stats.client_to_upstream.event_counts,
             outcome.stats.upstream_to_client.event_counts,
             outcome.stats.response_outcomes,
+            failure=outcome.stats.response_failure,
+            reasoning_effort=reasoning_effort,
+            temperature_omitted=temperature_omitted,
         ),
     }
     if resolution.echo_reference is not None:
@@ -2377,9 +2433,24 @@ def _delivery_guidance_notes(bridge: ToolBridge) -> list[str]:
     return [VOICE_DELIVERY_RECEIPT_NOTE] if bridge.delivery_guidance is not None else []
 
 
-# Receipt marker for a session whose microphone audio carried the client's own
-# playback as the echo reference (configuration evidence, never audio).
+# Receipt notes the voice relay writes. build_receipt passes every note through
+# the credential redactor, which masks any [A-Za-z0-9_-] run of 32 or more
+# characters, so each note must stay shorter or it reads as ***REDACTED***.
+VOICE_USAGE_RECEIPT_NOTE = "voice_usage_not_recorded"
+VOICE_PARAMS_RECEIPT_NOTE = "voice_model_params_not_recorded"
+AVATAR_MEDIA_RECEIPT_NOTE = "avatar_media_not_recorded"
+VOICE_NOT_STARTED_RECEIPT_NOTE = "voice_not_started"
+# A session whose microphone audio carried the client's own playback as the
+# echo reference (configuration evidence, never audio).
 ECHO_REFERENCE_RECEIPT_NOTE = "echo_reference_client"
+VOICE_RELAY_RECEIPT_NOTES = (
+    VOICE_USAGE_RECEIPT_NOTE,
+    VOICE_PARAMS_RECEIPT_NOTE,
+    AVATAR_MEDIA_RECEIPT_NOTE,
+    VOICE_NOT_STARTED_RECEIPT_NOTE,
+    VOICE_DELIVERY_RECEIPT_NOTE,
+    ECHO_REFERENCE_RECEIPT_NOTE,
+)
 
 
 def _echo_reference_notes(resolution: LiveVoiceProviderResolution) -> list[str]:
@@ -2438,8 +2509,8 @@ async def _record_avatar_receipt(
         ),
         partial=outcome.status != "complete",
         notes=[
-            "voice_usage_not_recorded", "voice_model_parameters_not_recorded",
-            "avatar_media_not_recorded", *_delivery_guidance_notes(bridge),
+            VOICE_USAGE_RECEIPT_NOTE, VOICE_PARAMS_RECEIPT_NOTE,
+            AVATAR_MEDIA_RECEIPT_NOTE, *_delivery_guidance_notes(bridge),
             *_echo_reference_notes(resolution),
         ],
     )
@@ -2825,8 +2896,11 @@ async def voice_live(websocket: WebSocket) -> None:
                 status="error" if outcome.status == "error" else "cancelled" if outcome.status == "cancelled" else "complete",
                 partial=outcome.status != "complete",
                 notes=[
-                    "voice_usage_not_recorded", "voice_model_parameters_not_recorded",
-                    *(_delivery_guidance_notes(bridge) if connected else ["voice_not_started"]),
+                    VOICE_USAGE_RECEIPT_NOTE, VOICE_PARAMS_RECEIPT_NOTE,
+                    *(
+                        _delivery_guidance_notes(bridge) if connected
+                        else [VOICE_NOT_STARTED_RECEIPT_NOTE]
+                    ),
                 ],
             )
             receipt.toolCallCount = bridge.call_count

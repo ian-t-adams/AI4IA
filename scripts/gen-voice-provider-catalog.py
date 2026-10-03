@@ -13,6 +13,10 @@ The infra catalog is the source of truth for both providers:
   ``echoCancellation.clientReference`` block is the opt-in, preview
   Live-Reference AEC path: the one api-version and ``features`` flag for which
   the generated Speech APIM policy lets a session leave the pinned version.
+  Each managed model pins ``samplingSupported`` (named as in
+  ``infra/models.json``) and an optional server-owned ``reasoningEffort``,
+  which must be a value ``infra/models.json`` probed for a model of the same
+  name.
 
 It also owns the ``photoAvatars`` block: the custom photo avatar home region
 (cross-checked against ``infra/models.json``), the undocumented creation
@@ -141,6 +145,9 @@ SPEECH_ECHO_REFERENCE = {
     "features": "client_ec_reference:true",
     "channels": 2,
 }
+# The ReasoningEffort enum of the pinned 2026-04-10 Voice Live reference, the only
+# values a managed model's server-owned `reasoningEffort` may take.
+SPEECH_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
 # Curated subset of the Voice Live managed models that Microsoft Learn's region
 # table serves from eastus2 (reviewed 2026-10-02): GPT realtime models on Global
 # Standard, gpt-4.1/gpt-4.1-mini on Standard, the GPT-5.x models on Data Zone
@@ -150,6 +157,15 @@ SPEECH_ECHO_REFERENCE = {
 # transcribers, so their pairing is unverified until a live session accepts it.
 # GPT-6/6.1 are not Voice Live models; gpt-5.5 and gpt-5.4-mini/nano are
 # bring-your-own-model only, and azure-realtime needs its own voice type.
+#
+# The last two fields are `samplingSupported` and the server-owned
+# `reasoningEffort` (None: the model gets none). Every GPT-5.x model is a
+# reasoning model without temperature (Microsoft Learn, reasoning models,
+# reviewed 2026-10-03), the rule app/api model_traits.supports_sampling applies
+# to HTTP chat. gpt-5.2, gpt-5.4 and the GPT-5.6 models run at `none`: the
+# lowest spoken latency, gpt-5.1's documented default, and the only effort
+# GPT-5.6 documents together with function tools. gpt-5.1 keeps its own
+# default `none`, and gpt-5-mini sends nothing.
 SPEECH_MANAGED_MODEL_SPECS = (
     (
         "gpt-realtime",
@@ -158,6 +174,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "native_audio",
         "openai",
         "gpt-4o-transcribe",
+        True,
+        None,
     ),
     (
         "gpt-realtime-mini",
@@ -166,6 +184,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "native_audio",
         "openai",
         "gpt-4o-transcribe",
+        True,
+        None,
     ),
     (
         "gpt-realtime-1.5",
@@ -174,6 +194,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "native_audio",
         "openai",
         "gpt-4o-transcribe",
+        True,
+        None,
     ),
     (
         "gpt-realtime-2.1",
@@ -182,6 +204,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "native_audio",
         "openai",
         "gpt-4o-transcribe",
+        True,
+        None,
     ),
     (
         "gpt-realtime-2.1-mini",
@@ -190,6 +214,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "native_audio",
         "openai",
         "gpt-4o-transcribe",
+        True,
+        None,
     ),
     (
         "gpt-4.1",
@@ -198,6 +224,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        True,
+        None,
     ),
     (
         "gpt-4.1-mini",
@@ -206,6 +234,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        True,
+        None,
     ),
     (
         "gpt-5-mini",
@@ -214,6 +244,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        False,
+        None,
     ),
     (
         "gpt-5.1",
@@ -222,6 +254,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        False,
+        None,
     ),
     (
         "gpt-5.2",
@@ -230,6 +264,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        False,
+        "none",
     ),
     (
         "gpt-5.4",
@@ -238,6 +274,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        False,
+        "none",
     ),
     (
         "gpt-5.6-terra",
@@ -246,6 +284,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        False,
+        "none",
     ),
     (
         "gpt-5.6-luna",
@@ -254,6 +294,8 @@ SPEECH_MANAGED_MODEL_SPECS = (
         "azure_speech_chain",
         "azure_speech",
         "azure-speech",
+        False,
+        "none",
     ),
 )
 SPEECH_MANAGED_MODEL_IDS = tuple(spec[0] for spec in SPEECH_MANAGED_MODEL_SPECS)
@@ -591,6 +633,78 @@ def _validate_speech_echo_reference(errors: list[str], block: Any) -> None:
     )
 
 
+def _validate_speech_model_parameters(
+    errors: list[str],
+    model: dict[str, Any],
+    label: str,
+    *,
+    sampling: bool,
+    effort: str | None,
+) -> None:
+    """Pin a managed model's sampling flag and server-owned reasoning effort.
+
+    The relay omits a client temperature when ``samplingSupported`` is false and
+    sends ``reasoningEffort`` on every session.update, so a typo here must fail
+    generation rather than reach Voice Live.
+    """
+    value = model.get("samplingSupported")
+    # Equality alone accepts 0 for False and 1 for True.
+    _require(
+        errors,
+        type(value) is bool and value == sampling,
+        f"{label}.samplingSupported must be {str(sampling).lower()}",
+    )
+    if effort is None:
+        _require(errors, "reasoningEffort" not in model, f"{label}.reasoningEffort must be absent")
+        return
+    declared = model.get("reasoningEffort")
+    _require(errors, declared == effort, f"{label}.reasoningEffort must be {effort!r}")
+    _require(
+        errors,
+        isinstance(declared, str) and declared in SPEECH_REASONING_EFFORTS,
+        f"{label}.reasoningEffort must be one of {SPEECH_REASONING_EFFORTS!r}",
+    )
+    _require(
+        errors,
+        value is False,
+        f"{label}.reasoningEffort is only for a model without sampling",
+    )
+
+
+def _validate_speech_reasoning_probes(
+    errors: list[str], provider: dict[str, Any], models: dict[str, Any]
+) -> None:
+    """A server-owned reasoning effort must be one the model was probed to accept.
+
+    infra/models.json records each chat model's ``reasoningEffort`` values from
+    probing the live deployments, because they vary in ways the documentation
+    does not predict. Voice Live hosts its own managed models, but a value the
+    same model refuses over HTTP is no safer here. Only a managed model with no
+    row of the same name has nothing to compare against.
+    """
+    rows = models.get("catalog", [])
+    probed = {
+        row["name"]: row.get("reasoningEffort")
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict) and isinstance(row.get("name"), str)
+    }
+    managed = provider.get("managedModels", [])
+    for index, model in enumerate(managed if isinstance(managed, list) else []):
+        if not isinstance(model, dict) or "reasoningEffort" not in model:
+            continue
+        model_id = model.get("id")
+        if model_id not in probed:
+            continue
+        values = probed[model_id]
+        _require(
+            errors,
+            isinstance(values, list) and model["reasoningEffort"] in values,
+            f"speech_voice_live.managedModels[{index}].reasoningEffort "
+            f"{model['reasoningEffort']!r} must be in infra/models.json's probed "
+            f"reasoningEffort for {model_id!r} (got {values!r})",
+        )
+
+
 def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> None:
     _require(
         errors,
@@ -639,6 +753,8 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         "description",
         "profile",
         "inputTranscription",
+        "samplingSupported",
+        "reasoningEffort",
         "apiVersion",
         "initialRegion",
         "audioFormat",
@@ -656,6 +772,8 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
             expected_profile,
             expected_transcription_provider,
             expected_transcription_model,
+            expected_sampling,
+            expected_effort,
         ) = spec
         label = f"speech_voice_live.managedModels[{index}]"
         _exact_keys(errors, model, allowed=model_fields, label=label)
@@ -693,6 +811,9 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
             transcription.get("model") == expected_transcription_model,
             f"{label}.inputTranscription.model must be "
             f"{expected_transcription_model!r}",
+        )
+        _validate_speech_model_parameters(
+            errors, model, label, sampling=expected_sampling, effort=expected_effort
         )
 
     defaults = provider.get("sessionDefaults", {})
@@ -987,14 +1108,19 @@ def _validate_photo_avatars(
         )
 
 
-def _load_regions(models: dict[str, Any] | None) -> dict[str, Any]:
+def _load_models(models: dict[str, Any] | None) -> dict[str, Any]:
     source = models if models is not None else json.loads(MODELS_SOURCE.read_text(encoding="utf-8"))
-    regions = source.get("regions", {})
+    return source if isinstance(source, dict) else {}
+
+
+def _load_regions(models: dict[str, Any] | None) -> dict[str, Any]:
+    regions = _load_models(models).get("regions", {})
     return regions if isinstance(regions, dict) else {}
 
 
 def build_catalog(raw: dict[str, Any], models: dict[str, Any] | None = None) -> dict[str, Any]:
     errors: list[str] = []
+    model_source = _load_models(models)
     _exact_keys(
         errors,
         raw,
@@ -1031,9 +1157,10 @@ def build_catalog(raw: dict[str, Any], models: dict[str, Any] | None = None) -> 
 
     _validate_azure_openai(errors, by_id.get("azure_openai", {}))
     _validate_speech_voice_live(errors, by_id.get("speech_voice_live", {}))
+    _validate_speech_reasoning_probes(errors, by_id.get("speech_voice_live", {}), model_source)
     _require(errors, "photoAvatars" in raw, "photoAvatars block is required")
     if "photoAvatars" in raw:
-        _validate_photo_avatars(errors, raw.get("photoAvatars"), _load_regions(models))
+        _validate_photo_avatars(errors, raw.get("photoAvatars"), _load_regions(model_source))
 
     if errors:
         raise SystemExit(

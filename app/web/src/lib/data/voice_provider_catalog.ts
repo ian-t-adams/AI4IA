@@ -90,6 +90,7 @@ export const voiceProviderCatalog = {
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -104,6 +105,7 @@ export const voiceProviderCatalog = {
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -118,6 +120,7 @@ export const voiceProviderCatalog = {
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -132,6 +135,7 @@ export const voiceProviderCatalog = {
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -146,6 +150,7 @@ export const voiceProviderCatalog = {
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -160,6 +165,7 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -174,6 +180,7 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -188,6 +195,7 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -202,6 +210,7 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -216,6 +225,8 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -230,6 +241,8 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -244,6 +257,8 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -258,6 +273,8 @@ export const voiceProviderCatalog = {
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",

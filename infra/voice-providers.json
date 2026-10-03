@@ -1,6 +1,6 @@
 {
   "$schema": "./voice-providers.schema.json",
-  "_comment": "Authoritative voice provider/capability catalog for AI4IA. scripts/gen-voice-provider-catalog.py projects this into packaged API JSON, a typed web TypeScript module, the Speech Voice Live APIM policy and the photo avatar APIM policy. Keep the provider IDs stable (`azure_openai`, `speech_voice_live`), keep Azure OpenAI deployment selection sourced from infra/models.json, and keep Speech Voice Live limited to the curated managed-model catalog and built-in voices. Speech `voices.previewOptions` marks the public-preview MAI-Voice-2.1 and MAI-Voice-2.1-Flash voices (no SLA; https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices). Speech `inputTranscription.options` lists transcription models a user may choose instead of a managed model's own `inputTranscription.model` default, each limited to the managed-model profiles the pinned 2026-04-10 Voice Live API reference supports; `mai-transcribe-2` is pinned rather than the floating `mai-transcribe` alias. Speech `echoCancellation.clientReference` is the opt-in, preview Live-Reference AEC path (https://learn.microsoft.com/azure/ai-services/speech-service/voice-live-how-to#live-reference-aec-acoustic-echo-cancellation): only a session that asks for it connects at its `apiVersion` with its `features` flag and sends `channels`-channel interleaved PCM16 (microphone, then what the page plays); every other session keeps the managed model's pinned version. `photoAvatars` pins the custom photo avatar home account region, the undocumented creation api-version, the Limited Access feature the runtime probe requires, the observed attribute values and the provider-issued preview host (see docs/photo-avatars.md).",
+  "_comment": "Authoritative voice provider/capability catalog for AI4IA. scripts/gen-voice-provider-catalog.py projects this into packaged API JSON, a typed web TypeScript module, the Speech Voice Live APIM policy and the photo avatar APIM policy. Keep the provider IDs stable (`azure_openai`, `speech_voice_live`), keep Azure OpenAI deployment selection sourced from infra/models.json, and keep Speech Voice Live limited to the curated managed-model catalog and built-in voices. Speech `voices.previewOptions` marks the public-preview MAI-Voice-2.1 and MAI-Voice-2.1-Flash voices (no SLA; https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices). Speech `inputTranscription.options` lists transcription models a user may choose instead of a managed model's own `inputTranscription.model` default, each limited to the managed-model profiles the pinned 2026-04-10 Voice Live API reference supports; `mai-transcribe-2` is pinned rather than the floating `mai-transcribe` alias. Speech `echoCancellation.clientReference` is the opt-in, preview Live-Reference AEC path (https://learn.microsoft.com/azure/ai-services/speech-service/voice-live-how-to#live-reference-aec-acoustic-echo-cancellation): only a session that asks for it connects at its `apiVersion` with its `features` flag and sends `channels`-channel interleaved PCM16 (microphone, then what the page plays); every other session keeps the managed model's pinned version. Each Speech managed model's `samplingSupported` (named as in infra/models.json) is false for the GPT-5.x reasoning models, so the relay omits any client temperature for them, and its optional `reasoningEffort` is the server-owned Voice Live `reasoning_effort` the relay sends on every session.update; a client value is never forwarded. `none` (gpt-5.2, gpt-5.4 and the GPT-5.6 models) keeps spoken replies fast, matches gpt-5.1's documented default and is the only effort GPT-5.6 documents alongside function tools. `photoAvatars` pins the custom photo avatar home account region, the undocumented creation api-version, the Limited Access feature the runtime probe requires, the observed attribute values and the provider-issued preview host (see docs/photo-avatars.md).",
   "defaultProviderId": "azure_openai",
   "providers": [
     {
@@ -88,6 +88,7 @@
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -102,6 +103,7 @@
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -116,6 +118,7 @@
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -130,6 +133,7 @@
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -144,6 +148,7 @@
             "provider": "openai",
             "model": "gpt-4o-transcribe"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -158,6 +163,7 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -172,6 +178,7 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": true,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -186,6 +193,7 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -200,6 +208,7 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -214,6 +223,8 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -228,6 +239,8 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -242,6 +255,8 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",
@@ -256,6 +271,8 @@
             "provider": "azure_speech",
             "model": "azure-speech"
           },
+          "samplingSupported": false,
+          "reasoningEffort": "none",
           "apiVersion": "2026-04-10",
           "initialRegion": "eastus2",
           "audioFormat": "pcm16",

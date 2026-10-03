@@ -76,7 +76,7 @@ transcripts, browser tokens or raw provider payloads to establish that distincti
 
 ### Voice Live conversation flow
 
-Each `voice_live_completion` custom event carries `flowVersion` (currently `1`),
+Each `voice_live_completion` custom event carries `flowVersion` (currently `2`),
 `deliveryGuidance` (the voice delivery guidance version bound to the session) and
 non-zero integer counts for a fixed allowlist of turn-taking events: browser
 events as `client*` (for example `clientAudioAppend`, `clientResponseCreate`,
@@ -90,13 +90,33 @@ values: `responseCompleted`, `responseCancelledTurnDetected` (a barge-in),
 `responseIncompleteContentFilter`, `responseFailed` and the `*Other` buckets.
 The allowlists live in `app/api/src/ai4ia_api/realtime_flow.py`.
 
+Version 2 adds why a session's replies failed and what the relay itself chose:
+
+- `responseFailedType`, `responseFailedCode` and `responseFailedParam` come from
+  `response.status_details.error` of the session's **first** `response.done`
+  whose status is `failed`. Each is present only when that field was, and only
+  as a short lowercase identifier matching `^[a-z][a-z0-9_.]{0,63}$`; any other
+  value is the literal `other`. The error message, and everything else in the
+  error, is never read. A count of `responseFailed` with no identifiers means the
+  first failure carried none.
+- `reasoningEffort` is the server-owned reasoning effort the relay set on the
+  session's `session.update` from the Speech Voice Live catalog (`none` for
+  `gpt-5.2`, `gpt-5.4` and the GPT-5.6 models), absent when it set none.
+- `clientTemperatureOmitted` counts the browser `session.update` frames whose
+  temperature the relay dropped because the managed model has no sampling (the
+  GPT-5.x models).
+
 On an event that carries `flowVersion`, an absent count means zero. Older events
-have no `flowVersion`, and their counts are unknown, not zero. The relay parses
-only `response.done` payloads for their status, below a size bound, and never
-records transcripts, item or response ids, tokens, provider avatar ids, URLs or
-free text. The same counts appear in the container's `voice_live_completion`
-JSON line under `stats.*.eventCounts`, `stats.responseOutcomes` and
-`deliveryGuidance`.
+have no `flowVersion`, and their counts are unknown, not zero; version 1 events
+carry none of the fields above. The relay parses
+only `response.done` payloads for their status and error identifiers, below a
+size bound, and never records transcripts, item or response ids, tokens,
+provider avatar ids, URLs, error messages or other free text. In an avatar
+session it reads them only after the provider avatar id is scrubbed out. The
+same counts appear in the container's `voice_live_completion`
+JSON line under `stats.*.eventCounts`, `stats.responseOutcomes`,
+`stats.responseFailure` and `deliveryGuidance`, with `reasoningEffort` and
+`clientTemperatureOmitted` as top-level keys.
 
 One session's flow, by its correlation id:
 
@@ -128,6 +148,27 @@ AppEvents
     bargeIns=sum(coalesce(toint(Properties["responseCancelledTurnDetected"]), 0))
   by provider=tostring(Properties["provider"]), model=tostring(Properties["model"])
 | extend bargeInShare=iff(responses == 0, real(null), todouble(bargeIns) / responses)
+```
+
+Why replies failed, and what the relay sent, per model (version 2 events). A
+fixed GPT-5.x Speech session shows `reasoningEffort` `none` and
+`responseCompleted` rather than `responseFailed`:
+
+```kusto
+AppEvents
+| where TimeGenerated > ago(7d) and Name == "voice_live_completion"
+| where toint(Properties["flowVersion"]) >= 2
+| extend failed=coalesce(toint(Properties["responseFailed"]), 0)
+| summarize sessions=count(), failedSessions=countif(failed > 0),
+    responses=sum(coalesce(toint(Properties["upResponseDone"]), 0)),
+    completed=sum(coalesce(toint(Properties["responseCompleted"]), 0)),
+    failedResponses=sum(failed),
+    temperatureOmitted=countif(coalesce(toint(Properties["clientTemperatureOmitted"]), 0) > 0)
+  by provider=tostring(Properties["provider"]), model=tostring(Properties["model"]),
+    reasoningEffort=tostring(Properties["reasoningEffort"]),
+    failedType=tostring(Properties["responseFailedType"]),
+    failedCode=tostring(Properties["responseFailedCode"]),
+    failedParam=tostring(Properties["responseFailedParam"])
 ```
 
 A session with replies but no `upSpeechStarted` never detected the user's speech;

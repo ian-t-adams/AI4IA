@@ -5,9 +5,18 @@ import json
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal, Sequence, TypeAlias
+from typing import Annotated, Any, Literal, Sequence, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    StrictBool,
+    computed_field,
+    model_serializer,
+    model_validator,
+)
 
 AZURE_OPENAI_PROVIDER_ID = "azure_openai"
 SPEECH_VOICE_LIVE_PROVIDER_ID = "speech_voice_live"
@@ -219,15 +228,39 @@ class VoiceProviderAzureSpeechManagedTranscription(BaseModel):
     model: Literal["azure-speech"]
 
 
+# The ReasoningEffort enum of the pinned 2026-04-10 Voice Live reference.
+SpeechReasoningEffort: TypeAlias = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+
+
 class _VoiceProviderManagedModelBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     displayName: str
     description: str
+    # Named as in infra/models.json: whether the model honours ``temperature``.
+    # False for the GPT-5.x reasoning models, so the relay omits any client value.
+    samplingSupported: StrictBool
+    # The server-owned ``reasoning_effort`` the relay sends on every
+    # session.update. None sends nothing; a client value is never forwarded.
+    reasoningEffort: SpeechReasoningEffort | None = None
     apiVersion: Literal["2026-04-10"]
     initialRegion: Literal["eastus2"]
     audioFormat: Literal["pcm16"]
     sampleRateHz: Literal[24000]
+
+    @model_validator(mode="after")
+    def validate_reasoning_effort(self) -> "_VoiceProviderManagedModelBase":
+        if self.reasoningEffort is not None and self.samplingSupported:
+            raise ValueError("Only a managed model without sampling takes a reasoning effort.")
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_undeclared_effort(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # The generated catalog omits an undeclared effort; so does the public view.
+        result = handler(self)
+        if result.get("reasoningEffort") is None:
+            result.pop("reasoningEffort", None)
+        return result
 
 
 class VoiceProviderNativeAudioManagedModel(_VoiceProviderManagedModelBase):
