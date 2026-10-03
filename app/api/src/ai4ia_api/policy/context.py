@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..auth.base import AuthenticatedUser
+from ..auth.identity import admin_is_unrestricted
 from ..catalog import DeploymentOption
 from .models import (
     EffectivePolicy, PolicyDecision, PolicyError, PolicyRequest, RestrictedProfile, policy_digest,
@@ -121,6 +122,21 @@ def publication_scope(check: Callable[[], Awaitable[None]]) -> Iterator[None]:
 
 def current_binding() -> PolicyBinding | None:
     return _current.get()
+
+
+def bound_unrestricted_admin(owner_id: str) -> bool:
+    """Whether this task's authenticated principal is an unrestricted admin who owns ``owner_id``.
+
+    Only an authenticated binding carries a principal: unattended scopes never
+    qualify, and a binding for a different owner says nothing about ``owner_id``.
+    """
+    binding = _current.get()
+    user = binding.user if binding is not None else None
+    return (
+        binding is not None and user is not None
+        and binding.owner_id == owner_id and user.internal_user_id == owner_id
+        and admin_is_unrestricted(user, binding.service.settings)
+    )
 
 
 @contextmanager

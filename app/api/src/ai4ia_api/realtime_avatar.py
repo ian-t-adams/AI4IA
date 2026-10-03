@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
+from .auth.identity import admin_is_unrestricted
 from .photo_avatars.catalog import load_photo_avatar_catalog
 from .photo_avatars.live import (
     LiveAvatarError, LiveAvatarGrant, live_cost_capped, resolve_live_avatar,
@@ -87,7 +88,7 @@ PROVIDER_ID_PLACEHOLDER = "[avatar]"
 IDLE_TICK_SECONDS = 1.0
 # While the avatar speaks its buffered answer only video arrives, so the idle
 # countdown pauses. The pause is bounded: a speaking state that never ends
-# resumes the countdown after this long (the session cap bounds it regardless).
+# resumes the countdown after this long, so the idle timeout still ends it.
 SPEAKING_HOLD_MAX_SECONDS = 300.0
 # How often the idle watchdog re-runs the session's policy guard, so a revoked
 # grant ends a session even when the client sends nothing that is checked.
@@ -244,10 +245,17 @@ def idle_warning_seconds(idle_timeout_seconds: float) -> int:
     return int(max(5, min(30, idle_timeout_seconds // 4)))
 
 
-def effective_max_seconds(settings: Settings) -> float:
-    """The avatar cap, tightened by ``realtime_max_session_seconds`` when that is set."""
-    cap = float(settings.photo_avatar_live_max_minutes_per_session * 60)
+def effective_max_seconds(settings: Settings, *, unrestricted: bool = False) -> float:
+    """The avatar cap, tightened by ``realtime_max_session_seconds`` when that is set.
+
+    An unrestricted admin skips the per-user live minute cap, so only a positive
+    ``realtime_max_session_seconds`` bounds their session; ``0.0`` means no cap.
+    The idle timeout and its watchdog still end a session nobody is talking in.
+    """
     realtime_cap = settings.realtime_max_session_seconds
+    if unrestricted:
+        return float(realtime_cap) if realtime_cap and realtime_cap > 0 else 0.0
+    cap = float(settings.photo_avatar_live_max_minutes_per_session * 60)
     if realtime_cap and realtime_cap > 0:
         cap = min(cap, float(realtime_cap))
     return cap
@@ -286,6 +294,8 @@ class LiveAvatarSession:
     home_region: str
     billing_model_id: str
     pricing: PricingBook = field(repr=False)
+    # 0.0 means no session cap: an unrestricted admin without a positive
+    # realtime_max_session_seconds. The idle timeout always applies.
     max_seconds: float
     idle_timeout_seconds: float
     configured: bool = False
@@ -609,6 +619,8 @@ async def open_live_avatar(
         home_region=grant.home_region,
         billing_model_id=billing_model_id,
         pricing=pricing,
-        max_seconds=effective_max_seconds(settings),
+        max_seconds=effective_max_seconds(
+            settings, unrestricted=admin_is_unrestricted(user, settings),
+        ),
         idle_timeout_seconds=float(settings.photo_avatar_live_idle_timeout_seconds),
     )

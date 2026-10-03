@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ..auth.base import AuthenticatedUser
+from ..auth.identity import admin_is_unrestricted
 from ..config import Settings
 from ..entitlements.service import EntitlementService
 from ..hard_quota.models import QuotaError
@@ -92,6 +93,7 @@ from .provider import (
     valid_provider_avatar_id,
 )
 from .store import (
+    MAX_LISTED,
     CostSnapshot,
     LimitReached,
     PhotoAvatarLedger,
@@ -223,6 +225,8 @@ class PhotoAvatarService:
         ledger = await self._store.ledger(user.internal_user_id)
         now = self._clock()
         count, recent = len(ledger.active), len(ledger.recent(now))
+        unrestricted = admin_is_unrestricted(user, self._settings)
+        max_avatars, max_per_day = self._caps(unrestricted)
         estimate = self._pricing.estimate_avatar(self._catalog.billingModelId)
         return PhotoAvatarConfig(
             enabled=True,
@@ -230,18 +234,19 @@ class PhotoAvatarService:
             reason=availability.reason,
             canCreate=(
                 availability.available
-                and count < self._settings.photo_avatar_max_per_user
-                and recent < self._settings.photo_avatar_max_creations_per_day
+                and count < max_avatars
+                and (max_per_day is None or recent < max_per_day)
             ),
             limits=PhotoAvatarLimits(
-                maxAvatars=self._settings.photo_avatar_max_per_user,
+                maxAvatars=max_avatars,
                 avatarCount=count,
                 maxCreationsPerDay=self._settings.photo_avatar_max_creations_per_day,
                 creationsInLastDay=recent,
-                nextCreationAt=next_creation_at(
-                    ledger, now, self._settings.photo_avatar_max_creations_per_day,
+                nextCreationAt=(
+                    next_creation_at(ledger, now, max_per_day) if max_per_day is not None else None
                 ),
                 promptMaxChars=self._catalog.promptMaxChars,
+                unlimited=unrestricted,
             ),
             attributes=PhotoAvatarAttributeOptions(
                 **{name: list(self._catalog.attributes.options(name)) for name in ATTRIBUTE_NAMES},
@@ -310,7 +315,8 @@ class PhotoAvatarService:
                 "The photo avatar price is unknown, so it cannot be admitted under a cost limit.",
             )
         now = self._clock()
-        self._check_limits(await self._store.ledger(owner), now)
+        max_avatars, max_per_day = self._caps(admin_is_unrestricted(user, self._settings))
+        self._check_limits(await self._store.ledger(owner), now, max_avatars, max_per_day)
         if not await self._ensure_project():
             raise PhotoAvatarError(
                 503, "avatar_project_unavailable", "The avatar project is not available right now.",
@@ -339,13 +345,10 @@ class PhotoAvatarService:
         )
         try:
             await self._store.reserve(
-                record,
-                max_avatars=self._settings.photo_avatar_max_per_user,
-                max_per_day=self._settings.photo_avatar_max_creations_per_day,
-                now=now,
+                record, max_avatars=max_avatars, max_per_day=max_per_day, now=now,
             )
         except LimitReached as exc:
-            raise self._limit_error(exc) from exc
+            raise self._limit_error(exc, max_avatars) from exc
         task = asyncio.ensure_future(self._dispatch(record, prompt, attributes, created_at=now))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
@@ -812,19 +815,35 @@ class PhotoAvatarService:
             limits = await self._entitlements.get_effective(owner)
         return limits.costPerDayMicroUsd is not None or limits.costPerMonthMicroUsd is not None
 
-    def _check_limits(self, ledger: PhotoAvatarLedger, now: datetime) -> None:
-        if len(ledger.active) >= self._settings.photo_avatar_max_per_user:
-            raise self._limit_error(LimitReached("max_avatars"))
-        if len(ledger.recent(now)) >= self._settings.photo_avatar_max_creations_per_day:
-            reopen = next_creation_at(ledger, now, self._settings.photo_avatar_max_creations_per_day)
-            wait = max(1, math.ceil((reopen - now).total_seconds())) if reopen else None
-            raise self._limit_error(LimitReached("daily", wait))
+    def _caps(self, unrestricted: bool) -> tuple[int, int | None]:
+        """(current avatars, creations per rolling day) the caller may reach.
 
-    def _limit_error(self, exc: LimitReached) -> PhotoAvatarError:
+        An unrestricted admin skips both per-user caps. The gallery's listing
+        bound still applies, so every record they own stays listable and
+        deletable. ``None`` means no daily cap; creations are still counted.
+        """
+        if unrestricted:
+            return MAX_LISTED, None
+        return (
+            self._settings.photo_avatar_max_per_user,
+            self._settings.photo_avatar_max_creations_per_day,
+        )
+
+    def _check_limits(
+        self, ledger: PhotoAvatarLedger, now: datetime, max_avatars: int, max_per_day: int | None,
+    ) -> None:
+        if len(ledger.active) >= max_avatars:
+            raise self._limit_error(LimitReached("max_avatars"), max_avatars)
+        if max_per_day is not None and len(ledger.recent(now)) >= max_per_day:
+            reopen = next_creation_at(ledger, now, max_per_day)
+            wait = max(1, math.ceil((reopen - now).total_seconds())) if reopen else None
+            raise self._limit_error(LimitReached("daily", wait), max_avatars)
+
+    def _limit_error(self, exc: LimitReached, max_avatars: int) -> PhotoAvatarError:
         if exc.kind == "max_avatars":
             return PhotoAvatarError(
                 409, "avatar_limit_reached",
-                f"You already have {self._settings.photo_avatar_max_per_user} avatars. Delete one to create another.",
+                f"You already have {max_avatars} avatars. Delete one to create another.",
             )
         return PhotoAvatarError(
             429, "daily_creation_limit", "The daily photo avatar creation limit is reached.",

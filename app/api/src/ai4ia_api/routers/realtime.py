@@ -2056,7 +2056,8 @@ async def relay(
     if current_realtime_setup() is not None:
         max_seconds = min(max_seconds or SETUP_MAX_SECONDS, SETUP_MAX_SECONDS)
     if avatar is not None:
-        # Avatar time bills while idle, so an avatar session is always capped.
+        # Avatar time bills while idle, so an avatar session is capped (an
+        # unrestricted admin's only by a positive max_seconds) and idle-limited.
         max_seconds = (
             min(max_seconds, avatar.max_seconds)
             if max_seconds and max_seconds > 0 else avatar.max_seconds

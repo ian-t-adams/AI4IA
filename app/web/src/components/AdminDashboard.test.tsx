@@ -15,6 +15,7 @@ vi.mock("@/lib/admin", async (importOriginal) => {
   return {
     ...actual,
     fetchWhoAmI: vi.fn(),
+    fetchMyEntitlement: vi.fn(),
     fetchOverview: vi.fn(),
     fetchUsageSummary: vi.fn(),
     fetchOfficialMcpHealth: vi.fn(),
@@ -29,6 +30,7 @@ import {
   ADMIN_OPERATIONS,
   type AdminUsageOverviewReport,
   type OfficialMcpHealthReport,
+  fetchMyEntitlement,
   fetchOverview,
   fetchUsageSummary,
   fetchOfficialMcpHealth,
@@ -125,6 +127,8 @@ beforeEach(() => {
   });
   window.localStorage.clear();
   vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "alice", isAdmin: true, adminOperations: [...ADMIN_OPERATIONS] });
+  // Unreadable by default, so the line stays out of unrelated tests.
+  vi.mocked(fetchMyEntitlement).mockRejectedValue(new Error("503: unavailable"));
   vi.mocked(fetchOverview).mockResolvedValue(overview);
   vi.mocked(fetchUsageSummary).mockResolvedValue(summary);
   vi.mocked(fetchOfficialMcpHealth).mockResolvedValue(officialMcp);
@@ -193,6 +197,30 @@ async function panelByHeading(name: string): Promise<HTMLElement> {
 }
 
 describe("AdminDashboard new analytics panels", () => {
+  it.each([
+    [{ userId: "alice-id", source: "admin", isUnlimited: true, disabled: false }, "Your usage limits: Unlimited (admin)"],
+    [{ userId: "alice-id", source: "override", isUnlimited: false, disabled: false, requestsPerMinute: 10 },
+      "Your usage limits: 10/min"],
+  ])("shows the signed-in admin's own limits (%o)", async (limits, text) => {
+    vi.mocked(fetchMyEntitlement).mockResolvedValue(limits);
+    render(<AdminDashboard />);
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(fetchMyEntitlement).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal));
+  });
+
+  it("hides the own-limits line when it can't be read, and never reads it for a refused caller", async () => {
+    render(<AdminDashboard />);
+    await screen.findByText("Active users");
+    await waitFor(() => expect(fetchMyEntitlement).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Your usage limits/)).toBeNull();
+    cleanup();
+    vi.mocked(fetchMyEntitlement).mockClear();
+    vi.mocked(fetchWhoAmI).mockResolvedValue({ subject: "reviewer", isAdmin: true, adminOperations: [] });
+    render(<AdminDashboard />);
+    await screen.findByRole("heading", { name: "Admins only" });
+    expect(fetchMyEntitlement).not.toHaveBeenCalled();
+  });
+
   it.each([
     { operation: "admin.metrics.resources.read", heading: "Platform resources", reader: fetchResources },
     { operation: "admin.metrics.operations.read", heading: "Operations and latency", reader: fetchOperations },

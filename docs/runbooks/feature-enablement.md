@@ -561,7 +561,12 @@ roles this repository creates or assigns):
 
 `spend` has a `default` limit object and optional claim mappings with `limits`.
 The fields match existing entitlements; numeric limits take the minimum of
-individual, default and matched restrictions. Usage accounting remains soft:
+individual, default and matched restrictions. An unrestricted admin's own
+individual entitlement never applies (see
+[admin identities](../configuration-reference.md#required-deployment-ownership-values)),
+but the `spend` default and matched restrictions still compose onto it: the
+shipped policy has none, and exempting admins from a future group restriction
+needs its own decision. Usage accounting remains soft:
 concurrent work can overshoot, and missing usage/prices are not a bill cap.
 Active policy reads distinguish unavailable state from permission. The existing
 hard-admission gate, reservations and activation restrictions are separate.
@@ -1528,7 +1533,8 @@ dedicated policy constrains model/tool/storage posture while equivalent
 ownership, approval, and spend controls still run at the call site. Per-user cost
 control is the
 `computeExecutionsPerDay` entitlement — a rolling 24h cap on sandbox executions,
-its own axis because a token or dollar budget cannot express it:
+its own axis because a token or dollar budget cannot express it. Like every
+entitlement, it does not bind an unrestricted admin's own executions:
 
 ```bash
 # Cap a user at 25 sandbox executions per rolling 24h. Omit the field (or DELETE
@@ -1785,13 +1791,19 @@ price; an outcome that is still unknown is recorded as cost-unknown, never as
 free. A daily creation is spent when the create is dispatched, even if the
 provider later rejects it or the avatar is deleted. Creation refuses under any
 cost cap if the price is missing. Hard admission covers avatar creation as a
-request-only surface; token and dollar caps refuse it.
+request-only surface; token and dollar caps refuse it. Unrestricted admins (see
+[admin identities](../configuration-reference.md#required-deployment-ownership-values))
+skip `photoAvatarMaxPerUser` and `photoAvatarMaxCreationsPerDay`; their creations
+are still counted and metered, and the gallery's 200-record listing bound still
+applies.
 
 Live avatar time (Phase 2) bills per second at $0.60 per minute while the session
 is connected, idle included.
 - Each session is capped by the smaller of `realtime_max_session_seconds` and
   `photoAvatarLiveMaxMinutesPerSession`, and ends after
-  `photoAvatarLiveIdleTimeoutSeconds` without conversation.
+  `photoAvatarLiveIdleTimeoutSeconds` without conversation. An unrestricted admin
+  skips `photoAvatarLiveMaxMinutesPerSession`, so only a positive
+  `realtime_max_session_seconds` caps their session; the idle timeout still ends it.
 - It is admitted on its own request-only `avatar_live` surface, which requires the
   `avatar.use` grant, before the voice session's own admission.
 - An unpriced live meter refuses under any cost cap.

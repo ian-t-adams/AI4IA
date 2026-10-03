@@ -10,7 +10,7 @@ from typing import Any, TYPE_CHECKING
 from azure.core.exceptions import AzureError
 
 from ..auth.base import AuthenticatedUser
-from ..auth.identity import identity_is_admin
+from ..auth.identity import admin_is_unrestricted, identity_is_admin
 from ..auth.userid import internal_user_id
 from ..catalog import DeploymentOption, ModelCatalog
 from ..entitlements.models import Entitlement, EntitlementLimits
@@ -262,6 +262,18 @@ class PolicyService:
             raise PolicyError(PolicyDecision("deny", "owner_mismatch"))
         return await self._resolve(owner_id, None)
 
+    async def _owner_limits(self, owner: str, user: AuthenticatedUser | None) -> Entitlement:
+        """The owner's per-user soft limits, before group spend and actor restrictions.
+
+        An authenticated unrestricted admin's own per-user default and override
+        never apply. Unattended work has no principal and reads stored policy.
+        """
+        if user is not None and user.internal_user_id == owner and admin_is_unrestricted(
+            user, self.settings,
+        ):
+            return Entitlement.unrestricted_admin()
+        return await self.entitlements.get_for_admission(owner)
+
     async def _resolve(self, owner: str, user: AuthenticatedUser | None) -> EffectivePolicy:
         empty = EffectivePolicy(
             owner_id=owner, mode="interactive" if user is not None else "unattended",
@@ -270,7 +282,7 @@ class PolicyService:
         )
         if not self.enabled:
             try:
-                limits = await self.entitlements.get_for_admission(owner)
+                limits = await self._owner_limits(owner, user)
             except _READ_FAILURES:
                 return replace(empty, limits_unavailable=True)
             return replace(empty, limits=limits)
@@ -278,7 +290,7 @@ class PolicyService:
         limits = empty.limits
         unavailable = False
         try:
-            limits = await self.entitlements.get_for_admission(owner)
+            limits = await self._owner_limits(owner, user)
         except _READ_FAILURES:
             unavailable = True
         spend_invalid = spend_unattended = False

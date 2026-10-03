@@ -106,12 +106,23 @@ class EntitlementService:
             value=override, expires_monotonic=time.monotonic() + self._cache_ttl
         )
 
-    async def get_effective(self, user_id: str) -> Entitlement:
+    async def get_effective(self, user_id: str, *, exempt_admin: bool = True) -> Entitlement:
         """The override for ``user_id`` if present, else the default. Cached
         behind a short TTL. On a store error, falls back to the last-known cached
         value **only when it is ``disabled``** (a deliberate block must survive a
         transient outage); for any other cached or missing value it fails OPEN to
-        the unlimited default, so a store hiccup never invents a numeric limit."""
+        the unlimited default, so a store hiccup never invents a numeric limit.
+
+        When this task is bound to an authenticated unrestricted admin who owns
+        ``user_id`` (``auth.identity.admin_is_unrestricted``), the admin resolves
+        unlimited and never disabled, whatever is stored. ``exempt_admin=False``
+        reads the stored policy instead, for management views and hard admission.
+        """
+        if exempt_admin:
+            from ..policy.context import bound_unrestricted_admin
+
+            if bound_unrestricted_admin(user_id):
+                return Entitlement.unrestricted_admin()
         entry = self._cache.get(user_id)
         if entry is not None and entry.expires_monotonic > time.monotonic():
             return entry.value or self._default
@@ -129,7 +140,8 @@ class EntitlementService:
     async def get_for_admission(self, user_id: str) -> Entitlement:
         """Hard mode never inherits soft policy-read fallbacks or cached caps."""
         # Preserve the established known-disabled fallback even during an outage.
-        effective = await self.get_effective(user_id)
+        # Admission reads stored policy: the admin exemption is not applied here.
+        effective = await self.get_effective(user_id, exempt_admin=False)
         if effective.disabled:
             return effective
         override = await self._store.get_strict(user_id)

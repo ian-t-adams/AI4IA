@@ -80,8 +80,15 @@ function joinList(parts: string[]): string {
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
 function usageText(limits: PhotoAvatarLimits | null): string | null {
   if (!limits) return null;
+  if (limits.unlimited) {
+    return `Unlimited (admin) · ${plural(limits.avatarCount, "avatar")} · ${plural(limits.creationsInLastDay, "creation")} in the last 24 hours`;
+  }
   return `${limits.avatarCount} of ${limits.maxAvatars} avatars · ${limits.creationsInLastDay} of ${limits.maxCreationsPerDay} creations in the last 24 hours`;
 }
 
@@ -94,9 +101,12 @@ function creationBlockedReason(
   if (!config.enabled || !config.available) return photoAvatarUnavailableText(config.reason);
   const limits = config.limits;
   if (limits && limits.avatarCount >= limits.maxAvatars) {
-    return `You have ${limits.avatarCount} of ${limits.maxAvatars} avatars, the most you can keep. Delete one to create another.`;
+    // An unrestricted admin skips the per-user cap, but the gallery can only list this many.
+    return limits.unlimited
+      ? `You have ${limits.avatarCount} avatars, the most the gallery can list. Delete one to create another.`
+      : `You have ${limits.avatarCount} of ${limits.maxAvatars} avatars, the most you can keep. Delete one to create another.`;
   }
-  if (limits && limits.creationsInLastDay >= limits.maxCreationsPerDay) {
+  if (limits && !limits.unlimited && limits.creationsInLastDay >= limits.maxCreationsPerDay) {
     const next = formatPhotoAvatarTime(limits.nextCreationAt);
     return `You've used ${limits.creationsInLastDay} of ${limits.maxCreationsPerDay} creations in the last 24 hours.${next ? ` You can create another after ${next}.` : ""}`;
   }

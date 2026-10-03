@@ -197,8 +197,9 @@ def test_enabled_shapes_are_the_published_contract():
     assert set(config) == CONFIG_KEYS
     assert set(config["limits"]) == {
         "maxAvatars", "avatarCount", "maxCreationsPerDay", "creationsInLastDay",
-        "nextCreationAt", "promptMaxChars", "displayNameMaxChars",
+        "nextCreationAt", "promptMaxChars", "displayNameMaxChars", "unlimited",
     }
+    assert config["limits"]["unlimited"] is False
     assert set(config["attributes"]) == {"gender", "age", "ethnicity", "style"}
     assert config["attestation"]["version"] == ATTESTATION_VERSION
     assert [item["id"] for item in config["attestation"]["statements"]] == [

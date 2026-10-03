@@ -243,6 +243,29 @@ describe("availability", () => {
     expect(screen.getByRole("button", { name: "New avatar" })).toBeDisabled();
   });
 
+  it("shows an unrestricted admin past both per-user caps as unlimited", async () => {
+    // Over the configured 5 and 5, which would block the ordinary user above.
+    on("GET", CONFIG_PATH, () => json({
+      ...CONFIG,
+      limits: { ...CONFIG.limits!, unlimited: true, maxAvatars: 200, avatarCount: 7, creationsInLastDay: 9 },
+    }));
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    expect(await screen.findByText(/Unlimited \(admin\) · 7 avatars · 9 creations in the last 24 hours/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New avatar" })).toBeEnabled();
+    expect(screen.queryByText(/of 5 avatars/)).toBeNull();
+  });
+
+  it("still explains the gallery's listing bound to an unrestricted admin", async () => {
+    on("GET", CONFIG_PATH, () => json({
+      ...CONFIG,
+      canCreate: false,
+      limits: { ...CONFIG.limits!, unlimited: true, maxAvatars: 200, avatarCount: 200, creationsInLastDay: 1 },
+    }));
+    render(<PhotoAvatarsPanel onClose={vi.fn()} />);
+    expect(await screen.findByText(/You have 200 avatars, the most the gallery can list\. Delete one/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New avatar" })).toBeDisabled();
+  });
+
   it("marks a ready avatar that can't be used right now without hiding it", async () => {
     on("GET", LIST, () =>
       json({ avatars: [READY_A, avatar({ id: ID_SAS, displayName: "Paused host", usable: false })] }),

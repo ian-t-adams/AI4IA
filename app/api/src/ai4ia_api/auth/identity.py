@@ -18,6 +18,10 @@ it lives here and both import it.
 Membership is *identity* only. Callers that also require a second factor (the
 entitlement API requires ``X-Admin-Secret`` under spoofable dev auth) layer that
 on top; see ``auth.admin.evaluate_admin``.
+
+:func:`admin_is_unrestricted` is the one rule for exempting an admin's own usage
+from per-user application caps. Every exemption site calls it rather than
+re-deriving it.
 """
 from __future__ import annotations
 
@@ -43,3 +47,21 @@ def identity_is_admin(user: AuthenticatedUser, settings: Settings) -> bool:
     if user.email and user.email.lower() in settings.admin_email_set:
         return True
     return has_admin_role(user)
+
+
+def admin_is_unrestricted(user: AuthenticatedUser, settings: Settings) -> bool:
+    """True when ``user``'s own usage is exempt from per-user application caps.
+
+    Requires a trustworthy identity: under spoofable auth anyone can name an
+    allowlisted subject, so nobody is exempt there. Everyone made an admin, by
+    ``AI4IA_ADMIN_SUBJECTS``, ``AI4IA_ADMIN_EMAILS`` or the ``admin`` app role,
+    becomes unrestricted, so grant admin sparingly.
+
+    The exemption covers per-user soft entitlements and the per-user photo
+    avatar, live avatar minute and document caps. It grants no admin API access
+    (``auth.admin.require_admin`` still decides that, including its optional
+    secret second factor) and waives no security control, provider or legal
+    obligation, global feature prerequisite, technical bound, group-policy
+    restriction or hard quota.
+    """
+    return not settings.auth_provider_is_spoofable and identity_is_admin(user, settings)

@@ -1749,7 +1749,9 @@ def test_live_avatar_injects_the_server_block_and_drops_client_avatar_fields():
             assert json.loads(ws.receive_text()) == {
                 "type": "ai4ia.avatar.session", "output_protocol": "websocket",
                 "idle_timeout_seconds": 120, "idle_warning_seconds": 30,
-                "max_session_seconds": 600,
+                # This suite makes alice an admin: unrestricted, so no per-user
+                # live minute cap (test_live_avatar_minute_cap_* pairs it).
+                "max_session_seconds": 0,
             }
             ws.send_text(json.dumps(hostile))
             echoed = ws.receive_text()

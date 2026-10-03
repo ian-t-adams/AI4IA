@@ -101,6 +101,8 @@ export interface DimensionBucket {
 
 export interface EntitlementView {
   userId: string;
+  // "override" | "default" | "policy" | "admin". "admin" means an unrestricted
+  // admin: per-user caps don't apply to that admin's own usage.
   source: string;
   isUnlimited: boolean;
   disabled: boolean;
@@ -312,6 +314,11 @@ export async function fetchWhoAmI(): Promise<WhoAmI> {
     throw new Error("Admin operation availability is unknown: invalid access response.");
   }
   return who;
+}
+
+// The signed-in caller's own effective limits; any authenticated user may read them.
+export function fetchMyEntitlement(signal?: AbortSignal): Promise<EntitlementView> {
+  return getJson<EntitlementView>("/api/entitlement", signal);
 }
 
 // Usage-only access cannot read entitlement-enriched overview/by-user. Keep a
@@ -630,13 +637,15 @@ export function linePoints(
     .join(" ");
 }
 
-// Short, human label for a user's entitlement in the top-users table.
+// Short, human label for an entitlement: the top-users table and the
+// dashboard's "Your usage limits" line.
 export function entitlementLabel(
   ent: EntitlementView | null | undefined,
   known = true,
 ): string {
   if (!known) return "Unavailable";
   if (!ent) return "Unlimited";
+  if (ent.source === "admin" && ent.isUnlimited) return "Unlimited (admin)";
   if (ent.disabled) return "Disabled";
   if (ent.isUnlimited) return "Unlimited";
   const parts: string[] = [];
