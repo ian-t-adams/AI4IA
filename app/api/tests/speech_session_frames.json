@@ -1,0 +1,257 @@
+{
+  "_comment": "Speech session.update frames captured from normalize_speech_client_frame at b2ec3ef7, before a session voice could carry a speaking rate or an HD voice temperature. tests/test_speech_voice_parameters.py builds the inputs and checks that, with neither set, every managed model still sends these bytes, with and without the client echo reference.",
+  "frames": {
+    "azure-speech+reasoning-none/andrew-neural/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"reasoning_effort\": \"none\", \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "azure-speech+reasoning-none/andrew-neural/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"reasoning_effort\": \"none\", \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}",
+    "azure-speech+reasoning-none/ava-hd/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-Ava:DragonHDLatestNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"reasoning_effort\": \"none\", \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "azure-speech+reasoning-none/ava-hd/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-Ava:DragonHDLatestNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"reasoning_effort\": \"none\", \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}",
+    "azure-speech+temperature/andrew-neural/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"temperature\": 0.7, \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "azure-speech+temperature/andrew-neural/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"temperature\": 0.7, \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}",
+    "azure-speech/andrew-neural/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "azure-speech/andrew-neural/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}",
+    "azure-speech/ava-hd/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-Ava:DragonHDLatestNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "azure-speech/ava-hd/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-Ava:DragonHDLatestNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"azure-speech\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}",
+    "gpt-4o-transcribe+temperature/andrew-neural/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"gpt-4o-transcribe\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"temperature\": 0.7, \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "gpt-4o-transcribe+temperature/andrew-neural/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"gpt-4o-transcribe\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"temperature\": 0.7, \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}",
+    "gpt-4o-transcribe/andrew-neural/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"gpt-4o-transcribe\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "gpt-4o-transcribe/andrew-neural/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-AndrewNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"gpt-4o-transcribe\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}",
+    "gpt-4o-transcribe/ava-hd/echo": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-Ava:DragonHDLatestNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"gpt-4o-transcribe\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"parallel_tool_calls\": false, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\", \"reference_source\": \"client\", \"channels\": 2}}}",
+    "gpt-4o-transcribe/ava-hd/plain": "{\"type\": \"session.update\", \"session\": {\"voice\": {\"type\": \"azure-standard\", \"name\": \"en-US-Ava:DragonHDLatestNeural\", \"locale\": \"en-US\"}, \"input_audio_transcription\": {\"model\": \"gpt-4o-transcribe\", \"language\": \"en-US\"}, \"turn_detection\": {\"type\": \"azure_semantic_vad\", \"create_response\": true, \"interrupt_response\": true, \"auto_truncate\": false}, \"input_audio_format\": \"pcm16\", \"output_audio_format\": \"pcm16\", \"input_audio_sampling_rate\": 24000, \"modalities\": [\"text\", \"audio\"], \"input_audio_noise_reduction\": {\"type\": \"azure_deep_noise_suppression\"}, \"input_audio_echo_cancellation\": {\"type\": \"server_echo_cancellation\"}}}"
+  },
+  "models": {
+    "gpt-realtime": {
+      "empty": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "gpt-4o-transcribe+temperature/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe+temperature/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "gpt-4o-transcribe/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe/andrew-neural/echo"
+      }
+    },
+    "gpt-realtime-mini": {
+      "empty": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "gpt-4o-transcribe+temperature/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe+temperature/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "gpt-4o-transcribe/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe/andrew-neural/echo"
+      }
+    },
+    "gpt-realtime-1.5": {
+      "empty": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "gpt-4o-transcribe+temperature/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe+temperature/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "gpt-4o-transcribe/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe/andrew-neural/echo"
+      }
+    },
+    "gpt-realtime-2.1": {
+      "empty": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "gpt-4o-transcribe+temperature/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe+temperature/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "gpt-4o-transcribe/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe/andrew-neural/echo"
+      }
+    },
+    "gpt-realtime-2.1-mini": {
+      "empty": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "gpt-4o-transcribe/ava-hd/plain",
+        "echo": "gpt-4o-transcribe/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "gpt-4o-transcribe+temperature/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe+temperature/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "gpt-4o-transcribe/andrew-neural/plain",
+        "echo": "gpt-4o-transcribe/andrew-neural/echo"
+      }
+    },
+    "gpt-4.1": {
+      "empty": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech+temperature/andrew-neural/plain",
+        "echo": "azure-speech+temperature/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech/andrew-neural/plain",
+        "echo": "azure-speech/andrew-neural/echo"
+      }
+    },
+    "gpt-4.1-mini": {
+      "empty": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech+temperature/andrew-neural/plain",
+        "echo": "azure-speech+temperature/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech/andrew-neural/plain",
+        "echo": "azure-speech/andrew-neural/echo"
+      }
+    },
+    "gpt-5-mini": {
+      "empty": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech/andrew-neural/plain",
+        "echo": "azure-speech/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech/andrew-neural/plain",
+        "echo": "azure-speech/andrew-neural/echo"
+      }
+    },
+    "gpt-5.1": {
+      "empty": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech/ava-hd/plain",
+        "echo": "azure-speech/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech/andrew-neural/plain",
+        "echo": "azure-speech/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech/andrew-neural/plain",
+        "echo": "azure-speech/andrew-neural/echo"
+      }
+    },
+    "gpt-5.2": {
+      "empty": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      }
+    },
+    "gpt-5.4": {
+      "empty": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      }
+    },
+    "gpt-5.6-terra": {
+      "empty": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      }
+    },
+    "gpt-5.6-luna": {
+      "empty": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "browser": {
+        "plain": "azure-speech+reasoning-none/ava-hd/plain",
+        "echo": "azure-speech+reasoning-none/ava-hd/echo"
+      },
+      "dropped_voice_fields": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      },
+      "non_hd_voice_temperature": {
+        "plain": "azure-speech+reasoning-none/andrew-neural/plain",
+        "echo": "azure-speech+reasoning-none/andrew-neural/echo"
+      }
+    }
+  }
+}

@@ -1134,6 +1134,19 @@ models. A turn that fails to transcribe is flagged in the call bar while the
 session continues. Voice Live usage stays cost-unknown in the usage ledger; no
 Azure retail meter for MAI voices or MAI transcription was published at review.
 
+**More voices, speaking rate and HD voice variation.** The catalog also offers
+11 more GA Dragon HD voices and 28 GA multilingual voices, all en-US, named
+exactly as Microsoft Learn lists them (reviewed 2026-10-03). `voices.hdOptions`
+lists the Dragon HD voices. Two catalog-owned ranges bound the Voice Live voice
+fields a user may set under **Setup > Voice**: `speakingRate` (0.5 to 1.5, any
+voice) and `hdVoiceTemperature` (0 to 1, Dragon HD voices only, separate from the
+model temperature). The relay clamps both and sends neither when unset, so an
+untouched session's `session.update` is unchanged. No deployment variable gates
+them. Until a signed-in session proves it, treat as unverified each added voice's
+acceptance by Voice Live in East US 2, the rate on MAI voices (Microsoft documents
+it for standard voices) and the HD voice temperature's effect. A refused voice or
+value ends the session with Azure's error; it never switches voices.
+
 **Preview Live-Reference AEC for photo avatars.** **Keep listening with precise
 echo cancellation (preview)** is a per-user choice under **While the avatar
 talks**. It has no deployment variable. It is reviewed catalog data:

@@ -237,6 +237,15 @@ default. Preview options have no service-level agreement. If Azure refuses one,
 Voice Live shows Azure's error instead of switching to another model. A turn it
 can't transcribe is flagged in the call bar while the session continues.
 
+The Azure Speech **Voice** list groups its US English voices by family:
+**Dragon HD**, **Multilingual**, **Neural** and **MAI (preview)**. **Speaking
+rate** (0.5 to 1.5) makes any Speech voice slower or faster; Microsoft doesn't
+document it for the preview MAI voices. **Voice variation (HD voices)** (0 to 1)
+sets how much a Dragon HD voice varies its intonation. It is disabled for other
+voices and keeps your value for the next HD voice. It is separate from
+**Temperature**, which shapes the reply itself. Leave either empty for the
+voice's own default.
+
 The GPT-5.x Azure Speech models ignore **Temperature**, so it is disabled for them
 (your saved value still applies to the other models). GPT-5.2, GPT-5.4 and the
 GPT-5.6 models also answer at the lowest reasoning effort, *none*, so spoken

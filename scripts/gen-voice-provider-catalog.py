@@ -8,8 +8,12 @@ The infra catalog is the source of truth for both providers:
 - ``speech_voice_live`` exposes only the curated managed-model catalog and
   carries curated azure-standard built-in Speech voices plus safe capability
   defaults/options. Public-preview MAI voices are listed in
-  ``voices.previewOptions``, and reviewed transcription alternatives to each
+  ``voices.previewOptions``, the Dragon HD voices in ``voices.hdOptions``, and
+  reviewed transcription alternatives to each
   managed model's own default live in ``inputTranscription.options``. Its
+  ``speakingRate`` and ``hdVoiceTemperature`` blocks are the documented bounds
+  of the Voice Live ``voice.rate`` (any voice) and ``voice.temperature`` (Dragon
+  HD voices only) a user may set. Its
   ``echoCancellation.clientReference`` block is the opt-in, preview
   Live-Reference AEC path: the one api-version and ``features`` flag for which
   the generated Speech APIM policy lets a session leave the pinned version.
@@ -99,14 +103,77 @@ AZURE_OPENAI_VOICES = (
     "marin",
     "cedar",
 )
-SPEECH_GA_VOICES = (
+# en-US GA voices named exactly as Microsoft Learn lists them (reviewed 2026-10-03).
+# Dragon HD: the GA voices both the HD voices page
+# (https://learn.microsoft.com/azure/ai-services/speech-service/high-definition-voices#supported-azure-speech-hd-voices,
+# the full list the Voice Live how-to points to) and the text to speech language
+# table (https://learn.microsoft.com/azure/ai-services/speech-service/language-support?tabs=tts)
+# list. The names keep that table's `en-US` casing; the HD page writes `en-us`.
+# The default comes first. Left out: en-US-Bree and en-US-Jane (GA in the
+# language table, absent from the HD voices page) and every preview voice
+# (Andrew3, Ava3, the multi-talker voice, AshTurbo, DragonHDOmni): the regions
+# table (https://learn.microsoft.com/azure/ai-services/speech-service/regions?tabs=tts)
+# offers no preview voices in eastus2, and DragonHDFlash is not offered there.
+SPEECH_HD_VOICES = (
     "en-US-Ava:DragonHDLatestNeural",
-    "en-US-AvaNeural",
-    "en-US-AndrewNeural",
+    "en-US-Adam:DragonHDLatestNeural",
+    "en-US-Alloy:DragonHDLatestNeural",
+    "en-US-Andrew:DragonHDLatestNeural",
+    "en-US-Andrew2:DragonHDLatestNeural",
+    "en-US-Aria:DragonHDLatestNeural",
     "en-US-Brian:DragonHDLatestNeural",
+    "en-US-Davis:DragonHDLatestNeural",
     "en-US-Emma:DragonHDLatestNeural",
+    "en-US-Emma2:DragonHDLatestNeural",
     "en-US-Jenny:DragonHDLatestNeural",
+    "en-US-Nova:DragonHDLatestNeural",
+    "en-US-Phoebe:DragonHDLatestNeural",
+    "en-US-Serena:DragonHDLatestNeural",
+    "en-US-Steffan:DragonHDLatestNeural",
 )
+# Every Dragon HD voice name ends with this, and only those are in hdOptions.
+SPEECH_HD_VOICE_SUFFIX = ":DragonHDLatestNeural"
+# The language table's GA en-US multilingual voices (names ending MultilingualNeural).
+SPEECH_MULTILINGUAL_VOICES = (
+    "en-US-AdamMultilingualNeural",
+    "en-US-AlloyTurboMultilingualNeural",
+    "en-US-AmandaMultilingualNeural",
+    "en-US-AndrewMultilingualNeural",
+    "en-US-AvaMultilingualNeural",
+    "en-US-BrandonMultilingualNeural",
+    "en-US-BrianMultilingualNeural",
+    "en-US-ChristopherMultilingualNeural",
+    "en-US-CoraMultilingualNeural",
+    "en-US-DavisMultilingualNeural",
+    "en-US-DerekMultilingualNeural",
+    "en-US-DustinMultilingualNeural",
+    "en-US-EchoTurboMultilingualNeural",
+    "en-US-EmmaMultilingualNeural",
+    "en-US-EvelynMultilingualNeural",
+    "en-US-FableTurboMultilingualNeural",
+    "en-US-JennyMultilingualNeural",
+    "en-US-LewisMultilingualNeural",
+    "en-US-LolaMultilingualNeural",
+    "en-US-NancyMultilingualNeural",
+    "en-US-NovaTurboMultilingualNeural",
+    "en-US-OnyxTurboMultilingualNeural",
+    "en-US-PhoebeMultilingualNeural",
+    "en-US-RyanMultilingualNeural",
+    "en-US-SamuelMultilingualNeural",
+    "en-US-SerenaMultilingualNeural",
+    "en-US-ShimmerTurboMultilingualNeural",
+    "en-US-SteffanMultilingualNeural",
+)
+SPEECH_NEURAL_VOICES = ("en-US-AvaNeural", "en-US-AndrewNeural")
+SPEECH_GA_VOICES = (*SPEECH_HD_VOICES, *SPEECH_MULTILINGUAL_VOICES, *SPEECH_NEURAL_VOICES)
+# Voice Live session voice parameters (Microsoft Learn, Voice Live how-to, "Audio
+# output through Azure text to speech", reviewed 2026-10-03). `rate` is a string
+# from 0.5 to 1.5 for any standard Azure voice. `temperature` applies to HD voices,
+# and the HD voices page documents it as a float from 0 to 1 (default 1.0). The
+# DragonHDOmni range differs (0.3 to 1.0), which is one more reason those voices
+# are not listed.
+SPEECH_SPEAKING_RATE = {"min": 0.5, "max": 1.5}
+SPEECH_HD_VOICE_TEMPERATURE = {"min": 0.0, "max": 1.0}
 # Public preview (no SLA). The en-US voices that support both models, per
 # https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices
 # (reviewed 2026-10-02). Flash is listed first: it is the model Microsoft
@@ -545,6 +612,71 @@ def _validate_speech_preview_voices(errors: list[str], voices: dict[str, Any]) -
     )
 
 
+def _validate_speech_hd_voices(errors: list[str], voices: dict[str, Any]) -> None:
+    """Pin the Dragon HD voices, the only ones the relay sends a voice temperature.
+
+    The list is explicit, and the name rule keeps it complete: every listed voice
+    is a Dragon HD name, and every Dragon HD name in ``options`` is listed.
+    """
+    hd = voices.get("hdOptions")
+    label = "speech_voice_live.capabilities.voices.hdOptions"
+    if not isinstance(hd, list):
+        errors.append(f"{label} must be an array")
+        return
+    _require(
+        errors,
+        tuple(hd) == SPEECH_HD_VOICES,
+        f"{label} must be {SPEECH_HD_VOICES!r} (got {tuple(hd)!r})",
+    )
+    options = voices.get("options")
+    option_list = options if isinstance(options, list) else []
+    _require(
+        errors,
+        all(isinstance(voice, str) and voice in option_list for voice in hd),
+        f"{label} must only name voices in voices.options",
+    )
+    _require(errors, len(set(map(repr, hd))) == len(hd), f"{label} must be unique")
+    named_hd = [
+        voice
+        for voice in option_list
+        if isinstance(voice, str) and voice.endswith(SPEECH_HD_VOICE_SUFFIX)
+    ]
+    _require(
+        errors,
+        sorted(named_hd) == sorted(voice for voice in hd if isinstance(voice, str))
+        and all(isinstance(voice, str) for voice in hd),
+        f"{label} must be exactly the voices.options named *{SPEECH_HD_VOICE_SUFFIX}",
+    )
+    preview = voices.get("previewOptions")
+    _require(
+        errors,
+        not set(map(repr, hd)) & set(map(repr, preview if isinstance(preview, list) else [])),
+        f"{label} must not include a preview voice",
+    )
+
+
+def _validate_speech_voice_range(
+    errors: list[str], block: Any, *, expected: dict[str, float], label: str
+) -> None:
+    """A voice parameter range must be exactly the documented bounds.
+
+    The relay clamps a client value to these bounds, so a typo here must fail
+    generation rather than widen what reaches Voice Live.
+    """
+    if not isinstance(block, dict):
+        errors.append(f"{label} must be an object")
+        return
+    _exact_keys(errors, block, allowed=tuple(expected), label=label)
+    for field, value in expected.items():
+        actual = block.get(field)
+        # Equality alone accepts True for 1 and False for 0.
+        _require(
+            errors,
+            type(actual) in (int, float) and actual == value,
+            f"{label}.{field} must be {value!r} (got {actual!r})",
+        )
+
+
 def _validate_speech_input_transcription(errors: list[str], block: Any) -> None:
     label = "speech_voice_live.capabilities.inputTranscription"
     _exact_keys(errors, block, allowed=("options",), label=label)
@@ -869,6 +1001,8 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
         capabilities,
         allowed=(
             "voices",
+            "speakingRate",
+            "hdVoiceTemperature",
             "inputTranscription",
             "turnDetection",
             "noiseSuppression",
@@ -883,10 +1017,23 @@ def _validate_speech_voice_live(errors: list[str], provider: dict[str, Any]) -> 
     _exact_keys(
         errors,
         voices,
-        allowed=("kind", "default", "options", "previewOptions"),
+        allowed=("kind", "default", "options", "previewOptions", "hdOptions"),
         label="speech_voice_live.capabilities.voices",
     )
     _validate_speech_preview_voices(errors, voices if isinstance(voices, dict) else {})
+    _validate_speech_hd_voices(errors, voices if isinstance(voices, dict) else {})
+    _validate_speech_voice_range(
+        errors,
+        capabilities.get("speakingRate") if isinstance(capabilities, dict) else None,
+        expected=SPEECH_SPEAKING_RATE,
+        label="speech_voice_live.capabilities.speakingRate",
+    )
+    _validate_speech_voice_range(
+        errors,
+        capabilities.get("hdVoiceTemperature") if isinstance(capabilities, dict) else None,
+        expected=SPEECH_HD_VOICE_TEMPERATURE,
+        label="speech_voice_live.capabilities.hdVoiceTemperature",
+    )
     _validate_speech_input_transcription(
         errors, capabilities.get("inputTranscription") if isinstance(capabilities, dict) else None
     )

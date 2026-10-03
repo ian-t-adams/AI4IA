@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { isPhotoAvatarId } from "./photoAvatars";
 import {
+  clampToRange,
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
@@ -23,6 +24,8 @@ import {
   isPlaybackProfile,
   isSpeechVoiceProvider,
   isVadType,
+  speechHdVoiceTemperatureRange,
+  speechSpeakingRateRange,
   type RealtimeVoice,
   type SpeechVoiceLiveSettings,
   type VoiceSessionSettings,
@@ -248,6 +251,9 @@ export function normalizeSpeechVoiceLiveSettings(
   const avatarListening = isAvatarListeningMode(r.avatarListening)
     ? r.avatarListening
     : DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.avatarListening;
+  // Clamped to this build's catalog; anything but a finite number is unset.
+  const speakingRate = clampToRange(r.speakingRate, speechSpeakingRateRange());
+  const voiceTemperature = clampToRange(r.voiceTemperature, speechHdVoiceTemperatureRange());
   return {
     temperature,
     voice,
@@ -257,6 +263,8 @@ export function normalizeSpeechVoiceLiveSettings(
     autoTruncate,
     transcriptionModel,
     avatarListening,
+    speakingRate,
+    voiceTemperature,
   };
 }
 

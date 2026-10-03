@@ -72,13 +72,58 @@ UNSUPPORTED_MODEL_IDS = (
     "gpt-realtime-2.1-datazone",
     "gpt-realtime-2",
 )
-SPEECH_GA_VOICES = [
+SPEECH_HD_VOICES = [
     "en-US-Ava:DragonHDLatestNeural",
+    "en-US-Adam:DragonHDLatestNeural",
+    "en-US-Alloy:DragonHDLatestNeural",
+    "en-US-Andrew:DragonHDLatestNeural",
+    "en-US-Andrew2:DragonHDLatestNeural",
+    "en-US-Aria:DragonHDLatestNeural",
+    "en-US-Brian:DragonHDLatestNeural",
+    "en-US-Davis:DragonHDLatestNeural",
+    "en-US-Emma:DragonHDLatestNeural",
+    "en-US-Emma2:DragonHDLatestNeural",
+    "en-US-Jenny:DragonHDLatestNeural",
+    "en-US-Nova:DragonHDLatestNeural",
+    "en-US-Phoebe:DragonHDLatestNeural",
+    "en-US-Serena:DragonHDLatestNeural",
+    "en-US-Steffan:DragonHDLatestNeural",
+]
+SPEECH_MULTILINGUAL_VOICES = [
+    "en-US-AdamMultilingualNeural",
+    "en-US-AlloyTurboMultilingualNeural",
+    "en-US-AmandaMultilingualNeural",
+    "en-US-AndrewMultilingualNeural",
+    "en-US-AvaMultilingualNeural",
+    "en-US-BrandonMultilingualNeural",
+    "en-US-BrianMultilingualNeural",
+    "en-US-ChristopherMultilingualNeural",
+    "en-US-CoraMultilingualNeural",
+    "en-US-DavisMultilingualNeural",
+    "en-US-DerekMultilingualNeural",
+    "en-US-DustinMultilingualNeural",
+    "en-US-EchoTurboMultilingualNeural",
+    "en-US-EmmaMultilingualNeural",
+    "en-US-EvelynMultilingualNeural",
+    "en-US-FableTurboMultilingualNeural",
+    "en-US-JennyMultilingualNeural",
+    "en-US-LewisMultilingualNeural",
+    "en-US-LolaMultilingualNeural",
+    "en-US-NancyMultilingualNeural",
+    "en-US-NovaTurboMultilingualNeural",
+    "en-US-OnyxTurboMultilingualNeural",
+    "en-US-PhoebeMultilingualNeural",
+    "en-US-RyanMultilingualNeural",
+    "en-US-SamuelMultilingualNeural",
+    "en-US-SerenaMultilingualNeural",
+    "en-US-ShimmerTurboMultilingualNeural",
+    "en-US-SteffanMultilingualNeural",
+]
+SPEECH_GA_VOICES = [
+    *SPEECH_HD_VOICES,
+    *SPEECH_MULTILINGUAL_VOICES,
     "en-US-AvaNeural",
     "en-US-AndrewNeural",
-    "en-US-Brian:DragonHDLatestNeural",
-    "en-US-Emma:DragonHDLatestNeural",
-    "en-US-Jenny:DragonHDLatestNeural",
 ]
 # Spelled out (not derived) so a generator typo cannot agree with itself.
 MAI_VOICES = [
@@ -204,6 +249,11 @@ class VoiceProviderCatalogTests(unittest.TestCase):
             [*SPEECH_GA_VOICES, *MAI_VOICES],
         )
         self.assertEqual(speech["capabilities"]["voices"]["previewOptions"], MAI_VOICES)
+        self.assertEqual(speech["capabilities"]["voices"]["hdOptions"], SPEECH_HD_VOICES)
+        self.assertEqual(speech["capabilities"]["speakingRate"], {"min": 0.5, "max": 1.5})
+        self.assertEqual(
+            speech["capabilities"]["hdVoiceTemperature"], {"min": 0.0, "max": 1.0}
+        )
         self.assertEqual(
             speech["sessionDefaults"]["voice"],
             "en-US-Ava:DragonHDLatestNeural",
@@ -301,6 +351,120 @@ class VoiceProviderCatalogTests(unittest.TestCase):
         ] = "en-US-Harper:MAI-Voice-2.1-Flash"
         mutations["preview default voice"] = default_mai
 
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assert_schema_rejects(mutated)
+                self.assert_generator_rejects(mutated)
+
+    def test_schema_and_generator_pin_the_reviewed_voices_and_hd_list(self) -> None:
+        def voices_mutation(change) -> dict:
+            mutated = copy.deepcopy(self.raw)
+            change(mutated["providers"][1]["capabilities"]["voices"])
+            return mutated
+
+        def replace(voices: dict, old: str, new: str) -> None:
+            for field in ("options", "hdOptions"):
+                voices[field] = [new if voice == old else voice for voice in voices[field]]
+
+        mutations = {
+            "missing hdOptions": voices_mutation(lambda voices: voices.pop("hdOptions")),
+            "HD voice not listed as HD": voices_mutation(
+                lambda voices: voices["hdOptions"].remove("en-US-Nova:DragonHDLatestNeural")
+            ),
+            "neural voice listed as HD": voices_mutation(
+                lambda voices: voices["hdOptions"].append("en-US-AvaNeural")
+            ),
+            "preview voice listed as HD": voices_mutation(
+                lambda voices: voices["hdOptions"].append(MAI_VOICES[0])
+            ),
+            # Same set, other order: only the exact reviewed list objects.
+            "HD list reordered": voices_mutation(
+                lambda voices: voices.__setitem__("hdOptions", sorted(voices["hdOptions"]))
+            ),
+            "earlier voice removed": voices_mutation(
+                lambda voices: voices["options"].remove("en-US-AndrewNeural")
+            ),
+            "lowercase locale": voices_mutation(
+                lambda voices: replace(
+                    voices,
+                    "en-US-Adam:DragonHDLatestNeural",
+                    "en-us-Adam:DragonHDLatestNeural",
+                )
+            ),
+        }
+        for voice in (
+            "en-US-Bree:DragonHDLatestNeural",
+            "en-US-Andrew3:DragonHDLatestNeural",
+            "en-US-Andrew:DragonHDOmniLatestNeural",
+        ):
+            mutations[f"unreviewed HD voice {voice}"] = voices_mutation(
+                lambda voices, voice=voice: (
+                    voices["options"].append(voice),
+                    voices["hdOptions"].append(voice),
+                )
+            )
+        for voice in ("en-US-AshTurboMultilingualNeural", "en-US-GuyNeural"):
+            mutations[f"unreviewed voice {voice}"] = voices_mutation(
+                lambda voices, voice=voice: voices["options"].append(voice)
+            )
+
+        jsonschema.validate(self.raw, self.schema)
+        self.gen.build_catalog(self.raw)
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assert_schema_rejects(mutated)
+                self.assert_generator_rejects(mutated)
+
+    def test_generator_name_rule_keeps_the_hd_list_complete(self) -> None:
+        mutated = copy.deepcopy(self.raw)
+        hd = mutated["providers"][1]["capabilities"]["voices"]["hdOptions"]
+        hd.remove("en-US-Nova:DragonHDLatestNeural")
+        # The reviewed list agrees with the catalog, so only the name rule objects.
+        original = self.gen.SPEECH_HD_VOICES
+        self.gen.SPEECH_HD_VOICES = tuple(hd)
+        try:
+            with self.assertRaises(SystemExit) as raised:
+                self.gen.build_catalog(mutated)
+        finally:
+            self.gen.SPEECH_HD_VOICES = original
+        message = str(raised.exception)
+        self.assertIn("1 issue(s)", message)
+        self.assertIn("named *:DragonHDLatestNeural", message)
+        # Control: the catalog as committed passes the same rule.
+        self.gen.build_catalog(self.raw)
+
+    def test_schema_and_generator_pin_the_documented_voice_parameter_ranges(self) -> None:
+        def range_mutation(name: str, change) -> dict:
+            mutated = copy.deepcopy(self.raw)
+            change(mutated["providers"][1]["capabilities"][name])
+            return mutated
+
+        def set_field(field: str, value: object):
+            return lambda block: block.__setitem__(field, value)
+
+        mutations = {
+            "faster rate": range_mutation("speakingRate", set_field("max", 2.0)),
+            "slower rate": range_mutation("speakingRate", set_field("min", 0.25)),
+            "hotter voice temperature": range_mutation(
+                "hdVoiceTemperature", set_field("max", 2.0)
+            ),
+            "negative voice temperature": range_mutation(
+                "hdVoiceTemperature", set_field("min", -0.5)
+            ),
+            "string rate": range_mutation("speakingRate", set_field("max", "1.5")),
+            "boolean voice temperature": range_mutation(
+                "hdVoiceTemperature", set_field("max", True)
+            ),
+            "rate default": range_mutation("speakingRate", set_field("default", 1.0)),
+            "missing bound": range_mutation("speakingRate", lambda block: block.pop("min")),
+        }
+        for name in ("speakingRate", "hdVoiceTemperature"):
+            missing = copy.deepcopy(self.raw)
+            del missing["providers"][1]["capabilities"][name]
+            mutations[f"missing {name}"] = missing
+
+        jsonschema.validate(self.raw, self.schema)
+        self.gen.build_catalog(self.raw)
         for label, mutated in mutations.items():
             with self.subTest(label=label):
                 self.assert_schema_rejects(mutated)

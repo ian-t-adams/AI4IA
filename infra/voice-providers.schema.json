@@ -833,6 +833,8 @@
       "additionalProperties": false,
       "required": [
         "voices",
+        "speakingRate",
+        "hdVoiceTemperature",
         "inputTranscription",
         "turnDetection",
         "noiseSuppression",
@@ -849,7 +851,8 @@
             "kind",
             "default",
             "options",
-            "previewOptions"
+            "previewOptions",
+            "hdOptions"
           ],
           "properties": {
             "kind": {
@@ -861,11 +864,50 @@
             "options": {
               "const": [
                 "en-US-Ava:DragonHDLatestNeural",
+                "en-US-Adam:DragonHDLatestNeural",
+                "en-US-Alloy:DragonHDLatestNeural",
+                "en-US-Andrew:DragonHDLatestNeural",
+                "en-US-Andrew2:DragonHDLatestNeural",
+                "en-US-Aria:DragonHDLatestNeural",
+                "en-US-Brian:DragonHDLatestNeural",
+                "en-US-Davis:DragonHDLatestNeural",
+                "en-US-Emma:DragonHDLatestNeural",
+                "en-US-Emma2:DragonHDLatestNeural",
+                "en-US-Jenny:DragonHDLatestNeural",
+                "en-US-Nova:DragonHDLatestNeural",
+                "en-US-Phoebe:DragonHDLatestNeural",
+                "en-US-Serena:DragonHDLatestNeural",
+                "en-US-Steffan:DragonHDLatestNeural",
+                "en-US-AdamMultilingualNeural",
+                "en-US-AlloyTurboMultilingualNeural",
+                "en-US-AmandaMultilingualNeural",
+                "en-US-AndrewMultilingualNeural",
+                "en-US-AvaMultilingualNeural",
+                "en-US-BrandonMultilingualNeural",
+                "en-US-BrianMultilingualNeural",
+                "en-US-ChristopherMultilingualNeural",
+                "en-US-CoraMultilingualNeural",
+                "en-US-DavisMultilingualNeural",
+                "en-US-DerekMultilingualNeural",
+                "en-US-DustinMultilingualNeural",
+                "en-US-EchoTurboMultilingualNeural",
+                "en-US-EmmaMultilingualNeural",
+                "en-US-EvelynMultilingualNeural",
+                "en-US-FableTurboMultilingualNeural",
+                "en-US-JennyMultilingualNeural",
+                "en-US-LewisMultilingualNeural",
+                "en-US-LolaMultilingualNeural",
+                "en-US-NancyMultilingualNeural",
+                "en-US-NovaTurboMultilingualNeural",
+                "en-US-OnyxTurboMultilingualNeural",
+                "en-US-PhoebeMultilingualNeural",
+                "en-US-RyanMultilingualNeural",
+                "en-US-SamuelMultilingualNeural",
+                "en-US-SerenaMultilingualNeural",
+                "en-US-ShimmerTurboMultilingualNeural",
+                "en-US-SteffanMultilingualNeural",
                 "en-US-AvaNeural",
                 "en-US-AndrewNeural",
-                "en-US-Brian:DragonHDLatestNeural",
-                "en-US-Emma:DragonHDLatestNeural",
-                "en-US-Jenny:DragonHDLatestNeural",
                 "en-US-Ethan:MAI-Voice-2.1-Flash",
                 "en-US-Grant:MAI-Voice-2.1-Flash",
                 "en-US-Harper:MAI-Voice-2.1-Flash",
@@ -900,6 +942,60 @@
                 "en-US-Olivia:MAI-Voice-2.1",
                 "en-US-Sage:MAI-Voice-2.1"
               ]
+            },
+            "hdOptions": {
+              "description": "Dragon HD voices: the only voices whose session voice may carry hdVoiceTemperature. A subset of options that includes the default voice.",
+              "const": [
+                "en-US-Ava:DragonHDLatestNeural",
+                "en-US-Adam:DragonHDLatestNeural",
+                "en-US-Alloy:DragonHDLatestNeural",
+                "en-US-Andrew:DragonHDLatestNeural",
+                "en-US-Andrew2:DragonHDLatestNeural",
+                "en-US-Aria:DragonHDLatestNeural",
+                "en-US-Brian:DragonHDLatestNeural",
+                "en-US-Davis:DragonHDLatestNeural",
+                "en-US-Emma:DragonHDLatestNeural",
+                "en-US-Emma2:DragonHDLatestNeural",
+                "en-US-Jenny:DragonHDLatestNeural",
+                "en-US-Nova:DragonHDLatestNeural",
+                "en-US-Phoebe:DragonHDLatestNeural",
+                "en-US-Serena:DragonHDLatestNeural",
+                "en-US-Steffan:DragonHDLatestNeural"
+              ]
+            }
+          }
+        },
+        "speakingRate": {
+          "description": "Voice Live voice.rate bounds Microsoft Learn documents for any standard voice (0.5 to 1.5). The relay clamps a client rate to them and sends it as a decimal string; unset sends nothing.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "const": 0.5
+            },
+            "max": {
+              "const": 1.5
+            }
+          }
+        },
+        "hdVoiceTemperature": {
+          "description": "Voice Live voice.temperature bounds Microsoft Learn documents for Dragon HD voices (0 to 1). The relay clamps a client value to them and forwards it only for an hdOptions voice; unset sends nothing. Separate from the model sampling temperature.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "const": 0.0
+            },
+            "max": {
+              "const": 1.0
             }
           }
         },

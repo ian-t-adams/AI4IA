@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import math
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any, Literal, Sequence, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, Sequence, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -13,6 +14,7 @@ from pydantic import (
     Field,
     SerializerFunctionWrapHandler,
     StrictBool,
+    StrictFloat,
     computed_field,
     model_serializer,
     model_validator,
@@ -56,6 +58,9 @@ class VoiceProviderVoices(BaseModel):
 class SpeechVoiceProviderVoices(VoiceProviderVoices):
     # Public-preview voices (no SLA), labelled as such by the browser.
     previewOptions: list[str]
+    # Dragon HD voices: the only ones whose session voice may carry a temperature
+    # (``hdVoiceTemperature``). The generator keeps the list complete by name.
+    hdOptions: list[str]
 
     @model_validator(mode="after")
     def validate_preview_options(self) -> "SpeechVoiceProviderVoices":
@@ -65,7 +70,59 @@ class SpeechVoiceProviderVoices(VoiceProviderVoices):
             raise ValueError("Speech preview voices must be catalog voice options.")
         if self.default in self.previewOptions:
             raise ValueError("The default Speech voice must not be a preview voice.")
+        if len(set(self.hdOptions)) != len(self.hdOptions):
+            raise ValueError("Speech HD voices must be unique.")
+        if not set(self.hdOptions) <= set(self.options):
+            raise ValueError("Speech HD voices must be catalog voice options.")
         return self
+
+
+class _SpeechVoiceRange(BaseModel):
+    """Bounds of a numeric session voice parameter a user may set.
+
+    A catalog may narrow the range Microsoft Learn documents, never widen it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    documented: ClassVar[tuple[float, float]]
+
+    min: StrictFloat
+    max: StrictFloat
+
+    @model_validator(mode="after")
+    def validate_documented_range(self) -> "_SpeechVoiceRange":
+        low, high = self.documented
+        # NaN fails every comparison, so it is refused too.
+        if not low <= self.min < self.max <= high:
+            raise ValueError(f"A voice parameter range must lie within {low} to {high}.")
+        return self
+
+    def clamp(self, value: object) -> float | None:
+        """A finite numeric client value, clamped to the range; anything else is None."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            number = float(value)
+        except OverflowError:
+            return None
+        if not math.isfinite(number):
+            return None
+        return max(self.min, min(number, self.max))
+
+
+class SpeechSpeakingRate(_SpeechVoiceRange):
+    """Voice Live ``voice.rate``: any standard voice, 0.5 to 1.5 (Microsoft Learn,
+    Voice Live how-to, reviewed 2026-10-03). The relay sends it as a decimal string."""
+
+    documented: ClassVar[tuple[float, float]] = (0.5, 1.5)
+
+
+class SpeechHdVoiceTemperature(_SpeechVoiceRange):
+    """Voice Live ``voice.temperature``: Dragon HD voices only, 0 to 1 (Microsoft
+    Learn, HD voices, reviewed 2026-10-03). Not the model's sampling temperature."""
+
+    documented: ClassVar[tuple[float, float]] = (0.0, 1.0)
 
 
 class VoiceProviderInputTranscription(BaseModel):
@@ -168,6 +225,8 @@ class SpeechVoiceProviderCapabilities(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     voices: SpeechVoiceProviderVoices
+    speakingRate: SpeechSpeakingRate
+    hdVoiceTemperature: SpeechHdVoiceTemperature
     inputTranscription: SpeechVoiceProviderInputTranscription
     turnDetection: VoiceProviderTurnDetection
     noiseSuppression: VoiceProviderSimpleOptions

@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_VOICE_SETTINGS,
+  type VoiceProvider,
 } from "@/lib/voiceLive";
 import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
 
@@ -403,7 +404,7 @@ describe("VoiceSettingsPanel", () => {
     });
     const select = screen.getByRole("combobox", { name: "Voice" });
     const labels = within(select).getAllByRole("option").map((o) => o.textContent);
-    expect(labels).toHaveLength(20);
+    expect(labels).toHaveLength(59);
     expect(labels[0]).toBe("Ava (en-US, Dragon HD)");
     expect(labels).toContain("Harper (en-US, MAI Voice 2.1 Flash, preview)");
     expect(labels).toContain("Harper (en-US, MAI Voice 2.1, preview)");
@@ -418,6 +419,165 @@ describe("VoiceSettingsPanel", () => {
     );
     rerender({ voice: "en-US-AndrewNeural" });
     expect(select).not.toHaveAttribute("aria-describedby");
+  });
+
+  it("groups Speech voices by catalog family and keeps OpenAI voices flat", () => {
+    const speech = voiceProviderCatalog.providers[1];
+    const { rerender } = setup({
+      provider: "speech_voice_live",
+      activeProvider: speech,
+      voice: speech.capabilities.voices.default,
+    });
+    const select = screen.getByRole("combobox", { name: "Voice" });
+    const groups = within(select).getAllByRole("group");
+    expect(groups.map((group) => group.getAttribute("label"))).toEqual([
+      "Dragon HD",
+      "Multilingual",
+      "Neural",
+      "MAI (preview)",
+    ]);
+    expect(groups.map((group) => within(group).getAllByRole("option").length)).toEqual([
+      15, 28, 2, 14,
+    ]);
+    expect(
+      within(groups[0])
+        .getAllByRole<HTMLOptionElement>("option")
+        .map((option) => option.value),
+    ).toEqual(speech.capabilities.voices.hdOptions);
+    expect(within(groups[1]).getByRole("option", { name: "Alloy Turbo (en-US, Multilingual)" }))
+      .toHaveValue("en-US-AlloyTurboMultilingualNeural");
+    expect(select).toHaveValue(speech.capabilities.voices.default);
+
+    rerender({
+      provider: "azure_openai",
+      activeProvider: voiceProviderCatalog.providers[0],
+      voice: "alloy",
+    });
+    const openai = screen.getByRole("combobox", { name: "Voice" });
+    expect(within(openai).queryAllByRole("group")).toHaveLength(0);
+    expect(within(openai).getAllByRole("option")).toHaveLength(10);
+  });
+
+  it("edits the speaking rate for any Speech voice and flags preview voices", async () => {
+    const speech = voiceProviderCatalog.providers[1];
+    const { user, rerender, onSpeechSettingsChange, onSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: speech,
+      voice: "en-US-AvaMultilingualNeural",
+    });
+    const rate = screen.getByRole("spinbutton", { name: "Speaking rate" });
+    expect(rate).toBeEnabled();
+    expect(rate).toHaveValue(null);
+    expect(rate).toHaveAttribute("min", "0.5");
+    expect(rate).toHaveAttribute("max", "1.5");
+    expect(rate).toHaveAccessibleDescription("From 0.5 (slower) to 1.5 (faster).");
+    fireEvent.change(rate, { target: { value: "1.2" } });
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      speakingRate: 1.2,
+    });
+    expect(onSettingsChange).not.toHaveBeenCalled();
+
+    rerender({
+      voice: "en-US-Harper:MAI-Voice-2.1-Flash",
+      speechSettings: { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, speakingRate: 1.2 },
+    });
+    expect(rate).toBeEnabled();
+    expect(rate).toHaveValue(1.2);
+    expect(rate).toHaveAccessibleDescription(
+      "From 0.5 (slower) to 1.5 (faster). Microsoft doesn't document a rate for preview voices.",
+    );
+    await user.clear(rate);
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+      speakingRate: null,
+    });
+  });
+
+  it("offers voice variation only for a Dragon HD voice and keeps the saved value", async () => {
+    const speech = voiceProviderCatalog.providers[1];
+    const saved = { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS, voiceTemperature: 0.4 };
+    const { user, rerender, onSpeechSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: speech,
+      voice: "en-US-AvaNeural",
+      speechSettings: saved,
+    });
+    const variation = screen.getByRole("spinbutton", { name: "Voice variation (HD voices)" });
+    expect(variation).toBeDisabled();
+    expect(variation).toHaveValue(null);
+    expect(variation).toHaveAccessibleDescription(
+      "Only Dragon HD voices take a voice variation. Your saved value stays for them.",
+    );
+    await user.type(variation, "0.7");
+    expect(onSpeechSettingsChange).not.toHaveBeenCalled();
+
+    // Control: a Dragon HD voice shows the saved value and takes edits.
+    rerender({ voice: "en-US-Andrew2:DragonHDLatestNeural" });
+    expect(variation).toBeEnabled();
+    expect(variation).toHaveValue(0.4);
+    expect(variation).toHaveAttribute("min", "0");
+    expect(variation).toHaveAttribute("max", "1");
+    expect(variation).toHaveAccessibleDescription(
+      "How much the voice varies its intonation, from 0 to 1. It doesn't change the reply.",
+    );
+    await user.clear(variation);
+    expect(onSpeechSettingsChange).toHaveBeenLastCalledWith({ ...saved, voiceTemperature: null });
+    // The model Temperature is a separate control and setting.
+    expect(screen.getByRole("spinbutton", { name: "Temperature" })).toHaveValue(null);
+  });
+
+  it.each(voiceProviderCatalog.providers[1].capabilities.voices.options)(
+    "enables voice variation for %s only if the catalog lists it as Dragon HD",
+    (voice) => {
+      const speech = voiceProviderCatalog.providers[1];
+      setup({ provider: "speech_voice_live", activeProvider: speech, voice });
+      const variation = screen.getByRole("spinbutton", { name: "Voice variation (HD voices)" });
+      const hd = (speech.capabilities.voices.hdOptions as readonly string[]).includes(voice);
+      expect(variation.hasAttribute("disabled")).toBe(!hd);
+      expect(screen.getByRole("spinbutton", { name: "Speaking rate" })).toBeEnabled();
+    },
+  );
+
+  it("shows neither voice control for Azure OpenAI or a Speech catalog without them", () => {
+    setup();
+    expect(screen.queryByRole("spinbutton", { name: "Speaking rate" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Voice variation (HD voices)" })).toBeNull();
+    cleanup();
+
+    const speech = voiceProviderCatalog.providers[1];
+    const capabilities: Record<string, unknown> = { ...speech.capabilities };
+    delete capabilities.speakingRate;
+    delete capabilities.hdVoiceTemperature;
+    setup({
+      provider: "speech_voice_live",
+      activeProvider: { ...speech, capabilities } as unknown as VoiceProvider,
+      voice: speech.capabilities.voices.default,
+    });
+    expect(screen.queryByRole("spinbutton", { name: "Speaking rate" })).toBeNull();
+    expect(screen.queryByRole("spinbutton", { name: "Voice variation (HD voices)" })).toBeNull();
+    cleanup();
+
+    // Control: the current catalog offers both.
+    setup({
+      provider: "speech_voice_live",
+      activeProvider: speech,
+      voice: speech.capabilities.voices.default,
+    });
+    expect(screen.getByRole("spinbutton", { name: "Speaking rate" })).toBeEnabled();
+    expect(screen.getByRole("spinbutton", { name: "Voice variation (HD voices)" })).toBeEnabled();
+  });
+
+  it("disables both voice controls while locked", () => {
+    const speech = voiceProviderCatalog.providers[1];
+    setup({
+      provider: "speech_voice_live",
+      activeProvider: speech,
+      voice: speech.capabilities.voices.default,
+      locked: true,
+    });
+    expect(screen.getByRole("spinbutton", { name: "Speaking rate" })).toBeDisabled();
+    expect(screen.getByRole("spinbutton", { name: "Voice variation (HD voices)" })).toBeDisabled();
   });
 
   it("names Speech turn detection and interruption in plain words, sending the same values", async () => {

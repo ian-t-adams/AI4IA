@@ -270,6 +270,73 @@ describe("avatar listening preference", () => {
   });
 });
 
+describe("Speech speaking rate and voice temperature preferences", () => {
+  it("default to unset and keep a number within the catalog's bounds", () => {
+    expect(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.speakingRate).toBeNull();
+    expect(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voiceTemperature).toBeNull();
+    expect(normalizeSpeechVoiceLiveSettings({})).toMatchObject({
+      speakingRate: null,
+      voiceTemperature: null,
+    });
+    expect(
+      normalizeSpeechVoiceLiveSettings({ speakingRate: 1.2, voiceTemperature: 0.4 }),
+    ).toMatchObject({ speakingRate: 1.2, voiceTemperature: 0.4 });
+  });
+
+  it.each([
+    [9, 1.5, 3, 1],
+    [0.1, 0.5, -2, 0],
+    [1.5, 1.5, 1, 1],
+    [0.5, 0.5, 0, 0],
+  ])("clamps a stored rate %s to %s and a voice temperature %s to %s", (rate, clampedRate, temp, clampedTemp) => {
+    expect(
+      normalizeSpeechVoiceLiveSettings({ speakingRate: rate, voiceTemperature: temp }),
+    ).toMatchObject({ speakingRate: clampedRate, voiceTemperature: clampedTemp });
+  });
+
+  it("treats anything but a finite number as unset", () => {
+    for (const bad of ["1.2", "", true, null, {}, [1.2], Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        normalizeSpeechVoiceLiveSettings({ speakingRate: bad, voiceTemperature: bad }),
+      ).toMatchObject({ speakingRate: null, voiceTemperature: null });
+    }
+  });
+
+  it("round-trips through storage, survives sanitizing with any voice, and defaults for older records", () => {
+    const providers = [...voiceProviderCatalog.providers] as VoiceProvider[];
+    const prefs: VoicePreferences = {
+      ...DEFAULT_VOICE_PREFERENCES,
+      provider: "speech_voice_live",
+      speech: {
+        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        voice: "en-US-AvaMultilingualNeural",
+        speakingRate: 0.8,
+        voiceTemperature: 0.6,
+      },
+    };
+    const storage = fakeStorage();
+    saveVoicePreferences(prefs, storage);
+    expect(loadVoicePreferences(storage).speech).toEqual(prefs.speech);
+    // The voice temperature is kept for a later HD voice, even with a voice that
+    // does not take one.
+    expect(
+      sanitizeVoicePreferencesForProviders(
+        prefs, providers, new Set(["gpt-realtime"]), "gpt-realtime", false, "azure_openai", true,
+      ).speech,
+    ).toEqual(prefs.speech);
+
+    const older: Record<string, unknown> = { ...prefs.speech };
+    delete older.speakingRate;
+    delete older.voiceTemperature;
+    storage.data[VOICE_PREFERENCES_STORAGE_NAME] = JSON.stringify({ ...prefs, speech: older });
+    expect(loadVoicePreferences(storage).speech).toMatchObject({
+      voice: "en-US-AvaMultilingualNeural",
+      speakingRate: null,
+      voiceTemperature: null,
+    });
+  });
+});
+
 describe("normalizeVoiceSessionSettings", () => {
   it("returns defaults for a non-object", () => {
     expect(normalizeVoiceSessionSettings(null)).toEqual(DEFAULT_VOICE_SETTINGS);

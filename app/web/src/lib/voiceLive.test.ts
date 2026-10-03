@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AVATAR_LISTENING_MODES,
   avatarPauseTailBoundMs,
+  clampToRange,
   DEFAULT_VOICE,
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
@@ -9,6 +10,7 @@ import {
   DEFAULT_SPEECH_NOISE_SUPPRESSION,
   DEFAULT_PLAYBACK_PROFILE,
   effectiveAvatarListening,
+  isSpeechHdVoice,
   MAX_MICROPHONE_BUFFERED_BYTES,
   microphoneBufferLimitBytes,
   microphoneConstraints,
@@ -23,9 +25,12 @@ import {
   responseDoneNotice,
   sessionUpdate,
   speechEchoReference,
+  speechHdVoiceTemperatureRange,
   speechModelSupportsSampling,
   speechSessionUpdate,
+  speechSpeakingRateRange,
   speechTranscriptionOptions,
+  speechVoiceGroups,
   transcriptionFailureNotice,
   transcriptionOptionLabel,
   type SpeechManagedModel,
@@ -450,6 +455,144 @@ describe("speechSessionUpdate", () => {
       }
     },
   );
+});
+
+describe("Speech voice parameters", () => {
+  const speech = voiceProviderCatalog.providers[1];
+  const options: readonly string[] = speech.capabilities.voices.options;
+  const hd: readonly string[] = speech.capabilities.voices.hdOptions;
+  const set = (patch: Partial<typeof DEFAULT_SPEECH_VOICE_LIVE_SETTINGS>) => ({
+    ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+    ...patch,
+  });
+  // The default Speech frame before these settings existed (the literal above,
+  // captured before the client echo reference); a model differs only in its
+  // own transcription model.
+  const BEFORE =
+    '{"type":"session.update","session":{"voice":{"type":"azure-standard","name":"en-US-Ava:DragonHDLatestNeural","locale":"en-US"},"input_audio_transcription":{"model":"gpt-4o-transcribe","language":"en-US"},"turn_detection":{"type":"azure_semantic_vad","interrupt_response":true,"auto_truncate":false},"input_audio_noise_reduction":{"type":"azure_deep_noise_suppression"},"input_audio_echo_cancellation":{"type":"server_echo_cancellation"}}}';
+  const frameBefore = (transcription: string) =>
+    BEFORE.replace('"gpt-4o-transcribe"', JSON.stringify(transcription));
+
+  it.each(speech.managedModels)(
+    "keeps the $id frame byte for byte while both are unset, and changes only the voice when set",
+    (model) => {
+      const before = frameBefore(model.inputTranscription.model);
+      // Settings saved before these fields existed have neither key.
+      const older: Record<string, unknown> = { ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS };
+      delete older.speakingRate;
+      delete older.voiceTemperature;
+      for (const unset of [
+        DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        older as unknown as typeof DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        set({ speakingRate: null, voiceTemperature: null }),
+      ]) {
+        expect(speechSessionUpdate(model.id, unset)).toBe(before);
+      }
+      const changed = JSON.parse(
+        speechSessionUpdate(model.id, set({ speakingRate: 1.2, voiceTemperature: 0.4 })),
+      );
+      expect(changed.session.voice).toEqual({
+        type: "azure-standard",
+        name: DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice,
+        locale: "en-US",
+        temperature: 0.4,
+        rate: 1.2,
+      });
+      changed.session.voice = JSON.parse(before).session.voice;
+      expect(JSON.stringify(changed)).toBe(before);
+    },
+  );
+
+  it.each([
+    [9, 1.5, 3, 1],
+    [0.1, 0.5, -1, 0],
+    [1.25, 1.25, 0.05, 0.05],
+  ])("clamps a rate %s to %s and a voice temperature %s to %s", (rate, sentRate, temp, sentTemp) => {
+    const voice = JSON.parse(
+      speechSessionUpdate("gpt-4.1", set({ speakingRate: rate, voiceTemperature: temp })),
+    ).session.voice;
+    expect(voice.rate).toBe(sentRate);
+    expect(voice.temperature).toBe(sentTemp);
+  });
+
+  it("sends neither for a value that is not a finite number", () => {
+    const before = frameBefore("azure-speech");
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, "1.2", true]) {
+      expect(
+        speechSessionUpdate(
+          "gpt-4.1",
+          set({ speakingRate: bad as never, voiceTemperature: bad as never }),
+        ),
+      ).toBe(before);
+    }
+    // Control: the same session with numbers carries both.
+    expect(
+      JSON.parse(speechSessionUpdate("gpt-4.1", set({ speakingRate: 1.1, voiceTemperature: 0.3 })))
+        .session.voice,
+    ).toMatchObject({ rate: 1.1, temperature: 0.3 });
+  });
+
+  it.each(options)("sends a rate for %s, and a voice temperature only if it is Dragon HD", (name) => {
+    const voice = JSON.parse(
+      speechSessionUpdate("gpt-realtime", set({ voice: name, speakingRate: 0.9, voiceTemperature: 0.7 })),
+    ).session.voice;
+    expect(voice.name).toBe(name);
+    expect(voice.rate).toBe(0.9);
+    expect(isSpeechHdVoice(name)).toBe(hd.includes(name));
+    if (hd.includes(name)) {
+      expect(voice.temperature).toBe(0.7);
+    } else {
+      expect(voice).not.toHaveProperty("temperature");
+    }
+  });
+
+  it("reads both ranges only from a Speech catalog that has them", () => {
+    expect(speechSpeakingRateRange()).toEqual({ min: 0.5, max: 1.5 });
+    expect(speechHdVoiceTemperatureRange()).toEqual({ min: 0, max: 1 });
+    expect(speechSpeakingRateRange(voiceProviderCatalog.providers[0])).toBeNull();
+    expect(speechHdVoiceTemperatureRange(voiceProviderCatalog.providers[0])).toBeNull();
+    // A provider served by an older API has neither, nor an HD list.
+    const capabilities: Record<string, unknown> = { ...speech.capabilities };
+    delete capabilities.speakingRate;
+    delete capabilities.hdVoiceTemperature;
+    capabilities.voices = { ...speech.capabilities.voices, hdOptions: undefined };
+    const older = { ...speech, capabilities } as unknown as VoiceProvider;
+    expect(speechSpeakingRateRange(older)).toBeNull();
+    expect(speechHdVoiceTemperatureRange(older)).toBeNull();
+    expect(isSpeechHdVoice(DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.voice, older)).toBe(false);
+    // A malformed range offers nothing rather than a wrong bound.
+    for (const range of [
+      { min: 1.5, max: 0.5 },
+      { min: 1, max: 1 },
+      { min: "0.5", max: 1.5 },
+      { min: 0.5, max: Number.POSITIVE_INFINITY },
+      { min: 0.5 },
+    ]) {
+      const malformed = {
+        ...speech,
+        capabilities: { ...speech.capabilities, speakingRate: range },
+      } as unknown as VoiceProvider;
+      expect(speechSpeakingRateRange(malformed)).toBeNull();
+    }
+    expect(clampToRange(1.2, null)).toBeNull();
+    expect(clampToRange(2, { min: 0.5, max: 1.5 })).toBe(1.5);
+  });
+
+  it("groups the catalog voices by family in catalog order", () => {
+    const groups = speechVoiceGroups(speech);
+    expect(groups.map((group) => [group.family, group.label, group.voices.length])).toEqual([
+      ["hd", "Dragon HD", 15],
+      ["multilingual", "Multilingual", 28],
+      ["neural", "Neural", 2],
+      ["mai", "MAI (preview)", 14],
+    ]);
+    expect(groups.flatMap((group) => group.voices)).toEqual(options);
+    expect(groups[0].voices).toEqual(hd);
+    expect(groups[3].voices).toEqual(speech.capabilities.voices.previewOptions);
+    expect(groups[2].voices).toEqual(["en-US-AvaNeural", "en-US-AndrewNeural"]);
+    expect(groups[1].voices.every((voice) => voice.endsWith("MultilingualNeural"))).toBe(true);
+    expect(speechVoiceGroups(voiceProviderCatalog.providers[0])).toEqual([]);
+  });
 });
 
 describe("Speech transcription options", () => {
