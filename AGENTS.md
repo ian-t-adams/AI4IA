@@ -1640,9 +1640,12 @@ a new owner-approved exception.
     before the unchanged `realtime` admission.
   - The per-send guard re-checks `avatar.use`, and the idle watchdog re-runs it
     every 15 seconds so silence can't outlast a revocation.
-  - Avatar sessions bill while idle, so they are always capped by the smaller of
-    `realtime_max_session_seconds` and the live minutes setting, and they end at
-    the idle timeout. Microphone audio, video and the guard-exempt output stop
+  - Avatar sessions bill while idle, so every one ends at the idle timeout and is
+    capped by the smaller of `realtime_max_session_seconds` and the live minutes
+    setting. An unrestricted admin (`admin_is_unrestricted`) skips the live
+    minutes setting: only a positive `realtime_max_session_seconds` caps theirs
+    (`max_seconds` 0 means none), and the idle timeout and its watchdog still
+    apply. Microphone audio, video and the guard-exempt output stop
     events (`OUTPUT_STOP_EVENT_TYPES`) are not activity.
   - The countdown holds while the avatar speaks (`switch_to_speaking` until
     `switch_to_idle`), for at most five minutes.
@@ -1746,6 +1749,9 @@ a new owner-approved exception.
   Do not add Graph lookups, writable user grant fields, or user-ID-only authority
   caches. Keep unavailable distinct from deny; limits remain per-user soft
   restrictions, never a group pool or Azure bill cap.
+  `auth.identity.admin_is_unrestricted` (trustworthy auth plus admin identity)
+  is the one rule exempting an admin's own usage from per-user caps; group
+  restrictions, hard quota, accounting and security controls still apply.
 - `publishing` keeps private owner/name drafts and immutable reviewed versions
   in existing owner partitions. Independent review requires explicit owner
   submission consent; fresh owner activation is separate. Review grants are not

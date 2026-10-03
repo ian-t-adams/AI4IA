@@ -135,6 +135,13 @@ export interface PhotoAvatarLimits {
   nextCreationAt: string | null;
   promptMaxChars: number;
   displayNameMaxChars: number;
+  /**
+   * The caller is an unrestricted admin, so the per-user caps don't apply.
+   * `maxAvatars` is then the gallery's listing bound (a technical limit) and
+   * `maxCreationsPerDay` is reported but not enforced. Optional so a payload
+   * without it still reads as false.
+   */
+  unlimited?: boolean;
 }
 
 export type PhotoAvatarAttributeOptions = Record<PhotoAvatarAttributeKey, string[]>;

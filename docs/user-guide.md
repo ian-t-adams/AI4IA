@@ -540,6 +540,17 @@ fixed-query operations panels. Capped scans are labelled truncated; unavailable,
 partial, and stale sources remain distinguishable. Telemetry does not provide
 complete proxy queue/fairness or provider-quota forecasting.
 
+Admins are also unrestricted on their own usage. Anyone the deployment makes an
+admin (`AI4IA_ADMIN_SUBJECTS` or the `admin` app role) skips per-user limits:
+entitlement caps and an account disable, the photo avatar count and
+daily-creation limits, the live avatar minute cap and the document library cap.
+The admin dashboard shows **Your usage limits: Unlimited (admin)**, and the photo
+avatar gallery shows **Unlimited (admin)**. Their usage is still metered and
+appears in the admin views. Approvals and security checks, feature switches,
+provider terms and safety systems, technical size bounds, Azure quotas and
+throttling, group-policy restrictions and hard quota still apply, and a live
+avatar session still ends after the idle timeout.
+
 ## Data boundaries
 
 Cosmos is canonical for conversations, usage, agents/workflows, document
