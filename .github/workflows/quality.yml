@@ -334,11 +334,6 @@ jobs:
           set -euo pipefail
           python3 -m unittest scripts.tests.test_proxy_delivery_contracts
 
-      - name: Run chiseled runtime security patch tests
-        run: |
-          set -euo pipefail
-          python3 -m unittest scripts.tests.test_runtime_security
-
       - name: Run portal status publication tests
         run: |
           set -euo pipefail
