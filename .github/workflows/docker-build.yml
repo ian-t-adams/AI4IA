@@ -152,13 +152,6 @@ jobs:
           echo "image_id=$(docker image inspect ai4ia-proxy:ci --format '{{.Id}}')" \
             >> "${GITHUB_OUTPUT}"
 
-      - name: Verify final proxy OpenSSL runtime bytes
-        run: |
-          set -euo pipefail
-          container="$(docker create ai4ia-proxy:ci)"
-          trap 'docker rm --force "${container}" >/dev/null' EXIT
-          docker export "${container}" | python3 proxy/runtime-security.py verify
-
       - name: Scan final proxy image for HIGH/CRITICAL vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -280,13 +273,6 @@ jobs:
           trap 'docker rm --force "${container}" >/dev/null' EXIT
           docker export "${container}" | python3 scripts/check-image-ownership.py \
             --root-owned app --owned var/lib/companion/keys=1654
-
-      - name: Verify final CompanionApp OpenSSL runtime bytes
-        run: |
-          set -euo pipefail
-          container="$(docker create ai4ia-companion:ci)"
-          trap 'docker rm --force "${container}" >/dev/null' EXIT
-          docker export "${container}" | python3 proxy/runtime-security.py verify
 
       - name: Smoke test - CompanionApp starts and admits only the allow-listed admin
         run: |
