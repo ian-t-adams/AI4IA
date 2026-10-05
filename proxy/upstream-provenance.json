@@ -136,7 +136,7 @@
     },
     {
       "path": "SimpleL7Proxy/SimpleL7Proxy.csproj",
-      "reason": "Keep runtime dependencies current, including IdentityModel 8.23.0 and OpenTelemetry 1.19.1; remove unsupported Application Insights 2.x packages and declare the OpenTelemetry processor API."
+      "reason": "Keep runtime dependencies current, including IdentityModel 8.23.0, OpenTelemetry 1.19.1 and Azure.Storage.Blobs 12.30.0; remove unsupported Application Insights 2.x packages and declare the OpenTelemetry processor API."
     },
     {
       "path": "SimpleL7Proxy/packages.lock.json",
@@ -411,7 +411,7 @@
       "upstreamCanonicalSha256": "b1a07dc4771bc2aeff6b561fcc215c0a6007b597fcfe47190fffef70b2bd277a"
     },
     "CompanionApp/CompanionApp.csproj": {
-      "localCanonicalSha256": "b83ae8c9ef3c36376ccf01d4df4dbeed1d53b8765cb8c3c8c23fe2b735658b41",
+      "localCanonicalSha256": "98a1e71697ab85de5fa7cc371259ac52e6f62d68c92c6cf4180d13da49ee7bbf",
       "upstreamRawSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
       "upstreamCanonicalSha256": "5ab7d47c9825fe112bbcc486724c5d8ef49a87e548f8e4caf20e233832b49c15",
       "disposition": "ai4ia-patched"
@@ -1353,7 +1353,7 @@
       "upstreamCanonicalSha256": "f5874823b8278f77acb55627c7f14c433b4e75cd6bdfac767b0b891d6b3af3fd"
     },
     "CompanionApp/packages.lock.json": {
-      "localCanonicalSha256": "201fc03126af889778ffa65c2423d349920d7c518736ca6cb6a6004b80e8b80a",
+      "localCanonicalSha256": "a2aeaff5f7fffdaa835629391c7f08fa26c532a0284987d650b8b8cf30a68ba2",
       "disposition": "ai4ia-added"
     },
     "CompanionApp/readme.md": {
@@ -2655,7 +2655,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "9640f2ac18f76cb720efd770d14d267d67865719f3db394807ef8a5f126b3870",
+      "localCanonicalSha256": "34f0884486b6ba052ef597e11ce873bc4de1566f01f8b79c8c6edb0f49b0939e",
       "upstreamRawSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "upstreamCanonicalSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "disposition": "ai4ia-patched"
@@ -2733,7 +2733,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/packages.lock.json": {
-      "localCanonicalSha256": "5807651419fad274c699988bf9ed290abe8ff52e03ebee7023072e2416e8a4fb",
+      "localCanonicalSha256": "7ea6293260a10d882c8b315d347861c55ba8f3c864d63af9b9e07e908c7c2835",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/sample-deployment.yaml": {
