@@ -13,10 +13,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def exercise(case: str) -> dict:
+def exercise(case: str, entry: str = "_exercise") -> dict:
     bootstrap = (
         "import sys; sys.path[:0] = [sys.argv[1], sys.argv[2]]; "
-        "from tests.test_fastapi_telemetry import _exercise; _exercise(sys.argv[3])"
+        f"from tests.test_fastapi_telemetry import {entry}; {entry}(sys.argv[3])"
     )
     with tempfile.TemporaryDirectory() as home:
         result = subprocess.run(
@@ -38,6 +38,118 @@ def exercise(case: str) -> dict:
 ])
 def test_real_factory_instrumentation(case):
     assert exercise(case)["passed"] is True
+
+
+@pytest.mark.parametrize("variant", ["app", "control"])
+def test_framework_native_telemetry_stays_off(variant):
+    """FastAPI 0.142's own request telemetry must not become a second family.
+
+    The control is a default `FastAPI()` on the identical fixture: it records
+    spans, metrics and exception logs and consults OTLP environment export,
+    which proves each absence asserted for the real factory is observable.
+    """
+    observed = exercise(variant, "_native")
+    if variant == "app":
+        assert observed == {
+            "spans": 0, "metrics": False, "logs": 0, "export_probes": [],
+            "secret_exported": False, "providers_kept": True,
+        }
+    else:
+        assert observed["spans"] > 0 and observed["metrics"] is True
+        assert observed["logs"] > 0 and observed["secret_exported"] is True
+        assert set(observed["export_probes"]) == {"TRACES", "METRICS", "LOGS"}
+        assert observed["providers_kept"] is True
+
+
+def _native(variant: str) -> None:
+    from contextlib import ExitStack, redirect_stdout
+    import io
+    import logging
+    from unittest.mock import patch
+
+    from fastapi.telemetry import _runtime
+    from opentelemetry import _logs, metrics, trace
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from pydantic import BaseModel
+    from pydantic_settings.sources import DotEnvSettingsSource
+
+    secret = "PRIVATE-native-path-query-exception"
+    spans = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(spans))
+    trace.set_tracer_provider(tracer_provider)
+    metric_reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
+    logs = InMemoryLogRecordExporter()
+    logger_provider = LoggerProvider()
+    logger_provider.add_log_record_processor(SimpleLogRecordProcessor(logs))
+    _logs.set_logger_provider(logger_provider)
+    export_probes = []
+
+    def export_endpoint(signal):
+        # Record the environment consultation without building an exporter.
+        export_probes.append(signal)
+
+    with ExitStack() as stack:
+        stack.enter_context(redirect_stdout(io.StringIO()))
+        stack.enter_context(patch.dict(os.environ, {
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.invalid",
+        }))
+        stack.enter_context(patch.object(DotEnvSettingsSource, "_read_env_files", return_value={}))
+        stack.enter_context(patch.object(_runtime, "_export_endpoint", export_endpoint))
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from ai4ia_api import main
+        from tests.conftest import make_settings
+
+        app = main.create_app(make_settings()) if variant == "app" else FastAPI()
+
+        class Body(BaseModel):
+            count: int
+
+        @app.get("/native/{item}")
+        async def echo(item: str):
+            return {"ok": True}
+
+        @app.get("/native-error")
+        async def fail():
+            raise RuntimeError(secret)
+
+        @app.post("/native-body")
+        async def body(payload: Body):
+            return {"count": payload.count}
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            assert client.get(f"/native/{secret}?key={secret}").status_code == 200
+            assert client.get("/native-error").status_code == 500
+            assert client.post("/native-body", json={"count": secret}).status_code == 422
+        tracer_provider.force_flush()
+        logger_provider.force_flush()
+        finished = spans.get_finished_spans()
+        records = logs.get_finished_logs()
+        exported = [item.to_json() for item in (*finished, *records)]
+        observed = {
+            "spans": len(finished),
+            "metrics": metric_reader.get_metrics_data() is not None,
+            "logs": len(records),
+            "export_probes": export_probes,
+            "secret_exported": any(secret in item for item in exported),
+            "providers_kept": (
+                trace.get_tracer_provider() is tracer_provider
+                and metrics.get_meter_provider() is meter_provider
+                and _logs.get_logger_provider() is logger_provider
+            ),
+        }
+        logging.disable(logging.CRITICAL)
+    print(json.dumps(observed))
 
 
 def _exercise(case: str) -> None:

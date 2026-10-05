@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Request, status
 from fastapi.applications import FastAPI
+from fastapi.telemetry import TelemetryConfig
 
 from .auth.factory import build_auth_provider
 from .agents.agent_catalog import load_agent_catalog
@@ -125,6 +126,23 @@ logger = logging.getLogger(__name__)
 # Cap the startup memory warmup so an unreachable database can't stall the app:
 # warmup is purely diagnostic (the store self-heals by retrying lazily).
 _MEMORY_WARMUP_TIMEOUT_S = 10.0
+
+# FastAPI 0.142 instruments every app through the global OpenTelemetry
+# providers by default: raw `url.path`/`url.query` span attributes, request
+# metrics, exception messages in log records and OTLP export configured from
+# environment variables. Request telemetry belongs to the gated, projected
+# instrumentor in request_telemetry.instrument_app, so this second family stays
+# off whether or not that gate is open. With all three signals off FastAPI adds
+# no spans and never reads the OTLP environment; its operation-span and
+# auto-configure opt-outs stay explicit so enabling a signal later cannot
+# silently bring them along.
+FASTAPI_NATIVE_TELEMETRY: TelemetryConfig = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -511,6 +529,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url="/docs" if openapi_enabled else None,
         redoc_url="/redoc" if openapi_enabled else None,
         openapi_url="/openapi.json" if openapi_enabled else None,
+        telemetry=FASTAPI_NATIVE_TELEMETRY,
     )
     register_error_handlers(app)
 
