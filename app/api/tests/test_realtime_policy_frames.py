@@ -5,6 +5,7 @@ import asyncio
 import json
 import socket
 import time
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -63,6 +64,40 @@ def frame_policy():
 
 def speech_target():
     return SimpleNamespace(deployment=None, model_id="gpt-realtime")
+
+
+def keepalive_timeout_protocol(backend, record_timeout):
+    if backend == "auto":
+        from uvicorn.protocols.websockets.auto import AutoWebSocketsProtocol as base
+    elif backend == "websockets":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from uvicorn.protocols.websockets.websockets_impl import WebSocketProtocol as base
+    else:  # pragma: no cover - parametrization owns the supported backends.
+        raise AssertionError(f"unsupported websocket backend: {backend}")
+
+    if hasattr(base, "keepalive_timeout"):
+
+        class InstrumentedKeepaliveTimeoutProtocol(base):
+            def keepalive_timeout(self):
+                record_timeout(1011, "keepalive ping timeout")
+                return super().keepalive_timeout()
+
+        return InstrumentedKeepaliveTimeoutProtocol
+
+    if hasattr(base, "fail_connection"):
+
+        class InstrumentedKeepaliveTimeoutProtocol(base):
+            def fail_connection(self, code=1006, reason=""):
+                if int(code) == 1011 and reason == "keepalive ping timeout":
+                    record_timeout(1011, reason)
+                return super().fail_connection(code, reason)
+
+        return InstrumentedKeepaliveTimeoutProtocol
+
+    raise AssertionError(
+        f"uvicorn websocket backend {base!r} exposes no keepalive-timeout instrumentation seam"
+    )
 
 
 async def test_avatar_frame_reads_current_owner_once_and_every_next_frame_is_fresh(frame_policy):
@@ -162,6 +197,11 @@ async def test_native_audio_backpressure_keeps_pongs_live_with_one_fresh_read(
     policy, store, _, principal, _ = frame_policy
     store.delay = 0.04
     received = []
+    keepalive_timeout = asyncio.get_running_loop().create_future()
+
+    def record_keepalive_timeout(code, reason):
+        if not keepalive_timeout.done():
+            keepalive_timeout.set_result((code, reason))
 
     async def endpoint(ws):
         bind_authenticated(policy, principal)
@@ -184,9 +224,10 @@ async def test_native_audio_backpressure_keeps_pongs_live_with_one_fresh_read(
     listener.listen()
     listener.setblocking(False)
     port = listener.getsockname()[1]
+    ws_protocol = keepalive_timeout_protocol(backend, record_keepalive_timeout)
     server = uvicorn.Server(uvicorn.Config(
         Starlette(routes=[WebSocketRoute("/voice", endpoint)]),
-        host="127.0.0.1", port=port, ws=backend,
+        host="127.0.0.1", port=port, ws=ws_protocol,
         ws_max_queue=2, ws_ping_interval=0.05, ws_ping_timeout=0.3,
         lifespan="off", access_log=False, log_level="critical",
     ))
@@ -211,9 +252,14 @@ async def test_native_audio_backpressure_keeps_pongs_live_with_one_fresh_read(
                     async with asyncio.timeout(5):
                         while True:
                             await ws.recv()
-                assert closed.value.rcvd is not None
-                assert closed.value.rcvd.code == 1011
-                assert closed.value.rcvd.reason == "keepalive ping timeout"
+                # Closing with unread audio can reset the TCP stream before the client observes
+                # the close frame, so prove the exact timeout at the server-side protocol seam.
+                code, reason = await asyncio.wait_for(keepalive_timeout, 0.5)
+                assert code == 1011
+                assert reason == "keepalive ping timeout"
+                if closed.value.rcvd is not None:
+                    assert closed.value.rcvd.code == 1011
+                    assert closed.value.rcvd.reason == "keepalive ping timeout"
                 assert len(received) < frames
             else:
                 async with asyncio.timeout(4):
@@ -221,6 +267,7 @@ async def test_native_audio_backpressure_keeps_pongs_live_with_one_fresh_read(
                         assert await ws.recv() == "accepted"
                 assert len(received) == frames
                 assert store.strict_reads == frames
+                assert not keepalive_timeout.done()
                 assert time.monotonic() - started < 3
     finally:
         if sender is not None:
