@@ -67,7 +67,7 @@ jobs:
           for package in selected:
               wheels = [
                   item for item in package["wheels"]
-                  if item["url"].endswith("-py3-none-any.whl")
+                  if item["url"].endswith("-none-any.whl")
               ]
               assert len(wheels) == 1, package["name"]
               requirements.append(
