@@ -44,3 +44,44 @@ jobs:
             app/web/package-lock.json
           if-no-files-found: error
           retention-days: 1
+      - name: Download exact public telemetry wheels for offline SDK controls
+        working-directory: app/api
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          packages = tomllib.loads(pathlib.Path("uv.lock").read_text())["package"]
+          selected = [
+              package for package in packages
+              if package["name"].startswith("opentelemetry-")
+              or package["name"] in {
+                  "azure-monitor-opentelemetry",
+                  "azure-monitor-opentelemetry-exporter",
+              }
+          ]
+          destination = pathlib.Path(os.environ["RUNNER_TEMP"]) / "telemetry-wheels"
+          destination.mkdir()
+          requirements = []
+          for package in selected:
+              wheels = [
+                  item for item in package["wheels"]
+                  if item["url"].endswith("-py3-none-any.whl")
+              ]
+              assert len(wheels) == 1, package["name"]
+              requirements.append(
+                  f"{package['name']}=={package['version']} --hash={wheels[0]['hash']}"
+              )
+          (destination / "requirements.txt").write_text("\n".join(requirements) + "\n")
+          PY
+          python -m pip download --no-deps --require-hashes --only-binary=:all: \
+            --index-url https://pypi.org/simple \
+            --requirement "${RUNNER_TEMP}/telemetry-wheels/requirements.txt" \
+            --dest "${RUNNER_TEMP}/telemetry-wheels"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-maintenance-telemetry-wheels-${{ github.sha }}
+          path: ${{ runner.temp }}/telemetry-wheels
+          if-no-files-found: error
+          retention-days: 1

@@ -351,7 +351,7 @@ projecting route-template/status metadata before recording; no raw path/query,
 credentials, identities, exception payloads or caller-written metadata may reach
 it or GenAI children. Do not register a second provider, increase sampling or
 enable raw request metrics to make coverage appear healthy. The shipping
-1.8.10/b57/1.44.0/0.65b0 integration controls use the actual app and SDK, not only a
+1.8.11/b58/1.45.1/0.66b1 integration controls use the actual app and SDK, not only a
 constructor-order mock; imported SDK source must match its wheel RECORD hashes.
 Disable distro HTTPX and HTTPX2 auto-instrumentation as well as FastAPI: the app
 retains its manual HTTPX owner without adding another client family. Real
@@ -380,6 +380,14 @@ The deprecated `UV_INDEX_URL` / `--index-url` does not override a configured
 `UV_DEFAULT_INDEX`; the command can succeed while still rewriting every URL.
 `scripts/tests/test_lockfile_provenance.py` fails on a single non-PyPI URL and
 refuses to pass vacuously on a truncated lock.
+
+The same guard checks every non-root npm package record for an HTTPS public
+`registry.npmjs.org` artifact and valid SHA-512 integrity. Repair mirrored npm
+metadata through the package manager using verified public tarballs; preserve
+locked versions, platform constraints and the complete native SWC inventory.
+Plain `npm install --package-lock-only` can leave existing mirror URLs untouched
+and normalize unrelated platform fields. Do not accept that as provenance repair
+or hand-invent artifact hashes.
 
 **On that same network, `uv lock --check` also fails on a pristine checkout**, and
 its hint tells you to do the harmful thing. `--check` re-resolves against *your*
@@ -1080,6 +1088,17 @@ train, so the exact `0.65b0` Dependabot deferral is removed. Keep the compatibil
 group and real SDK ownership/privacy/sampling controls; never disable telemetry,
 change its semantic contract, or force incompatible packages to make an updater
 green. This dependency update is not deployment or live export evidence.
+
+The October 12 maintenance moves that pair to verified
+`azure-monitor-opentelemetry==1.8.11`, exporter `1.0.0b58`, SDK/API `1.45.1`
+and instrumentation `0.66b1`. The official distro tag and PyPI wheel agree on
+exporter `~=1.0.0b58`, SDK `~=1.45.0` and HTTPX `>=0.66b0,<0.67b0`.
+The distro's configuration/ownership code and exporter sampler are unchanged
+from the reviewed prior tags. Raise the two declared floors together; keep the
+compatibility group without an obsolete `0.66b0` deferral. Exporter b58 also maps
+`session.id` to Azure's session context, so the actual span/envelope privacy
+control poisons that field as well. Do not admit a new identity field, capture
+mode or exporter because an upstream release understands it.
 
 Before closing work, reconcile each linked issue's original acceptance criteria
 with shipped evidence. Use `Closes #...` only when the PR completes the full

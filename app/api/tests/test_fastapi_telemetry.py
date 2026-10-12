@@ -302,7 +302,7 @@ def _exercise(case: str) -> None:
         stack.enter_context(patch.dict(os.environ, {
             "OTEL_METRICS_EXPORTER": "none", "OTEL_LOGS_EXPORTER": "none",
             "OTEL_EXPERIMENTAL_RESOURCE_DETECTORS": "",
-            # b57 starts this worker directly, even with an in-memory exporter.
+            # The exporter starts this worker even with an in-memory exporter.
             "APPLICATIONINSIGHTS_CONTROLPLANE_DISABLED": "true",
             "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST": ".*",
             "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE": ".*",
@@ -414,7 +414,7 @@ def _exercise(case: str) -> None:
                 current.set_attributes({
                     "gen_ai.agent.id": secret, "gen_ai.agent.name": secret,
                     "microsoft.gen_ai.main_agent.id": secret, "user.id": secret,
-                    "url.full": secret,
+                    "url.full": secret, "session.id": secret,
                 })
                 return await call_next(request)
 
@@ -530,7 +530,7 @@ def _exercise(case: str) -> None:
                 parent_rate = parent.attributes.get("_MS.sampleRate")
                 if parent_rate is not None:
                     assert child.attributes.get("_MS.sampleRate") == parent_rate
-                # b57 resamples a recorded 100%-rate parent lacking an explicit
+                # The exporter resamples a recorded 100%-rate parent lacking an explicit
                 # rate attribute; preserving the SDK is not forcing inheritance.
                 assert not child.events and not child.links
                 assert secret not in child.to_json()
@@ -546,7 +546,7 @@ def _exercise(case: str) -> None:
             if case == "errors":
                 assert any(span.status.status_code == StatusCode.ERROR for span in server)
             if case == "sampling":
-                # Same exact b57 sampler, both local parent conditions. No
+                # Same shipping sampler, both local parent conditions. No
                 # application sampling configuration is changed for this proof.
                 from opentelemetry.sdk.trace.sampling import Decision
                 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
