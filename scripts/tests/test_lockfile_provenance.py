@@ -1,4 +1,8 @@
-"""Pins the dependency lockfile to public package provenance.
+"""Pins the dependency lockfiles to public package provenance.
+
+The npm lock also requires public registry artifacts and SHA-512 integrity for
+every package record. Mirror URLs can survive a package-manager refresh and
+leave Dependabot unable to update the otherwise public Markdown dependency tree.
 
 `app/api/uv.lock` records, for every resolved package, the registry it came from
 and the exact URL of each artifact. Those URLs are the repo's only machine-
