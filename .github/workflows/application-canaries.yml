@@ -62,7 +62,7 @@ jobs:
         run: python -m scripts.canaries locate --directory "$RUNNER_TEMP/application-canary"
       - name: Read exact predecessor state
         if: ${{ steps.history.outputs.artifact_id != '' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ steps.history.outputs.artifact_id }}
           run-id: ${{ steps.history.outputs.previous_run_id }}
@@ -74,7 +74,7 @@ jobs:
         run: python -m scripts.canaries prepare --directory "$RUNNER_TEMP/application-canary"
       - name: Retain bounded handoff
         if: ${{ steps.prepare.outputs.observe == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: application-canary-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/application-canary/handoff.json
@@ -82,7 +82,7 @@ jobs:
           retention-days: 7
       - name: Retain control state
         if: ${{ !cancelled() && steps.prepare.outputs.observe != 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: application-canary-state-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/application-canary/state.json
@@ -118,7 +118,7 @@ jobs:
       - name: Install hash-checked HTTP transport from the API lock
         run: python -m scripts.canaries.dependencies
       - name: Read same-run admitted handoff
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: application-canary-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/application-canary
@@ -126,7 +126,7 @@ jobs:
         run: python -m scripts.canaries observe --directory "$RUNNER_TEMP/application-canary"
       - name: Retain final content-free state
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: application-canary-state-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/application-canary/state.json
