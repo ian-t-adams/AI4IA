@@ -901,9 +901,7 @@ class WorkflowAndCliTests(unittest.TestCase):
     def test_default_off_main_only_job_scoped_permissions_and_pinned_actions(self):
         self.assertEqual(self.workflow["permissions"], {})
         self.assertFalse(self.workflow["concurrency"]["cancel-in-progress"])
-        self.assertEqual(self.workflow["on" if "on" in self.workflow else True]["schedule"], [
-            {"cron": "23 */6 * * *"},
-        ])
+        self.assertNotIn("schedule", self.workflow["on" if "on" in self.workflow else True])
         gating.WorkflowPermissionBoundaryTests().assert_permission_boundary(self.workflow)
         for job in self.workflow["jobs"].values():
             self.assertIn("refs/heads/main", job["if"])

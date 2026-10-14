@@ -1,7 +1,7 @@
 name: application-canaries
 
-# Scheduling is operational, not a user workflow. Model/WS traffic is dormant
-# until a separately approved identity, finite lease, and server posture exist.
+# Retired from scheduled monitoring. Preserve the manual incident/recovery path;
+# anonymous uptime.yml checks replace the old model-call cron.
 on:
   workflow_dispatch:
     inputs:
@@ -14,8 +14,6 @@ on:
         description: "resolve only: SHA-256 printed by python -m scripts.canaries.resolution for the reviewed AI4IA_CANARY_RESOLUTION"
         type: string
         default: ""
-  schedule:
-    - cron: "23 */6 * * *"
 
 permissions: {}
 

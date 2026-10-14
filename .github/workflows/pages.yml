@@ -34,6 +34,7 @@ on:
       - "scripts/gen-docs-catalog.py"
       - "scripts/status-snapshot.ps1"
       - "scripts/status-endpoints.ps1"
+      - "scripts/uptime.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
   schedule:
@@ -65,6 +66,9 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+
+      - name: Install shared hash-checked HTTP runtime
+        run: python -m scripts.canaries.dependencies
 
       # Regenerate the portal docs index from the manifest so the published hub
       # always reflects the current repo markdown (titles, descriptions, new docs).
@@ -131,6 +135,9 @@ jobs:
               throw "Status refresh produced a stale $name file ($($age.TotalMinutes) minutes old)"
             }
           }
+
+      - name: Preserve independently collected uptime observations
+        run: python -m scripts.uptime carry --directory site/data
 
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

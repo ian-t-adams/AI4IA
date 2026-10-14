@@ -736,6 +736,7 @@ python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/red
 python3 -m unittest scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
 python3 scripts/gen-voice-migration-docs.py --check              # public dates, never live proof
 python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
+python3 -m unittest scripts.tests.test_uptime                   # anonymous probes, incident transitions and portal freshness
 python3 -m unittest scripts.tests.test_canary_runtime           # fresh venv holding only the canary jobs' lock-derived runtime
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
@@ -857,8 +858,21 @@ JSON cannot pass API health; unresolved targets and historical missing coverage
 remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
 cookies or default credentials. Never publish response bodies or exception text.
 
-`application-canaries.yml` is operational scheduling, default-off for all app and
-model traffic, and independent of the anonymous portal snapshot. Its prepare
+`uptime.yml` is the normal 15-minute monitor: four anonymous GETs of web, proxy
+liveness and API live/ready, without model calls, user IO, Azure login, a monitor
+identity or a lease. Reuse the bounded DNS-pinned transport and lock-derived
+HTTP dependencies. Persist only public endpoint status/time/latency and small
+incident counters. Alert once after three non-passing observations, recover on
+the next pass, and continue probes when history is unavailable. Unknown coverage
+is never healthy. Workflow success means collection/publication, not endpoint
+health. The portal marks observations older than 45 minutes unknown; fast Pages
+publishes retain the original Azure snapshot timestamps or show unavailable,
+never republish a committed seed as current. Keep the shared Pages publisher
+lock and separate read-only observer/Pages deployment permissions.
+
+`application-canaries.yml` is retired from scheduling and retained manual-only,
+default-off for all app and model traffic. Do not restore its cron or enable it
+as a prerequisite for anonymous uptime. Its prepare
 job reads only this repository's exact predecessor run/artifact; its separately
 gated observation job alone exchanges dedicated OIDC for an API token. No ARM
 login, deploy identity, Graph, new resource, live test or settings mutation belongs

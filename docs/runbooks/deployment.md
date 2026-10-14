@@ -695,15 +695,86 @@ media, or realtime. It is one identity and cannot detect per-user entitlement or
 ownership defects. Rollback does not run after manual cancellation or the
 180-minute job timeout because the runner is terminated.
 
+### Anonymous uptime monitoring
+
+`.github/workflows/uptime.yml` replaces the scheduled model canary with four
+anonymous GET observations every 15 minutes: the web root, proxy `/liveness`,
+API `/health/live`, and API `/health/ready`. It makes **no model calls**, creates
+or deletes no conversations, needs no monitoring identity or lease, and performs
+no Azure resource queries. The post-deployment authenticated chat smoke test
+above is unchanged.
+
+Configure these **workflow-only repository variables**, not azd settings:
+
+| Variable | Meaning |
+| --- | --- |
+| `AI4IA_WEB_CUSTOM_DOMAIN` | Existing public web hostname, without a scheme or path. |
+| `AI4IA_PROXY_CUSTOM_DOMAIN` | Existing public proxy hostname, without a scheme or path. |
+| `AI4IA_UPTIME_API_URL` | Exact public direct API HTTPS origin, without a path or credentials. Independent of the retired canary configuration. |
+
+The observer has only repository read access. It reuses the existing
+DNS-pinned, bounded HTTPS transport and its lock-derived aiohttp runtime;
+no cookies, default credentials, auth headers, redirects, TLS bypass or ambient
+proxy configuration are used. Each health request is limited to 20 seconds;
+API/proxy bodies are limited to 4 KiB and the web page to 512 KiB. HTTP 200 HTML
+establishes web availability, proxy liveness requires its `OK` payload, and
+the API requires its expected JSON status. Readiness also requires
+`stage=session_store`. An auth challenge or redirect is not healthy.
+
+The status page reads `site/data/uptime.json` separately from the twice-daily
+Azure snapshot. It shows observation time, status and latency; a failed read,
+unconfigured target or evidence older than 45 minutes is **unknown**, not green.
+GitHub's schedule is best effort. These samples are not a continuous uptime
+percentage/SLA, a user-auth check, a model-path check, or a voice-quality test.
+Readiness covers the canonical session store, not Search or every downstream
+dependency.
+
+The latest public report carries small per-endpoint failure counters. Three
+consecutive non-passing observations open an incident; unknown coverage also
+counts as non-passing but is never labeled a confirmed endpoint outage.
+Only a **new** incident fails the notification step, after the report has been
+published, so ongoing outages do not generate the old repeated-failure noise.
+The next passing observation automatically clears that endpoint's incident.
+No expiry renewal, operator digest, bootstrap or manual recovery is required.
+Missing, invalid or stale history is reported and restarts counting; it never
+prevents current anonymous checks or invents a healthy baseline. A target change
+restarts only that target's counter.
+
+**A green workflow means collection/publication succeeded, not that the app is
+healthy.** Check the report or the status cards for actual health during an
+ongoing incident. GitHub Actions failure notifications depend on the recipient's
+existing notification preferences; this change creates no email subscription,
+webhook, action group or new alert service. Recovery is recorded in the next
+report and workflow summary.
+
+The existing Pages deployment permission is isolated in the publish job and
+is not an Azure login or application token. Uptime and the twice-daily Pages
+workflow share one publisher lock. Fast publishes carry forward the **original
+timestamp** of the latest published Azure inventory/status, never relabel it as
+fresh or replace a failed read with the committed seed. A missing published
+snapshot is shown as unavailable. The Azure-backed publisher continues to
+require its normal successful inventory refresh and carries forward uptime
+observations without probing models.
+
+To pause this read-only monitor, disable the `uptime` workflow. Re-enabling it
+resumes health checks; there is no blocked lease to resolve.
+
 ### Continuous application canaries
 
+**Retired from automatic scheduling.** `application-canaries.yml` has no cron
+and is kept as a manual-only historical incident/recovery path. It is not
+required to run uptime monitoring. Keep the existing workflow disabled unless
+an operator deliberately approves a specific legacy operation. Its identity,
+incident artifacts and unresolved old test conversation are retained, not
+silently cleared by the monitoring replacement.
+
 `.github/workflows/application-canaries.yml` is a separate **default-off**
-operational monitor, not deployment verification, user workflow scheduling, or
+legacy model probe, not deployment verification, user workflow scheduling, or
 a quality evaluator. `python -m scripts.canaries` implements its bounded
 `locate`, `prepare`, `observe` and `notify` steps. The existing anonymous API
 liveness/readiness observations in portal snapshots remain independent.
 
-The six-hour schedule does not authorize inference. Without explicit enablement,
+The historical six-hour cadence does not authorize inference. Without explicit enablement,
 the preparation job records disabled/unscored coverage and maintains its
 content-free state chain using only repository/Actions read permissions.
 Only an admitted main-ref, first-attempt observation job can request OIDC. It
@@ -711,7 +782,7 @@ exchanges the current workflow assertion directly for the configured API
 audience; there is no Azure CLI login, ARM token, Graph/userinfo request, saved
 credential, new identity, Azure resource, or repository creation.
 
-Before enabling, the owner must approve the dedicated Entra application/subject,
+Before deliberately reusing this manual legacy path, the owner must approve the dedicated Entra application/subject,
 its exact API audience and main-ref federation, restrictive operator actor
 policy, finite observation lease, expenditure context, and scoped v1 cleanup.
 The actor must not be the deployment identity, API application, administrator

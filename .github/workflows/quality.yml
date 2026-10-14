@@ -208,7 +208,10 @@ jobs:
           python3 scripts/gen-voice-migration-docs.py --check
           python3 -m unittest scripts.tests.test_voice_live_canary scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
 
-      - name: Run continuous canary offline controls
+      - name: Run anonymous uptime controls
+        run: python3 -m unittest scripts.tests.test_uptime
+
+      - name: Run retained manual canary offline controls
         run: python3 -m unittest scripts.tests.test_application_canary
 
       - name: Run canary declared-runtime guard
