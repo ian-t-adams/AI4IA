@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
+import aiohttp
 import yaml
 
 from scripts import uptime
@@ -341,10 +342,13 @@ class UptimeWorkflowTests(unittest.TestCase):
         self.assertLess(names.index("Preserve independently collected uptime observations"), names.index("Upload site artifact"))
 
     def test_fresh_import_has_no_api_sdk_or_credential_dependency(self):
+        # Isolated Python omits the quality job's --user HTTP dependency install.
+        http_site = Path(aiohttp.__file__).resolve().parent.parent
         script = f"""
 import importlib
 import importlib.abc
 import sys
+sys.path.insert(0, {str(http_site)!r})
 sys.path.insert(0, {str(ROOT)!r})
 class DenyApi(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
