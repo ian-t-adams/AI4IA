@@ -3,7 +3,7 @@
 # proxy/upstream-provenance.json. Refresh these OCI manifest-list digests with:
 # docker buildx imagetools inspect <tag> --format '{{json .Manifest.Digest}}'
 FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS sdk
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:48e51f2f6798897be7ac4e775c049ed8fe60d3190f637e1f9c9dc7513efa659c AS runtime-base
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:84def277556c2843a44fdeefbd3145d0a2e32d8f736d0c1a7b0a96b2880b0187 AS runtime-base
 
 FROM sdk AS build-env
 WORKDIR /app
