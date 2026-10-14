@@ -24,7 +24,7 @@ SOURCE_SCOPES = ("Shared", "Shared-parser", "SimpleL7Proxy", "CompanionApp")
 AI4IA_PATCH_REASONS = {
     "Shared-parser/Shared-parser.csproj": (
         "Remove unused runtime packages and update "
-        "Microsoft.Extensions.Logging.Abstractions to 10.0.12 for the parser."
+        "Microsoft.Extensions.Logging.Abstractions to 10.0.13 for the parser."
     ),
     "Shared/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
     "Shared-parser/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
@@ -109,14 +109,15 @@ AI4IA_PATCH_REASONS = {
     ),
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
         "Keep runtime dependencies current, including IdentityModel 8.23.0, "
-        "OpenTelemetry 1.19.1 and Azure.Storage.Blobs 12.30.0; remove unsupported "
-        "Application Insights 2.x packages and declare the OpenTelemetry processor API."
+        "OpenTelemetry 1.19.1, Azure.Storage.Blobs 12.30.1 and Application Insights "
+        "3.2.0; remove unsupported Application Insights 2.x packages and declare "
+        "the OpenTelemetry processor API."
     ),
     "CompanionApp/CompanionApp.csproj": (
         "Drop the embedded resources and content items of the excluded deployment "
         "page and chat/vision presets, reference the Blazor script asset package "
-        "explicitly so locked restore does not depend on restore layering or SDK patch, "
-        "and keep runtime dependencies current."
+        "explicitly at ASP.NET 10.0.13 so locked restore does not depend on "
+        "restore layering or SDK patch, and keep runtime dependencies current."
     ),
     "CompanionApp/Program.cs": (
         "Hosted mode: a first-in-pipeline admin gate over the platform principal with a "

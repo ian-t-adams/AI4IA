@@ -233,7 +233,7 @@ The paired real-factory control enables that environment flag for both apps so
 it continues to prove a noisy framework control against an explicitly quiet
 AI4IA instance; it does not rely on the framework's new quiet default.
 
-Azure Monitor 1.8.10 also enables both `httpx` and `httpx2` instrumentor
+Azure Monitor 1.8.11 also enables both `httpx` and `httpx2` instrumentor
 entrypoints by default. Both are explicitly disabled in the distro options:
 `logging_setup` retains the existing manual HTTPX owner, and HTTPX2 is not
 opted in. Otherwise the distro takes ownership first and the application's
@@ -271,12 +271,12 @@ no-op meter rather than start an additional request-metrics feed whose raw
 host/path dimensions bypass the span projection. Other existing metric and event
 producers keep their previous configuration and allowlists.
 
-**Sampling is unchanged.** Azure Monitor 1.8.10 selects its rate-limited sampler
+**Sampling is unchanged.** Azure Monitor 1.8.11 selects its rate-limited sampler
 by default when no explicit sampling setting is supplied. The request facade
 retains the actual SDK parent context and sampling attributes used by
-exporter 1.0.0b57 / SDK 1.44.0. Its local-parent rules include dropping children
+exporter 1.0.0b58 / SDK 1.45.1. Its local-parent rules include dropping children
 of a dropped parent and inheriting an explicitly recorded sample rate; a recorded
-100%-rate parent with no explicit rate attribute may be sampled again by b57.
+100%-rate parent with no explicit rate attribute may be sampled again by b58.
 No always-on override, sample-rate increase or ingestion-limit change is made.
 Missing request spans can affect parentage, but a bounded observation with zero
 GenAI records does not establish an all-time exporter failure or prove sampling
@@ -290,9 +290,18 @@ envelope conversion, one-time configuration, per-app gates, preserved auth/error
 cleanup, real gateway child-parent links, poisoned fields and actual sampler
 controls. Imported distro, exporter, sampler, SDK and instrumentor source files
 must match their installed wheel RECORD hashes, not just package metadata or
-paths. The 1.8.10 / b57 / 1.44.0 / 0.65b0 train was installed with the public
-lock's artifact hashes enforced. Wheel requirements and the official 1.8.10
-tag's `setup.py` require b57, despite the changelog's b56 statement.
+paths. The shipping train is 1.8.11 / b58 / 1.45.1 / 0.66b1. The public lock
+records its artifact hashes; the real SDK controls enforce imported-source
+RECORD parity. The official 1.8.11 tag and wheel agree on b58, SDK `~=1.45.0`
+and HTTPX `>=0.66b0,<0.67b0`. Both application dependency floors move together
+and Dependabot still reviews the pair as one group, without suppressing the
+now-compatible instrumentation update. The distro ownership/configuration code
+and exporter sampler match their prior reviewed tags.
+
+Exporter b58 adds `session.id` mapping to Azure's session context. This does not
+permit an application session identifier on request or GenAI spans. The
+whole-span/envelope privacy control injects that field with the other poisoned
+caller metadata and requires it to remain absent.
 
 Paired controls remove only the HTTPX ownership opt-outs and prove that the
 real distro then loads both entrypoints and attempts HTTPX instrumentation
@@ -304,7 +313,7 @@ The HTTPX2 control proves entrypoint selection, not execution of an uninstalled
 HTTPX2 client.
 
 Offline SDK tests explicitly disable its control-plane worker and deny the
-`requests` transport as well as substituting provider HTTP: b57's distro can
+`requests` transport as well as substituting provider HTTP: the distro can
 start a background configuration worker even with an in-memory exporter.
 These are offline controls, not production request/GenAI export evidence.
 
@@ -324,7 +333,7 @@ is introduced. The current official GenAI conventions have moved to the
 The exact development revision
 `0c87594975195608dc91b3f702e250a7b240c151` is pinned in the span contract. It is
 not a stable release or a published schema URL. The compatible Azure Monitor
-1.8.10 / HTTPX 0.65b0 dependency upgrade preserves this semantic contract;
+1.8.11 / HTTPX 0.66b1 dependency upgrade preserves this semantic contract;
 dependency updates do not authorize new constants, capture or payload fields.
 
 Each logical text-model call emits one CLIENT span. Its timestamps measure the

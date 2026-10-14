@@ -200,8 +200,8 @@ class DependencyReviewBoundaries(unittest.TestCase):
         self.assertEqual(
             ignores,
             [],
-            "Azure Monitor 1.8.10 supports HTTPX 0.65b0; do not retain the "
-            "1.8.9-only deferral or suppress future/unrelated dependency updates.",
+            "Azure Monitor 1.8.11 supports HTTPX 0.66; do not retain an older "
+            "train's deferral or suppress future/unrelated dependency updates.",
         )
 
     def test_gate_installers_use_declared_exact_versions(self) -> None:
