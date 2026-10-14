@@ -225,6 +225,14 @@ calling the distro before constructing that prebound class is not sufficient.
 The factory uses the canonical `fastapi.applications.FastAPI` class so an ambient
 class replacement cannot silently double-instrument or bypass the per-app gate.
 
+FastAPI 0.143 makes its own environment-based exporter setup opt-in through
+`FASTAPI_OTEL_AUTO_CONFIGURE`. AI4IA still explicitly disables FastAPI's native
+telemetry family: the app's existing exporter and projected instrumentation
+remain the only owners, even if an environment opts into framework exporters.
+The paired real-factory control enables that environment flag for both apps so
+it continues to prove a noisy framework control against an explicitly quiet
+AI4IA instance; it does not rely on the framework's new quiet default.
+
 Azure Monitor 1.8.10 also enables both `httpx` and `httpx2` instrumentor
 entrypoints by default. Both are explicitly disabled in the distro options:
 `logging_setup` retains the existing manual HTTPX owner, and HTTPX2 is not

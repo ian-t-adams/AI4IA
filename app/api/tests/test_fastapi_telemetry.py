@@ -44,9 +44,10 @@ def test_real_factory_instrumentation(case):
 def test_framework_native_telemetry_stays_off(variant):
     """FastAPI 0.142's own request telemetry must not become a second family.
 
-    The control is a default `FastAPI()` on the identical fixture: it records
-    spans, metrics and exception logs and consults OTLP environment export,
-    which proves each absence asserted for the real factory is observable.
+    The identical environment opts into FastAPI's exporter setup (required
+    since 0.143). The default `FastAPI()` control records spans, metrics and
+    exception logs and consults OTLP export; the real factory must explicitly
+    refuse this second telemetry family even when the environment opts in.
     """
     observed = exercise(variant, "_native")
     if variant == "app":
@@ -101,6 +102,7 @@ def _native(variant: str) -> None:
         stack.enter_context(redirect_stdout(io.StringIO()))
         stack.enter_context(patch.dict(os.environ, {
             "OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.invalid",
+            "FASTAPI_OTEL_AUTO_CONFIGURE": "true",
         }))
         stack.enter_context(patch.object(DotEnvSettingsSource, "_read_env_files", return_value={}))
         stack.enter_context(patch.object(_runtime, "_export_endpoint", export_endpoint))
