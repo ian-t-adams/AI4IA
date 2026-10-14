@@ -575,9 +575,9 @@ documented.
 ### Routines
 
 A [routine](https://learn.microsoft.com/azure/foundry/agents/how-to/use-routines) in
-azure-ai-projects 2.7.0 is **not** the multi-step, tool-calling workflow this repo's manifest
+azure-ai-projects 2.8.0 is **not** the multi-step, tool-calling workflow this repo's manifest
 schema models. There is no `project.routines` at all; the actual surface, still under `beta` in
-SDK 2.6.1 and 2.7.0 although the service is GA, is
+SDK 2.8.0 although the service is GA, is
 `project.beta.routines.create_or_update(routine_name, *, triggers, action)`, which models an event
 **trigger** (a custom event, a GitHub issue, a cron schedule, or a timer) that invokes ONE
 already-existing Foundry agent by name with a static input payload -- fundamentally different from
