@@ -110,12 +110,14 @@ dependencies = [
     # ONLY when APPLICATIONINSIGHTS_CONNECTION_STRING is set, so local/dev with no
     # connection string is a pure no-op and the SDK is never started. Pulls in the
     # OpenTelemetry API/SDK + the FastAPI/Azure-SDK instrumentations transitively.
-    "azure-monitor-opentelemetry>=1.8.9",
+    # Monitor 1.8.11 and HTTPX 0.66 are a compatibility pair; raise their floors
+    # together so a fresh resolver cannot select the older incompatible distro.
+    "azure-monitor-opentelemetry>=1.8.11",
     # Keep HTTPX declared for the application's manual instrumentation owner.
     # Distro FastAPI/HTTPX/HTTPX2 auto-instrumentation is explicitly disabled:
     # FastAPI uses the actual app instance and HTTPX is activated once through
     # the same connection-string gate. No HTTPX2 client family is opted in.
-    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.66b0",
     # Durable Task SDK + the Azure-managed (Durable Task Scheduler) backend, used
     # by workflows/durable.py to run multi-step workflows out of the HTTP request
     # so they survive a replica restart, deploy, or scale-in.
