@@ -153,7 +153,7 @@ dev = [
     # [tool.ruff.lint]), which closes that specific failure mode, and the ceiling
     # keeps the remaining surface (fix behavior, rule semantics within the
     # selected set) an explicit, CI-gated bump rather than a surprise.
-    "ruff>=0.16.2,<0.17",
+    "ruff>=0.16.2,<0.18",
     "pyright>=1.1.411",
     # Lets tests exercise real foundry/toolbox.manifest.schema.json validation (see
     # test_foundry_toolbox.py) instead of skipping via pytest.importorskip("jsonschema").
