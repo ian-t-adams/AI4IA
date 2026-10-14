@@ -1,4 +1,8 @@
-"""Pins the dependency lockfile to public package provenance.
+"""Pins the dependency lockfiles to public package provenance.
+
+The npm lock also requires public registry artifacts and SHA-512 integrity for
+every package record. Mirror URLs can survive a package-manager refresh and
+leave Dependabot unable to update the otherwise public Markdown dependency tree.
 
 `app/api/uv.lock` records, for every resolved package, the registry it came from
 and the exact URL of each artifact. Those URLs are the repo's only machine-
@@ -40,13 +44,18 @@ committing.
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
 import unittest
 from collections import Counter
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[2]
 LOCKFILE = REPO / "app" / "api" / "uv.lock"
+NPM_LOCKFILE = REPO / "app" / "web" / "package-lock.json"
 
 # The only hosts a public Python lockfile should name: PyPI's index and the
 # canonical artifact CDN it redirects to.
@@ -58,6 +67,38 @@ _REGISTRY = re.compile(r'registry = "([^"]+)"')
 
 def _hosts() -> Counter[str]:
     return Counter(_URL_HOST.findall(LOCKFILE.read_text(encoding="utf-8")))
+
+
+def _npm_artifact_errors(packages: dict) -> list[str]:
+    errors = []
+    for location, entry in packages.items():
+        if location == "":
+            continue
+        if not isinstance(entry, dict):
+            errors.append(f"{location}: invalid package record")
+            continue
+        resolved = entry.get("resolved")
+        try:
+            url = urlsplit(resolved) if isinstance(resolved, str) else None
+        except ValueError:
+            url = None
+        if (
+            url is None or url.scheme != "https" or url.netloc != "registry.npmjs.org"
+            or url.query or url.fragment or not url.path.endswith(".tgz")
+        ):
+            errors.append(f"{location}: nonpublic or missing npm artifact")
+        integrity = entry.get("integrity")
+        try:
+            digest = (
+                base64.b64decode(integrity.removeprefix("sha512-"), validate=True)
+                if isinstance(integrity, str) and integrity.startswith("sha512-")
+                else b""
+            )
+        except (ValueError, binascii.Error):
+            digest = b""
+        if len(digest) != 64:
+            errors.append(f"{location}: missing or malformed SHA-512 integrity")
+    return errors
 
 
 class LockfileResolvesFromPublicPyPI(unittest.TestCase):
@@ -100,6 +141,50 @@ class LockfileResolvesFromPublicPyPI(unittest.TestCase):
         )
         for required in ("pypi.org", "files.pythonhosted.org"):
             self.assertIn(required, hosts, f"no {required} URLs found in uv.lock")
+
+
+class LockfileResolvesFromPublicNpm(unittest.TestCase):
+    def test_every_package_has_public_artifact_and_strong_integrity(self) -> None:
+        document = json.loads(NPM_LOCKFILE.read_text(encoding="utf-8"))
+        self.assertEqual(document["lockfileVersion"], 3)
+        packages = document["packages"]
+        self.assertGreater(
+            len(packages), 400,
+            "Too few npm package records: a truncated lock must not pass provenance.",
+        )
+        self.assertIn("node_modules/next", packages)
+        self.assertIn("node_modules/remark-gfm", packages)
+        errors = _npm_artifact_errors(packages)
+        self.assertEqual(
+            errors, [],
+            "Repair npm metadata using the public registry and verified artifact "
+            f"hashes, without changing locked versions. First errors: {errors[:8]}",
+        )
+
+    def test_guard_rejects_foreign_urls_missing_artifacts_and_weak_integrity(self) -> None:
+        location = "node_modules/example"
+        public = {
+            "version": "1.0.0",
+            "resolved": "https://registry.npmjs.org/example/-/example-1.0.0.tgz",
+            "integrity": "sha512-" + base64.b64encode(bytes(range(64))).decode("ascii"),
+        }
+        self.assertEqual(_npm_artifact_errors({location: public}), [])
+        for change in (
+            {"resolved": "https://mirror.invalid/example.tgz"},
+            {"resolved": "http://registry.npmjs.org/example.tgz"},
+            {"resolved": "https://registry.npmjs.org:443/example.tgz"},
+            {"resolved": "https://user@registry.npmjs.org/example.tgz"},
+            {"resolved": "https://registry.npmjs.org/example.tgz?token=fixture"},
+            {"resolved": None},
+            {"resolved": "https://[broken"},
+            {"integrity": "sha1-" + base64.b64encode(bytes(range(20))).decode("ascii")},
+            {"integrity": "sha512-invalid"},
+            {"integrity": None},
+        ):
+            with self.subTest(change=change):
+                self.assertTrue(_npm_artifact_errors({location: {**public, **change}}))
+                self.assertEqual(_npm_artifact_errors({location: public}), [])
+        self.assertTrue(_npm_artifact_errors({location: None}))
 
 
 if __name__ == "__main__":
