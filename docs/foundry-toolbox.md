@@ -200,7 +200,7 @@ the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
 
 ## Per-tool configuration
 
-These are the tool types AI4IA supports **in a toolbox** via `azure-ai-projects` (2.7.0),
+These are the tool types AI4IA supports **in a toolbox** via `azure-ai-projects` (2.8.0),
 mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 `scripts/provision-foundry-toolbox.py`:
 
@@ -259,7 +259,7 @@ manifest leaves it omitted, so this upgrade changes no active search behavior.
 > fails if a future SDK field or type is left uncovered.
 
 > **Available vs. deployed:** this table is every tool type the schema/provisioning script
-> support (14 as of azure-ai-projects 2.7.0). The live canonical `ai4ia-toolbox`
+> support (14 as of azure-ai-projects 2.8.0). The live canonical `ai4ia-toolbox`
 > (`foundry/toolbox.manifest.json`) currently uses only three: `web_search`, `code_interpreter`,
 > and `toolbox_search_preview`. See `foundry/toolbox.manifest.example.json` for a populated
 > reference covering all 14 types (18 tools total, including both the
@@ -268,16 +268,17 @@ manifest leaves it omitted, so this upgrade changes no active search behavior.
 
 ### Deliberately unsupported SDK toolbox types
 
-The SDK exposes 16 toolbox classes, but AI4IA continues to support 14. These two
-2.6.0 additions are explicitly accounted for in
+The SDK exposes 17 toolbox classes, but AI4IA continues to support 14. The
+two 2.6.0 additions and the 2.8.0 GA browser discriminator are accounted for in
 `scripts/provision-foundry-toolbox.py`'s `_UNSUPPORTED_TOOL_TYPES`, not enabled:
 
 | SDK class / discriminator | Exact type-specific SDK fields | Reason for exclusion |
 | --- | --- | --- |
 | `ShellToolboxTool` / `shell` | `allowed_callers`, `environment` | Arbitrary shell execution needs a separate sandbox, egress, approval, and skill-execution review. An SDK update is not approval to add execution capabilities. |
 | `WebIQPreviewToolboxTool` / `web_iq_preview` | `project_connection_id`, `server_label`, `require_approval` | The Foundry-hosted connection and approval contract has not been reviewed against AI4IA's existing WebIQ feature gate, fixed endpoints, budgets, and execution-time governance. |
+| `BrowserAutomationToolboxTool` / `browser_automation` | `browser_automation` | The GA discriminator and nested connection payload require a separate schema, adapter, egress and approval review. A dependency update must not alias it to `browser_automation_preview` or advertise a new execution surface. |
 
-Both also have the common `type`, `name`, `description`, and `tool_configs`
+All three also have the common `type`, `name`, `description`, and `tool_configs`
 fields. Their complete field inventories and discriminators remain reflection
 checked: a new field on an excluded class still fails parity. The schema,
 dependency-free semantic validator, and SDK adapter reject these types; neither
@@ -360,6 +361,23 @@ support or exclusion is needed. This is source compatibility evidence, not a
 deployment or live-service claim; routine and inbound A2A artifacts remain
 non-executable.
 
+**SDK 2.8.0 minor review:** the
+[official release](https://github.com/Azure/azure-sdk-for-python/releases/tag/azure-ai-projects_2.8.0)
+adds GA optimization, data-generation and evaluator APIs and GA browser
+automation. None of the new service APIs is invoked by this update. The new
+`BrowserAutomationToolboxTool` is explicitly excluded with the exact five-field
+inventory above, while the existing preview class stays supported. Paired tests
+reject the GA type in the schema, semantic validator and actual SDK adapter,
+then remove only the exclusion to prove the identical constructor payload can
+dispatch. A new field on the excluded class still fails reflection parity.
+The existing concrete toolbox constructors retain their fields in the verified
+2.7.0/2.8.0 wheels. All manifest/schema SDK versions, install hints and portal
+requirements move with the exact `2.8.0` pin. Regeneration confirms the official
+MCP catalog stays unchanged: `sdkContract` is non-executable metadata and the
+active three-tool surface is unchanged. The wheel installs only its own package
+and dist-info; no top-level `scripts` package is admitted. Routine and inbound
+A2A artifacts remain validation-only.
+
 > **Not toolbox tools:** `computer_use` and `bing_custom_search` exist only as *agent-level* tools
 > in the SDK (`ComputerUsePreviewTool` / `BingCustomSearchPreviewTool`) with no `*ToolboxTool`
 > counterpart, so they cannot be added to a toolbox. Attach them directly to an agent instead.
@@ -439,7 +457,7 @@ API currently does not support private-network-only projects. See Microsoft's
 
 ## Operator runbook (end to end)
 
-1. **Install the provisioning extra.** It pins `azure-ai-projects==2.7.0` exactly, not a
+1. **Install the provisioning extra.** It pins `azure-ai-projects==2.8.0` exactly, not a
    floating floor, because the toolbox model classes this script constructs have already
    changed shape once between 2.x releases; every install path should land on the one version
    the manifest schema, provisioner, and tests were reviewed against:

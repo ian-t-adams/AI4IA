@@ -41,7 +41,7 @@ def _valid() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.7.0",
+            "version": "2.8.0",
             "status": "not-executable",
             "surface": "project.beta.routines.create_or_update",
         },

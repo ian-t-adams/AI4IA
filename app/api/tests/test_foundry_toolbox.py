@@ -48,7 +48,7 @@ def _valid_manifest() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.7.0",
+            "version": "2.8.0",
             "status": "validated",
             "surface": "project.toolboxes",
         },
@@ -2628,8 +2628,8 @@ def _sdk_toolbox_classes(m) -> dict[str, type]:
 
 def _assert_sdk_toolbox_parity(m):
     sdk_toolbox_classes = _sdk_toolbox_classes(m)
-    assert len(sdk_toolbox_classes) >= 16, (
-        f"expected at least the 16 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
+    assert len(sdk_toolbox_classes) >= 17, (
+        f"expected at least the 17 known toolbox types via reflection, found: {sorted(sdk_toolbox_classes)}"
     )
 
     modeled_classes = set(_tb._TYPE_TO_MODEL.values())
@@ -2719,6 +2719,7 @@ def test_class_named_like_a_toolbox_tool_outside_the_hierarchy_is_not_a_toolbox_
         ("WebSearchToolboxTool", "allowed_callers"),
         ("ShellToolboxTool", "future"),
         ("WebIQPreviewToolboxTool", "future"),
+        ("BrowserAutomationToolboxTool", "future"),
     ],
 )
 def test_new_sdk_fields_still_fail_parity_even_on_excluded_types(monkeypatch, class_name, field):
@@ -2730,7 +2731,7 @@ def test_new_sdk_fields_still_fail_parity_even_on_excluded_types(monkeypatch, cl
         _assert_sdk_toolbox_parity(m)
 
 
-@pytest.mark.parametrize("tool_type", ["shell", "web_iq_preview"])
+@pytest.mark.parametrize("tool_type", ["shell", "web_iq_preview", "browser_automation"])
 def test_excluded_sdk_types_are_rejected_by_schema_and_semantic_validation(tool_type):
     jsonschema = pytest.importorskip("jsonschema")
     manifest = _valid_manifest()
@@ -2766,6 +2767,13 @@ def test_excluded_sdk_types_are_rejected_by_schema_and_semantic_validation(tool_
             "serverLabel": "webiq",
             "requireApproval": "always",
         },
+        {
+            "type": "browser_automation",
+            "name": "review-required",
+            "browser_automation": {
+                "connection": {"projectConnectionId": "review-required"},
+            },
+        },
     ],
 )
 def test_excluded_sdk_types_cannot_dispatch_even_if_added_to_the_supported_map(monkeypatch, tool):
@@ -2796,10 +2804,17 @@ def test_excluded_sdk_types_cannot_dispatch_even_if_added_to_the_supported_map(m
         assert type(built.environment) is m.ToolboxShellContainerAutoEnvironment
         assert built.environment.network_policy.type == "disabled"
         assert built.allowed_callers == ["direct"]
-    else:
+    elif tool["type"] == "web_iq_preview":
         assert built.project_connection_id == "review-required"
         assert built.server_label == "webiq"
         assert built.require_approval == "always"
+    else:
+        assert type(built.browser_automation) is m.BrowserAutomationToolParameters
+        assert (
+            type(built.browser_automation.connection)
+            is m.BrowserAutomationToolConnectionParameters
+        )
+        assert built.browser_automation.connection.project_connection_id == "review-required"
     assert len(captured["update_calls"]) == 1
 
 
