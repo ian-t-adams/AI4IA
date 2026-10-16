@@ -668,11 +668,11 @@ Re-enabling requires a new rollout id whose `coverageStart` follows a new drain.
 Existing owner documents may be reused; the fence covers the gap. Never delete an
 owner document to reset it.
 
-The continuous authenticated canaries of
-[#412](https://github.com/ian-t-adams/AI4IA/issues/412) are refused under hard
-mode. `/api/canary/capabilities` reports `lifecycle_unavailable`, the realtime
-capability reports not ready, and the policy canary probes return
-`policy_surface_unsupported`. Only the post-deployment canary of the bootstrapped
+The retained restricted model/setup actor profiles are refused under hard mode.
+`/api/canary/capabilities` reports `lifecycle_unavailable`, the realtime capability
+reports not ready, and the policy probes return `policy_surface_unsupported`.
+The scheduled authenticated monitor was retired; anonymous uptime makes no
+metered application calls. Only the post-deployment canary of the bootstrapped
 deploy identity exercises the enforcing path.
 
 ## What must happen before activation

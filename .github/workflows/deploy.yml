@@ -48,6 +48,7 @@ on:
       - "scripts/_generator.py"
       - "scripts/post-deploy-verify.py"
       - "scripts/_canary_contract.py"
+      - "scripts/http_contract.py"
       - "scripts/verify-image-provenance.py"
       - "scripts/verify-companion-image.py"
       - "scripts/_image_refs.py"

@@ -170,8 +170,6 @@ def _assert_sdk_contract_metadata():
     for path in (
         _MANIFEST,
         _EXAMPLE_MANIFEST,
-        _REPO_ROOT / "foundry" / "routines" / "example.routine.json",
-        _REPO_ROOT / "foundry" / "a2a" / "example.a2a.json",
     ):
         manifest = _tb.load_manifest(path)
         schema = json.loads((path.parent / manifest["$schema"]).read_text(encoding="utf-8"))
@@ -240,10 +238,8 @@ def test_sdk_distribution_inventory_rejects_files_outside_its_package(stray):
     [
         _MANIFEST,
         _EXAMPLE_MANIFEST,
-        _REPO_ROOT / "foundry" / "routines" / "example.routine.json",
-        _REPO_ROOT / "foundry" / "a2a" / "example.a2a.json",
     ],
-    ids=["active-toolbox", "reference-toolbox", "routine", "a2a"],
+    ids=["active-toolbox", "reference-toolbox"],
 )
 def test_sdk_contract_schema_rejects_the_previous_version(path):
     import jsonschema

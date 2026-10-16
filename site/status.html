@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI4IA — Deployment snapshot &amp; health</title>
-  <meta name="description" content="Timestamped AI4IA deployment snapshot generated from Azure Resource Graph, Azure Resource Health, and public endpoint probes." />
+  <title>AI4IA — Uptime &amp; deployment health</title>
+  <meta name="description" content="Anonymous AI4IA uptime observations every 15 minutes, alongside the separate twice-daily Azure deployment snapshot." />
   <link rel="icon" href="assets/favicon.ico" />
   <link rel="stylesheet" href="assets/styles.css" />
 </head>
@@ -33,8 +33,29 @@
   <main id="main">
     <section class="hero" style="padding-top:40px">
       <div class="container">
+        <p class="eyebrow">Public availability</p>
+        <h1>Uptime and health</h1>
+        <p class="lede">Four anonymous checks on a 15-minute schedule. No model calls, user sessions,
+          voice traffic, or monitoring approval leases.</p>
+        <p class="updated" id="uptime-updated" aria-live="polite">Loading uptime observations&#8230;</p>
+        <div class="grid cols-2" id="uptime-endpoints"></div>
+        <div class="notice" style="margin-top:16px">
+          These are sampled observations, not a continuous uptime SLA or an end-to-end chat test.
+          Web checks require HTTP 200 HTML; proxy liveness requires its expected anonymous response.
+          API liveness checks the process; readiness checks the canonical session store.
+          Redirects and auth challenges do not pass. GitHub scheduling can be delayed; evidence older
+          than 45 minutes is unknown. Three consecutive non-passing observations open an incident,
+          and the next passing observation clears it automatically.
+          <a href="https://github.com/ian-t-adams/AI4IA/actions/workflows/uptime.yml" target="_blank" rel="noopener">Observation summaries and alerts</a>.
+          A successful workflow means collection and publication succeeded, not that every endpoint is healthy.
+        </div>
+      </div>
+    </section>
+
+    <section class="hero" style="padding-top:40px">
+      <div class="container">
         <p class="eyebrow">Deployment health</p>
-        <h1>Deployment snapshot</h1>
+        <h2>Deployment snapshot</h2>
         <p class="lede">The deployed footprint of AI4IA in <span class="mono" id="status-resource-group">the configured resource group</span>, generated
           from Azure Resource Graph (the authoritative inventory), Azure Resource Health, and probes of the public
           web and model-proxy endpoints plus direct API liveness and canonical session-store readiness.</p>
@@ -47,7 +68,8 @@
         <div class="stats" id="status-stats"></div>
         <div id="health-source" aria-live="polite" style="margin-top:16px"></div>
         <div class="notice" style="margin-top:16px">
-          This is a <strong>static snapshot</strong>, not a live poll: a scheduled GitHub Actions workflow regenerates
+          This is a separate <strong>twice-daily static snapshot</strong>, not a live poll.
+          Independently of uptime observations above, a scheduled GitHub Actions workflow regenerates
           <span class="mono">status.js</span> and <span class="mono">inventory.js</span> using the deployment's federated
           (OIDC) identity, then republishes this
           page. A snapshot older than 24 hours is visibly marked stale. Health is derived from provisioning state,
@@ -58,7 +80,7 @@
 
     <section style="padding-top:6px">
       <div class="container">
-        <h2 class="section-title">Public endpoint probes</h2>
+        <h2 class="section-title">Deployment snapshot endpoint probes</h2>
         <p class="section-sub">Web and proxy probes establish ingress reachability, including an auth challenge (401/403).
           API liveness requires the expected successful health response; readiness additionally checks the cached canonical
           session store. Redirects, auth challenges, invalid responses and unresolved targets never pass API health.

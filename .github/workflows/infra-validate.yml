@@ -24,8 +24,6 @@ on:
       - "scripts/_production_capacity.py"
       - "scripts/_capacity_evidence.py"
       - "scripts/check-model-availability.py"
-      - "scripts/provision-foundry-routine.py"
-      - "scripts/provision-foundry-a2a.py"
       - "scripts/postprovision.ps1"
       - "scripts/tests/test_feature_prereqs.py"
       - "scripts/tests/test_model_capacity_profile.py"
@@ -107,13 +105,6 @@ jobs:
         run: |
           check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.json
           check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.example.json
-
-      - name: Validate Foundry routine + A2A manifests against schemas
-        run: |
-          check-jsonschema --schemafile foundry/routines/routine.schema.json foundry/routines/example.routine.json
-          check-jsonschema --schemafile foundry/a2a/a2a.schema.json foundry/a2a/example.a2a.json
-          python scripts/provision-foundry-routine.py --check
-          python scripts/provision-foundry-a2a.py --check
 
       - name: Validate catalog consistency (regions / SKUs / names)
         run: python scripts/validate-catalog.py
