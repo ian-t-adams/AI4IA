@@ -6,6 +6,7 @@ import copy
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -13,15 +14,16 @@ import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from urllib.parse import urlsplit
 
 import aiohttp
 import yaml
 
 from scripts import uptime
-from scripts.canaries.contracts import CanaryError, stamp
-from scripts.canaries.transport import Response
+from scripts.http_contract import HttpError, stamp
+from scripts.http_transport import PublicResolver, Response, Transport
 from scripts.tests import test_gating_workflows as gating
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,7 +58,7 @@ def report(state: uptime.State = "up", previous: uptime.Report | None = None) ->
 
 
 class FakeTransport:
-    replies: dict[str, Response | CanaryError] = {}
+    replies: dict[str, Response | HttpError] = {}
     sent: list[tuple[str, str, dict]] = []
     allowed: set[str] = set()
 
@@ -72,12 +74,12 @@ class FakeTransport:
     async def request(self, method: str, url: str, **kwargs) -> Response:
         type(self).sent.append((method, url, kwargs))
         reply = type(self).replies.get(urlsplit(url).path, response({}, status=404))
-        if isinstance(reply, CanaryError):
+        if isinstance(reply, HttpError):
             raise reply
         return reply
 
 
-def replies() -> dict[str, Response | CanaryError]:
+def replies() -> dict[str, Response | HttpError]:
     return {
         "/": response(b"<!doctype html><html>App</html>", content_type="text/html"),
         "/liveness": response(b"OK\n", content_type="text/plain"),
@@ -162,9 +164,9 @@ class UptimeStateTests(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 malformed = copy.deepcopy(valid)
                 malformed["endpoints"][0][field] = value
-                with self.assertRaises(CanaryError):
+                with self.assertRaises(HttpError):
                     uptime.parse_report(json.dumps(malformed).encode())
-        with self.assertRaises(CanaryError):
+        with self.assertRaises(HttpError):
             uptime.parse_report(b'{"version":1,"version":1}')
 
     def test_targets_require_public_https_origins_not_credentials_or_paths(self):
@@ -202,8 +204,9 @@ class UptimeProbeTests(unittest.IsolatedAsyncioTestCase):
             response({"status": "unavailable", "stage": "session_store"}, status=503),
             response({}, status=401), response({}, status=403), response({}, status=302),
             response(b'{"status":"ok","status":"bad"}'),
+            response(b'{"status":"bad","status":"ok","stage":"session_store"}'),
             response(b'{"status":"ok","stage":"session_store"}', content_type="text/html"),
-            CanaryError("redirect_rejected"), CanaryError("response_too_large"), CanaryError("deadline"),
+            HttpError("redirect_rejected"), HttpError("response_too_large"), HttpError("deadline"),
         ):
             with self.subTest(failed=failed):
                 FakeTransport.replies["/health/ready"] = failed
@@ -229,7 +232,7 @@ class UptimeProbeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unavailable_or_corrupt_history_does_not_prevent_four_checks(self):
         for history in (
-            response({}, status=404), CanaryError("network_unavailable"),
+            response({}, status=404), HttpError("network_unavailable"),
             response(b"{not-json"), response({"version": 1}),
             response({**report(), "checkedAt": stamp(NOW + timedelta(minutes=5))}),
         ):
@@ -304,6 +307,95 @@ class UptimeProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Collection success is not application health", exported)
 
 
+class UptimeTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dns_connects_only_to_the_approved_public_answers(self):
+        resolver = PublicResolver({"web.example.test"})
+        fixture = [{
+            "hostname": "web.example.test", "host": "8.8.8.8", "port": 443,
+            "family": socket.AF_INET, "proto": 0, "flags": 0,
+        }]
+        resolver._delegate.resolve = AsyncMock(return_value=fixture)
+        try:
+            self.assertEqual(await resolver.resolve("web.example.test", 443), fixture)
+            for address in ("127.0.0.1", "10.0.0.1", "169.254.169.254", "192.0.2.1", "::1"):
+                resolver._delegate.resolve.return_value = [*fixture, {**fixture[0], "host": address}]
+                with self.subTest(address=address), self.assertRaises(HttpError):
+                    await resolver.resolve("web.example.test", 443)
+            resolver._delegate.resolve.reset_mock()
+            with self.assertRaises(HttpError):
+                await resolver.resolve("unapproved.example.test", 443)
+            resolver._delegate.resolve.assert_not_called()
+        finally:
+            await resolver.close()
+
+    async def test_get_only_transport_enforces_bounds_and_never_follows_redirects(self):
+        class Content:
+            body = b'{"status":"ok"}'
+
+            def iter_chunked(self, _size):
+                async def iterate():
+                    yield self.body
+                return iterate()
+
+        class HttpResponse:
+            status = 200
+            content_length = None
+            headers = {}
+            content_type = "application/json"
+            content = Content()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+        result = HttpResponse()
+        sent = []
+
+        def request(method, url, **kwargs):
+            sent.append((method, url, kwargs))
+            return result
+
+        transport = Transport({"https://web.example.test"})
+        transport._client = SimpleNamespace(request=request)
+        self.assertEqual((await transport.request("GET", "https://web.example.test/health")).object(),
+                         {"status": "ok"})
+        self.assertEqual(sent[0][2]["headers"], {
+            "Accept": "application/json", "Accept-Encoding": "identity", "Cache-Control": "no-store",
+        })
+        self.assertFalse(sent[0][2]["allow_redirects"])
+        for method, url in (
+            ("POST", "https://web.example.test/health"),
+            ("DELETE", "https://web.example.test/health"),
+            ("GET", "https://other.example.test/health"),
+            ("GET", "https://user:password@web.example.test/health"),
+        ):
+            with self.subTest(method=method, url=url), self.assertRaises(HttpError):
+                await transport.request(method, url)
+        self.assertEqual(len(sent), 1)
+        result.content.body = b"x" * 4097
+        with self.assertRaisesRegex(HttpError, "response_too_large"):
+            await transport.request("GET", "https://web.example.test/health", limit=4096)
+        result.status = 302
+        with self.assertRaisesRegex(HttpError, "redirect_rejected"):
+            await transport.request("GET", "https://web.example.test/health")
+        self.assertEqual(len(sent), 3)
+
+    async def test_session_disables_cookies_environment_auth_and_decompression(self):
+        client = SimpleNamespace(close=AsyncMock())
+        with patch("scripts.http_transport.aiohttp.ClientSession", return_value=client) as session, \
+                patch("scripts.http_transport.aiohttp.TCPConnector") as connector:
+            async with Transport({"https://web.example.test"}):
+                options = session.call_args.kwargs
+                self.assertFalse(options["trust_env"])
+                self.assertFalse(options["auto_decompress"])
+                self.assertIsInstance(options["cookie_jar"], aiohttp.DummyCookieJar)
+                self.assertFalse(connector.call_args.kwargs["use_dns_cache"])
+                await connector.call_args.kwargs["resolver"].close()
+        client.close.assert_awaited_once()
+
+
 class UptimeWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "uptime.yml").read_text())
@@ -319,7 +411,7 @@ class UptimeWorkflowTests(unittest.TestCase):
         self.assertEqual(observer["permissions"], {"contents": "read"})
         self.assertNotIn("environment", observer)
         for step in observer["steps"]:
-            self.assertNotRegex(json.dumps(step), r"AZURE_CLIENT_ID|CANARY_CONFIG|OIDC|Authorization|scripts\.canaries observe")
+            self.assertNotRegex(json.dumps(step), r"AZURE_CLIENT_ID|CANARY_CONFIG|OIDC|Authorization")
             self.assertNotRegex(step.get("run", ""), r"\baz(?:d)?\b|gh api|/api/sessions|/api/chat|voice")
         gating.WorkflowPermissionBoundaryTests().assert_permission_boundary(self.workflow)
 

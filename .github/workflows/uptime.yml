@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install shared hash-checked HTTP runtime
-        run: python -m scripts.canaries.dependencies
+        run: python -m scripts.http_dependencies
       - name: Observe public health and preserve the last Azure snapshot
         id: check
         env:

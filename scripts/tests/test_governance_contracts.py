@@ -85,71 +85,6 @@ class HardQuotaActivationContractTests(unittest.TestCase):
         self.assertNotIn("hardQuota", data)
 
 
-class FoundryManifestContractTests(unittest.TestCase):
-    """The Foundry manifests are a machine contract, not documentation."""
-
-    def setUp(self) -> None:
-        self.toolbox = json.loads(read("foundry/toolbox.manifest.json"))
-        self.routine = json.loads(read("foundry/routines/example.routine.json"))
-        self.a2a = json.loads(read("foundry/a2a/example.a2a.json"))
-
-    def test_every_manifest_pins_the_same_sdk_contract(self) -> None:
-        for name, manifest in (
-            ("toolbox", self.toolbox),
-            ("routine", self.routine),
-            ("a2a", self.a2a),
-        ):
-            with self.subTest(manifest=name):
-                self.assertEqual("1.0", manifest["manifestVersion"])
-                self.assertTrue(manifest["owner"])
-                self.assertEqual("azure-ai-projects", manifest["sdkContract"]["package"])
-                self.assertEqual("2.7.0", manifest["sdkContract"]["version"])
-
-    def test_only_the_toolbox_is_executable(self) -> None:
-        """Routine and A2A are design artifacts; nothing may reconcile them."""
-        example_toolbox = json.loads(read("foundry/toolbox.manifest.example.json"))
-        self.assertEqual("active", self.toolbox["lifecycle"])
-        self.assertEqual("validated", self.toolbox["sdkContract"]["status"])
-        self.assertEqual("reference", example_toolbox["lifecycle"])
-        for name, manifest in (("routine", self.routine), ("a2a", self.a2a)):
-            with self.subTest(manifest=name):
-                self.assertEqual("design-preview", manifest["lifecycle"])
-                self.assertEqual("not-executable", manifest["sdkContract"]["status"])
-
-        a2a_script = read("scripts/provision-foundry-a2a.py")
-        for emitter in ("to_az_commands", "build_agent_link", "--emit-az"):
-            self.assertNotIn(
-                emitter,
-                a2a_script,
-                f"the A2A provisioner regained {emitter!r}; it is validation-only",
-            )
-        self.assertIn("lifecycle='active'", read("scripts/provision-foundry-toolbox.py"))
-
-    def test_the_routine_only_references_tools_the_toolbox_defines(self) -> None:
-        canonical = {
-            tool.get("name") or tool.get("serverLabel") for tool in self.toolbox["tools"]
-        }
-        referenced = {
-            tool for step in self.routine["steps"] for tool in step.get("tools", [])
-        }
-        self.assertTrue(referenced, "the example routine references no tools at all")
-        self.assertLessEqual(referenced, canonical)
-
-    def test_design_artifacts_are_labelled_design_only(self) -> None:
-        surfaces = "\n".join(
-            read(path)
-            for path in (
-                "foundry/routines/routine.schema.json",
-                "foundry/routines/example.routine.json",
-                "foundry/a2a/a2a.schema.json",
-                "foundry/a2a/example.a2a.json",
-                "scripts/provision-foundry-routine.py",
-                "scripts/provision-foundry-a2a.py",
-            )
-        )
-        self.assertIn("DESIGN-ONLY", surfaces)
-
-
 class WorkflowWiringTests(unittest.TestCase):
     def test_foundry_endpoint_travels_by_artifact_not_repository_variable(self) -> None:
         """A stored endpoint variable can silently target a stale environment.
@@ -177,12 +112,6 @@ class WorkflowWiringTests(unittest.TestCase):
             "vars.AI4IA_PRODUCTION_FOUNDRY_PROJECT_ENDPOINT",
         ):
             self.assertNotIn(stored, workflow)
-
-    def test_design_only_provisioners_stay_check_only_in_ci(self) -> None:
-        infra_validate = read(".github/workflows/infra-validate.yml")
-        self.assertIn("provision-foundry-routine.py --check", infra_validate)
-        self.assertIn("provision-foundry-a2a.py --check", infra_validate)
-
 
 class DeployableSurfaceTests(unittest.TestCase):
     def test_network_isolation_parameters_are_unreachable_from_a_deploy(self) -> None:

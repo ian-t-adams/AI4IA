@@ -78,7 +78,7 @@ because final usage does not prove all proxy/APIM retry attempts; global default
 token/USD caps refuse startup. Group-policy `spend` and execution-actor
 `restrictions.spend` limits stay **soft** policy restrictions: they are not
 hard-enforced and must not be presented as hard caps. Hard durable workers refuse
-rather than replay ambiguously, and the continuous canaries are unavailable. A
+rather than replay ambiguously, and restricted model/setup actor probes are unavailable. A
 rollback to a non-enforcing revision ends the rollout. The local fake is not a
 distributed quota. See [the activation contract](../hard-quota-admission.md#request-count-activation-contract).
 
@@ -779,11 +779,10 @@ below prepares desired inventory changes; it does not activate these flags or
 prove a deployed model version. All live work requires separate approval under
 [`deploy-with-an-agent.md`](../deploy-with-an-agent.md).
 
-The separate [continuous application canary](deployment.md#continuous-application-canaries)
-is default-off and cannot enable this gate or select `ga`. Its setup-only
-observation requires both the resolved protocol header and ordered server
-acknowledgements under separately approved actor/spend scope. It does not replace
-the audio, tools, interruption, persistence, cutover or rollback acceptance below.
+[Anonymous uptime monitoring](deployment.md#anonymous-uptime-monitoring) does not
+open a realtime session, select `ga`, or establish voice acceptance. The former
+scheduled model/setup monitor was removed. The audio, tools, interruption,
+persistence, cutover and rollback acceptance below remain separate.
 
 1. Reconfirm the intended catalog deployment's current offering, entitlement,
    regional capacity and lifecycle evidence. The existing GA `gpt-realtime`

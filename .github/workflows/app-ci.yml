@@ -36,8 +36,6 @@ on:
       - "scripts/gen-voice-provider-catalog.py"
       - "scripts/migrate-memory-to-cosmos.py"
       - "scripts/provision-foundry-toolbox.py"
-      - "scripts/provision-foundry-routine.py"
-      - "scripts/provision-foundry-a2a.py"
       - "scripts/tests/test_memory_cosmos_migration.py"
       - "scripts/assess-conversation-deletion.py"
       - "scripts/_deletion_assessment*.py"
@@ -45,10 +43,13 @@ on:
       - "scripts/fixtures/conversation-deletion-assessment.json"
       - "scripts/tests/test_conversation_deletion_assessment.py"
       - "scripts/evaluations/**"
-      - "scripts/canaries/**"
+      - "scripts/http_dependencies.py"
+      - "scripts/http_contract.py"
+      - "scripts/http_transport.py"
+      - "scripts/uptime.py"
+      - "scripts/tests/test_http_dependencies.py"
+      - "scripts/tests/test_uptime.py"
       - "scripts/_canary_contract.py"
-      - "scripts/tests/test_canary_runtime.py"
-      - "scripts/tests/_canary_runtime_probe.py"
       - "scripts/tests/test_behavioral_evaluations.py"
       - "scripts/tests/test_live_evaluations.py"
       - "scripts/tests/test_live_evaluation_api.py"
@@ -164,12 +165,11 @@ jobs:
           ruff check --config app/api/pyproject.toml scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py scripts/tests/test_conversation_deletion_assessment.py
           pyright --pythonversion 3.12 --level error scripts/_deletion_assessment.py scripts/_deletion_assessment_sdk.py scripts/assess-conversation-deletion.py
           python -m pytest -q scripts/tests/test_conversation_deletion_assessment.py
-      - name: Operational canary static controls
+      - name: Operational health static controls
         working-directory: .
         run: |
-          ruff check --config app/api/pyproject.toml scripts/canaries scripts/uptime.py scripts/_canary_contract.py scripts/tests/test_application_canary.py scripts/tests/test_canary_runtime.py scripts/tests/_canary_runtime_probe.py scripts/tests/test_uptime.py
-          pyright --project scripts/canaries
-          pyright --pythonversion 3.12 --level error scripts/uptime.py
+          ruff check --config app/api/pyproject.toml scripts/http_contract.py scripts/http_dependencies.py scripts/http_transport.py scripts/uptime.py scripts/_canary_contract.py scripts/tests/test_http_dependencies.py scripts/tests/test_uptime.py
+          pyright --pythonversion 3.12 --level error scripts/http_contract.py scripts/http_dependencies.py scripts/http_transport.py scripts/uptime.py
 
       - name: External Claude source contracts
         working-directory: .

@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 
-from scripts.canaries.contracts import CanaryError, public_origin, stamp, strict_json, timestamp
-from scripts.canaries.transport import Response, Transport
+from scripts.http_contract import HttpError, public_origin, stamp, strict_json, timestamp
+from scripts.http_transport import Response, Transport
 
 PORTAL = "https://ian-t-adams.github.io/AI4IA"
 THRESHOLD = 3
@@ -69,7 +69,7 @@ def origins(environment: dict[str, str]) -> dict[str, str | None]:
     for name, value in values.items():
         try:
             result[name] = public_origin(value)
-        except CanaryError:
+        except HttpError:
             result[name] = None
     return result
 
@@ -109,7 +109,7 @@ async def probe(client: Transport, identifier: str, url: str | None) -> Observat
             row["state"], row["reason"] = "up", "healthy"
         else:
             row["reason"] = "invalid_response"
-    except CanaryError as exc:
+    except HttpError as exc:
         row["reason"] = exc.code
     row["latencyMs"] = round((asyncio.get_running_loop().time() - started) * 1000)
     return row
@@ -126,7 +126,7 @@ def parse_report(raw: bytes) -> Report:
         or not isinstance(value["endpoints"], list)
         or len(value["endpoints"]) != len(ENDPOINTS)
     ):
-        raise CanaryError("invalid_response")
+        raise HttpError("invalid_response")
     timestamp(value["checkedAt"])
     rows: list[Observation] = []
     for item, (identifier, _, path) in zip(value["endpoints"], ENDPOINTS, strict=True):
@@ -146,21 +146,21 @@ def parse_report(raw: bytes) -> Report:
                 or item["url"] is None or item["observedAt"] is None
             ))
         ):
-            raise CanaryError("invalid_response")
+            raise HttpError("invalid_response")
         if item["url"] is not None:
             try:
                 parsed = urlsplit(item["url"]) if isinstance(item["url"], str) else None
                 if parsed is None or item["url"] != public_origin(f"https://{parsed.netloc}") + path:
-                    raise CanaryError("invalid_response")
+                    raise HttpError("invalid_response")
             except ValueError as exc:
-                raise CanaryError("invalid_response") from exc
+                raise HttpError("invalid_response") from exc
         if item["observedAt"] is not None:
             timestamp(item["observedAt"])
         for field in ("latencyMs", "httpStatus"):
             number = item[field]
             maximum = 30_000 if field == "latencyMs" else 599
             if number is not None and (type(number) is not int or not 0 <= number <= maximum):
-                raise CanaryError("invalid_response")
+                raise HttpError("invalid_response")
         rows.append(Observation(
             id=identifier, url=item["url"], state=item["state"], reason=item["reason"],
             observedAt=item["observedAt"], httpStatus=item["httpStatus"],
@@ -208,9 +208,9 @@ async def previous_report(client: Transport) -> Report | None:
             "GET", data_url("uptime.json"), timeout=5, limit=REPORT_LIMIT,
         )
         if response.status != 200 or response.content_type != "application/json":
-            raise CanaryError("invalid_response")
+            raise HttpError("invalid_response")
         return parse_report(response.body)
-    except CanaryError as exc:
+    except HttpError as exc:
         print(f"::warning::Uptime alert history unavailable ({exc.code}); current checks will still run.")
         return None
 
@@ -227,24 +227,24 @@ async def carry_snapshots(client: Transport, directory: Path) -> None:
                 "GET", data_url(f"{name}.js"), timeout=5, limit=SNAPSHOT_LIMIT,
             )
             if response.status != 200:
-                raise CanaryError("invalid_response")
+                raise HttpError("invalid_response")
             match = re.fullmatch(
                 rf"\s*(?://[^\n]*\n)?window\.{variable}\s*=\s*(\{{[\s\S]*\}})\s*;\s*",
                 response.body.decode("utf-8-sig"),
             )
             if match is None:
-                raise CanaryError("invalid_response")
+                raise HttpError("invalid_response")
             data = strict_json(match[1].encode("utf-8"), limit=SNAPSHOT_LIMIT)
             if not isinstance(data, dict) or not isinstance(data.get("generatedAt"), str):
-                raise CanaryError("invalid_response")
+                raise HttpError("invalid_response")
             generated = datetime.fromisoformat(data["generatedAt"].replace("Z", "+00:00"))
             if generated.tzinfo is None or generated > now():
-                raise CanaryError("invalid_response")
+                raise HttpError("invalid_response")
             if name == "inventory" and not isinstance(data.get("resources"), list):
-                raise CanaryError("invalid_response")
+                raise HttpError("invalid_response")
             if name == "status" and not isinstance(data.get("summary"), dict):
-                raise CanaryError("invalid_response")
-        except (CanaryError, ValueError, UnicodeError):
+                raise HttpError("invalid_response")
+        except (HttpError, ValueError, UnicodeError):
             data = None
             print(f"::warning::Published Azure {name} snapshot unavailable; no committed seed will be substituted.")
         (directory / f"{name}.js").write_text(

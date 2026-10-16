@@ -35,6 +35,9 @@ on:
       - "scripts/status-snapshot.ps1"
       - "scripts/status-endpoints.ps1"
       - "scripts/uptime.py"
+      - "scripts/http_transport.py"
+      - "scripts/http_contract.py"
+      - "scripts/http_dependencies.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
   schedule:
@@ -68,7 +71,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install shared hash-checked HTTP runtime
-        run: python -m scripts.canaries.dependencies
+        run: python -m scripts.http_dependencies
 
       # Regenerate the portal docs index from the manifest so the published hub
       # always reflects the current repo markdown (titles, descriptions, new docs).
