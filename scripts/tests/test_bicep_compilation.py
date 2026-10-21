@@ -138,8 +138,8 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
     def test_json_transports_decode_into_the_values_consumers_received_before(self) -> None:
         """azd substitutes parameter values unescaped, so JSON arrives as base64.
 
-        main.bicep decodes each transport once. The API environment value, the
-        proxy's secret file and the parsed Claude binding keep the expressions
+        main.bicep decodes each transport once. The API environment value and
+        the parsed Claude binding keep the expressions
         they had when these were raw string parameters, and empty stays empty.
         """
         parameters, variables = self.template["parameters"], self.template["variables"]
@@ -167,19 +167,54 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             "[if(parameters('claudeExternalEnabled'), json(variables('claudeBindingJson')), createObject())]",
         )
 
-        # The secret is decoded inline, never held in a named variable.
-        self.assertNotIn("proxyProfileProjectionJson", variables)
-        gateway = self.template["resources"]["gateway"]["properties"]
+    def test_retired_planes_have_no_parameters_modules_or_runtime_activation(self) -> None:
+        for name in (
+            "vnetIsolationEnabled", "dataTierPrivate", "proxyProfilesEnabled",
+            "proxyProfileProjectionJsonBase64", "proxyEventHubTelemetryEnabled",
+            "proxyAsyncEnabled", "companionAppEnabled", "companionAppImage",
+        ):
+            self.assertNotIn(name, self.template["parameters"])
+        for name in ("network", "privateEndpoints", "proxyasync", "eventhubs", "companion"):
+            self.assertNotIn(name, self.template["resources"])
+        gateway = self.template["resources"]["gateway"]["properties"]["template"]
+        env = {row["name"]: row for row in gateway["variables"]["staticEnv"]}
+        for name, value in (
+            ("UseProfiles", "false"), ("AsyncModeEnabled", "false"), ("EVENT_LOGGERS", "none"),
+            ("ValidateAuthConfig", "enabled=true;mode=key;header=S7P-KEY"),
+        ):
+            self.assertEqual(env[name]["value"], value)
+        self.assertEqual(env["ValidateAuthKey1"]["secretRef"], "api-proxy-inbound-key")
+        container = gateway["resources"]["proxyApp"]["properties"]["template"]
+        self.assertEqual(container["volumes"], [])
+        self.assertEqual(container["containers"][0]["volumeMounts"], [])
+        for retired in ("profile-projection", "AsyncBlobStorageConfig", "AsyncSBConfig", "EVENTHUB_NAMESPACE"):
+            self.assertNotIn(retired, json.dumps(gateway))
+
+    def test_public_identity_gated_resources_keep_their_names_and_auth_posture(self) -> None:
+        def resources(module: str) -> list[dict]:
+            rows = self.template["resources"][module]["properties"]["template"]["resources"]
+            return list(rows.values()) if isinstance(rows, dict) else rows
+
+        data = [
+            row for row in resources("data")
+            if row["type"] in ("Microsoft.DocumentDB/databaseAccounts", "Microsoft.Storage/storageAccounts")
+        ]
+        self.assertEqual(len(data), 3)
+        for row in data:
+            self.assertEqual(row["properties"]["publicNetworkAccess"], "Enabled")
+            key = "disableLocalAuth" if row["type"] == "Microsoft.DocumentDB/databaseAccounts" else "allowSharedKeyAccess"
+            self.assertIs(row["properties"][key], key == "disableLocalAuth")
+        vault = next(row for row in resources("keyvault") if row["type"] == "Microsoft.KeyVault/vaults")
+        self.assertEqual(vault["properties"]["publicNetworkAccess"], "Enabled")
+        self.assertIs(vault["properties"]["enableRbacAuthorization"], True)
+        platform = self.template["resources"]["platform"]["properties"]["template"]
+        self.assertNotIn("infrastructureSubnetId", platform["parameters"])
         self.assertEqual(
-            gateway["parameters"]["proxyProfileProjectionJson"],
-            "[if(empty(parameters('proxyProfileProjectionJsonBase64')), createObject('value', ''), "
-            "createObject('value', base64ToString(parameters('proxyProfileProjectionJsonBase64'))))]",
+            platform["variables"]["containerEnvName"],
+            "[format('cae-{0}-{1}', parameters('workload'), parameters('environmentName'))]",
         )
-        self.assertEqual(gateway["template"]["parameters"]["proxyProfileProjectionJson"]["type"], "securestring")
-        self.assertIn(
-            "createObject('name', 'profile-projection-json', 'value', parameters('proxyProfileProjectionJson'))",
-            json.dumps(gateway["template"]["resources"]),
-        )
+        managed = next(row for row in resources("platform") if row["type"] == "Microsoft.App/managedEnvironments")
+        self.assertNotIn("vnetConfiguration", managed["properties"])
 
     def test_claude_operator_units_compile_default_off_without_application_or_key_resources(self) -> None:
         for filename, gate, allowed in (
@@ -428,111 +463,6 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertIn(
             "AI4IA_PHOTO_AVATARS_ENABLED", api["template"]["variables"]["photoAvatarEnv"],
         )
-
-    def _companion(self) -> tuple[dict, dict[str, list[dict]]]:
-        module = self.template["resources"]["companion"]
-        resources = module["properties"]["template"]["resources"]
-        rows = resources.values() if isinstance(resources, dict) else resources
-        by_type: dict[str, list[dict]] = {}
-        for row in rows:
-            by_type.setdefault(row["type"], []).append(row)
-        return module, by_type
-
-    def test_companion_console_is_default_off_and_never_created_open(self) -> None:
-        parameters = self.template["parameters"]
-        self.assertIs(parameters["companionAppEnabled"]["defaultValue"], False)
-        self.assertEqual(parameters["companionAppImage"]["defaultValue"], "")
-        module, _ = self._companion()
-        self.assertEqual(module["condition"], "[variables('companionAppDeployable')]")
-        deployable = self.template["variables"]["companionAppDeployable"]
-        # Every prerequisite is part of the one condition; an empty admin set, a
-        # missing sign-in app or a non-digest image never creates the app.
-        for guard in (
-            "parameters('companionAppEnabled')",
-            "parameters('proxyEventHubTelemetryEnabled')",
-            "contains(parameters('companionAppImage'), '@sha256:')",
-            "not(empty(parameters('companionAppEntraClientId')))",
-            "greater(length(concat(variables('companionAdminGroupIds'), "
-            "variables('companionAdminPrincipalIds'))), 0)",
-        ):
-            self.assertIn(guard, deployable)
-
-    def test_companion_console_identity_is_read_only_and_hub_scoped(self) -> None:
-        _, by_type = self._companion()
-        roles = by_type["Microsoft.Authorization/roleAssignments"]
-        # An assignment without an explicit scope lands on the resource group.
-        scopes = {role["properties"]["roleDefinitionId"]: role.get("scope", "<resource group>") for role in roles}
-        self.assertEqual(len(scopes), len(roles), "duplicate role definitions")
-        module_vars = self.template["resources"]["companion"]["properties"]["template"]["variables"]
-        self.assertEqual(module_vars["acrPullRoleId"], "7f951dda-4ed3-4680-a7ca-43fe172d538d")
-        self.assertEqual(module_vars["eventHubsDataReceiverRoleId"], "a638d3c7-ab3a-418d-83e6-5f17a39d4fde")
-        self.assertEqual(set(scopes), {
-            "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
-            "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
-            "variables('eventHubsDataReceiverRoleId'))]",
-        })
-        receiver = scopes[
-            "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
-            "variables('eventHubsDataReceiverRoleId'))]"
-        ]
-        self.assertIn("Microsoft.EventHub/namespaces/eventhubs'", receiver)
-        module = json.dumps(self.template["resources"]["companion"])
-        # No write, model, secret or configuration authority: Data Owner/Reader,
-        # Cognitive Services, Foundry and Key Vault roles are all absent.
-        for role in (
-            "5ae67dd6-50cb-40e7-96ff-dc2bfa4b606b", "516239f1-63e1-4d78-a4de-a74fb236a071",
-            "a97b65f3-24c7-4388-baec-2e87135dc908", "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
-            "53ca6127-db72-4b80-b1b0-d745d6d5456d", "4633458b-17de-408a-b874-0445c86b69e6",
-            "2b629674-e913-4c01-ae53-ef4638d8f975",
-        ):
-            self.assertNotIn(role, module)
-        self.assertEqual(len(by_type["Microsoft.EventHub/namespaces/eventhubs/consumergroups"]), 1)
-
-    def test_companion_console_requires_entra_admin_sign_in(self) -> None:
-        _, by_type = self._companion()
-        (auth,) = by_type["Microsoft.App/containerApps/authConfigs"]
-        properties = auth["properties"]
-        self.assertIs(properties["platform"]["enabled"], True)
-        self.assertEqual(properties["globalValidation"]["unauthenticatedClientAction"], "RedirectToLoginPage")
-        self.assertIs(properties["httpSettings"]["requireHttps"], True)
-        self.assertIs(properties["login"]["tokenStore"]["enabled"], False)
-        entra = properties["identityProviders"]["azureActiveDirectory"]
-        self.assertIs(entra["enabled"], True)
-        self.assertNotIn("clientSecretSettingName", entra["registration"])
-        policy = entra["validation"]["defaultAuthorizationPolicy"]
-        self.assertEqual(policy["allowedPrincipals"], {
-            "groups": "[parameters('adminGroupIds')]",
-            "identities": "[parameters('adminPrincipalIds')]",
-        })
-        self.assertEqual(policy["allowedApplications"], ["[parameters('entraClientId')]"])
-
-    def test_companion_console_is_not_an_azd_service_and_holds_no_secrets(self) -> None:
-        _, by_type = self._companion()
-        (app,) = by_type["Microsoft.App/containerApps"]
-        self.assertEqual(app["tags"], "[parameters('tags')]")
-        self.assertNotIn("azd-service-name", json.dumps(app))
-        configuration = app["properties"]["configuration"]
-        self.assertNotIn("secrets", configuration)
-        ingress = configuration["ingress"]
-        self.assertIs(ingress["external"], True)
-        self.assertIs(ingress["allowInsecure"], False)
-        (restrictions,) = ingress["copy"]
-        self.assertEqual(restrictions["name"], "ipSecurityRestrictions")
-        self.assertEqual(restrictions["count"], "[length(parameters('allowedIpRanges'))]")
-        self.assertEqual(restrictions["input"]["action"], "Allow")
-        template = app["properties"]["template"]
-        self.assertEqual(template["scale"]["maxReplicas"], 1)
-        (container,) = template["containers"]
-        self.assertEqual(container["image"], "[parameters('image')]")
-        env = {item["name"]: item.get("value") for item in container["env"]}
-        self.assertEqual(env["AZURE_TOKEN_CREDENTIALS"], "ManagedIdentityCredential")
-        self.assertEqual(env["CompanionApp__EventHubMonitor__eventhub_enabled"], "true")
-        # The in-app admin gate receives exactly the platform policy's allow-list.
-        self.assertEqual(env["CompanionApp__Admin__GroupIds"], "[join(parameters('adminGroupIds'), ',')]")
-        self.assertEqual(env["CompanionApp__Admin__PrincipalIds"], "[join(parameters('adminPrincipalIds'), ',')]")
-        for forbidden in ("EVENTHUB_CONNECTIONSTRING", "CompanionApp__EventHubMonitor__ConnectionString",
-                          "CompanionApp__EventHubMonitor__CheckpointStorage"):
-            self.assertNotIn(forbidden, env)
 
     def test_proxy_hosts_and_header_policy_keep_upstream_caller_controls_off(self) -> None:
         gateway = self.template["resources"]["gateway"]["properties"]["template"]

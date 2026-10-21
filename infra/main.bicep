@@ -323,46 +323,11 @@ param proxyCustomDomain string = ''
 @description('Existing Azure-managed cert name the proxy adopts (empty derives a stable name).')
 param proxyManagedCertName string = ''
 
-@description('Enable the SimpleL7Proxy server-owned application profile snapshot. Default OFF; requires a non-empty minimal projection JSON.')
-param proxyProfilesEnabled bool = false
-
-@secure()
-@description('Minimal server-owned application profile projection (the secret AI4IA_PROXY_PROFILE_PROJECTION_JSON), carried as its UTF-8 base64 transport because azd substitutes parameter values unescaped. Mounted as an ACA secret file; never fetched from a public endpoint.')
-param proxyProfileProjectionJsonBase64 string = ''
-
 @description('Enable priority-key mapping and reserved proxy workers. Default OFF.')
 param proxyPrioritiesEnabled bool = false
 
 @description('Reserved proxy workers in priority:count format. Required when proxyPrioritiesEnabled.')
 param proxyPriorityWorkers string = ''
-
-@description('Enable metadata-only SimpleL7Proxy Event Hub telemetry. Default OFF.')
-param proxyEventHubTelemetryEnabled bool = false
-
-@description('Deploy the optional admin-only CompanionApp telemetry console. Default OFF; requires proxy Event Hub telemetry, an attested digest-pinned image, an Entra app registration and at least one admin group or principal.')
-param companionAppEnabled bool = false
-
-@description('Digest-pinned CompanionApp image in this environment registry, produced and attested by .github/workflows/companion-image.yml.')
-param companionAppImage string = ''
-
-@description('Client id of the Entra app registration used for CompanionApp sign-in.')
-param companionAppEntraClientId string = ''
-
-@description('Comma-separated Entra group object ids whose members may use CompanionApp.')
-param companionAppAdminGroupIds string = ''
-
-@description('Comma-separated Entra user or service principal object ids that may use CompanionApp.')
-param companionAppAdminPrincipalIds string = ''
-
-@description('Optional comma-separated admin CIDR ranges allowed to reach CompanionApp ingress.')
-param companionAppAllowedIpRanges string = ''
-
-@description('CompanionApp minimum replicas: 0 scales to zero, 1 keeps the in-memory feed collecting.')
-@allowed([0, 1])
-param companionAppMinReplicas int = 0
-
-@description('Enable durable proxy async processing backed by dedicated Blob + Service Bus resources. Default OFF.')
-param proxyAsyncEnabled bool = false
 
 @minValue(1)
 @description('SimpleL7Proxy workers per replica.')
@@ -398,25 +363,6 @@ before this was turned on. FastAPI now holds no OpenAI inference role:
 Responses-API Code Interpreter uses a dedicated API-scoped APIM route, while
 Content Understanding retains only its narrow data-plane role.''')
 param foundryDisableLocalAuth bool = true
-
-@description('''EXPERIMENTAL direct-Bicep network-isolation foundation. This
-parameter is intentionally absent from main.parameters.json and normal azd/CI
-mapping: it is not an enableable production posture yet and does not cover every
-required Azure service or DNS path. When true, it provisions a VNet + private DNS,
-creates a NEW VNet-injected Container Apps environment under a `-vnet` name, and
-stands up the currently implemented private-endpoint subset. Default false =
-today's public + identity-gated posture, byte-for-byte unchanged. See
-docs/runbooks/feature-enablement.md before extending or using this scaffold.''')
-param vnetIsolationEnabled bool = false
-
-@description('''EXPERIMENTAL direct-Bicep private-only data-tier switch. This
-parameter is intentionally absent from main.parameters.json and normal azd/CI
-mapping. When true, it disables public access for the currently covered data
-resources. It is valid only with vnetIsolationEnabled, working private DNS, and a
-deployer that already has a VNet path; otherwise off-VNet azd loses management
-access. The current scaffold is incomplete and must not be presented as end-to-end
-network isolation. Default false.''')
-param dataTierPrivate bool = false
 
 @description('''Enable Key Vault purge protection, which blocks permanent deletion of the
 vault and its secrets for the soft-delete retention window. Default false so the
@@ -577,8 +523,6 @@ module keyvault 'modules/keyvault.bicep' = {
     // connection secrets at runtime, which needs Secrets Officer (write), not the
     // read-only Secrets User above. Granted only when the feature is enabled.
     secretsOfficerPrincipalIds: customToolsEnabled ? [apiIdentity.principalId] : []
-    // Network-isolation mode: lock the vault to private-only.
-    publicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
 
@@ -611,8 +555,6 @@ module data 'modules/data.bicep' = {
     // Photo avatar records (Cosmos) and previews (shared media account);
     // gated on the photo avatar flag — default OFF.
     deployPhotoAvatarStorage: photoAvatarsEnabled
-    // Network-isolation mode: lock the data tier to private-only.
-    dataPublicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
 
@@ -635,20 +577,6 @@ module search 'modules/search.bicep' = {
   }
 }
 
-// Network isolation: VNet + private DNS. Provisioned only when the
-// flag is on; nothing here exists by default. The Container Apps env binds to
-// snet-infra and the data-tier private endpoints land in snet-pep.
-module network 'modules/network.bicep' = if (vnetIsolationEnabled) {
-  name: 'network'
-  scope: rg
-  params: {
-    location: location
-    tags: tags
-    workload: workload
-    environmentName: environmentName
-  }
-}
-
 module platform 'modules/containerapps.bicep' = {
   name: 'platform'
   scope: rg
@@ -660,139 +588,6 @@ module platform 'modules/containerapps.bicep' = {
     uniqueSuffix: uniqueSuffix
     logAnalyticsName: monitoring.outputs.logAnalyticsName
     acrPullPrincipalIds: allPrincipalIds
-    // VNet injection. Empty when the flag is off => env name + posture
-    // unchanged. Non-empty => a NEW VNet-injected env under a `-vnet` name.
-    // network is deployed under the same flag, so the guarded access is safe.
-    #disable-next-line BCP318
-    infrastructureSubnetId: vnetIsolationEnabled ? network.outputs.infraSubnetId : ''
-  }
-}
-
-// Data-tier private endpoints. Targets are filtered to drop any
-// conditionally-deployed storage account that isn't present (empty serviceId).
-var privateEndpointTargets = vnetIsolationEnabled ? filter([
-  {
-    name: 'cosmos'
-    serviceId: data.outputs.cosmosId
-    groupId: 'Sql'
-    #disable-next-line BCP318
-    dnsZoneId: network.outputs.cosmosDnsZoneId
-  }
-  {
-    name: 'docstorage'
-    serviceId: data.outputs.documentStorageId
-    groupId: 'blob'
-    #disable-next-line BCP318
-    dnsZoneId: network.outputs.blobDnsZoneId
-  }
-  {
-    name: 'imgstorage'
-    serviceId: data.outputs.imageStorageId
-    groupId: 'blob'
-    #disable-next-line BCP318
-    dnsZoneId: network.outputs.blobDnsZoneId
-  }
-  {
-    name: 'keyvault'
-    serviceId: keyvault.outputs.keyVaultId
-    groupId: 'vault'
-    #disable-next-line BCP318
-    dnsZoneId: network.outputs.vaultDnsZoneId
-  }
-  {
-    name: 'proxyasyncblob'
-    serviceId: proxyasync.outputs.storageAccountId
-    groupId: 'blob'
-    #disable-next-line BCP318
-    dnsZoneId: network.outputs.blobDnsZoneId
-  }
-  {
-    name: 'proxyasyncbus'
-    serviceId: proxyasync.outputs.serviceBusNamespaceId
-    groupId: 'namespace'
-    #disable-next-line BCP318
-    dnsZoneId: network.outputs.serviceBusDnsZoneId
-  }
-], t => !empty(t.serviceId)) : []
-
-module privateEndpoints 'modules/privateendpoints.bicep' = if (vnetIsolationEnabled) {
-  name: 'privateEndpoints'
-  scope: rg
-  params: {
-    location: location
-    tags: tags
-    #disable-next-line BCP318
-    pepSubnetId: network.outputs.pepSubnetId
-    targets: privateEndpointTargets
-  }
-}
-
-module eventhubs 'modules/eventhubs.bicep' = if (proxyEventHubTelemetryEnabled) {
-  name: 'eventhubs'
-  scope: rg
-  params: {
-    location: location
-    tags: tags
-    workload: workload
-    environmentName: environmentName
-    uniqueSuffix: uniqueSuffix
-    senderPrincipalIds: [
-      proxyIdentity.principalId
-    ]
-    receiverPrincipalIds: []
-    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
-  }
-}
-
-// --- Optional admin-only CompanionApp telemetry console (default OFF) ---
-// Not an azd service: the digest comes from the attested companion-image
-// workflow. Fail closed: without the telemetry feed, a digest-pinned image, a
-// sign-in app registration and a non-empty admin set, nothing is created, so an
-// empty Easy Auth allow-list can never admit every tenant user.
-var companionAdminGroupIds = filter(map(split(companionAppAdminGroupIds, ','), id => trim(id)), id => !empty(id))
-var companionAdminPrincipalIds = filter(map(split(companionAppAdminPrincipalIds, ','), id => trim(id)), id => !empty(id))
-var companionAllowedIpRanges = filter(map(split(companionAppAllowedIpRanges, ','), range => trim(range)), range => !empty(range))
-var companionAppDeployable = companionAppEnabled && proxyEventHubTelemetryEnabled && contains(companionAppImage, '@sha256:') && !empty(companionAppEntraClientId) && length(concat(companionAdminGroupIds, companionAdminPrincipalIds)) > 0
-
-module companion 'modules/companion.bicep' = if (companionAppDeployable) {
-  name: 'companion'
-  scope: rg
-  params: {
-    location: location
-    tags: tags
-    environmentName: environmentName
-    containerEnvId: platform.outputs.containerEnvId
-    acrName: platform.outputs.acrName
-    acrLoginServer: platform.outputs.acrLoginServer
-    image: companionAppImage
-    #disable-next-line BCP318
-    eventHubNamespaceName: eventhubs.outputs.namespaceName
-    #disable-next-line BCP318
-    eventHubName: eventhubs.outputs.telemetryHubName
-    entraTenantId: empty(entraTenantId) ? tenant().tenantId : entraTenantId
-    entraClientId: companionAppEntraClientId
-    adminGroupIds: companionAdminGroupIds
-    adminPrincipalIds: companionAdminPrincipalIds
-    allowedIpRanges: companionAllowedIpRanges
-    minReplicas: companionAppMinReplicas
-  }
-}
-
-// Durable async is separate from the in-memory synchronous proxy queue. The
-// module is declared unconditionally but creates no resources unless enabled.
-module proxyasync 'modules/proxyasync.bicep' = {
-  name: 'proxyasync'
-  scope: rg
-  params: {
-    enabled: proxyAsyncEnabled
-    location: location
-    tags: tags
-    workload: workload
-    environmentName: environmentName
-    uniqueSuffix: uniqueSuffix
-    proxyPrincipalId: proxyIdentity.principalId
-    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
-    publicNetworkAccess: dataTierPrivate ? 'Disabled' : 'Enabled'
   }
 }
 
@@ -923,22 +718,11 @@ module gateway 'modules/gateway.bicep' = {
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     appConfigEndpoint: keyvault.outputs.appConfigEndpoint
     appConfigLabel: proxyAppConfigLabel
-    proxyEventHubTelemetryEnabled: proxyEventHubTelemetryEnabled
-    #disable-next-line BCP318
-    eventHubNamespaceFqdn: proxyEventHubTelemetryEnabled ? eventhubs.outputs.namespaceFqdn : ''
-    #disable-next-line BCP318
-    eventHubName: proxyEventHubTelemetryEnabled ? eventhubs.outputs.telemetryHubName : ''
-    proxyProfilesEnabled: proxyProfilesEnabled
-    proxyProfileProjectionJson: empty(proxyProfileProjectionJsonBase64) ? '' : base64ToString(proxyProfileProjectionJsonBase64)
     proxyPrioritiesEnabled: proxyPrioritiesEnabled
     proxyPriorityWorkers: proxyPriorityWorkers
     proxyWorkers: proxyWorkers
     proxyMinReplicas: proxyMinReplicas
     proxyMaxReplicas: proxyMaxReplicas
-    proxyAsyncEnabled: proxyAsyncEnabled
-    proxyAsyncBlobUri: proxyasync.outputs.blobServiceUri
-    proxyAsyncServiceBusNamespace: proxyasync.outputs.serviceBusNamespaceFqdn
-    proxyAsyncServiceBusQueue: proxyasync.outputs.asyncQueueName
     customDomain: proxyCustomDomain
     managedCertificateName: proxyManagedCertName
     containerEnvName: platform.outputs.containerEnvName
@@ -1340,10 +1124,6 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = platform.outputs.acrLoginServe
 output AZURE_CONTAINER_REGISTRY_NAME string = platform.outputs.acrName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = platform.outputs.containerEnvName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = platform.outputs.containerEnvId
-#disable-next-line BCP318
-output AZURE_EVENTHUBS_NAMESPACE_FQDN string = proxyEventHubTelemetryEnabled ? eventhubs.outputs.namespaceFqdn : ''
-#disable-next-line BCP318
-output AZURE_EVENTHUBS_TELEMETRY_HUB string = proxyEventHubTelemetryEnabled ? eventhubs.outputs.telemetryHubName : ''
 output AZURE_MODEL_GATEWAY_URL string = gateway.outputs.proxyIngressUrl
 output AZURE_APIM_GATEWAY_URL string = gateway.outputs.apimGatewayUrl
 output AZURE_APIM_NAME string = apimcore.outputs.apimName
@@ -1368,8 +1148,6 @@ output AZURE_API_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
 output AZURE_WEB_URL string = web.outputs.webUrl
 output AZURE_WEB_APP_NAME string = web.outputs.webAppName
-#disable-next-line BCP318
-output AZURE_COMPANION_APP_URL string = companionAppDeployable ? 'https://${companion.outputs.fqdn}' : ''
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_FOUNDRY_ENDPOINTS array = [for (r, i) in regionList: {
   region: r.name

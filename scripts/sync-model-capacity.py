@@ -14,6 +14,8 @@ allowlist:
 * Regional pools satisfy ``current in region + available == limit``.
 * Data-zone pools are allocated independently by ``models.regions[].dataZone``.
 
+``--reduce-to-quota`` repairs recorded pools after a quota decrease without
+increasing any deployment, changing pool membership, or going below a baseline.
 The command is read-only unless ``--apply`` is supplied.
 """
 
@@ -133,6 +135,84 @@ def _balanced_allocate(
         (entry["model"], entry["region"], entry["sku"]): capacities[index]
         for index, entry in enumerate(entries)
     }
+
+
+def reduce_capacity_to_quota(
+    models: dict[str, Any],
+    live_by_region: dict[str, dict[str, int]],
+    quota_by_region: dict[str, list[dict[str, Any]]],
+) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str, str], str], list[str]]:
+    """Reduce only over-limit recorded pools; retain outside allocation and baselines."""
+    quotas = {region: index_quota(rows) for region, rows in quota_by_region.items()}
+    plan: dict[tuple[str, str, str], int] = {}
+    pools: dict[tuple[str, str, str], str] = {}
+    diagnostics: list[str] = []
+    for model in models["catalog"]:
+        if model_target(model) != "source":
+            continue
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for deployment in model["deployments"]:
+            pool = deployment.get("maxCapacityPool")
+            if pool is not None:
+                grouped[(deployment["sku"], pool)].append(deployment)
+        for (sku, pool), deployments in grouped.items():
+            observed = []
+            for deployment in deployments:
+                region = deployment["region"]
+                counter = next((
+                    quotas.get(region, {})[key]
+                    for key in _quota_keys(sku, model["name"])
+                    if key in quotas.get(region, {})
+                ), None)
+                if counter is None:
+                    raise ValueError(f"{model['name']} ({sku}, {pool}): quota evidence is missing.")
+                observed.append(counter)
+            if len({(row["counter"], row["limit"], row["current"]) for row in observed}) != 1:
+                raise ValueError(f"{model['name']} ({sku}, {pool}): quota replicas disagree.")
+            counter = observed[0]
+            recorded = [int(deployment.get("maxCapacity", deployment["capacity"])) for deployment in deployments]
+            if sum(recorded) <= counter["limit"]:
+                continue
+            if pool != "global" and pool not in {
+                f"region:{deployment['region']}" for deployment in deployments
+            } | {
+                f"data-zone:{models['regions'][deployment['region']]['dataZone']}"
+                for deployment in deployments
+            }:
+                raise ValueError(f"{model['name']} ({sku}): unrecognized recorded pool {pool!r}.")
+            current = []
+            for deployment in deployments:
+                name = deployment_name(models, model["name"], deployment)
+                value = live_by_region.get(deployment["region"], {}).get(name)
+                if type(value) is not int or value < 0:
+                    raise ValueError(f"{name}: live allocation is unavailable.")
+                current.append(value)
+            if counter["current"] < sum(current):
+                raise ValueError(f"{model['name']} ({sku}, {pool}): quota usage contradicts live allocation.")
+            outside = counter["current"] - sum(current)
+            target = counter["limit"] - outside
+            baselines = [int(deployment["capacity"]) for deployment in deployments]
+            if target < sum(baselines):
+                raise ValueError(f"{model['name']} ({sku}, {pool}): quota cannot fit the portable baselines.")
+            members = [
+                {
+                    "model": model["name"], "region": deployment["region"], "sku": sku,
+                    "current": baseline, "available": min(recorded[index], current[index]) - baseline,
+                }
+                for index, (deployment, baseline) in enumerate(zip(deployments, baselines, strict=True))
+            ]
+            if any(member["available"] < 0 for member in members):
+                raise ValueError(f"{model['name']} ({sku}, {pool}): live allocation is below baseline.")
+            allocated = _balanced_allocate(members, target)
+            if sum(allocated.values()) != target:
+                raise ValueError(f"{model['name']} ({sku}, {pool}): reduction would require an increase.")
+            plan.update(allocated)
+            pools.update({key: pool for key in allocated})
+            diagnostics.append(
+                f"{model['name']} ({sku}, {pool}): recorded {sum(recorded)} -> {target} units; "
+                f"outside allocation {outside}, quota {counter['limit']} [{counter['counter']}]"
+            )
+    return plan, pools, diagnostics
 
 
 def build_capacity_plan(
@@ -301,10 +381,11 @@ def build_capacity_plan(
 
 
 def _collect_live(
-    models: dict[str, Any], resource_group: str, environment_name: str
+    models: dict[str, Any], resource_group: str, environment_name: str, subscription_id: str
 ) -> dict[str, dict[str, int]]:
     accounts = _az_json(
-        "cognitiveservices", "account", "list", "--resource-group", resource_group
+        "cognitiveservices", "account", "list", "--resource-group", resource_group,
+        "--subscription", subscription_id,
     )
     foundry_token = models["naming"]["foundryToken"]
     live: dict[str, dict[str, int]] = {}
@@ -331,6 +412,7 @@ def _collect_live(
             resource_group,
             "--name",
             matches[0]["name"],
+            "--subscription", subscription_id,
         )
         live[region] = {
             str(item["name"]): int((item.get("sku") or {}).get("capacity") or 0)
@@ -364,6 +446,7 @@ def _collect_platform(
             f"modelFormat={model_format}",
             f"modelName={model_name}",
             f"modelVersion={version}",
+            "--subscription", subscription_id,
         )
     return collected
 
@@ -379,6 +462,10 @@ def main() -> int:
         help="Write maxCapacity values to infra/models.json. Default is plan-only.",
     )
     parser.add_argument("--output-plan", type=Path)
+    parser.add_argument(
+        "--reduce-to-quota", action="store_true",
+        help="Reduce only over-limit recorded pools; never increase live or desired capacities.",
+    )
     args = parser.parse_args()
 
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
@@ -396,14 +483,20 @@ def main() -> int:
         )
 
     source = source_catalog(models)
-    live = _collect_live(source, args.resource_group, args.environment_name)
+    live = _collect_live(source, args.resource_group, args.environment_name, subscription_id)
     active_names = {name for deployments in live.values() for name in deployments}
     quota = {
-        region: _az_json("cognitiveservices", "usage", "list", "--location", region)
+        region: _az_json(
+            "cognitiveservices", "usage", "list", "--location", region,
+            "--subscription", subscription_id,
+        )
         for region in models["regions"]
     }
-    platform = _collect_platform(subscription_id, source, active_names)
-    plan, pools, diagnostics = build_capacity_plan(models, live, quota, platform)
+    if args.reduce_to_quota:
+        plan, pools, diagnostics = reduce_capacity_to_quota(models, live, quota)
+    else:
+        platform = _collect_platform(subscription_id, source, active_names)
+        plan, pools, diagnostics = build_capacity_plan(models, live, quota, platform)
 
     baseline_total = 0
     maximum_total = 0
@@ -411,12 +504,17 @@ def main() -> int:
     live_total = 0
     active_maximum_total = 0
     changed_from_live = 0
+    increased = 0
+    reduced = 0
     plan_rows: list[dict[str, Any]] = []
     for model in models["catalog"]:
         for deployment in model["deployments"]:
             key = (model["name"], deployment["region"], deployment["sku"])
             baseline = int(deployment["capacity"])
-            maximum = int(plan.get(key, deployment.get("maxCapacity", baseline)))
+            recorded = deployment.get("maxCapacity", baseline)
+            if type(recorded) is not int or recorded < baseline:
+                raise ValueError(f"{model['name']}: maximum capacity must be an integer at or above baseline.")
+            maximum = plan.get(key, recorded)
             baseline_total += baseline
             maximum_total += maximum
             if key in plan:
@@ -427,6 +525,8 @@ def main() -> int:
                 active_maximum_total += maximum
                 if maximum != current:
                     changed_from_live += 1
+                increased += maximum > current
+                reduced += maximum < current
                 deployment["maxCapacity"] = maximum
                 deployment["maxCapacityPool"] = pools[key]
                 plan_rows.append(
@@ -442,9 +542,12 @@ def main() -> int:
 
     print(
         f"Capacity plan: {len(plan_rows)} live deployments, "
-        f"{changed_from_live} live increases, {live_total} -> "
-        f"{active_maximum_total} active units (+{active_maximum_total - live_total})."
+        f"{increased} increases and {reduced} reductions, {live_total} -> "
+        f"{active_maximum_total} active units ({active_maximum_total - live_total:+d})."
     )
+    if args.reduce_to_quota:
+        for diagnostic in diagnostics:
+            print(f"  {diagnostic}")
     for row in sorted(
         plan_rows,
         key=lambda item: item["maxCapacity"] - item["liveCapacity"],

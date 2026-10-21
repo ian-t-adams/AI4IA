@@ -11,7 +11,7 @@ Vendored directories:
 - `proxy/Shared/`
 - `proxy/Shared-parser/`
 - `proxy/SimpleL7Proxy/`
-- `proxy/CompanionApp/`, a hosted subset of the upstream telemetry console. Upstream pages AI4IA does not vendor are recorded as `ai4ia-excluded` in the provenance manifest. The subset also carries Bootstrap 5.3.3's minified stylesheet (`wwwroot/lib/bootstrap/dist/css/bootstrap.min.css`, MIT License, copyright The Bootstrap Authors), whose license header is retained in the file.
+- `proxy/CompanionApp/`, a retained unhosted subset of the upstream telemetry console. Upstream pages AI4IA does not vendor are recorded as `ai4ia-excluded` in the provenance manifest. The subset also carries Bootstrap 5.3.3's minified stylesheet (`wwwroot/lib/bootstrap/dist/css/bootstrap.min.css`, MIT License, copyright The Bootstrap Authors), whose license header is retained in the file.
 
 Upstream license: MIT License, copyright Microsoft Corporation. A copy of the upstream MIT license is kept at `proxy/LICENSE`. Keep the pinned commit, this notice, `proxy/README.md`, and its documented AI4IA deviations in sync whenever the vendored copy is refreshed.
 
@@ -26,7 +26,7 @@ are local adaptations over that pin, documented in the same inventory.
 
 - `app/web` uses Next.js, React, TypeScript, ESLint, Vitest, Testing Library, MSAL browser packages, and their transitive npm dependencies. See `app/web/package.json` and `app/web/package-lock.json`.
 - `app/api` uses FastAPI, Pydantic, httpx, Azure SDKs, PyJWT, Durable Task, Web IQ, OpenTelemetry/Azure Monitor packages, pytest, ruff, pyright, and their transitive Python dependencies. See `app/api/pyproject.toml` and `app/api/uv.lock`.
-- `proxy` builds .NET 10 SimpleL7Proxy and NuGet dependencies from the vendored project files. The optional CompanionApp console (`proxy/CompanionApp.Dockerfile`) builds from the same vendored source and locked NuGet graph.
+- `proxy` builds .NET 10 SimpleL7Proxy and NuGet dependencies from the vendored project files. The retained CompanionApp source snapshot is no longer built or hosted by AI4IA; its licenses and provenance remain.
 
 ## Tooling, containers, and actions
 

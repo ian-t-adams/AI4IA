@@ -26,7 +26,6 @@ feature resources.
 | `identity.bicep` | User-assigned managed identities |
 | `monitoring.bicep` | Log Analytics and workspace-based Application Insights |
 | `monitoring-reader-sub.bicep` | Subscription-scoped Monitoring Reader assignment for the API |
-| `network.bicep` / `privateendpoints.bicep` | Partial VNet/private-endpoint design scaffolding; not a served end-to-end isolation mode |
 | `keyvault.bicep` | Key Vault and App Configuration RBAC; postprovision reconciles the label-aware warm sentinel with the deployment identity |
 | `foundry.bicep` / `models.bicep` | Foundry accounts/projects and catalog-driven deployments |
 | `data.bicep` | Cosmos (canonical state) plus document/media/blob containers; PostgreSQL was retired and deleted |
@@ -35,8 +34,6 @@ feature resources.
 | `api.bicep` / `web.bicep` | API and web Container Apps |
 | `apimcore.bicep` / `gateway.bicep` | Shared APIM plus public SimpleL7Proxy HTTP/SSE edge, model/realtime APIs, policy, auth, and Foundry RBAC |
 | `mcpgateway.bicep` / `apicenter.bicep` | Official MCP APIM plane and optional API Center inventory |
-| `proxyasync.bicep` | Default-off AVM Blob + Service Bus backing for durable proxy async jobs |
-| `eventhubs.bicep` | Default-off proxy metadata Event Hubs namespace/hub |
 | `durabletask.bicep` | Optional Durable Task Scheduler and task hub |
 | `alerts.bicep` / `cost.bicep` | Monitor alerting and budget tracking |
 
@@ -73,12 +70,13 @@ python scripts/gen-gateway-policy.py --check
 python -m unittest scripts.tests.test_gateway_policy
 ```
 
-The direct Bicep `vnetIsolationEnabled` / `dataTierPrivate` parameters are not
-present in `main.parameters.json` or normal azd/CI mapping. Their current endpoint
-graph is partial: ACR, App Configuration, Search, Foundry, APIM, and monitoring
-are not privately covered. Do not treat direct parameter invocation as a supported
-private/regulated deployment. The underlying modules remain design scaffolding
-until a complete endpoint/DNS matrix and isolated cold-deploy test exist.
+The incomplete private-network scaffold and dormant proxy profiles, async,
+Event Hub export and hosted CompanionApp integrations are retired. The supported
+posture remains public endpoints with identity-based data-plane access and
+separate proxy/APIM credentials, not private networking or multi-application
+onboarding. No existing resource or user record is deleted by this source change.
+Review [the retained cleanup boundary](../docs/runbooks/feature-enablement.md#retired-scaffolding-and-operational-add-ons)
+before any separately approved cleanup or migration of an experimental deployment.
 
 ## Deployment prerequisites
 

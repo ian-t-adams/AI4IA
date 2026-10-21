@@ -2,8 +2,8 @@
 """Derive the azd transports of the JSON-valued deployment variables.
 
 azd inserts environment values into infra/main.parameters.json without JSON
-escaping, so AI4IA_CLAUDE_BINDING_JSON, AI4IA_GROUP_POLICY_JSON and the secret
-AI4IA_PROXY_PROFILE_PROJECTION_JSON travel as <NAME>_B64 base64 transports
+escaping, so AI4IA_CLAUDE_BINDING_JSON and AI4IA_GROUP_POLICY_JSON
+travel as <NAME>_B64 base64 transports
 (scripts/_json_transport.py). The raw variables stay the operator contract; never
 set a transport by hand.
 

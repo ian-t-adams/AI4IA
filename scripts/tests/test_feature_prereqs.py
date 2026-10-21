@@ -45,7 +45,7 @@ DERIVE_SCRIPT = ROOT / "scripts" / "derive-json-transport.py"
 REAL_PARAMETERS = ROOT / "infra" / "main.parameters.json"
 
 sys.path.insert(0, str(ROOT / "scripts"))
-from _json_transport import TRANSPORTS, TransportError, decode, encode  # noqa: E402
+from _json_transport import TRANSPORTS, Transport, TransportError, decode, encode  # noqa: E402
 
 # Minimum environment for a production / new-tenant standup. The committed
 # parameters file reads these through ${VAR=default} placeholders.
@@ -325,62 +325,76 @@ class StagedRealtimeTests(unittest.TestCase):
                 self.assertEqual(code, 0, err)
 
 
-COMPANION_IMAGE = "crfixture.azurecr.io/ai4ia/companion-ai4ia-fixture@sha256:" + "a" * 64
-COMPANION_READY = {
-    "companionAppEnabled": True,
-    "proxyEventHubTelemetryEnabled": True,
-    "companionAppImage": COMPANION_IMAGE,
-    "companionAppEntraClientId": "22222222-2222-2222-2222-222222222222",
-    "companionAppAdminGroupIds": "33333333-3333-3333-3333-333333333333",
-}
+class RetiredConfigurationTests(unittest.TestCase):
+    PARAMETERS = (
+        "vnetIsolationEnabled", "dataTierPrivate",
+        "proxyProfilesEnabled", "proxyProfileProjectionJson", "proxyProfileProjectionJsonBase64",
+        "proxyEventHubTelemetryEnabled", "proxyAsyncEnabled",
+        "companionAppEnabled", "companionAppImage", "companionAppEntraClientId",
+        "companionAppAdminGroupIds", "companionAppAdminPrincipalIds",
+        "companionAppAllowedIpRanges", "companionAppMinReplicas",
+    )
+    FLAGS = (
+        "AI4IA_PROXY_PROFILES_ENABLED", "AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED",
+        "AI4IA_PROXY_ASYNC_ENABLED", "AI4IA_COMPANION_APP_ENABLED",
+    )
+    VALUES = (
+        "AI4IA_PROXY_PROFILE_PROJECTION_JSON", "AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64",
+        "AI4IA_COMPANION_APP_IMAGE", "AI4IA_COMPANION_APP_ENTRA_CLIENT_ID",
+        "AI4IA_COMPANION_APP_ADMIN_GROUP_IDS", "AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS",
+        "AI4IA_COMPANION_APP_ALLOWED_IP_RANGES", "AI4IA_COMPANION_APP_MIN_REPLICAS",
+    )
 
-
-class CompanionAppPrerequisiteTests(unittest.TestCase):
-    def test_committed_console_is_default_off(self) -> None:
+    def test_removed_parameters_are_absent_and_stale_files_fail_even_when_disabled(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
-        self.assertEqual(
-            parameters["companionAppEnabled"]["value"], "${AI4IA_COMPANION_APP_ENABLED=false}",
-        )
-        self.assertEqual(parameters["companionAppImage"]["value"], "${AI4IA_COMPANION_APP_IMAGE=}")
-        # Control: a disabled console ignores even a nonsensical image.
-        with tempfile.TemporaryDirectory() as tmp, _environment(AZURE_ENV_NAME="ai4ia-fixture"):
-            code, _, err = _run(_write_parameters(tmp, {"companionAppImage": "nginx:latest"}))
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, _, err = _run(REAL_PARAMETERS)
             self.assertEqual(code, 0, err)
+            for name in self.PARAMETERS:
+                self.assertNotIn(name, parameters)
+                for value in (False, True, ""):
+                    with self.subTest(name=name, value=value):
+                        code, _, err = _run(_write_parameters(tmp, {name: value}))
+                        self.assertEqual(code, 1)
+                        self.assertIn(f"{name} has been removed", err)
 
-    def test_every_prerequisite_fails_closed_and_the_complete_set_passes(self) -> None:
-        cases = (
-            ({"proxyEventHubTelemetryEnabled": False}, "requires proxyEventHubTelemetryEnabled=true"),
-            ({"companionAppImage": ""}, "requires companionAppImage as a digest reference"),
-            ({"companionAppImage": "crfixture.azurecr.io/ai4ia/companion-ai4ia-fixture:latest"},
-             "requires companionAppImage as a digest reference"),
-            ({"companionAppImage": "docker.io/ai4ia/companion-ai4ia-fixture@sha256:" + "a" * 64},
-             "requires companionAppImage as a digest reference"),
-            ({"companionAppImage": "crfixture.azurecr.io/ai4ia/companion-other@sha256:" + "a" * 64},
-             "must come from this environment's companion repository"),
-            ({"companionAppEntraClientId": ""}, "requires companionAppEntraClientId"),
-            ({"companionAppAdminGroupIds": ""}, "requires at least one admin group or principal id"),
-            ({"companionAppAdminGroupIds": "admins"}, "must be Entra object id GUIDs"),
-            ({"companionAppAllowedIpRanges": "0.0.0.0/0"}, "must not allow every address"),
-            ({"companionAppAllowedIpRanges": "10.0.0.0/33"}, "must be an IPv4 CIDR"),
-            ({"companionAppMinReplicas": "2"}, "companionAppMinReplicas must be 0 or 1"),
-        )
-        with tempfile.TemporaryDirectory() as tmp, _environment(AZURE_ENV_NAME="ai4ia-fixture"):
-            # Control: the complete prerequisite set validates.
-            code, _, err = _run(_write_parameters(tmp, COMPANION_READY))
-            self.assertEqual(code, 0, err)
-            code, _, err = _run(_write_parameters(tmp, {
-                **COMPANION_READY,
-                "companionAppAdminGroupIds": "",
-                "companionAppAdminPrincipalIds": "44444444-4444-4444-4444-444444444444",
-                "companionAppAllowedIpRanges": "203.0.113.0/24, 198.51.100.7/32",
-                "companionAppMinReplicas": "1",
-            }))
-            self.assertEqual(code, 0, err)
-            for override, message in cases:
-                with self.subTest(override=override):
-                    code, _, err = _run(_write_parameters(tmp, {**COMPANION_READY, **override}))
+    def test_retired_flags_accept_only_empty_or_explicit_false_not_an_activation(self) -> None:
+        for name in self.FLAGS:
+            for value in ("", "false", "true", "1", "yes", "invalid"):
+                with self.subTest(name=name, value=value), _environment(**{name: value}):
+                    code, _, err = _run(REAL_PARAMETERS)
+                    denied = value not in {"", "false"}
+                    self.assertEqual(code, 1 if denied else 0, err)
+                    self.assertEqual(f"{name} has been removed" in err, denied)
+
+    def test_retired_values_are_refused_without_disclosing_them(self) -> None:
+        secret = '[{"appId":"synthetic-private-projection"}]'
+        for name in self.VALUES:
+            with self.subTest(name=name):
+                with _environment(**{name: ""}):
+                    code, _, err = _run(REAL_PARAMETERS)
+                    self.assertEqual(code, 0, err)
+                with _environment(**{name: secret}):
+                    code, out, err = _run(REAL_PARAMETERS)
                     self.assertEqual(code, 1)
-                    self.assertIn(message, err)
+                    self.assertIn(f"{name} has been removed", err)
+                    self.assertNotIn(secret, out + err)
+
+    def test_removed_profile_transport_cannot_be_derived_or_disclosed(self) -> None:
+        secret = '[{"appId":"synthetic-private-projection"}]'
+        self.assertNotIn("AI4IA_PROXY_PROFILE_PROJECTION_JSON", TRANSPORT)
+        self.assertNotIn(
+            "AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64",
+            DERIVE.derived({"AI4IA_PROXY_PROFILE_PROJECTION_JSON": secret}),
+        )
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, out, err = _run(_write_parameters(tmp, {
+                "proxyProfileProjectionJson": secret,
+                "proxyProfileProjectionJsonBase64": encode(secret),
+            }))
+        self.assertEqual(code, 1)
+        self.assertNotIn(secret, out + err)
+        self.assertNotIn(encode(secret), out + err)
 
 
 class CommittedParametersTests(unittest.TestCase):
@@ -758,7 +772,6 @@ class DeploymentAttestationTests(unittest.TestCase):
             ("data.bicep", "cosmos-"),
             ("apimcore.bicep", "apim-mcp-"),
             ("keyvault.bicep", "appcs-"),
-            ("eventhubs.bicep", "evhns-"),
         ):
             source = (ROOT / "infra" / "modules" / filename).read_text(encoding="utf-8")
             shape = re.search(rf"take\('({prefix}[^']+)', (\d+)\)", source)
@@ -1037,20 +1050,6 @@ class FeaturePrerequisiteTests(unittest.TestCase):
                 VALIDATOR.PARAMETERS_FILE = original
             return result, output.getvalue()
 
-    def test_profiles_reject_shared_key_prerequisite(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "proxyProfilesEnabled": True,
-                "proxyProfileProjectionJsonBase64": encode('[{"appId":"app-a"}]'),
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("verified identity-aware application header", output)
-        # The projection itself decoded and validated: only the edge blocks.
-        self.assertNotIn("proxyProfileProjectionJson", output)
-
     def test_tool_auto_approval_requires_entra_only_when_enabled(self) -> None:
         parameters: dict[str, object] = {
             "owner": "operator",
@@ -1144,39 +1143,6 @@ class FeaturePrerequisiteTests(unittest.TestCase):
             })
         self.assertEqual(result, 1, output)
         self.assertIn("imageEditingEnabled=true requires imageGenerationEnabled=true", output)
-
-    def test_environment_overrides_parameter_placeholder_defaults(self) -> None:
-        with patch.dict(
-            "os.environ",
-            _transported({
-                "AI4IA_PROXY_PROFILES_ENABLED": "true",
-                "AI4IA_PROXY_PROFILE_PROJECTION_JSON": '[{"appId":"app-a"}]',
-            }),
-            clear=False,
-        ):
-            result, output = self.run_validator(
-                {
-                    "owner": "operator",
-                    "apimPublisherEmail": "ops@contoso.test",
-                    "proxyProfilesEnabled": "${AI4IA_PROXY_PROFILES_ENABLED=false}",
-                    "proxyProfileProjectionJsonBase64": "${AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64=}",
-                }
-            )
-        self.assertEqual(result, 1)
-        self.assertIn("verified identity-aware application header", output)
-        self.assertNotIn("proxyProfileProjectionJson", output)
-
-    def test_private_data_tier_requires_vnet_isolation(self) -> None:
-        result, output = self.run_validator(
-            {
-                "owner": "operator",
-                "apimPublisherEmail": "ops@contoso.test",
-                "dataTierPrivate": True,
-                "vnetIsolationEnabled": False,
-            }
-        )
-        self.assertEqual(result, 1)
-        self.assertIn("requires vnetIsolationEnabled=true", output)
 
     def test_speech_voice_live_requires_master_voice_live_gate(self) -> None:
         result, output = self.run_validator(
@@ -1293,11 +1259,10 @@ AWKWARD_JSON = json.dumps(
     },
     ensure_ascii=False, indent=2,
 )
-SECRET_PROJECTION = '[{"appId": "app-a", "label": "synthetic \\"secret\\" projection"}]'
+SECRET_JSON = '{"label": "synthetic \\"secret\\" configuration"}'
 RAW_JSON = {
     "AI4IA_GROUP_POLICY_JSON": INCIDENT_POLICY,
     "AI4IA_CLAUDE_BINDING_JSON": AWKWARD_JSON,
-    "AI4IA_PROXY_PROFILE_PROJECTION_JSON": SECRET_PROJECTION,
 }
 AZD_TOKEN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(=([^}]*))?\}")
 
@@ -1406,7 +1371,7 @@ class AzdParameterSubstitutionRegressionTests(unittest.TestCase):
 
 class JsonTransportCodecTests(unittest.TestCase):
     def test_values_round_trip_exactly_in_a_substitution_safe_alphabet(self) -> None:
-        for raw in ("", "{}", " \t", INCIDENT_POLICY, AWKWARD_JSON, SECRET_PROJECTION, "\u2028", "🚀"):
+        for raw in ("", "{}", " \t", INCIDENT_POLICY, AWKWARD_JSON, SECRET_JSON, "\u2028", "🚀"):
             with self.subTest(raw=raw[:24]):
                 carried = encode(raw)
                 self.assertEqual(decode(carried), raw)
@@ -1469,21 +1434,15 @@ class DeriveJsonTransportTests(unittest.TestCase):
             )
             return result, target.read_text(encoding="utf-8")
 
-    def test_github_env_masks_the_secret_and_writes_every_transport(self) -> None:
+    def test_github_env_writes_every_transport_without_disclosing_values(self) -> None:
         result, written = self.run_github_env(RAW_JSON)
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = dict(line.split("=", 1) for line in written.splitlines())
         self.assertEqual(set(lines), {transport.transport_variable for transport in TRANSPORTS})
         for transport in TRANSPORTS:
             self.assertEqual(decode(lines[transport.transport_variable]), RAW_JSON[transport.variable])
-        masked = lines["AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64"]
-        self.assertTrue(masked)  # control: there is a secret-derived value to mask
-        self.assertEqual(result.stdout.splitlines()[0], f"::add-mask::{masked}")
-        self.assertEqual(result.stdout.count(masked), 1)
-        self.assertNotIn(masked, result.stderr)
         for transport in TRANSPORTS:
-            if not transport.secret:
-                self.assertNotIn(lines[transport.transport_variable], result.stdout)
+            self.assertNotIn(lines[transport.transport_variable], result.stdout)
             self.assertNotIn(RAW_JSON[transport.variable], result.stdout + result.stderr)
 
     def test_the_mask_is_emitted_before_the_secret_is_written(self) -> None:
@@ -1498,10 +1457,19 @@ class DeriveJsonTransportTests(unittest.TestCase):
                         seen.append(target.read_text(encoding="utf-8"))
                     return super().write(text)
 
-            code = DERIVE.github_env({**RAW_JSON, "GITHUB_ENV": str(target)}, Recorder())
+            transport = Transport("AI4IA_TEST_SECRET_JSON", "testSecretJson", secret=True)
+            out = Recorder()
+            with patch.object(DERIVE, "TRANSPORTS", (transport,)):
+                code = DERIVE.github_env({
+                    transport.variable: SECRET_JSON, "GITHUB_ENV": str(target),
+                }, out)
             self.assertEqual(code, 0)
             self.assertEqual(seen, [""])
-            self.assertIn(encode(SECRET_PROJECTION), target.read_text(encoding="utf-8"))
+            masked = encode(SECRET_JSON)
+            self.assertEqual(out.getvalue().splitlines()[0], f"::add-mask::{masked}")
+            self.assertEqual(out.getvalue().count(masked), 1)
+            self.assertNotIn(SECRET_JSON, out.getvalue())
+            self.assertIn(masked, target.read_text(encoding="utf-8"))
 
     def test_unset_variables_derive_empty_transports_and_no_mask(self) -> None:
         result, written = self.run_github_env({})
@@ -1734,14 +1702,14 @@ class JsonTransportValidationTests(unittest.TestCase):
 
     def test_the_secret_projection_never_reaches_validator_output(self) -> None:
         stale = {
-            "AI4IA_PROXY_PROFILE_PROJECTION_JSON": SECRET_PROJECTION,
-            "AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64": encode(SECRET_PROJECTION + " "),
+            "AI4IA_PROXY_PROFILE_PROJECTION_JSON": SECRET_JSON,
+            "AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64": encode(SECRET_JSON + " "),
         }
         with _environment(**stale):
             code, out, err = _run(REAL_PARAMETERS)
         self.assertEqual(code, 1)
-        self.assertIn("AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64 does not carry", err)
-        for value in (*stale.values(), encode(SECRET_PROJECTION)):
+        self.assertIn("AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64 has been removed", err)
+        for value in (*stale.values(), encode(SECRET_JSON)):
             self.assertNotIn(value, out + err)
 
 

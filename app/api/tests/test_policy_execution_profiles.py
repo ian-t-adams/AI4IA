@@ -72,11 +72,11 @@ def profiles():
         calls.append(body)
         return provider_reply(request)
 
-    def headers(subject):
+    def headers(subject, **claims):
         now = int(time.time())
         token = jwt.encode({
             "aud": BARE_GUID, "iss": ISSUER, "tid": TENANT, "oid": subject,
-            "iat": now, "exp": now + 3600, "roles": [],
+            "iat": now, "exp": now + 3600, "roles": [], **claims,
         }, private, algorithm="RS256", headers={"kid": KID})
         return {"Authorization": f"Bearer {token}"}
 
@@ -124,27 +124,140 @@ def test_real_profile_probe_and_one_shot_dispatch(profiles, profile, subject, pr
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("change", ["tools", "memory", "fresh", "sentinel", "output", "missing_guard"])
-def test_monitor_cannot_bypass_profile_at_actual_dispatch(profiles, change):
+@pytest.mark.parametrize("subject,prompt,maximum,guard", [
+    (MONITOR, CANARY_SENTINEL, 64, "canary_dispatch_guard"),
+    (EVALUATOR, "What is seven plus five?", 256, "evaluation_dispatch_guard"),
+])
+@pytest.mark.parametrize("change", ["tools", "memory", "fresh", "prompt", "output", "missing_guard"])
+def test_retained_actor_cannot_bypass_profile_at_actual_dispatch(
+    profiles, subject, prompt, maximum, guard, change,
+):
     client, model, headers, calls = profiles
-    auth = headers(MONITOR)
-    session = client.post("/api/sessions", json={
-        "model": model, "libraryDocumentIds": [],
-    }, headers=auth).json()
-    body = {
-        "sessionId": session["id"], "content": CANARY_SENTINEL, "model": model,
-        "stream": False, "allowTools": False, "allowAutomaticMemory": False,
-        "requireFreshSession": True, "params": {"max_tokens": 64},
-    }
+    auth = headers(subject)
+
+    def request():
+        session = client.post("/api/sessions", json={
+            "model": model, "libraryDocumentIds": [],
+        }, headers=auth)
+        assert session.status_code == 201, session.text
+        return {
+            "sessionId": session.json()["id"], "content": prompt, "model": model,
+            "stream": False, "allowTools": False, "allowAutomaticMemory": False,
+            "requireFreshSession": True, "params": {"max_tokens": maximum},
+        }
+
+    control = client.post("/api/chat", json=request(), headers=auth)
+    assert control.status_code == 200, control.text
+    assert len(calls) == 1
+    body = request()
     if change in {"tools", "memory", "fresh"}:
         key = {"tools": "allowTools", "memory": "allowAutomaticMemory", "fresh": "requireFreshSession"}[change]
         body[key] = change != "fresh"
-    elif change == "sentinel":
-        body["content"] = "A different authored prompt."
+    elif change == "prompt":
+        body["content"] = "A different authored prompt." if subject == MONITOR else "x" * 4097
     elif change == "output":
-        body["params"]["max_tokens"] = 65
+        body["params"]["max_tokens"] = maximum + 1
     else:
-        client.app.state.canary_dispatch_guard = None
+        setattr(client.app.state, guard, None)
     response = client.post("/api/chat", json=body, headers=auth)
     assert response.status_code >= 400, response.text
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("subject,profile,prompt,maximum", [
+    (MONITOR, "monitor-canary", CANARY_SENTINEL, 64),
+    (EVALUATOR, "authored-synthetic-evaluation", "What is seven plus five?", 256),
+])
+@pytest.mark.parametrize("transition", ["paused", "malformed"])
+def test_retiring_clients_cannot_relax_configured_actor_denials_or_owner_cleanup(
+    profiles, subject, profile, prompt, maximum, transition,
+):
+    client, model, headers, calls = profiles
+    auth = headers(subject)
+    capability = client.get(
+        "/api/execution-capabilities", params={"profile": profile, "model": model}, headers=auth,
+    )
+    assert capability.status_code == 200 and capability.json()["ready"]
+    session = client.post("/api/sessions", json={
+        "model": model, "libraryDocumentIds": [],
+    }, headers=auth)
+    assert session.status_code == 201, session.text
+    session_id = session.json()["id"]
+    body = {
+        "sessionId": session_id, "content": prompt, "model": model, "stream": False,
+        "allowTools": False, "allowAutomaticMemory": False, "requireFreshSession": True,
+        "params": {"max_tokens": maximum},
+    }
+    control = client.post("/api/chat", json=body, headers=auth)
+    assert control.status_code == 200, control.text
+    assert len(calls) == 1
+    session = client.post("/api/sessions", json={
+        "model": model, "libraryDocumentIds": [],
+    }, headers=auth)
+    assert session.status_code == 201, session.text
+    session_id = session.json()["id"]
+    body["sessionId"] = session_id
+    settings = client.app.state.settings
+    if transition == "paused":
+        settings.group_policy_enabled = False
+    else:
+        settings.group_policy_json = "{invalid"
+    response = client.post("/api/chat", json=body, headers=auth)
+    assert response.status_code >= 400, response.text
+    assert len(calls) == 1
+    foreign = headers(EVALUATOR if subject == MONITOR else MONITOR)
+    path = f"/api/sessions/{session_id}"
+    assert client.get(path, headers=foreign).status_code == 404
+    assert client.delete(path, headers=foreign).status_code == 404
+    assert client.get(path, headers=auth).status_code == 200
+    assert client.delete(path, headers=auth).status_code == 202
+    for _ in range(2):
+        cleanup = client.post(f"{path}/deletion/reconcile", headers=auth)
+        assert cleanup.status_code in (200, 202), cleanup.text
+        if cleanup.status_code == 200:
+            break
+    assert cleanup.status_code == 200 and cleanup.json()["state"] == "cleanup_verified"
+    assert client.get(f"{path}/deletion", headers=auth).json() == cleanup.json()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("subject,profile,prompt,maximum", [
+    (MONITOR, "monitor-canary", CANARY_SENTINEL, 64),
+    (EVALUATOR, "authored-synthetic-evaluation", "What is seven plus five?", 256),
+])
+@pytest.mark.parametrize("invalid", ["expired", "admin"])
+def test_retained_actor_requires_unexpired_nonprivileged_signed_identity(
+    profiles, subject, profile, prompt, maximum, invalid,
+):
+    client, model, headers, calls = profiles
+    auth = headers(subject)
+    session = client.post("/api/sessions", json={
+        "model": model, "libraryDocumentIds": [],
+    }, headers=auth)
+    assert session.status_code == 201, session.text
+    body = {
+        "sessionId": session.json()["id"], "content": prompt, "model": model, "stream": False,
+        "allowTools": False, "allowAutomaticMemory": False, "requireFreshSession": True,
+        "params": {"max_tokens": maximum},
+    }
+    invalid_auth = headers(subject, **(
+        {"exp": int(time.time()) - 60} if invalid == "expired" else {"roles": ["admin"]}
+    ))
+    capability = client.get(
+        "/api/execution-capabilities", params={"profile": profile, "model": model},
+        headers=invalid_auth,
+    )
+    assert capability.status_code >= 400 or capability.json()["ready"] is False
+    response = client.post("/api/chat", json=body, headers=invalid_auth)
+    assert response.status_code >= 400, response.text
     assert calls == []
+    if invalid == "admin":
+        assert client.post("/api/chat", json=body, headers=auth).status_code == 409
+    session = client.post("/api/sessions", json={
+        "model": model, "libraryDocumentIds": [],
+    }, headers=auth)
+    assert session.status_code == 201, session.text
+    body["sessionId"] = session.json()["id"]
+    control = client.post("/api/chat", json=body, headers=auth)
+    assert control.status_code == 200, control.text
+    assert len(calls) == 1
