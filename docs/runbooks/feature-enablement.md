@@ -377,6 +377,10 @@ partial, warnings and mismatches are failures; a correct-looking Boolean or
 manifest never substitutes for these reads.
 
 APIM's `format=rawxml` readback can change indentation and terminal newlines.
+The ARM transport must explicitly send `Accept: application/json` even with that
+query: Azure CLI can otherwise export BOM-prefixed raw policy text instead of
+the JSON `PolicyContract`. Keep strict JSON parsing and the raw XML value inside
+its envelope; do not strip arbitrary prefixes or accept an untyped fallback.
 Policy-content comparison therefore ignores only XML comments and whitespace
 between elements. Ordered elements, every parsed attribute (including C#
 expressions and string literals), and all meaningful body/value text remain
