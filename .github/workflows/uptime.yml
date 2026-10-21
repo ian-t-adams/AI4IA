@@ -1,0 +1,76 @@
+name: uptime
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions: {}
+
+# Share the portal's publisher lock so neither workflow overwrites newer data.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: anonymous health observations
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      firing: ${{ steps.check.outputs.firing }}
+      recovered: ${{ steps.check.outputs.recovered }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install shared hash-checked HTTP runtime
+        run: python -m scripts.http_dependencies
+      - name: Observe public health and preserve the last Azure snapshot
+        id: check
+        env:
+          AI4IA_WEB_CUSTOM_DOMAIN: ${{ vars.AI4IA_WEB_CUSTOM_DOMAIN }}
+          AI4IA_PROXY_CUSTOM_DOMAIN: ${{ vars.AI4IA_PROXY_CUSTOM_DOMAIN }}
+          AI4IA_UPTIME_API_URL: ${{ vars.AI4IA_UPTIME_API_URL }}
+        run: python -m scripts.uptime observe --directory site/data
+      - name: Regenerate portal docs index
+        run: python scripts/gen-docs-catalog.py
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ./site
+
+  deploy:
+    needs: observe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        with:
+          enablement: false
+      - name: Deploy observations to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - name: Record automatic recovery
+        if: needs.observe.outputs.recovered == 'true'
+        run: echo "::notice::An uptime incident recovered. See the observation summary and status page."
+      - name: Alert once for a new incident
+        if: needs.observe.outputs.firing == 'true'
+        run: |
+          echo "::error::Three consecutive uptime observations failed. See the observation summary and status page."
+          exit 1

@@ -102,7 +102,7 @@ the owner's approval.
 | `app/api` | FastAPI application, governance, integrations, and stores |
 | `infra` | Bicep, deployable parameters, model/tool/voice catalogs, APIM policies |
 | `proxy` | Pinned SimpleL7Proxy source and the maintained integration |
-| `foundry` | Toolbox and skill manifests; clearly labelled design-only examples |
+| `foundry` | Active toolbox contract, reference manifest and repository-owned skills |
 | `scripts` | Generation, validation, release, inventory, and recovery tooling |
 | `docs` / `site` | Explanatory documentation, operator runbooks, and static portal |
 

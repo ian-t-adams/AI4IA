@@ -347,27 +347,53 @@ def test_concurrent_sweep_and_insert_does_not_corrupt_state(monkeypatch):
     `_hits.items()` while a concurrent insert from another thread mutates the
     same dict -- without a shared lock this either raises `RuntimeError:
     dictionary changed size during iteration` or silently corrupts state.
-    Drives a dedicated "sweeper" thread calling `_sweep_stale_users` in a
-    tight loop alongside several "inserter" threads concurrently calling
-    `_rate_limited` with distinct, never-repeating user ids, so the sweeper
-    is racing against genuine dict mutation for the whole test."""
+    Uses finite concurrent work and checks that both code paths hold the same
+    real reentrant lock. A hot unbounded sweeper can starve inserters on a busy
+    CI host even when the implementation is correct."""
     import ai4ia_api.routers.client_events as mod
 
-    monkeypatch.setattr(mod, "_hits", {})
+    real_lock = mod._hits_lock
+    ownership = threading.local()
+
+    class ObservedLock:
+        def __enter__(self):
+            real_lock.acquire()
+            ownership.depth = getattr(ownership, "depth", 0) + 1
+            return self
+
+        def __exit__(self, *_):
+            ownership.depth -= 1
+            real_lock.release()
+
+    class GuardedHits(dict):
+        def items(self):
+            assert getattr(ownership, "depth", 0) > 0, "sweep omitted the shared lock"
+            return super().items()
+
+        def pop(self, *args):
+            assert getattr(ownership, "depth", 0) > 0, "insertion omitted the shared lock"
+            return super().pop(*args)
+
+    monkeypatch.setattr(mod, "_hits_lock", ObservedLock())
+    monkeypatch.setattr(mod, "_hits", GuardedHits())
     monkeypatch.setattr(mod, "_last_sweep", 0.0)
     monkeypatch.setattr(mod, "_MAX_TRACKED_USERS", 1_000)
     errors: list[Exception] = []
-    stop = threading.Event()
+    start = threading.Barrier(7)
+    sweeps = []
 
     def _sweeper() -> None:
         try:
-            while not stop.is_set():
+            start.wait(timeout=10)
+            for _ in range(300):
                 mod._sweep_stale_users(mod.time.monotonic())
+                sweeps.append(True)
         except Exception as exc:  # pragma: no cover - assertion below also fails
             errors.append(exc)
 
     def _inserter(worker_id: int) -> None:
         try:
+            start.wait(timeout=10)
             for i in range(300):
                 mod._rate_limited(f"sweep-race-{worker_id}-{i}")
         except Exception as exc:  # pragma: no cover - assertion below also fails
@@ -380,10 +406,10 @@ def test_concurrent_sweep_and_insert_does_not_corrupt_state(monkeypatch):
         t.start()
     for t in inserters:
         t.join(timeout=10)
-    stop.set()
     sweeper_thread.join(timeout=10)
 
     assert errors == []
+    assert len(sweeps) == 300
     assert not sweeper_thread.is_alive()
     assert all(not t.is_alive() for t in inserters)
 

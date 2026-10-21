@@ -76,7 +76,7 @@ from _canary_contract import (
     CANARY_CATEGORY_ORDER as CANARY_CATEGORY_ORDER, catalog_model_preferences,
     SESSION_ID_RE, chat_payload, deletion_status_valid, session_payload, verified_cleanup,
 )
-from canaries.contracts import CanaryError, obj, strict_json
+from http_contract import HttpError, obj, strict_json
 
 STATE_VERSION = 1
 APP_NAME_PREFIX = {"api": "ca-api-", "web": "ca-web-", "proxy": "ca-proxy-"}
@@ -1553,7 +1553,7 @@ def cleanup_canary_session(
             if resumed["attempts"] < current["attempts"]:
                 raise _CleanupError("session cleanup progress regressed")
             current = resumed
-    except CanaryError:
+    except HttpError:
         return "session cleanup response malformed or too large"
     except _CleanupError as exc:
         return str(exc)
@@ -1642,7 +1642,7 @@ def run_canary(
         )
     try:
         session = obj(strict_json(created.body, limit=MAX_BODY_BYTES - 1))
-    except CanaryError:
+    except HttpError:
         return CanaryResult(ok=False, model=model, detail="session create response is invalid; cleanup unknown")
     session_id = session.get("id") if isinstance(session, dict) else None
     if not isinstance(session_id, str) or not SESSION_ID_RE.fullmatch(session_id):

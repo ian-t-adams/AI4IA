@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from canaries.contracts import CanaryError, encoded, strict_json
+from http_contract import HttpError, encoded, strict_json
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "infra" / "models.json"
@@ -100,7 +100,7 @@ def resolve_target(model: str, region: str) -> Target:
         raise CanaryInputError("Model catalog exceeds the input bound.")
     try:
         source = strict_json(data, limit=MAX_CATALOG_BYTES)
-    except CanaryError as exc:
+    except HttpError as exc:
         raise CanaryInputError("Model catalog must contain bounded strict JSON.") from exc
     matches = [
         deployment for entry in source["catalog"]
@@ -273,7 +273,7 @@ def run_bounded(args: argparse.Namespace, target: Target) -> dict:
         return result(target, "worker_error")
     try:
         reported = strict_json(completed.stdout, limit=MAX_REPORT_BYTES)
-    except CanaryError:
+    except HttpError:
         return result(target, "worker_error")
     if (
         not isinstance(reported, dict)

@@ -33,7 +33,7 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
   shared dot-sourced safety library, not a standalone entry point.
 - `docs` and `site` — architecture, runbooks, user/operator docs, and the GitHub
   Pages portal.
-- `foundry` — toolbox, routine, and A2A manifests validated by CI.
+- `foundry` — active/reference toolbox manifests and repository-owned skills.
 
 ## Non-negotiable rules
 
@@ -695,10 +695,6 @@ check-jsonschema --schemafile infra/mcp-servers.schema.json infra/mcp-servers.js
 check-jsonschema --schemafile infra/voice-providers.schema.json infra/voice-providers.json
 check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.json
 check-jsonschema --schemafile foundry/toolbox.manifest.schema.json foundry/toolbox.manifest.example.json
-check-jsonschema --schemafile foundry/routines/routine.schema.json foundry/routines/example.routine.json
-check-jsonschema --schemafile foundry/a2a/a2a.schema.json foundry/a2a/example.a2a.json
-python scripts/provision-foundry-routine.py --check
-python scripts/provision-foundry-a2a.py --check
 python scripts/validate-catalog.py
 python scripts/gen-gateway-policy.py --check
 python scripts/gen-voice-provider-catalog.py --check
@@ -735,8 +731,8 @@ keeps endpoint and authentication configuration in the Foundry project connectio
 python3 -m unittest scripts.tests.test_voice_live_canary        # canary URL/redaction rules
 python3 -m unittest scripts.tests.test_speech_canary scripts.tests.test_voice_migration_docs
 python3 scripts/gen-voice-migration-docs.py --check              # public dates, never live proof
-python3 -m unittest scripts.tests.test_application_canary       # offline continuous monitor/state/identity controls
-python3 -m unittest scripts.tests.test_canary_runtime           # fresh venv holding only the canary jobs' lock-derived runtime
+python3 -m unittest scripts.tests.test_uptime                   # anonymous probes, incident transitions and portal freshness
+python3 -m unittest scripts.tests.test_http_dependencies        # lock-derived HTTP-only runtime for both portal publishers
 python3 -m unittest scripts.tests.test_subscription_preflight   # provider/model preflight logic
 python3 -m unittest scripts.tests.test_model_retirement         # dates, read-only reports and activation contracts
 python3 -m unittest scripts.tests.test_retirement_reader_setup  # real setup CLI with offline az/gh stubs
@@ -785,8 +781,8 @@ python3 -m unittest scripts.tests.test_image_ownership           # exported-file
 `jmespath==0.9.5`, pinned in quality to the inspected Azure CLI parser version:
 the raw ARM projection regressions must execute the real query, not skip it or
 test only already-projected data. The reporter itself remains stdlib-only.
-`test_canary_runtime` needs PyYAML plus PyPI access for its venv install, and
-must run on the canary workflow's Python major.minor; it fails rather than skips.
+`test_uptime` needs aiohttp, PyYAML and Node for the portal renderer; the HTTP
+dependency controls need PyYAML and remain offline.
 The rest are stdlib-only.
 
 Operational guards must distinguish a failed Azure read from a missing resource.
@@ -857,40 +853,30 @@ JSON cannot pass API health; unresolved targets and historical missing coverage
 remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
 cookies or default credentials. Never publish response bodies or exception text.
 
-`application-canaries.yml` is operational scheduling, default-off for all app and
-model traffic, and independent of the anonymous portal snapshot. Its prepare
-job reads only this repository's exact predecessor run/artifact; its separately
-gated observation job alone exchanges dedicated OIDC for an API token. No ARM
-login, deploy identity, Graph, new resource, live test or settings mutation belongs
-in source validation. `scripts/canaries` shares the sentinel/catalog candidates
-and ordered Voice Live setup primitive with existing operator helpers, but uses
-strict bounded JSON, public DNS pinning, no redirects/cookies/default credentials,
-one application chat attempt, a finite lease and strict v1 owner cleanup.
-Missing state, ambiguous writes and partial cleanup never reset the failure
-count to a healthy zero or authorize another mutation. Retain only allowlisted
-content-free state; API sessions/receipts, private configuration and raw errors
-must never be uploaded. GA config/header alone is not an event canary, and an
-operator actor policy must admit the setup-only path separately. See
-`docs/runbooks/deployment.md#continuous-application-canaries` for the activation
-and notification boundaries. Its existing quality job installs the same pinned
-aiohttp transport for offline fixtures; app-ci also runs Ruff and Pyright over
-the monitor package.
+`uptime.yml` is the normal 15-minute monitor: four anonymous GETs of web, proxy
+liveness and API live/ready, without model calls, user IO, Azure login, a monitor
+identity or a lease. Reuse the bounded DNS-pinned transport and lock-derived
+HTTP dependencies. Persist only public endpoint status/time/latency and small
+incident counters. Alert once after three non-passing observations, recover on
+the next pass, and continue probes when history is unavailable. Unknown coverage
+is never healthy. Workflow success means collection/publication, not endpoint
+health. The portal marks observations older than 45 minutes unknown; fast Pages
+publishes retain the original Azure snapshot timestamps or show unavailable,
+never republish a committed seed as current. Keep the shared Pages publisher
+lock and separate read-only observer/Pages deployment permissions.
 
-Both canary jobs install only aiohttp's closure, hash-checked and binary-only
-from `app/api/uv.lock` by `python -m scripts.canaries.dependencies`; never add an
-ad hoc pip install. The monitor must run without API runtime dependencies. It
-prices through `load_model_pricing`, the catalog-free view of the same book,
-because `load_pricing` resolves SKU-scoped rows through the pydantic catalog. Run
-36267220637 failed exactly that way after its OIDC exchange: every unit test
-injects a price book, and an import check passes. `test_canary_runtime` therefore
-drives a synthetic lifecycle through the real CLI in a fresh venv holding only the
-declared runtime, and an allowlist bounds the API modules it may load. A blocked
-chain leaves only through `resolve`: an owner-attested bootstrap of a new lease
-bound to a digest-approved `AI4IA_CANARY_RESOLUTION` record. The record names the
-exact blocked predecessor, GitHub-verified lost runs and the superseded leases;
-even a chain that lost its lease must retire one, and a lost last attempt floors
-cadence at the blocked observation. Its refusals never poison a healthy chain,
-and nothing unblocks automatically.
+The retired scheduled model-monitor workflow and lease/recovery CLI are removed,
+not a hidden prerequisite for uptime. Preserve historical incident evidence and
+unresolved owner data; retirement does not prove cleanup or grant broader actor
+permissions. Deployment smoke tests and explicit voice diagnostics stay separate.
+
+Both portal publishers install only aiohttp's closure, hash-checked and
+binary-only from `app/api/uv.lock` through `python -m scripts.http_dependencies`.
+Their shared `scripts/http_transport.py` permits only anonymous public HTTPS
+GETs, with no bearer tokens, bodies, cookies, ambient proxies or WebSockets.
+The observer must remain independent of API runtime/SDK dependencies.
+Dependency-free parsing lives in `scripts/http_contract.py` so the retained
+deployment and speech diagnostics need no extra HTTP runtime install.
 
 `security-scan` runs Trivy filesystem/config scans and gitleaks over the full
 proxy tree. `.trivyignore.yaml` suppresses only the untouched upstream Dockerfile

@@ -6,11 +6,7 @@ import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import SimpleNamespace
 from typing import get_args
-from urllib.parse import urlsplit
 
 import jwt
 import pytest
@@ -346,75 +342,3 @@ def test_setup_lifetime_includes_slow_connection_and_still_closes_it(setup_clien
     assert len(slow.calls) == 1
     assert not slow.reached_handshake
     assert slow.upstream.closed
-
-
-async def test_workflow_realtime_probe_crosses_real_signed_policy_and_relay(setup_client, monkeypatch):
-    root = Path(__file__).resolve().parents[3]
-    monkeypatch.syspath_prepend(str(root))
-    import aiohttp
-    from scripts.canaries.configuration import Configuration
-    from scripts.canaries.contracts import Report, Run, stamp
-    from scripts.canaries.monitor import realtime
-    from scripts.canaries.transport import Response
-
-    client, token, connector, _ = setup_client
-
-    class ApplicationTransport:
-        handshake_protocol = None
-
-        async def request(self, method, url, *, token=None, **_):
-            parsed = urlsplit(url)
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            result = client.request(
-                method, parsed.path + (f"?{parsed.query}" if parsed.query else ""),
-                headers=headers, follow_redirects=False,
-            )
-            return Response(
-                result.status_code, result.content, 0.01,
-                result.headers.get("content-type", "").split(";", 1)[0],
-            )
-
-        def client(self, _url, *, websocket):
-            assert websocket
-            return self
-
-        @asynccontextmanager
-        async def ws_connect(self, url, *, protocols, origin, **_):
-            parsed = urlsplit(url)
-            with client.websocket_connect(
-                parsed.path + "?" + parsed.query, subprotocols=list(protocols),
-                headers={"origin": origin},
-            ) as ws:
-                self.handshake_protocol = dict(ws.extra_headers)[b"x-ai4ia-realtime-protocol"].decode()
-
-                class Socket:
-                    protocol = ws.accepted_subprotocol
-
-                    async def send_str(self, text):
-                        ws.send_text(text)
-
-                    async def close(self, **_):
-                        ws.close()
-
-                    def __aiter__(self):
-                        async def events():
-                            while True:
-                                yield SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=ws.receive_text())
-                        return events()
-
-                yield Socket()
-
-    now = datetime.now(timezone.utc)
-    config = Configuration(
-        TENANT, "22222222-2222-2222-2222-222222222222", ACTOR, f"api://{BARE_GUID}",
-        ORIGIN, "https://api.example.test", "55555555-5555-5555-5555-555555555555",
-        stamp(now + timedelta(hours=1)), 4, 21600, True, True, True, True,
-    )
-    report = Report(Run("owner/repo", 1, 200, 2, 1, "a" * 40), stamp(now))
-    report.mark("posture", "pass")
-    source = json.loads((root / "infra" / "models.json").read_text(encoding="utf-8"))
-    await realtime(ApplicationTransport(), config, token(), source, {"models": []}, report)
-    assert report.stages["realtime"].outcome == "pass", report.document()
-    assert len(connector.calls) == 1
-    assert len(connector.upstream.sent_text) == 1
-    assert not connector.upstream.sent_bytes
