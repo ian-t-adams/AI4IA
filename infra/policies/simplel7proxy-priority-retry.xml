@@ -732,9 +732,6 @@ REFACTOR:
 								<value>@((string)context.Variables["auth"])</value>
 							</set-header>
 						</when>
-						<otherwise>
-							<!-- empty/none: do not add any auth header -->
-						</otherwise>
 					</choose>
 					<set-variable name="activityLog" value="@{
 						// Backend Selected

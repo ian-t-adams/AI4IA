@@ -385,9 +385,6 @@
 								<value>@((string)context.Variables["auth"])</value>
 							</set-header>
 						</when>
-						<otherwise>
-
-						</otherwise>
 					</choose>
 					<set-variable name="activityLog" value="@{
 						// Backend Selected

@@ -381,6 +381,9 @@ The ARM transport must explicitly send `Accept: application/json` even with that
 query: Azure CLI can otherwise export BOM-prefixed raw policy text instead of
 the JSON `PolicyContract`. Keep strict JSON parsing and the raw XML value inside
 its envelope; do not strip arbitrary prefixes or accept an untyped fallback.
+Omit no-op, comment-only `otherwise` branches from authored policy: APIM drops
+their comments and reindents the remaining empty text. Do not relax comparisons
+of executable expressions or payload values to accommodate that dead branch.
 Policy-content comparison therefore ignores only XML comments and whitespace
 between elements. Ordered elements, every parsed attribute (including C#
 expressions and string literals), and all meaningful body/value text remain
@@ -441,6 +444,8 @@ To configure the separately approved connection:
 1. Store its dedicated key as deployment secret `AI4IA_CLAUDE_GATEWAY_API_KEY`.
    Bicep accepts a secure parameter and stores an APIM secret named value;
    neither FastAPI nor the browser receives the key or upstream endpoint.
+   The named value remains present with an inert `disabled` value when the mode
+   is off, so common policy references still validate without a credential.
 2. Set `AI4IA_CLAUDE_GATEWAY_URL` to the exact upstream base. Keep
    `AI4IA_CLAUDE_EXTERNAL_ENABLED=false` and `AI4IA_CLAUDE_ENABLED=false`, then
    set `AI4IA_CLAUDE_GATEWAY_ENABLED=true`.

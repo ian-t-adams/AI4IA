@@ -389,13 +389,14 @@ resource claudeBindingValues 'Microsoft.ApiManagement/service/namedValues@2024-0
   }
 }]
 
-resource claudeGatewayKey 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (claudeGatewayEnabled) {
+// Common backend policy references must resolve even while this mode is off.
+resource claudeGatewayKey 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
   parent: sharedApim
   name: 'claude-gateway-key'
   properties: {
     displayName: 'claude-gateway-key'
     secret: true
-    value: claudeGatewayApiKey
+    value: claudeGatewayEnabled ? claudeGatewayApiKey : 'disabled'
   }
 }
 
