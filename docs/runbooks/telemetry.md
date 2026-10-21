@@ -374,13 +374,13 @@ production traces. Its local/CI report contains version identifiers, check
 outcomes and synthetic counters only, not receipt payloads or identities.
 Fixture latency and token prices are not measured live model quality or billing.
 
-The separate default-off live authored-synthetic driver, activation variables,
-finite budgets and exact-owner cleanup policy are documented in the
-[evaluation guide](../behavioral-evaluations.md#separate-opt-in-live-authored-tasks).
-It is not a production-trace reader or a required PR gate. A paid judge and
+The dormant live authored-synthetic client and its schedule are retired; the
+API's configured actor denials and owner cleanup remain, as documented in the
+[evaluation guide](../behavioral-evaluations.md#retired-live-client-and-retained-identity-safeguards).
+A paid judge and
 production-content ingestion remain disabled. No `AppGenAIContent` routing,
 RBAC, retention or consent policy is established by source tests or by running
-either evaluation suite. Keep the telemetry compatibility pair and no-content
+the offline evaluator. Keep the telemetry compatibility pair and no-content
 export contract intact.
 
 ## Diagnosing unavailable panels

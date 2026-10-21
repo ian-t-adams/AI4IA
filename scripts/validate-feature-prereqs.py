@@ -128,75 +128,48 @@ def transported_json(parameters: dict[str, Any], errors: list[str]) -> dict[str,
     return decoded
 
 
-GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
-COMPANION_IMAGE_RE = re.compile(
-    r"(?P<registry>[a-z0-9]+\.azurecr\.io)/ai4ia/companion-(?P<env>[a-z0-9-]+)@sha256:[0-9a-f]{64}"
+RETIRED_PARAMETERS = frozenset({
+    "vnetIsolationEnabled", "dataTierPrivate",
+    "proxyProfilesEnabled", "proxyProfileProjectionJson", "proxyProfileProjectionJsonBase64",
+    "proxyEventHubTelemetryEnabled", "proxyAsyncEnabled",
+    "companionAppEnabled", "companionAppImage", "companionAppEntraClientId",
+    "companionAppAdminGroupIds", "companionAppAdminPrincipalIds",
+    "companionAppAllowedIpRanges", "companionAppMinReplicas",
+})
+RETIRED_FLAG_VARIABLES = (
+    "AI4IA_PROXY_PROFILES_ENABLED", "AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED",
+    "AI4IA_PROXY_ASYNC_ENABLED", "AI4IA_COMPANION_APP_ENABLED",
 )
-CIDR_RE = re.compile(r"(?P<address>\d{1,3}(?:\.\d{1,3}){3})/(?P<prefix>\d{1,2})")
+RETIRED_VALUE_VARIABLES = (
+    "AI4IA_PROXY_PROFILE_PROJECTION_JSON", "AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64",
+    "AI4IA_COMPANION_APP_IMAGE", "AI4IA_COMPANION_APP_ENTRA_CLIENT_ID",
+    "AI4IA_COMPANION_APP_ADMIN_GROUP_IDS", "AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS",
+    "AI4IA_COMPANION_APP_ALLOWED_IP_RANGES", "AI4IA_COMPANION_APP_MIN_REPLICAS",
+)
 
 
-def _csv(value: Any) -> list[str]:
-    return [item.strip() for item in text(value).split(",") if item.strip()]
-
-
-def companion_app_errors(parameters: dict[str, Any]) -> list[str]:
-    """Fail-closed prerequisites of the optional admin-only CompanionApp console."""
-
-    if not truthy(parameter_value(parameters, "companionAppEnabled", False)):
-        return []
-    errors: list[str] = []
-    if not truthy(parameter_value(parameters, "proxyEventHubTelemetryEnabled", False)):
-        errors.append(
-            "companionAppEnabled=true requires proxyEventHubTelemetryEnabled=true; "
-            "the proxy Event Hub feed is the console's only data source."
-        )
-    image = text(parameter_value(parameters, "companionAppImage"))
-    match = COMPANION_IMAGE_RE.fullmatch(image)
-    environment = text(os.environ.get("AZURE_ENV_NAME", "")).lower()
-    if match is None:
-        errors.append(
-            "companionAppEnabled=true requires companionAppImage as a digest reference "
-            "<registry>.azurecr.io/ai4ia/companion-<env>@sha256:<digest> produced by the "
-            "companion-image workflow; a tag or placeholder is never deployed."
-        )
-    elif environment and match.group("env") != environment:
-        errors.append("companionAppImage must come from this environment's companion repository.")
-    if not GUID_RE.fullmatch(text(parameter_value(parameters, "companionAppEntraClientId"))):
-        errors.append(
-            "companionAppEnabled=true requires companionAppEntraClientId, the client id of "
-            "the Entra app registration used for sign-in."
-        )
-    admins = [
-        *_csv(parameter_value(parameters, "companionAppAdminGroupIds")),
-        *_csv(parameter_value(parameters, "companionAppAdminPrincipalIds")),
+def retired_configuration_errors(parameters: dict[str, Any]) -> list[str]:
+    """Reject stale configuration without reading or printing retired payloads."""
+    names = set(parameters) & RETIRED_PARAMETERS
+    for name in RETIRED_FLAG_VARIABLES:
+        value = os.environ.get(name, "").strip().lower()
+        if value and value != "false":
+            names.add(name)
+    for name in RETIRED_VALUE_VARIABLES:
+        if os.environ.get(name, "").strip():
+            names.add(name)
+    return [
+        f"{name} has been removed; remove this setting before provisioning. "
+        "Retained Azure resources and user data require separate cleanup approval."
+        for name in sorted(names)
     ]
-    if not admins:
-        errors.append(
-            "companionAppEnabled=true requires at least one admin group or principal id; "
-            "an empty allow-list would admit every user in the tenant."
-        )
-    elif any(not GUID_RE.fullmatch(admin) for admin in admins):
-        errors.append("CompanionApp admin group and principal ids must be Entra object id GUIDs.")
-    for cidr in _csv(parameter_value(parameters, "companionAppAllowedIpRanges")):
-        parsed = CIDR_RE.fullmatch(cidr)
-        if (
-            parsed is None
-            or int(parsed.group("prefix")) > 32
-            or any(int(octet) > 255 for octet in parsed.group("address").split("."))
-        ):
-            errors.append(f"companionAppAllowedIpRanges entry {cidr!r} must be an IPv4 CIDR.")
-        elif int(parsed.group("prefix")) == 0:
-            errors.append("companionAppAllowedIpRanges must not allow every address.")
-    if text(parameter_value(parameters, "companionAppMinReplicas", 0)) not in {"0", "1"}:
-        errors.append("companionAppMinReplicas must be 0 or 1; Blazor circuits need one replica.")
-    return errors
 
 
 def main(*, require_deployment_attestation: bool = False) -> int:
     raw = json.loads(PARAMETERS_FILE.read_text(encoding="utf-8"))
     parameters = raw.get("parameters", {})
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
-    errors: list[str] = []
+    errors = retired_configuration_errors(parameters)
     warnings: list[str] = []
     json_values = transported_json(parameters, errors)
     model_capacity_profile = text(
@@ -663,38 +636,6 @@ def main(*, require_deployment_attestation: bool = False) -> int:
                 "hard-enforced caps."
             )
 
-    profiles_enabled = truthy(parameter_value(parameters, "proxyProfilesEnabled", False))
-    profile_projection = json_values["proxyProfileProjectionJson"]
-    if profiles_enabled:
-        if not profile_projection:
-            errors.append(
-                "proxyProfilesEnabled=true requires proxyProfileProjectionJson."
-            )
-        else:
-            try:
-                profiles = json.loads(profile_projection)
-            except json.JSONDecodeError as exc:
-                errors.append(f"proxyProfileProjectionJson is invalid JSON: {exc.msg}.")
-            else:
-                if not isinstance(profiles, list) or not profiles:
-                    errors.append(
-                        "proxyProfileProjectionJson must be a non-empty JSON array."
-                    )
-                elif any(
-                    not isinstance(profile, dict)
-                    or not isinstance(profile.get("appId"), str)
-                    or not profile["appId"].strip()
-                    for profile in profiles
-                ):
-                    errors.append(
-                        "Every proxy profile projection entry requires a non-empty appId."
-                    )
-        errors.append(
-            "proxyProfilesEnabled=true requires a verified identity-aware application "
-            "header at the proxy edge. The temporary shared-key ingress does not meet "
-            "that prerequisite; keep profiles disabled until Entra workload auth is wired."
-        )
-
     priorities_enabled = truthy(
         parameter_value(parameters, "proxyPrioritiesEnabled", False)
     )
@@ -711,13 +652,6 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         errors.append("proxyMinReplicas must be at least 1 for the active gateway path.")
     if min_replicas > max_replicas:
         errors.append("proxyMinReplicas must not exceed proxyMaxReplicas.")
-
-    errors.extend(companion_app_errors(parameters))
-
-    if truthy(parameter_value(parameters, "dataTierPrivate", False)) and not truthy(
-        parameter_value(parameters, "vnetIsolationEnabled", False)
-    ):
-        errors.append("dataTierPrivate=true requires vnetIsolationEnabled=true.")
 
     owner = text(parameter_value(parameters, "owner"))
     cost_center = text(parameter_value(parameters, "costCenter"))

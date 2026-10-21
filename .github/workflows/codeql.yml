@@ -67,9 +67,6 @@ jobs:
           dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --locked-mode --nologo
           dotnet build proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj \
             --configuration Release --no-restore --nologo
-          dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --locked-mode --nologo
-          dotnet build proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj \
-            --configuration Release --no-restore --nologo
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
