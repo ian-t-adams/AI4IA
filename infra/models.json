@@ -757,8 +757,17 @@
     },
     {
       "name": "model-router",
+      "displayName": "Model Router (Astra / Sol / Luna)",
       "format": "OpenAI",
       "category": "router",
+      "routing": {
+        "mode": "balanced",
+        "models": [
+          { "format": "OpenAI", "name": "gpt-6-astra", "version": "2026-09-03" },
+          { "format": "OpenAI", "name": "gpt-6-sol", "version": "2026-09-22" },
+          { "format": "OpenAI", "name": "gpt-6-luna", "version": "2026-09-22" }
+        ]
+      },
       "deployments": [
         {
           "region": "eastus2",
@@ -1352,7 +1361,6 @@
       "name": "sora-2",
       "format": "OpenAI",
       "category": "video",
-      "runtimeEnabled": false,
       "deployments": [
         {
           "region": "eastus2",

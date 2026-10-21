@@ -20,6 +20,15 @@
     "claudeExternalEnabled": {
       "value": "${AI4IA_CLAUDE_EXTERNAL_ENABLED=false}"
     },
+    "claudeGatewayEnabled": {
+      "value": "${AI4IA_CLAUDE_GATEWAY_ENABLED=false}"
+    },
+    "claudeGatewayUrl": {
+      "value": "${AI4IA_CLAUDE_GATEWAY_URL=}"
+    },
+    "claudeGatewayApiKey": {
+      "value": "${AI4IA_CLAUDE_GATEWAY_API_KEY=}"
+    },
     "claudeBindingJsonBase64": {
       "value": "${AI4IA_CLAUDE_BINDING_JSON_B64=}"
     },

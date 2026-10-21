@@ -1630,7 +1630,7 @@ def main() -> int:
         (REALTIME_GA_OUTPUT_PATH, realtime_ga_generated),
     )
     try:
-        for filename in ("claude-disabled.xml", "claude-federated-auth.xml"):
+        for filename in ("claude-disabled.xml", "claude-federated-auth.xml", "claude-gateway-auth.xml"):
             path = ROOT / "infra" / "policies" / filename
             validate_policy_fragment(path.read_text(encoding="utf-8"), filename)
         for path, policy in fragments:

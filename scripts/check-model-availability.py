@@ -69,6 +69,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _capacity_evidence as capacity_evidence
 import _model_retirement as retirement
 from _claude_binding import verify_configured
+from _model_routing import offered_routing_models, routing_configuration, routing_matches
 from _model_targets import ModelTarget, model_target
 from _production_capacity import (
     PROFILES,
@@ -173,6 +174,7 @@ def catalog_requirements(
     by_region: dict[str, list[dict[str, Any]]] = {}
     for entry in models.get("catalog", []):
         declared_target = model_target(entry)
+        routing = routing_configuration(entry, models)
         if target is not None and declared_target != target:
             continue
         if not include_anthropic and entry.get("format") == "Anthropic":
@@ -203,6 +205,7 @@ def catalog_requirements(
                     ),
                     "versionUpgradeOption": "NoAutoUpgrade",
                     "region": region,
+                    **({"routing": routing} if routing is not None else {}),
                     **({"deploymentTarget": declared_target} if declared_target != "source" else {}),
                 }
             )
@@ -438,6 +441,7 @@ def _regional_deployment_inventory(
             "capacity": sku.get("capacity"),
             "versionUpgradeOption": str(properties.get("versionUpgradeOption") or ""),
             "provisioningState": str(properties.get("provisioningState") or ""),
+            **({"routing": properties["routing"]} if "routing" in properties else {}),
         }
     return inventory
 
@@ -487,6 +491,8 @@ def existing_deployment_drift(
             "provisioningState is "
             f"{existing.get('provisioningState') or '<missing>'}, wants Succeeded"
         )
+    if "routing" in required and not routing_matches(existing.get("routing"), required["routing"]):
+        differences.append("routing mode or exact model subset differs")
     return differences
 
 
@@ -1300,6 +1306,18 @@ def main() -> int:
         errors, warnings = evaluate(
             required, index, index_lifecycle(scoped_offered), existing_deployments
         )
+        for item in required:
+            if "routing" not in item:
+                continue
+            candidates = [
+                row["model"] for row in scoped_offered
+                if row["model"]["name"] == item["name"] and row["model"]["version"] == item["version"]
+                and any(sku["name"] == item["sku"] for sku in row["model"].get("skus", []))
+            ]
+            if not candidates or not all(
+                offered_routing_models(candidate, item["routing"]) for candidate in candidates
+            ):
+                errors.append(f"{item['deploymentName']}: exact router subset is not offered; refusing implicit routing.")
         observations = retirement_observations(
             required, offered, existing_deployments, region=region, now=datetime.now(UTC),
             inventory_state=inventory_state, inventory_observed_at=inventory_at, public=public,

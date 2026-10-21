@@ -32,6 +32,7 @@ internal sealed class ApimPolicyHarness
     private static readonly XElement LegacyPolicy = LoadPolicy(
         System.IO.Path.Combine(PolicyDirectory, "simplel7proxy-priority-policy.xml"));
     internal static readonly XElement ClaudeAuth = LoadPolicy(System.IO.Path.Combine(PolicyDirectory, "claude-federated-auth.xml"));
+    private static readonly XElement ClaudeGatewayAuth = LoadPolicy(System.IO.Path.Combine(PolicyDirectory, "claude-gateway-auth.xml"));
     private static readonly XElement ClaudeDisabled = LoadPolicy(System.IO.Path.Combine(PolicyDirectory, "claude-disabled.xml"));
     private static readonly Dictionary<string, XElement> CatalogPolicies = Enumerable.Range(0, 12).ToDictionary(
         i => $"endpoint_selection_catalog_{i}_32",
@@ -45,6 +46,7 @@ internal sealed class ApimPolicyHarness
     internal XElement? InheritedInbound;
     internal bool UseCatalog;
     internal bool ClaudeEnabled;
+    internal bool ClaudeGatewayEnabled;
     internal bool FailIdentity;
     internal string? ProviderLoopback;
     internal ApimResponse? TokenResponse;
@@ -185,7 +187,8 @@ internal sealed class ApimPolicyHarness
                 VisitedFragments.Add(fragment);
                 string? section = Sections.FirstOrDefault(s => fragment == $"simplel7proxy_{s}_32");
                 if (section is not null) await Execute(Policies[section]);
-                else if (fragment == "claude_auth_v1") await Execute(ClaudeEnabled ? ClaudeAuth : ClaudeDisabled);
+                else if (fragment == "claude_auth_v1") await Execute(
+                    !ClaudeEnabled ? ClaudeDisabled : ClaudeGatewayEnabled ? ClaudeGatewayAuth : ClaudeAuth);
                 else if (GeneratedCatalog is not null)
                 {
                     if (!GeneratedCatalog.TryGetValue(fragment, out var generated))
@@ -236,8 +239,11 @@ internal sealed class ApimPolicyHarness
                     string address = _backend;
                     if (ProviderLoopback is not null)
                     {
-                        Assert.AreEqual(Context.NamedValues["claude-target-endpoint"] + "/anthropic", address);
-                        address = ProviderLoopback + "/anthropic";
+                        string expected = ClaudeGatewayEnabled
+                            ? Context.NamedValues["claude-gateway-url"]
+                            : Context.NamedValues["claude-target-endpoint"] + "/anthropic";
+                        Assert.AreEqual(expected, address);
+                        address = ProviderLoopback + new Uri(expected).AbsolutePath.TrimEnd('/');
                     }
                     Assert.IsTrue(new Uri(address).IsLoopback, "The offline harness may only contact its loopback provider.");
                     var url = address + "/" + _path.TrimStart('/');
@@ -349,7 +355,7 @@ internal sealed class ApimPolicyHarness
     internal static Func<string, ApimContext, object> CompilePolicies(IEnumerable<XElement> additional)
     {
         var expressions = Policies.Values.Concat(CatalogPolicies.Values)
-            .Concat([VersionedPolicy, Setup, ClaudeAuth, ClaudeDisabled, PhotoAvatarPolicy]).Concat(additional)
+            .Concat([VersionedPolicy, Setup, ClaudeAuth, ClaudeGatewayAuth, ClaudeDisabled, PhotoAvatarPolicy]).Concat(additional)
             .SelectMany(p => p.DescendantsAndSelf())
             .SelectMany(n => n.Attributes().Select(a => a.Value).Concat(n.HasElements ? [] : new[] { n.Value }))
             .Where(v => v.StartsWith("@(") || v.StartsWith("@{")).Distinct().ToArray();

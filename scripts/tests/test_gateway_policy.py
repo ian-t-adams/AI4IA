@@ -442,12 +442,9 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("operation_not_allowed", fragment)
 
     def test_sora_uses_catalog_owned_v1_video_operation(self) -> None:
-        # The shipped row is runtime-disabled, so the positive control flips only
-        # that flag on the same document: route shape is still catalog-owned.
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         row = next(model for model in models["catalog"] if model["name"] == "sora-2")
-        self.assertIs(row["runtimeEnabled"], False)
-        row["runtimeEnabled"] = True
+        self.assertIs(row.get("runtimeEnabled", True), True)
         blocks, _ = gateway_generator.render_catalog(models)
         sora = [
             block
@@ -469,7 +466,7 @@ class GatewayPolicyTests(unittest.TestCase):
     def test_runtime_disabled_rows_keep_inventory_but_get_no_http_route(self) -> None:
         source = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
         row = next(model for model in source["catalog"] if model["name"] == "sora-2")
-        self.assertIs(row["runtimeEnabled"], False)
+        self.assertIs(row.get("runtimeEnabled", True), True)
         # Runtime disablement is not deletion: the desired deployments remain.
         self.assertEqual(
             [(d["region"], d["sku"]) for d in row["deployments"]],
@@ -480,7 +477,9 @@ class GatewayPolicyTests(unittest.TestCase):
                 models = json.loads(json.dumps(source))
                 target = next(m for m in models["catalog"] if m["name"] == "sora-2")
                 if enabled:
-                    del target["runtimeEnabled"]
+                    target.pop("runtimeEnabled", None)
+                else:
+                    target["runtimeEnabled"] = False
                 blocks, _ = gateway_generator.render_catalog(models)
                 routes = [block for block in blocks if 'new JProperty("sora-2-' in block]
                 self.assertEqual(len(routes), 2 if enabled else 0)
@@ -489,7 +488,7 @@ class GatewayPolicyTests(unittest.TestCase):
             path.read_text(encoding="utf-8")
             for path in gateway_generator.CATALOG_OUTPUT_PATHS
         )
-        self.assertNotIn("sora-2-", shards)
+        self.assertIn("sora-2-", shards)
 
     def test_runtime_enabled_must_be_a_boolean(self) -> None:
         for value in ("false", 0, 1, None, "true"):

@@ -8,13 +8,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 from xml.etree import ElementTree as ET
 
 from _capacity_evidence import EvidenceError, az_command, number, object_value, run_bounded, strict_json
 from _model_targets import model_target
 from _model_retirement import parse_date
+from _claude_gateway import configured_gateway, source_apim_id, verify_gateway_routes, verify_gateway_transition
 
 ROOT = Path(__file__).resolve().parents[1]
 INFERENCE_ACTIONS = ["Microsoft.CognitiveServices/accounts/AIServices/*"]
@@ -129,7 +130,8 @@ def configured_binding(environment: dict[str, str] | os._Environ[str] = os.envir
 
     staged = enabled("AI4IA_CLAUDE_EXTERNAL_ENABLED")
     active = enabled("AI4IA_CLAUDE_ENABLED")
-    require(not active or staged, "claude_external_binding_required")
+    gateway = configured_gateway(environment)
+    require(not active or staged or gateway is not None, "claude_external_binding_required")
     if not staged:
         return None
     binding = parse_binding(environment.get("AI4IA_CLAUDE_BINDING_JSON", ""))
@@ -470,8 +472,14 @@ def same_policy(actual: object, expected: str) -> bool:
     return shape(policy_tree(actual)) == shape(policy_tree(expected))
 
 
-def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
-    apim = binding["sourceApimResourceId"]
+class RouteReader(Protocol):
+    def get(self, target: bool, path: str, version: str, *, graph: bool = False) -> dict[str, Any]: ...
+
+
+def verify_apim_routes(
+    apim: str, named_values: dict[str, str], workload: str, reader: RouteReader, *,
+    auth_filename: str, secret_names: tuple[str, ...] = (),
+) -> None:
     api_path = apim + "/apis/openai"
     before = reader.get(False, api_path + "/policies/policy", "2024-05-01")
     actual = before.get("properties", {}).get("value", "")
@@ -486,7 +494,7 @@ def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
         fragment = reader.get(False, apim + "/policyFragments/" + reference, "2024-05-01")
         filename = base + ".xml"
         if base == "claude_auth_v1":
-            filename = "claude-federated-auth.xml" if enabled else "claude-disabled.xml"
+            filename = auth_filename
         elif base == "endpoint_selection_setup_32":
             filename = "simplel7proxy-endpoints.xml"
         elif base.startswith("endpoint_selection_catalog_"):
@@ -496,14 +504,20 @@ def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
     require(same_policy(actual, expected), "claude_route_policy_changed")
     named = reader.get(False, apim + "/namedValues", "2024-05-01")
     rows = object_rows(named.get("value"), 256, "claude_named_value_inventory")
-    for name, value in binding.named_values.items():
+    for name, value in named_values.items():
         matches = [row for row in rows if row.get("name") == name]
         require(
             len(matches) == 1 and matches[0].get("properties", {}).get("value") == value
             and matches[0]["properties"].get("secret") is False,
             "claude_named_value_mismatch",
         )
-    subscription = reader.get(False, apim + "/subscriptions/" + binding["workload"] + "-proxy-models", "2024-05-01")
+    for name in secret_names:
+        matches = [row for row in rows if row.get("name") == name]
+        require(
+            len(matches) == 1 and matches[0].get("properties", {}).get("secret") is True,
+            "claude_gateway_secret_not_protected",
+        )
+    subscription = reader.get(False, apim + "/subscriptions/" + workload + "-proxy-models", "2024-05-01")
     props = subscription.get("properties", {})
     require(
         props.get("scope", "").lower() in {api_path.lower(), "/apis/openai"}
@@ -512,6 +526,13 @@ def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
     )
     after = reader.get(False, api_path + "/policies/policy", "2024-05-01")
     require(after == before, "claude_route_changed_during_readback")
+
+
+def verify_routes(binding: Binding, reader: Reader, *, enabled: bool) -> None:
+    verify_apim_routes(
+        binding["sourceApimResourceId"], binding.named_values, binding["workload"], reader,
+        auth_filename="claude-federated-auth.xml" if enabled else "claude-disabled.xml",
+    )
 
 
 def verify_binding_transition(binding: Binding, reader: Reader) -> None:
@@ -550,6 +571,13 @@ def verify_binding_transition(binding: Binding, reader: Reader) -> None:
 
 def verify_configured(models: dict[str, Any], *, routed: bool = False, target_plan: bool = False) -> int:
     binding = configured_binding()
+    if configured_gateway() is not None:
+        require(not target_plan, "claude_gateway_does_not_provision_models")
+        if routed:
+            verify_gateway_routes(source_apim_id())
+        else:
+            verify_gateway_transition(source_apim_id())
+        return 0
     if binding is None:
         return 0
     reader = Reader(binding, os.environ.get("AI4IA_CLAUDE_TARGET_AZURE_CONFIG_DIR", ""))

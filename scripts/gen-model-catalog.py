@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser, check_or_write
 from _model_targets import image_editing, image_editing_default, model_target, runtime_enabled
+from _model_routing import routing_configuration
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "infra" / "models.json"
@@ -41,6 +42,7 @@ def build_catalog(models: dict) -> dict:
     items = []
     for model in models["catalog"]:
         target = model_target(model)
+        routing_configuration(model, models)
         options = []
         for dep in model["deployments"]:
             region = dep["region"]

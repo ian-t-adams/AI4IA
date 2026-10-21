@@ -315,11 +315,11 @@ photos; edit the whole image instead.
 Video generation is asynchronous and slower than a text reply. Supported clip
 lengths are 4, 8, or 12 seconds, with 4 seconds as the default.
 
-Video generation is offered only while a video model is enabled. Sora 2, the
-only available video model, retires on October 15, 2026 with no replacement, so
-this deployment no longer offers `/generate_video` or the agent tool. Agents
-that list it keep their other tools. Clips you already generated remain in their
-conversations and stay viewable.
+Video generation is offered only while a video model is enabled. The source
+subscription extended Sora 2 to November 2, 2026, so the catalog restores it
+temporarily; it becomes available after the matching app/gateway rollout.
+There is no verified successor. Clips you already generated remain viewable,
+including if generation is disabled again.
 
 **Cost estimate unavailable** is not free. Published estimates can differ from
 Azure billing, especially for provider-specific media meters.

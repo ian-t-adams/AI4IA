@@ -829,7 +829,7 @@
     },
     {
       "id": "model-router",
-      "displayName": "model-router",
+      "displayName": "Model Router (Astra / Sol / Luna)",
       "category": "router",
       "format": "OpenAI",
       "api": "chat",
@@ -1659,7 +1659,6 @@
       "id": "sora-2",
       "displayName": "sora-2",
       "category": "video",
-      "runtimeEnabled": false,
       "format": "OpenAI",
       "api": "chat",
       "requiredRealtimeProtocol": null,

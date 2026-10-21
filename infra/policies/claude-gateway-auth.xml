@@ -1,0 +1,42 @@
+<fragment>
+    <choose>
+        <when condition="@(context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;claudeFederated&quot;, false))">
+            <set-variable name="claudeGatewayBindingValid" value="@{
+                string endpoint = &quot;{{claude-gateway-url}}&quot;;
+                string key = &quot;{{claude-gateway-key}}&quot;;
+                if (!System.Text.RegularExpressions.Regex.IsMatch(endpoint, @&quot;\Ahttps:&quot; + &quot;/&quot; + @&quot;/[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.azure-api\.net/claude\z&quot;)
+                    || !System.Text.RegularExpressions.Regex.IsMatch(key, @&quot;\A[A-Za-z0-9]{16,128}\z&quot;)) { return false; }
+                if (context.Subscription == null || context.Subscription.Id != &quot;{{claude-proxy-subscription}}&quot;) { return false; }
+                if (context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;noReplay&quot;, false) || context.Request.Method != &quot;POST&quot;) { return false; }
+                string model = context.Variables.GetValueOrDefault&lt;string&gt;(&quot;model&quot;, &quot;&quot;);
+                string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
+                if (path != &quot;deployments/&quot; + model + &quot;/chat/completions&quot;) { return false; }
+                JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
+                if (backends.Count != 1) { return false; }
+                JObject backend = (JObject)backends[0];
+                return backend.Value&lt;string&gt;(&quot;auth&quot;) == &quot;CLAUDE_FEDERATED&quot;
+                    &amp;&amp; backend.Value&lt;string&gt;(&quot;url&quot;) == &quot;{{claude-target-endpoint}}/anthropic&quot;
+                    &amp;&amp; backend.Value&lt;string&gt;(&quot;path&quot;) == &quot;anthropic&quot;
+                    &amp;&amp; backend.Value&lt;string&gt;(&quot;deployment&quot;) == model;
+            }" />
+            <choose>
+                <when condition="@(!context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;claudeGatewayBindingValid&quot;, false))">
+                    <return-response>
+                        <set-status code="503" reason="Claude gateway binding unavailable" />
+                        <set-body>{"error":{"code":"claude_gateway_binding_unavailable"}}</set-body>
+                    </return-response>
+                </when>
+            </choose>
+            <set-variable name="claudeGateway" value="@(true)" />
+            <set-variable name="claudeExpectedUrl" value="{{claude-gateway-url}}" />
+            <set-variable name="listBackends" value="@{
+                JArray backends = (JArray)context.Variables[&quot;listBackends&quot;];
+                ((JObject)backends[0])[&quot;url&quot;] = &quot;{{claude-gateway-url}}&quot;;
+                return backends;
+            }" />
+        </when>
+        <otherwise>
+            <authentication-managed-identity resource="@((string)context.Variables[&quot;authResource&quot;])" output-token-variable-name="managed-id-access-token" ignore-error="false" />
+        </otherwise>
+    </choose>
+</fragment>

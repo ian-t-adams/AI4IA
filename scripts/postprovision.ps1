@@ -473,6 +473,17 @@ function Test-GatewayTopology {
 
 function Test-ClaudeBinding {
   $enabled = Get-EnvValue 'AI4IA_CLAUDE_EXTERNAL_ENABLED'
+  $gatewayEnabled = Get-EnvValue 'AI4IA_CLAUDE_GATEWAY_ENABLED'
+  if ($gatewayEnabled -eq 'true') {
+    $apimId = Get-EnvValue 'AZURE_APIM_RESOURCE_ID'
+    & python (Join-Path $PSScriptRoot 'check-claude-binding.py') --routed --source-apim-resource-id $apimId
+    if ($LASTEXITCODE -ne 0) {
+      Add-Result -Name 'claude-gateway' -Status 'FAIL' -Detail 'upstream gateway source route readback unavailable'
+      return
+    }
+    Add-Result -Name 'claude-gateway' -Status 'PASS' -Detail 'source routes and protected credential metadata verified; not live inference proof'
+    return
+  }
   if ($enabled -ne 'true') { return }
   & python (Join-Path $PSScriptRoot 'check-claude-binding.py') --routed
   if ($LASTEXITCODE -ne 0) {

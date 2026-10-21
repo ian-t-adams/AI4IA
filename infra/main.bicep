@@ -3,7 +3,7 @@
 targetScope = 'subscription'
 
 import { selectedCapacity } from './capacity.bicep'
-import { deploymentTarget } from './model-targets.bicep'
+import { deploymentTarget, deploymentRouting } from './model-targets.bicep'
 
 @minLength(3)
 @maxLength(20)
@@ -35,6 +35,16 @@ param claudeEnabled bool = false
 
 @description('Attach the separately approved source UAMI and stage the external Claude binding. Default OFF; never creates target resources or directory objects.')
 param claudeExternalEnabled bool = false
+
+@description('Use an existing upstream APIM for Claude with an AI4IA-only API-scoped key. Default OFF; mutually exclusive with direct cross-tenant federation. Never creates the upstream gateway or its keys.')
+param claudeGatewayEnabled bool = false
+
+@description('Exact existing upstream APIM base URL, HTTPS Azure API Management host with /claude suffix. Not a direct provider URL.')
+param claudeGatewayUrl string = ''
+
+@secure()
+@description('Dedicated upstream API subscription key, supplied from the deployment secret store. Never shared with Desktop, emitted as an output, or delivered to the API/browser.')
+param claudeGatewayApiKey string = ''
 
 @description('Operator-owned exact cross-tenant binding JSON (AI4IA_CLAUDE_BINDING_JSON), carried as its UTF-8 base64 transport because azd substitutes parameter values unescaped; checked by check-claude-binding.py using two isolated authenticated readers. No credentials. Empty by default; configuration is not readback proof.')
 param claudeBindingJsonBase64 string = ''
@@ -429,6 +439,7 @@ var modelDeploymentsByRegion = [for r in regionList: flatten(map(deployableCatal
   version: d.version
   sku: d.sku
   capacity: selectedCapacity(d, modelCapacityProfile)
+  routing: deploymentRouting(m)
 })))]
 
 var uniqueSuffix = uniqueString(subscription().id, environmentName)
@@ -704,6 +715,9 @@ module gateway 'modules/gateway.bicep' = {
     sharedApimPrincipalId: apimcore.outputs.principalId
     claudeEnabled: claudeEnabled
     claudeExternalEnabled: claudeExternalEnabled
+    claudeGatewayEnabled: claudeGatewayEnabled
+    claudeGatewayUrl: claudeGatewayUrl
+    claudeGatewayApiKey: claudeGatewayApiKey
     claudeBinding: claudeBinding
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     proxyIdentityResourceId: proxyIdentity.resourceId
@@ -893,6 +907,7 @@ module api 'modules/api.bicep' = {
     adminApiSecret: adminApiSecret
     claudeEnabled: claudeEnabled
     claudeExternalEnabled: claudeExternalEnabled
+    claudeGatewayEnabled: claudeGatewayEnabled
     // The API stamps the priority band; the proxy reserves workers for it. Both
     // sides read the same switch so they can never be half-enabled: a band with
     // no reservation is inert, and a reservation with no band starves.

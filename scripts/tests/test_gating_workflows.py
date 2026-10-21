@@ -895,6 +895,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         claude_enabled: str = "true",
         missing: tuple[str, ...] = (),
         ref: str = "refs/heads/main",
+        extra: dict[str, str] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], str]:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -908,6 +909,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
             env["AI4IA_CLAUDE_ENABLED"] = claude_enabled
             env["GITHUB_REF"] = ref
             env["GITHUB_OUTPUT"] = str(output)
+            env.update(extra or {})
             for name in missing:
                 env.pop(name, None)
             assert BASH is not None
@@ -924,6 +926,28 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         result, output = self.run_validation()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip(), "deployment_enabled=true")
+
+    def test_gateway_authentication_is_explicit_and_not_a_federation_fallback(self) -> None:
+        gateway = {
+            "AI4IA_CLAUDE_EXTERNAL_ENABLED": "false", "AI4IA_CLAUDE_GATEWAY_ENABLED": "true",
+            "AI4IA_CLAUDE_GATEWAY_URL": "https://claude-fixture.azure-api.net/claude",
+        }
+        attestation = (
+            "AI4IA_CLAUDE_ORGANIZATION_NAME", "AI4IA_CLAUDE_COUNTRY_CODE", "AI4IA_CLAUDE_INDUSTRY",
+        )
+        result, output = self.run_validation(extra=gateway, missing=attestation)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(output.strip(), "deployment_enabled=true")
+        for changes in (
+            {"AI4IA_CLAUDE_EXTERNAL_ENABLED": "true"},
+            {"AI4IA_CLAUDE_GATEWAY_URL": ""},
+            {"AI4IA_CLAUDE_GATEWAY_ENABLED": "maybe"},
+        ):
+            with self.subTest(changes=changes):
+                result, output = self.run_validation(extra={**gateway, **changes}, missing=attestation)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "")
+        self.assertEqual(self.run_validation(extra=gateway, missing=attestation)[0].returncode, 0)
 
     def test_only_the_exact_main_branch_can_reach_deployment_admission(self) -> None:
         for ref in ("", "main", "refs/heads/release", "refs/tags/main", "refs/heads/Main"):

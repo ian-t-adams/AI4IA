@@ -24,6 +24,8 @@ on:
       - "scripts/_production_capacity.py"
       - "scripts/_capacity_evidence.py"
       - "scripts/check-model-availability.py"
+      - "scripts/_model_routing.py"
+      - "scripts/tests/test_model_routing.py"
       - "scripts/postprovision.ps1"
       - "scripts/tests/test_feature_prereqs.py"
       - "scripts/tests/test_model_capacity_profile.py"
@@ -39,6 +41,8 @@ on:
       - "scripts/gen-gateway-policy.py"
       - "scripts/_model_targets.py"
       - "scripts/_claude_binding.py"
+      - "scripts/_claude_gateway.py"
+      - "scripts/tests/test_claude_gateway.py"
       - "scripts/check-claude-binding.py"
       - "scripts/tests/test_claude_binding.py"
       - "scripts/tests/_claude_fixture.py"
@@ -114,6 +118,7 @@ jobs:
           python scripts/gen-gateway-policy.py --check
           python -m unittest scripts.tests.test_gateway_policy
           python -m unittest scripts.tests.test_claude_binding
+          python -m unittest scripts.tests.test_claude_gateway
 
       # A duplicate property name in any policy JObject is a RUNTIME failure that
       # compiles cleanly: Newtonsoft throws "Property with the same name already
@@ -146,7 +151,9 @@ jobs:
         run: python -m unittest scripts.tests.test_feature_prereqs
 
       - name: Model capacity profile tests
-        run: python -m unittest scripts.tests.test_model_capacity_profile
+        run: |
+          python -m unittest scripts.tests.test_model_capacity_profile
+          python -m unittest scripts.tests.test_model_routing
 
       - name: Runtime and IaC posture contract tests
         run: |
