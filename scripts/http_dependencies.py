@@ -1,10 +1,10 @@
-"""Install the canary's only third-party runtime, hash-checked from app/api/uv.lock.
+"""Install the public-health HTTP runtime, hash-checked from app/api/uv.lock.
 
-Both canary jobs run this before any canary command. The API lock is the single
-version and artifact-hash source: this derives the closure of ``DIRECT`` from it
+Uptime and portal publication share the API lock as their single version and
+artifact-hash source: this derives the closure of ``DIRECT`` from it
 and never resolves, upgrades or builds anything. ``--require-hashes`` makes pip
 refuse an artifact, or a transitive dependency, that the lock does not record;
-``--only-binary`` refuses source builds. Everything else the canary runs is the
+``--only-binary`` refuses source builds. Everything else the observer runs is the
 standard library or repository source that must stay free of API dependencies.
 """
 
@@ -18,7 +18,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "app" / "api" / "uv.lock"
 DIRECT = ("aiohttp",)
 REGISTRY = "https://pypi.org/simple"
@@ -86,7 +86,7 @@ def _marker(condition: Condition) -> str:
 
 
 def requirements(lock: dict[str, Any], direct: tuple[str, ...] = DIRECT) -> str:
-    lines = ["# Derived from app/api/uv.lock by scripts/canaries/dependencies.py."]
+    lines = ["# Derived from app/api/uv.lock by scripts/http_dependencies.py."]
     for name, (package, condition) in closure(lock, direct).items():
         artifacts = [package.get("sdist"), *package.get("wheels", [])]
         hashes = sorted({artifact["hash"] for artifact in artifacts if artifact})
@@ -101,9 +101,9 @@ def requirements(lock: dict[str, Any], direct: tuple[str, ...] = DIRECT) -> str:
 def main() -> int:
     lock = tomllib.loads(LOCK.read_text(encoding="utf-8"))
     pins = ", ".join(f"{name}=={package['version']}" for name, (package, _) in closure(lock).items())
-    print(f"Hash-checked canary runtime from app/api/uv.lock: {pins}.", flush=True)
+    print(f"Hash-checked HTTP runtime from app/api/uv.lock: {pins}.", flush=True)
     with tempfile.TemporaryDirectory() as temporary:
-        path = Path(temporary) / "canary-requirements.txt"
+        path = Path(temporary) / "http-requirements.txt"
         path.write_text(requirements(lock), encoding="utf-8")
         command = [sys.executable, "-m", "pip", *PIP_ARGUMENTS, "--requirement", str(path)]
         return subprocess.run(command, check=False).returncode

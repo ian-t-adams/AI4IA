@@ -40,8 +40,8 @@ owner approval before merge.
 | Foundry dev pack | Public preview | Optional operator toolchain | No repository requirement changes |
 | Toolboxes for prompt agents | Public preview; GA for hosted agents | Toolbox consumed as MCP from AI4IA's runtime | No change |
 | Tool search in toolboxes | GA | Live toolbox uses `toolbox_search_preview`, which lists `tool_search` and `call_tool` | #512 binds toolbox consent to the reviewed manifest; keep the preview spelling |
-| Agent-to-Agent (A2A) tool | GA | Outgoing `a2a` type already modeled; unused by the canonical toolbox | No change; incoming design stays blocked |
-| Routines | GA | Validation-only design artifact | Stay design-only |
+| Agent-to-Agent (A2A) tool | GA | Outgoing `a2a` type already modeled; unused by the canonical toolbox | No change; inbound A2A is not implemented |
+| Routines | GA | Not implemented | Former design-only scaffolding removed |
 | Insights in Foundry | Public preview | Content-free GenAI spans in AI4IA's Application Insights | Not adopted; needs infrastructure and cost decisions |
 | Rubric evaluator, synthetic and traces-to-dataset generation, agent optimizer | GA later in September 2026 | Offline and live authored-synthetic evaluation only | Not adopted; judge and production-trace decisions pending |
 | Entra and Agent 365 lifecycle enforcement | Announced | No Foundry agent identities | Not applicable |
@@ -427,9 +427,10 @@ listed tools, so the
 The GA A2A tool is the outgoing direction: a toolbox `a2a` tool with
 `a2aVersion` `"1.0"`, modeled since SDK 2.5.0 alongside `a2a_preview`. Incoming
 A2A exposes a deployed Foundry prompt agent that uses the responses protocol;
-protocol 1.0 is GA and 0.3 is preview. AI4IA has no Foundry prompt agent, so
-all seven blockers in `foundry/a2a/example.a2a.json` remain. Protocol 1.0 is the
-target when an incoming design is approved.
+protocol 1.0 is GA and 0.3 is preview. AI4IA has no Foundry prompt agent or
+inbound A2A implementation. The former schema-only proposal was removed, not
+activated. Any future implementation must define the actual endpoint, protocol,
+authentication, APIM and runtime contracts.
 
 ### Routines
 
@@ -438,7 +439,7 @@ a one-time timer, a recurring schedule, or an event (GitHub issues and Teams
 channel messages at launch). Each routine runs with the creator's or the agent's
 identity through the `authorization` argument added in SDK 2.6.0. The Python
 surface is still `project.beta.routines.create_or_update` in SDK 2.6.1 and
-2.7.0. AI4IA's artifact stays design-only: there is no Foundry agent to target,
+2.7.0. AI4IA does not implement this surface: there is no Foundry agent to target,
 and a routine run would bypass owner admission, consent, receipts, hard-quota
 admission and schedule-slot contracts. Governed scheduling is AI4IA's default-off
 `AI4IA_WORKFLOW_SCHEDULING_ENABLED` path. The reminder tool remains

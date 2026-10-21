@@ -5,9 +5,7 @@ import json
 import hashlib
 import time
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 import jwt
@@ -103,54 +101,7 @@ def actor_app(request, monkeypatch):
         yield client, model, token, calls, connector, config
 
 
-def observation_config(subject):
-    from scripts.canaries.configuration import Configuration
-    from scripts.canaries.contracts import stamp
-
-    return Configuration(
-        TENANT, CLIENTS[subject], subject, f"api://{BARE_GUID}",
-        ORIGIN, "https://api.example.test", "55555555-5555-5555-5555-555555555555",
-        stamp(datetime.now(timezone.utc) + timedelta(hours=1)), 4, 21600,
-        True, True, True, subject == REALTIME,
-    )
-
-
-async def exercise_monitor(client, bearer):
-    from scripts.canaries.contracts import Report, Run, stamp
-    from scripts.canaries.identity import validate_api_token
-    from scripts.canaries.monitor import chat
-    from scripts.canaries.transport import Response
-
-    requests = []
-
-    class ApplicationTransport:
-        async def request(self, method, url, *, token=None, body=None, **_):
-            parsed = urlsplit(url)
-            assert parsed.netloc == "web.example.test"
-            requests.append((method, parsed.path))
-            result = client.request(
-                method, parsed.path + (f"?{parsed.query}" if parsed.query else ""),
-                headers={**authorization(token), "Content-Type": "application/json"},
-                content=body, follow_redirects=False,
-            )
-            return Response(
-                result.status_code, result.content, 0.01,
-                result.headers.get("content-type", "").split(";", 1)[0],
-            )
-
-    now = datetime.now(timezone.utc)
-    config = observation_config(MONITOR)
-    validate_api_token(bearer, config, now)
-    report = Report(Run("owner/repo", 1, 200, 2, 1, "a" * 40), stamp(now))
-    source = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
-    await chat(ApplicationTransport(), config, bearer, source, report)
-    return report, requests
-
-
 def exercise_setup(client, bearer):
-    from scripts.canaries.identity import validate_api_token
-
-    validate_api_token(bearer, observation_config(REALTIME), datetime.now(timezone.utc))
     response = client.get(
         "/api/canary/realtime-capabilities", headers=authorization(bearer),
     )
@@ -179,7 +130,7 @@ def exercise_setup(client, bearer):
 async def test_shared_defaults_cannot_admit_both_roleless_actors(
     actor_app, categories, chat_ready, setup_ready,
 ):
-    client, _model, token, calls, connector, config = actor_app
+    client, model, token, calls, connector, config = actor_app
     config["domains"] = {
         "models": {"default": {"allow": categories}},
         "tools": {"default": {"allow": []}},
@@ -187,17 +138,13 @@ async def test_shared_defaults_cannot_admit_both_roleless_actors(
     }
     config["spend"] = {"default": {"requestsPerMinute": 50}}
     client.app.state.settings.group_policy_json = json.dumps(config)
-    report, requests = await exercise_monitor(client, token())
-    assert (report.stages["model"].outcome == "pass") is chat_ready, report.document()
-    assert len(calls) == int(chat_ready)
+    assert ready(client, model, token()) is chat_ready
     if chat_ready:
-        assert report.cleanup_safe
-        assert client.get("/api/sessions", headers=authorization(token())).json() == []
-        assert len(client.get(
-            "/api/sessions/deletions", headers=authorization(token()),
-        ).json()["items"]) == 1
-    else:
-        assert all(method == "GET" for method, _ in requests)
+        response = client.post(
+            "/api/chat", json=fresh_request(client, model, token()), headers=authorization(token()),
+        )
+        assert response.status_code == 200, response.text
+    assert len(calls) == int(chat_ready)
     setup = client.get(
         "/api/canary/realtime-capabilities", headers=authorization(token(REALTIME)),
     )
@@ -230,27 +177,23 @@ async def test_explicit_restrictions_admit_both_actors_without_restricting_ordin
         tools = client.get("/api/tools", headers=headers).json()["tools"]
         assert tools and not any(item["available"] or item["selectable"] for item in tools)
 
-    report, requests = await exercise_monitor(client, token())
-    assert all(report.stages[name].outcome == "pass" for name in (
-        "platform", "auth", "catalog", "posture", "session", "gateway", "model", "persistence", "cleanup",
-    )), report.document()
-    assert report.cleanup_safe and report.usage_known
-    assert report.estimated_micro_usd is not None
+    request = fresh_request(client, model, token())
+    response = client.post("/api/chat", json=request, headers=authorization(token()))
+    assert response.status_code == 200, response.text
     assert len(calls) == 1
     sent = calls[0]
     sentinel = [{"role": "user", "content": CANARY_SENTINEL}]
-    # Least-cost selection may choose either governed text protocol; the body
-    # must be the sentinel-only envelope in the native shape the monitor reported.
-    assert report.protocol in ("chat", "responses")
-    assert ("input" in sent) is (report.protocol == "responses")
-    if report.protocol == "responses":
-        assert sent["input"] == sentinel and "messages" not in sent
-        assert sent["max_output_tokens"] == 64 and sent["store"] is False
-    else:
-        assert sent["messages"] == sentinel
-        assert sent.get("max_tokens", sent.get("max_completion_tokens")) == 64
+    assert sent["messages"] == sentinel
+    assert sent.get("max_tokens", sent.get("max_completion_tokens")) == 64
     assert "tools" not in sent
-    assert sum(method == "POST" and path == "/api/chat" for method, path in requests) == 1
+    session_path = f"/api/sessions/{request['sessionId']}"
+    assert client.delete(session_path, headers=authorization(token())).status_code == 202
+    for _ in range(2):
+        cleanup = client.post(f"{session_path}/deletion/reconcile", headers=authorization(token()))
+        assert cleanup.status_code in (200, 202), cleanup.text
+        if cleanup.status_code == 200:
+            break
+    assert cleanup.status_code == 200 and cleanup.json()["state"] == "cleanup_verified"
     assert client.get("/api/sessions", headers=authorization(token())).json() == []
     assert len(client.get("/api/sessions/deletions", headers=authorization(token())).json()["items"]) == 1
 
@@ -1020,26 +963,6 @@ def test_caller_profile_labels_do_not_select_actor_authority(actor_app):
         )
         assert result.status_code >= 400, result.text
     assert len(calls) == 1 and not connector.calls
-
-
-@pytest.mark.parametrize("claims", [
-    {"roles": ["permissive-role"]}, {"scp": "scope"},
-    {"azp": CLIENTS[REALTIME]}, {"appid": CLIENTS[REALTIME]}, {"oid": REALTIME},
-    {"tid": "00000000-0000-0000-0000-000000000077"},
-    {"aud": "00000000-0000-0000-0000-000000000077"},
-    {"iss": "https://wrong-issuer.example.test"}, {"idtyp": "user"},
-    {"email": "synthetic@example.test"},
-])
-def test_monitor_token_validator_remains_strict_with_actor_restrictions(actor_app, claims):
-    from scripts.canaries.contracts import CanaryError
-    from scripts.canaries.identity import validate_api_token
-
-    _client, _model, token, calls, connector, _config = actor_app
-    now = datetime.now(timezone.utc)
-    validate_api_token(token(), observation_config(MONITOR), now)
-    with pytest.raises(CanaryError, match="identity_rejected"):
-        validate_api_token(token(**claims), observation_config(MONITOR), now)
-    assert not calls and not connector.calls
 
 
 @pytest.mark.parametrize("claims", [

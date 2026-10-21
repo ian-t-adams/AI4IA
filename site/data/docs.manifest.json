@@ -60,7 +60,7 @@
         { "path": "app/api/README.md", "title": "API (FastAPI) README", "desc": "Backend responsibilities, feature gates and the container image contract." },
         { "path": "app/web/README.md", "title": "Web (Next.js) README", "desc": "Frontend surfaces, runtime feature visibility and the same-origin API proxy." },
         { "path": "proxy/README.md", "title": "Model proxy README", "desc": "The vendored SimpleL7Proxy gateway and the AI4IA Dockerfile." },
-        { "path": "foundry/README.md", "title": "Foundry manifests", "desc": "The active toolbox contract plus validation-only routine and A2A design artifacts; only the toolbox is reconciled." }
+        { "path": "foundry/README.md", "title": "Foundry manifests", "desc": "The active toolbox contract, reference manifest and repository-owned skills." }
       ]
     },
     {

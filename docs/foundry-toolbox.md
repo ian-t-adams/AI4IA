@@ -216,7 +216,7 @@ mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 | `toolbox_search` | **Tool search (GA spelling)** — let the model pick tools from a large set | none | SDK 2.4.0's `ToolSearchToolboxTool`, added alongside — not replacing — `toolbox_search_preview`; both discriminators remain live and carry an identical field set (only the common `name`/`description`/`toolConfigs`). GA since September 2026. Microsoft Learn documents that it hides every unpinned toolbox tool behind injected `tool_search` and generic `call_tool` meta-tools, the behavior the preview spelling already shows. Put only one of the two spellings in a real toolbox. |
 | `mcp` | Nest another MCP server as a tool | `serverLabel`, one of `serverUrl`/`connectorId`/`tunnelId`, `requireApproval`, `projectConnectionId`, `serverDescription`/`allowedTools`/`allowedCallers`/`deferLoading` (optional) | Lets the toolbox aggregate upstream MCP servers. Identified by `serverLabel`. `tunnelId` selects a Secure MCP Tunnel instead of a direct URL or built-in connector. `allowedCallers` restricts invocation to `direct` and/or `programmatic` callers. Unlike `azure_ai_search`/`browser_automation_preview`, `mcp`'s `projectConnectionId` genuinely is a tool-root field in the SDK. `requireApproval` is the literal `"always"`/`"never"`, or an object with `always`/`never` keys each holding a tool filter (`toolNames`/`readOnly`); an empty object is rejected. `allowedTools` is either a non-empty array of tool-name strings or that same tool-filter shape, restricting which discovered upstream tools are exposed. `serverDescription` is free text surfaced to the model; `deferLoading` (boolean) defers fetching the server's tool list until first use. There is no BYO-container-image tool type; if you need to run genuinely custom execution logic, wrap it in your own server and expose it as an `mcp` tool instead of trying to pass a custom image to `code_interpreter.container`. The SDK's `mcp` model also exposes `authorization` (an OAuth bearer token) and `headers` (which can carry auth material); AI4IA does not expose either for the same secret-sprawl reason as `networkPolicy.domainSecrets` above -- put credentials in the referenced project connection instead. |
 | `a2a` | Delegate to a remote Agent-to-Agent (A2A) protocol agent | `a2aVersion` (`"1.0"`, required), at least one of `projectConnectionId`/`baseUrl`, `agentCardPath`/`sendCredentialsForAgentCard` (optional) | SDK 2.7.0's GA `A2AToolboxTool` discriminator. It retains the preview model's endpoint/connection fields and adds the required `a2aVersion`. Prefer this spelling for new manifests. |
-| `a2a_preview` | Delegate to a remote Agent-to-Agent (A2A) protocol agent | at least one of `projectConnectionId`/`baseUrl`, `agentCardPath`/`sendCredentialsForAgentCard` (optional) | SDK 2.4.0's `A2APreviewToolboxTool` -- the **outgoing** direction (AI4IA's toolbox *calling out* to someone else's A2A agent), the inverse of the "Routines and Agent-to-Agent (A2A)" section below (AI4IA *exposing* its own agent as an A2A endpoint for others to call). Use `projectConnectionId` to delegate through a project connection storing the remote agent's endpoint and auth (Microsoft's documented approach), `baseUrl` (+ optional `agentCardPath`, `sendCredentialsForAgentCard`) for a self-contained, connectionless call to an anonymous agent, or both together (e.g. `baseUrl` as the target plus `projectConnectionId` for auth) -- the SDK constructor and schema both accept either or both; neither is client-side exclusive of the other. At least one is required; fields specific to other tool types (e.g. `serverLabel`, `requireApproval`) are rejected. |
+| `a2a_preview` | Delegate to a remote Agent-to-Agent (A2A) protocol agent | at least one of `projectConnectionId`/`baseUrl`, `agentCardPath`/`sendCredentialsForAgentCard` (optional) | SDK 2.4.0's `A2APreviewToolboxTool` -- the **outgoing** direction (AI4IA's toolbox *calling out* to someone else's A2A agent), not an inbound endpoint exposing AI4IA for others to call. Use `projectConnectionId` to delegate through a project connection storing the remote agent's endpoint and auth (Microsoft's documented approach), `baseUrl` (+ optional `agentCardPath`, `sendCredentialsForAgentCard`) for a self-contained, connectionless call to an anonymous agent, or both together (e.g. `baseUrl` as the target plus `projectConnectionId` for auth) -- the SDK constructor and schema both accept either or both; neither is client-side exclusive of the other. At least one is required; fields specific to other tool types (e.g. `serverLabel`, `requireApproval`) are rejected. |
 | `fabric_iq_preview` | Ground responses in a Microsoft Fabric IQ knowledge source | `projectConnectionId` (required), `serverLabel`/`serverUrl`/`requireApproval` (optional) | SDK 2.7.0's `FabricIQPreviewToolboxTool`. Shares the `serverLabel`/`serverUrl`/`requireApproval` field *names* with `mcp`, but not `allowedTools`/`serverDescription`/`deferLoading` (those are mcp-only and rejected here). |
 | `work_iq_preview` | Ground responses in Microsoft 365 Work IQ | `projectConnectionId` (required; the tool's only field) | SDK 2.7.0's `WorkIQPreviewToolboxTool`. Unlike `fabric_iq_preview`, does **not** accept `serverLabel`/`serverUrl`/`requireApproval` or any other field. |
 | `reminder_preview` | Let the model schedule reminders for the caller | none | SDK 2.7.0's `ReminderPreviewToolboxTool`. No type-specific fields or connection required -- only the common `name`/`description`/`toolConfigs` below. |
@@ -307,8 +307,8 @@ serializer also match the
 No new tool support or exclusion is needed. Exact-pin and reflection tests
 require the real SDK rather than skipping when it is absent, and reject
 imported-version drift, stale manifest versions, and unreviewed types/fields.
-This is source compatibility evidence, not a deployment or live-service claim;
-routine and inbound A2A artifacts remain non-executable.
+This is source compatibility evidence, not a deployment or live-service claim.
+Foundry routines and inbound A2A are not implemented.
 
 **SDK 2.7.0 minor review:** the [official release](https://github.com/Azure/azure-sdk-for-python/releases/tag/azure-ai-projects_2.7.0)
 adds preview Voice Agent clients (`.beta.voice_agents` conversations, realtime
@@ -358,8 +358,8 @@ regular top-level `scripts` package would shadow this repository's namespace
 The sdist matches its locked hash, and its package files equal the wheel's apart
 from the two namespace `__init__.py` files the wheel omits. No new tool
 support or exclusion is needed. This is source compatibility evidence, not a
-deployment or live-service claim; routine and inbound A2A artifacts remain
-non-executable.
+deployment or live-service claim. Foundry routines and inbound A2A are not
+implemented.
 
 **SDK 2.8.0 minor review:** the
 [official release](https://github.com/Azure/azure-sdk-for-python/releases/tag/azure-ai-projects_2.8.0)
@@ -561,85 +561,23 @@ portal-created samples such as `swagger-petstore` are retained by ARM incrementa
 must be removed separately with `scripts/cleanup-lean-azure-retained.ps1` after verifying the exact
 asset; they are not created or advertised by this repo.
 
-## P7 — Routines and Agent-to-Agent (A2A): design artifacts only
+## Routines and inbound Agent-to-Agent (A2A)
 
-Routine and A2A files are **design/preview artifacts**, not served capabilities.
-Foundry routines and the A2A tool reached GA in September 2026; that changes the
-service status, not these artifacts.
-Routine creation has no faithful translation to the pinned SDK contract. The A2A
-scaffold also lacks the protocol/version, endpoint, auth, APIM operation/product/
-subscription/policy, and runtime-client contracts needed to make an integration
-callable. Schema validation proves only that each design is internally shaped as
-documented.
+AI4IA does not implement Foundry routines or expose a Foundry agent as an inbound
+A2A endpoint. The former design-only manifests, validators and tests were
+removed because they did not create or serve either capability.
 
-### Routines
-
-A [routine](https://learn.microsoft.com/azure/foundry/agents/how-to/use-routines) in
-azure-ai-projects 2.8.0 is **not** the multi-step, tool-calling workflow this repo's manifest
-schema models. There is no `project.routines` at all; the actual surface, still under `beta` in
-SDK 2.8.0 although the service is GA, is
-`project.beta.routines.create_or_update(routine_name, *, triggers, action)`, which models an event
-**trigger** (a custom event, a GitHub issue, a cron schedule, or a timer) that invokes ONE
-already-existing Foundry agent by name with a static input payload -- fundamentally different from
-"run these N steps, each calling toolbox tools." Our manifest schema
-(`name`/`description`/`model`/`toolbox`/`steps[].{name,instructions,tools}`) has no trigger-type
-field and no target-agent-name field, so there is no faithful, non-inventive translation from one
-shape to the other. GA does not remove the second blocker either: AI4IA has no Foundry agent to
-target, and a routine runs with the creator's or the agent's identity (SDK 2.6.0's
-`authorization`) outside AI4IA's owner admission, consent, receipts and schedule contracts. The
-governed scheduler remains the default-off [workflow automation](workflow-automation.md) path.
-
-**Residual gap:** rather than fake-map semantics (e.g. silently treating a step as a trigger and
-guessing an agent name for `action.agent_name`), `scripts/provision-foundry-routine.py` is
-permanently validation/planning-only: it loads, validates, and prints the plan (steps, model,
-referenced toolbox tools, project endpoint if configured) for `foundry/routines/*.routine.json`,
-and never imports or calls the Azure SDK. There is intentionally **no `--create`** -- it was
-removed rather than faked. This will be revisited if AI4IA defines a manifest schema that actually
-captures a trigger + target-agent shape, or the SDK's routines surface gains step-based workflow
-support.
-
-Shipped:
-- `foundry/routines/routine.schema.json` + `foundry/routines/example.routine.json` -- a schema and
-  a populated example routine (steps, tool references, model) documenting the workflow shape
-  AI4IA plans for, kept to make the residual gap concrete and forward-compatible.
-- `scripts/provision-foundry-routine.py` -- pure `load_manifest`/`validate_manifest`/`plan_steps`/
-  `referenced_tools` functions (dependency-free, unit-tested in `test_foundry_routine.py`; the
-  script never imports `azure.ai.projects`).
-- The routine references canonical toolbox **instance names**. Semantic validation
-  loads `foundry/toolbox.manifest.json` and rejects unknown names. That proves only
-  namespace consistency; no runtime/APIM dispatch or inherited governance path
-  exists today.
-
-Run it: `python scripts/provision-foundry-routine.py` (validates the manifest and prints the plan;
-there is no `--create`).
-
-### Agent-to-Agent (A2A) design
-
-[A2A](https://learn.microsoft.com/azure/foundry/agents/how-to/enable-agent-to-agent-endpoint)
-can expose a Foundry agent over the Agent2Agent protocol. Incoming A2A requires a
-deployed Foundry prompt agent on the responses protocol; protocol 1.0 is GA and
-0.3 is preview. The GA A2A *tool* is the opposite, outgoing direction, already
-modeled as the toolbox `a2a` type above. AI4IA retains a useful
-design artifact for the incoming direction, but it is not an implementation:
-
-1. Select and pin the A2A protocol/version contract and endpoint discovery shape
-   (protocol 1.0 is the GA target).
-2. Define backend authentication and the APIM API operation, product/subscription,
-   and policy.
-3. Implement an authenticated runtime client and wire it to a server-authoritative
-   agent/tool contract.
-4. Add live-compatible tests for both APIM and runtime behavior before changing
-   the lifecycle from `design-preview`.
-
-Shipped: `foundry/a2a/a2a.schema.json`,
-`foundry/a2a/example.a2a.json`, and
-`scripts/provision-foundry-a2a.py`. The script validates and prints the complete
-blocker inventory. It deliberately has no `--emit-az`, endpoint builder, or
-`AgentSpec` projection: none would prove a callable integration.
+The working toolbox's outgoing `a2a` and `a2a_preview` adapters remain supported.
+They delegate to a remote agent; they do not expose AI4IA as an A2A service.
+AI4IA's governed scheduling remains its default-off
+[workflow automation](workflow-automation.md) path. Any future Foundry routine
+or inbound A2A implementation needs an actual authenticated integration with
+the application's routing, ownership, admission, consent and receipt contracts,
+not a new schema-only placeholder.
 
 ## Testing and CI
 
-- `app/api/tests/test_foundry_toolbox.py` pins, with no Azure SDK or network: manifest
+- `app/api/tests/test_foundry_toolbox.py` exercises offline manifest
   validation (checked-in manifest matches the live toolbox, bad name / too many unnamed tools /
   non-toolbox tool types flagged), camelCase→snake_case tool projection, the consumer URL, the
   portable mcp-servers.json entry shape (`foundryToolbox: true`, no hardcoded URL), and the azd
@@ -662,17 +600,9 @@ blocker inventory. It deliberately has no `--emit-az`, endpoint builder, or
   still fail, and that excluded SDK payloads can construct but cannot dispatch
   unless their deliberate exclusion gate is removed.
 - `infra-validate` runs `check-jsonschema` on `foundry/toolbox.manifest.json`, the populated
-  `foundry/toolbox.manifest.example.json`, and the routine + A2A example manifests,
-  then runs semantic design checks so unknown routine tool names and incomplete
-  A2A blocker inventories fail.
+  `foundry/toolbox.manifest.example.json` and their shared toolbox schema.
 - `app-ci` runs the pytest suite whenever `app/**`, `foundry/**`, or the provisioning scripts
   change.
 - `scripts/tests/test_lean_azure_iac.py` pins the API Center ARM graph: every curated server is
   passed from `main.bicep`, registered as MCP, versioned, and deployed through its **APIM consumer
   URL**; it also guards the default-off Event Hubs and active App Configuration sentinel.
-- `app/api/tests/test_foundry_routine.py` pins the routine script: manifest validation, canonical
-  toolbox cross-validation, that `--create`/`create_routine` no longer exist
-  (guarding against a silent regression back to fake-mapping), and that the dry-run plan tolerates
-  a missing project endpoint. `app/api/tests/test_foundry_a2a.py` pins the design-only A2A script:
-  the full blocker inventory, non-callable lifecycle metadata, and the absence of
-  command emission or runtime registration.

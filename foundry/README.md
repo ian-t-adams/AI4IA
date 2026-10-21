@@ -26,8 +26,6 @@ APIM injects the managed-identity bearer, the static
 | `toolbox.manifest.example.json` | Populated `reference` manifest with one of every supported tool. It is never reconciled as-is. |
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
 | `skills/<name>/SKILL.md` | Repository-owned source for an unpinned active skill. `--create` reconciles immutable skill versions before the toolbox. |
-| `routines/routine.schema.json` + `routines/example.routine.json` | Design/preview routine contract. It is validated against canonical toolbox names but is not created or served. |
-| `a2a/a2a.schema.json` + `a2a/example.a2a.json` | Design/preview A2A contract with an explicit blocker inventory. It does not create a callable integration. |
 
 The audited provisioning SDK is `azure-ai-projects==2.8.0`. The `shell` and
 `web_iq_preview` toolbox types introduced in 2.6.0 remain unsupported pending capability
@@ -43,8 +41,7 @@ the full runbook for the SDK review and exact exclusions.
 ## Reconciliation
 
 `.github/workflows/foundry-assets.yml` uses GitHub OIDC to reconcile the
-repository-owned **skills and toolbox** data-plane assets. Routine and A2A files
-are validation-only and are never reconciled.
+repository-owned **skills and toolbox** data-plane assets.
 The workflow is **not** triggered directly by changes under `foundry/**`:
 it runs on `workflow_run` after the `deploy` workflow completes successfully for a
 push to `main`, and on manual dispatch. That ordering is the point — `deploy` is
@@ -84,11 +81,7 @@ python scripts/provision-foundry-toolbox.py            # dry run: prints plan + 
 # 4. Paste the printed entry into infra/mcp-servers.json, set
 #    enableOfficialMcp=true + enableFoundryToolbox=true, and use the deploy workflow.
 
-# 5. Validate design-only artifacts. Neither command creates or serves anything.
-python scripts/provision-foundry-routine.py --check
-python scripts/provision-foundry-a2a.py --check
-
-# 6. Manual repair only: pass the selected azd environment's endpoint explicitly.
+# 5. Manual repair only: pass the selected azd environment's endpoint explicitly.
 #    Automatic post-deploy reconciliation consumes the triggering deploy's artifact.
 gh workflow run foundry-assets.yml --ref main -f project_endpoint=$projectEndpoint
 ```
@@ -98,8 +91,6 @@ The toolbox script reads the project endpoint from `--project-endpoint` or
 For a first standup, the workflow is authoritative because it runs after deploy
 has created the OIDC identity's project role. Reserve a local `--create` for an
 explicitly approved repair after confirming the local operator has that same role.
-Routine and A2A scripts are offline design validators. The toolbox bridge uses
-preview toolbox/Skills contracts. Foundry routines and the A2A tool became GA in
-September 2026, but these routine and A2A files remain design-only (see
-[`docs/foundry-platform-evaluation.md`](../docs/foundry-platform-evaluation.md));
-do not infer that a schema-valid routine or A2A design is callable.
+The toolbox bridge uses preview toolbox/Skills contracts. Foundry routines and
+inbound A2A are not implemented; their design-only scaffolding was removed.
+The toolbox's outgoing `a2a` adapters and repository-owned skills are unchanged.
