@@ -1,0 +1,31 @@
+name: temporary public NuGet lock repair
+
+on:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  locks:
+    if: github.repository == 'ian-t-adams/AI4IA' && github.head_ref == 'dependabot/nuget/proxy/SimpleL7Proxy/proxy-deps-1e5d38a2ab'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: "10.0.x"
+      - name: Generate all root-project locks from public NuGet
+        run: |
+          dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate --source https://api.nuget.org/v3/index.json
+          dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --force-evaluate --source https://api.nuget.org/v3/index.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reviewed-public-nuget-locks
+          path: proxy/**/packages.lock.json
+          retention-days: 1
+          if-no-files-found: error
