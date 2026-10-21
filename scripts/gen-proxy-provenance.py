@@ -109,7 +109,7 @@ AI4IA_PATCH_REASONS = {
     ),
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
         "Keep runtime dependencies current, including IdentityModel 8.23.0, "
-        "OpenTelemetry 1.19.1, Azure.Storage.Blobs 12.30.1 and Application Insights "
+        "OpenTelemetry 1.20.1, Azure.Storage.Blobs 12.30.1 and Application Insights "
         "3.2.0; remove unsupported Application Insights 2.x packages and declare "
         "the OpenTelemetry processor API."
     ),
