@@ -442,17 +442,22 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("operation_not_allowed", fragment)
 
     def test_sora_uses_catalog_owned_v1_video_operation(self) -> None:
-        # The shipped row is runtime-disabled, so the positive control flips only
-        # that flag on the same document: route shape is still catalog-owned.
+        # Exercise the generic video route with a synthetic row; no removed
+        # deployment is admitted by the shipping catalog.
         models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
-        row = next(model for model in models["catalog"] if model["name"] == "sora-2")
-        self.assertIs(row["runtimeEnabled"], False)
-        row["runtimeEnabled"] = True
+        row = {
+            "name": "synthetic-video", "format": "OpenAI", "category": "video",
+            "deployments": [
+                {"region": region, "sku": "GlobalStandard", "capacity": 1, "version": "1"}
+                for region in ("eastus2", "swedencentral")
+            ],
+        }
+        models["catalog"].append(row)
         blocks, _ = gateway_generator.render_catalog(models)
         sora = [
             block
             for block in blocks
-            if 'new JProperty("sora-2-' in block
+            if 'new JProperty("synthetic-video-' in block
         ]
         self.assertEqual(len(sora), 2)
         for block in sora:
@@ -468,23 +473,21 @@ class GatewayPolicyTests(unittest.TestCase):
 
     def test_runtime_disabled_rows_keep_inventory_but_get_no_http_route(self) -> None:
         source = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
-        row = next(model for model in source["catalog"] if model["name"] == "sora-2")
-        self.assertIs(row["runtimeEnabled"], False)
+        row = next(model for model in source["catalog"] if model["name"] == "gpt-5.4")
+        row["runtimeEnabled"] = False
         # Runtime disablement is not deletion: the desired deployments remain.
-        self.assertEqual(
-            [(d["region"], d["sku"]) for d in row["deployments"]],
-            [("eastus2", "GlobalStandard"), ("swedencentral", "GlobalStandard")],
-        )
+        self.assertTrue(row["deployments"])
         for enabled in (False, True):
             with self.subTest(runtimeEnabled=enabled):
                 models = json.loads(json.dumps(source))
-                target = next(m for m in models["catalog"] if m["name"] == "sora-2")
+                target = next(m for m in models["catalog"] if m["name"] == "gpt-5.4")
                 if enabled:
                     del target["runtimeEnabled"]
                 blocks, _ = gateway_generator.render_catalog(models)
-                routes = [block for block in blocks if 'new JProperty("sora-2-' in block]
-                self.assertEqual(len(routes), 2 if enabled else 0)
-                self.assertTrue(any('new JProperty("gpt-5.4-' in block for block in blocks))
+                prefix = 'new JProperty("gpt-5.4-' + models["naming"]["subscriptionToken"] + '-'
+                routes = [block for block in blocks if prefix in block]
+                self.assertEqual(len(routes), len(row["deployments"]) if enabled else 0)
+                self.assertTrue(any('new JProperty("gpt-5.2-' in block for block in blocks))
         shards = "".join(
             path.read_text(encoding="utf-8")
             for path in gateway_generator.CATALOG_OUTPUT_PATHS
@@ -495,7 +498,7 @@ class GatewayPolicyTests(unittest.TestCase):
         for value in ("false", 0, 1, None, "true"):
             with self.subTest(value=value):
                 models = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
-                next(m for m in models["catalog"] if m["name"] == "sora-2")["runtimeEnabled"] = value
+                next(m for m in models["catalog"] if m["name"] == "gpt-5.4")["runtimeEnabled"] = value
                 with self.assertRaisesRegex(ValueError, "runtimeEnabled must be a Boolean"):
                     gateway_generator.render_catalog(models)
 

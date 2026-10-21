@@ -291,25 +291,18 @@ the deployment is a separate, approved live cleanup. Seams that advertise a
 capability backed by the disabled model must ask the same availability question.
 Video does this through one shared predicate.
 
-### Sora 2 retirement (2026-10-15)
+### Sora 2 retirement and removal
 
-`sora-2` version `2025-12-08` is the only video model this subscription offers
-in East US 2, Sweden Central or West US. Its inference retirement is
-`2026-10-15T00:00:00Z` (Preview lifecycle); the older `2025-10-06` version has
-already retired, and Foundry offers no successor. OpenAI's own Sora 2 API shuts
-down on 2026-09-24. These are dated subscription and public observations, not a
-live serving check.
+The desired catalog no longer contains `sora-2`; no video successor is selected.
+The public schedule lists `2026-10-15`, while the fresh 2026-10-21 subscription
+observation reports Deprecated with inference retirement `2026-11-02T00:00:00Z`.
+Neither observation proves a live generation would succeed. Generation stays
+unavailable rather than re-enabling the deprecated model.
 
-The catalog therefore runtime-disables `sora-2` while keeping both of its
-deployments. With no runtime-enabled video model, `generate_video` disappears
-from every surface: the tool catalog, conversation and agent tool sets,
-`/generate_video`, consent and publication snapshots. A direct attempt is
-refused before any provider call. `AI4IA_VIDEO_GENERATION_ENABLED` stays on
-deliberately. The deployed API only receives its durable video Blob settings
-while that flag is on, and previously generated clips remain viewable through
-the authenticated `/api/videos/artifacts/{id}` endpoint. Deleting the two
-`sora-2` deployments and their desired rows is separate cleanup that needs its
-own approval; see the
+Existing clips remain viewable through the owner-scoped artifact endpoint.
+Keep the durable video Blob settings; removing a model does not authorize
+removing historical clips, shared accounts or their storage. Physical deployment
+cleanup is an exact-resource operator action, never an automatic sweep; see the
 [deployment runbook](runbooks/deployment.md#sora-2-runtime-retirement).
 
 ## Retirement evidence and reporting

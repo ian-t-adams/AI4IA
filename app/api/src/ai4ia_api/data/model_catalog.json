@@ -8,8 +8,7 @@
       "roles": [
         "chat",
         "voice",
-        "image",
-        "video"
+        "image"
       ]
     },
     "swedencentral": {
@@ -18,8 +17,7 @@
       "roles": [
         "chat",
         "voice",
-        "image",
-        "video"
+        "image"
       ]
     },
     "westus": {
@@ -1652,40 +1650,6 @@
           "sku": "Standard",
           "modelVersion": "001",
           "deploymentName": "tts-hd-slurmfactory-swedencentral-std"
-        }
-      ]
-    },
-    {
-      "id": "sora-2",
-      "displayName": "sora-2",
-      "category": "video",
-      "runtimeEnabled": false,
-      "format": "OpenAI",
-      "api": "chat",
-      "requiredRealtimeProtocol": null,
-      "contextWindow": null,
-      "maxOutputTokens": null,
-      "toolCalling": null,
-      "inputModalities": [
-        "text"
-      ],
-      "imageSizes": null,
-      "imageQualities": null,
-      "reasoningEffort": null,
-      "options": [
-        {
-          "region": "eastus2",
-          "dataZone": "US",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-12-08",
-          "deploymentName": "sora-2-slurmfactory-eastus2-glbl"
-        },
-        {
-          "region": "swedencentral",
-          "dataZone": "EU",
-          "sku": "GlobalStandard",
-          "modelVersion": "2025-12-08",
-          "deploymentName": "sora-2-slurmfactory-swedencentral-glbl"
         }
       ]
     },

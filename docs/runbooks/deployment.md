@@ -1147,23 +1147,16 @@ not authorize cleanup, tenant/Claude changes, capacity-profile changes or releas
 
 ### Sora 2 runtime retirement
 
-`sora-2` `2025-12-08` is the only video model the subscription offers in East US 2,
-Sweden Central or West US. Its inference retirement is `2026-10-15T00:00:00Z`
-(Preview); `2025-10-06` has already retired and Foundry offers no successor.
-OpenAI's own Sora 2 API shuts down on 2026-09-24. The source change sets
-`runtimeEnabled: false` on the `sora-2` row and keeps both deployments in the
-desired catalog. It must be merged **and deployed** before the retirement date.
+The desired catalog and generated runtime catalog no longer include `sora-2`.
+No Foundry video successor is selected, so generation remains unavailable on
+every advertisement and execution seam; saved agents and old messages are not
+rewritten. Existing clips remain served by `/api/videos/artifacts/{id}`.
 
-| Surface | Before | After |
-| --- | --- | --- |
-| `/api/tools` | `generate_video` available whenever the flag and store are on | Unavailable, with the detail "No runtime-enabled video generation model is available." |
-| Conversation, agent and inspector tool sets | Include an attached `generate_video` | Exclude it; saved agents and overrides are not rewritten |
-| `/generate_video` | Runs, then fails at the provider after retirement | Local reply that no video model is enabled; no model call |
-| Consent and publication snapshots | Include the tool contract | Omit it; publishing an agent that requires it is refused |
-| Direct execution | Could reach the gateway | Refused before any provider call |
-| APIM model catalog | Routes both `sora-2` deployments | No `sora-2` route |
-| Previously generated clips | Served by `/api/videos/artifacts/{id}` | Unchanged |
-| Desired inventory | Two `sora-2` deployments | Unchanged; physical removal is separate |
+The public schedule lists `2026-10-15` for version `2025-12-08`; a fresh
+2026-10-21 subscription read instead reports Deprecated with inference
+retirement `2026-11-02T00:00:00Z` and no replacement. Do not collapse those
+different evidence sources into a claim that inference was tested or that a
+physical deployment was already removed.
 
 Keep `AI4IA_VIDEO_GENERATION_ENABLED=true`. `api.bicep` emits
 `AI4IA_VIDEO_BLOB_ACCOUNT_URL` only while the flag is on. Turning it off would
@@ -1172,25 +1165,22 @@ leave the API with an empty in-memory video store, so existing clips would retur
 checks also remain in place: the handler asks again, and the service refuses a
 model it cannot resolve.
 
-Changing the catalog changes the consent environment digest, like any catalog
-edit. Users renew session/run tool consent. Published versions whose recorded
-environment differs must be reviewed and republished before they run again.
-
-Deployment order is safe either way. `deploy.yml` provisions before it deploys
-the application. Between those steps the old revision still offers
-`generate_video`, and a call gets a sanitized gateway error instead of a paid
-generation. An application-image rollback likewise leaves the old revision
-offering a tool the gateway no longer routes; that fails the same way.
-`provision=false` defers the APIM route removal to the next provision. The new
-application still hides the tool.
+Before an approved provision, remove only the two reviewed live deployment
+resources in the exact environment: the `sora-2` children of the East US 2 and
+Sweden Central Foundry accounts, after fresh id/model/version readback. ARM
+Incremental mode does not delete omitted children and the strict postprovision
+inventory check must still refuse removed-but-live rows. There is no automatic
+sweep or check bypass. Keep the accounts/projects, shared Blob resources,
+historical usage and user artifacts. The changed subscription retirement date
+must be visible in the operator's deletion decision; an old public date is not
+proof that a live deployment is absent.
 
 After deployment, check the change without generating video: `/api/tools` reports
 `generate_video` unavailable, and a known existing clip still returns 200 to its
-owner. Deleting the two deployments and the desired row is a later, separately
-approved cleanup under
-[Coordinated catalog retirement](#coordinated-catalog-retirement). If a successor
-appears, add it as a reviewed catalog row. Re-enabling `sora-2` after its
-retirement date would advertise a model that cannot serve.
+owner. Source removal is not physical deletion or live rollout evidence.
+See [Coordinated catalog retirement](#coordinated-catalog-retirement) for the
+exact-resource boundary. If a successor appears, add it as a reviewed catalog
+row rather than aliasing it to historical Sora choices.
 
 ### Read-only model retirement reporting
 

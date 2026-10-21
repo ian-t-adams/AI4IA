@@ -1,10 +1,8 @@
 """Paired catalog fixtures for runtime-available and runtime-disabled video models.
 
-The shipped catalog runtime-disables ``sora-2``, its only video model. Tests of the
-working ``generate_video`` path therefore run against a copy of that SAME catalog
-with only ``runtimeEnabled`` flipped back on, and their controls flip it off. Each
-copy gets its own file path, so ``load_catalog``'s cache never shares (or leaks a
-mutation of) one catalog object between tests.
+The shipped catalog has no video model. Retained generic video and artifact
+controls use synthetic deployment metadata; no removed deployment is re-enabled.
+Each copy gets its own path so the catalog cache cannot leak mutations.
 """
 from __future__ import annotations
 
@@ -19,7 +17,16 @@ PACKAGED_CATALOG = Path(ai4ia_api.__file__).resolve().parent / "data" / "model_c
 def video_catalog_path(directory: Path, *, runtime_enabled: bool) -> str:
     raw = json.loads(PACKAGED_CATALOG.read_text(encoding="utf-8"))
     videos = [model for model in raw["models"] if model["category"] == "video"]
-    assert videos, "the packaged catalog must still carry its video inventory"
+    if not videos:
+        videos = [{
+            "id": "sora-2", "displayName": "Synthetic video fixture",
+            "format": "OpenAI", "category": "video", "api": "chat",
+            "options": [{
+                "deploymentName": "synthetic-video-eastus2", "region": "eastus2",
+                "dataZone": "US", "sku": "GlobalStandard", "modelVersion": "2025-12-08",
+            }],
+        }]
+        raw["models"].extend(videos)
     for model in videos:
         model["runtimeEnabled"] = runtime_enabled
     state = "enabled" if runtime_enabled else "disabled"

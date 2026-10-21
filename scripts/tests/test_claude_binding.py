@@ -408,7 +408,7 @@ class ClaudeBindingTests(unittest.TestCase):
              ("claude-sonnet-5", "2", "DataZoneStandard", 80), ("claude-opus-5-5", "2", "GlobalStandard", 40),
              ("claude-opus-5-5", "2", "DataZoneStandard", 40)],
         )
-        self.assertIn("sora-2", {model["name"] for model in source_catalog(document)["catalog"]})
+        self.assertIn("gpt-5.4", {model["name"] for model in source_catalog(document)["catalog"]})
         for field in ("deploymentTarget", "anthropicThinking", "samplingSupported", "reasoningEffort"):
             changed = deepcopy(document)
             row = next(m for m in changed["catalog"] if m.get("deploymentTarget") == "external-claude")

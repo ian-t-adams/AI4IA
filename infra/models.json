@@ -19,8 +19,7 @@
       "roles": [
         "chat",
         "voice",
-        "image",
-        "video"
+        "image"
       ]
     },
     "swedencentral": {
@@ -29,8 +28,7 @@
       "roles": [
         "chat",
         "voice",
-        "image",
-        "video"
+        "image"
       ]
     },
     "westus": {
@@ -1349,30 +1347,6 @@
       ]
     },
     {
-      "name": "sora-2",
-      "format": "OpenAI",
-      "category": "video",
-      "runtimeEnabled": false,
-      "deployments": [
-        {
-          "region": "eastus2",
-          "sku": "GlobalStandard",
-          "capacity": 5,
-          "version": "2025-12-08",
-          "maxCapacity": 9,
-          "maxCapacityPool": "region:eastus2"
-        },
-        {
-          "region": "swedencentral",
-          "sku": "GlobalStandard",
-          "capacity": 5,
-          "version": "2025-12-08",
-          "maxCapacity": 9,
-          "maxCapacityPool": "region:swedencentral"
-        }
-      ]
-    },
-    {
       "name": "o3-deep-research",
       "format": "OpenAI",
       "category": "research",
@@ -1434,10 +1408,16 @@
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
       "toolCalling": true,
-      "inputModalities": ["text"],
+      "inputModalities": [
+        "text"
+      ],
       "samplingSupported": false,
       "anthropicThinking": "disabled",
-      "reasoningEffort": ["low", "medium", "high"],
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
       "deployments": [
         {
           "region": "eastus2",
@@ -1457,10 +1437,16 @@
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
       "toolCalling": true,
-      "inputModalities": ["text"],
+      "inputModalities": [
+        "text"
+      ],
       "samplingSupported": false,
       "anthropicThinking": "disabled",
-      "reasoningEffort": ["low", "medium", "high"],
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
       "deployments": [
         {
           "region": "eastus2",
@@ -1486,10 +1472,16 @@
       "contextWindow": 1000000,
       "maxOutputTokens": 128000,
       "toolCalling": false,
-      "inputModalities": ["text"],
+      "inputModalities": [
+        "text"
+      ],
       "samplingSupported": false,
       "anthropicThinking": "adaptive",
-      "reasoningEffort": ["low", "medium", "high"],
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
       "deployments": [
         {
           "region": "eastus2",
