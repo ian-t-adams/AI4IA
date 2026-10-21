@@ -56,7 +56,7 @@ foundry = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.14.2" },
-    { name = "azure-ai-projects", marker = "extra == 'foundry'", specifier = "==2.8.0" },
+    { name = "azure-ai-projects", marker = "extra == 'foundry'", specifier = "==2.9.0" },
     { name = "azure-cosmos", specifier = ">=4.16.2,<5" },
     { name = "azure-identity", specifier = ">=1.17" },
     { name = "azure-identity", marker = "extra == 'foundry'", specifier = ">=1.17" },
@@ -330,7 +330,7 @@ wheels = [
 
 [[package]]
 name = "azure-ai-projects"
-version = "2.8.0"
+version = "2.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "azure-core" },
@@ -340,9 +340,9 @@ dependencies = [
     { name = "openai" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/80/12/1b1aeef287b886c8d75f7666e7493346bf030765506e82d9411d38c8a455/azure_ai_projects-2.8.0.tar.gz", hash = "sha256:63de92a4507c89075d2cc8c300d192617161e7bd29972846148c8e4d434ed354", size = 40027918, upload-time = "2026-10-05T22:45:24.332Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/63/c4/2d12f3ba1bc1cc3f844e9d34e602f825dea8d5cae069a203f80591e63091/azure_ai_projects-2.9.0.tar.gz", hash = "sha256:f85902b1c220f5ef999f7892d5fa8b6f1efecf867c73b107df7de614f5821fd3", size = 40061819, upload-time = "2026-10-17T03:57:23.38Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/36/bf/e389959c6856eba648c38d250faa82f950389c85dd4535ae9a4a400e8dd7/azure_ai_projects-2.8.0-py3-none-any.whl", hash = "sha256:75c877f55c2235af91b6d328fbaeac5fd3e2c7714b739809539e900e2c0ab5ca", size = 537918, upload-time = "2026-10-05T22:45:27.533Z" },
+    { url = "https://files.pythonhosted.org/packages/99/25/cda9f33df69ba45378b7dcbb591b15ca0df0ddf633cbf2359d2f8030f06b/azure_ai_projects-2.9.0-py3-none-any.whl", hash = "sha256:e0e0ea059dee51ea92b65f1e40fa6b50f62636485f8228325f1918f9fb5d7d92", size = 552868, upload-time = "2026-10-17T03:57:26.606Z" },
 ]
 
 [[package]]
