@@ -117,6 +117,11 @@ from main-stack provisioning, not from coverage accounting. See the
 [cross-tenant source contract](runbooks/feature-enablement.md#cross-tenant-claude-source-contract).
 Keyless public HTTPS is not private networking; Private Link/tier/DNS changes
 require a separate approved design.
+An explicitly selected existing-gateway mode can instead forward Claude from
+the source APIM to an upstream APIM using a dedicated API-scoped subscription
+key held only by the source gateway. The upstream APIM uses its own managed
+identity to Foundry. This adds a hop; it does not bypass SimpleL7Proxy/APIM,
+enable Foundry account keys, or use an interactive user's credentials.
 Responses chat uses `store=false` and resends Cosmos history rather than chaining
 provider-stored conversations. Opaque encrypted reasoning items needed within a
 tool loop remain transient and are not persisted as messages or receipts.

@@ -172,6 +172,8 @@ jobs:
       - name: External Claude source contracts
         working-directory: .
         run: |
-          ruff check --config app/api/pyproject.toml scripts/_claude_binding.py scripts/_model_targets.py scripts/check-claude-binding.py scripts/tests/test_claude_binding.py scripts/tests/_claude_fixture.py
-          pyright --pythonversion 3.12 --level error scripts/_claude_binding.py scripts/_model_targets.py scripts/check-claude-binding.py
+          ruff check --config app/api/pyproject.toml scripts/_claude_binding.py scripts/_claude_gateway.py scripts/_model_targets.py scripts/_model_routing.py scripts/check-claude-binding.py scripts/tests/test_claude_binding.py scripts/tests/test_claude_gateway.py scripts/tests/test_model_routing.py scripts/tests/_claude_fixture.py
+          pyright --pythonversion 3.12 --level error scripts/_claude_binding.py scripts/_claude_gateway.py scripts/_model_targets.py scripts/_model_routing.py scripts/check-claude-binding.py
           python -m unittest scripts.tests.test_claude_binding
+          python -m unittest scripts.tests.test_claude_gateway
+          python -m unittest scripts.tests.test_model_routing

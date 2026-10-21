@@ -55,6 +55,8 @@ on:
       - "scripts/check-model-availability.py"
       - "scripts/check-claude-binding.py"
       - "scripts/_claude_binding.py"
+      - "scripts/_claude_gateway.py"
+      - "scripts/_model_routing.py"
       - "scripts/_model_targets.py"
       - "scripts/_production_capacity.py"
       - "scripts/_model_naming.py"
@@ -111,6 +113,8 @@ jobs:
       AI4IA_ALERT_EMAIL: ${{ vars.AI4IA_ALERT_EMAIL }}
       AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
       AI4IA_CLAUDE_EXTERNAL_ENABLED: ${{ vars.AI4IA_CLAUDE_EXTERNAL_ENABLED }}
+      AI4IA_CLAUDE_GATEWAY_ENABLED: ${{ vars.AI4IA_CLAUDE_GATEWAY_ENABLED }}
+      AI4IA_CLAUDE_GATEWAY_URL: ${{ vars.AI4IA_CLAUDE_GATEWAY_URL }}
       AI4IA_CLAUDE_BINDING_JSON: ${{ vars.AI4IA_CLAUDE_BINDING_JSON }}
       AI4IA_CLAUDE_ORGANIZATION_NAME: ${{ vars.AI4IA_CLAUDE_ORGANIZATION_NAME }}
       AI4IA_CLAUDE_COUNTRY_CODE: ${{ vars.AI4IA_CLAUDE_COUNTRY_CODE }}
@@ -161,7 +165,6 @@ jobs:
               missing+=("$name")
             fi
           done
-
           auth_provider="${AI4IA_AUTH_PROVIDER:-}"
           if [ "${auth_provider,,}" = "entra" ]; then
             for name in \
@@ -175,17 +178,20 @@ jobs:
             done
           fi
 
+          claude_gateway="${AI4IA_CLAUDE_GATEWAY_ENABLED:-}"
           case "${AI4IA_CLAUDE_ENABLED,,}" in
             true)
-              for name in \
-                AI4IA_CLAUDE_ORGANIZATION_NAME \
-                AI4IA_CLAUDE_COUNTRY_CODE \
-                AI4IA_CLAUDE_INDUSTRY
-              do
-                if [ -z "${!name:-}" ]; then
-                  missing+=("$name")
-                fi
-              done
+              if [ "${claude_gateway,,}" != "true" ]; then
+                for name in \
+                  AI4IA_CLAUDE_ORGANIZATION_NAME \
+                  AI4IA_CLAUDE_COUNTRY_CODE \
+                  AI4IA_CLAUDE_INDUSTRY
+                do
+                  if [ -z "${!name:-}" ]; then
+                    missing+=("$name")
+                  fi
+                done
+              fi
               ;;
             ""|false)
               ;;
@@ -203,13 +209,30 @@ jobs:
               fi
               ;;
             ""|false)
-              if [ "${AI4IA_CLAUDE_ENABLED,,}" = "true" ]; then
+              if [ "${AI4IA_CLAUDE_ENABLED,,}" = "true" ] && [ "${claude_gateway,,}" != "true" ]; then
                 echo "::error::Claude requires the separately approved external binding."
                 exit 1
               fi
               ;;
             *)
               echo "::error::AI4IA_CLAUDE_EXTERNAL_ENABLED must be true, false, or unset."
+              exit 1
+              ;;
+          esac
+
+          case "${claude_gateway,,}" in
+            true)
+              if [ "${claude_external,,}" = "true" ]; then
+                echo "::error::Claude gateway and federation modes are mutually exclusive."
+                exit 1
+              fi
+              if [ -z "${AI4IA_CLAUDE_GATEWAY_URL:-}" ]; then
+                missing+=("AI4IA_CLAUDE_GATEWAY_URL")
+              fi
+              ;;
+            ""|false) ;;
+            *)
+              echo "::error::AI4IA_CLAUDE_GATEWAY_ENABLED must be true, false, or unset."
               exit 1
               ;;
           esac
@@ -255,6 +278,9 @@ jobs:
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AI4IA_CLAUDE_ENABLED: ${{ vars.AI4IA_CLAUDE_ENABLED }}
       AI4IA_CLAUDE_EXTERNAL_ENABLED: ${{ vars.AI4IA_CLAUDE_EXTERNAL_ENABLED }}
+      AI4IA_CLAUDE_GATEWAY_ENABLED: ${{ vars.AI4IA_CLAUDE_GATEWAY_ENABLED }}
+      AI4IA_CLAUDE_GATEWAY_URL: ${{ vars.AI4IA_CLAUDE_GATEWAY_URL }}
+      AI4IA_CLAUDE_GATEWAY_API_KEY: ${{ secrets.AI4IA_CLAUDE_GATEWAY_API_KEY }}
       # Raw JSON, like AI4IA_GROUP_POLICY_JSON and the secret
       # AI4IA_PROXY_PROFILE_PROJECTION_JSON below. azd cannot substitute JSON into
       # main.parameters.json, so it reads the <NAME>_B64 transports that
@@ -1149,6 +1175,12 @@ jobs:
       - name: Verify current Claude routes before image rollout
         if: ${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}
         run: python scripts/check-claude-binding.py --routed
+
+      - name: Verify upstream Claude gateway routes before image rollout
+        if: ${{ env.AI4IA_CLAUDE_GATEWAY_ENABLED == 'true' }}
+        run: |
+          apim_id="$(azd env get-value AZURE_APIM_RESOURCE_ID)"
+          python scripts/check-claude-binding.py --routed --source-apim-resource-id "${apim_id}"
 
       - name: Deploy application
         id: deploy

@@ -1186,6 +1186,13 @@ Four rules follow:
 
 ### Add a model
 
+`model-router` may declare a catalog-owned `routing` mode and exact
+format/name/version subset. Bicep sends it as `properties.routing`; the
+preflight verifies offered members and treats changed or missing routing as
+deployment drift. Do not replace an invalid subset with the provider default
+or provision extra base deployments: Azure routes those models internally.
+The shipped Balanced pool is Astra/Sol/Luna, not a restriction on other app choices.
+
 1. Edit `infra/models.json` first; include category, format, provider `api`,
    version, regions/SKUs/capacity, and metadata such as context/output limits.
 2. Run:
@@ -1238,7 +1245,7 @@ Four rules follow:
    hooks. `AI4IA_CLAUDE_EXTERNAL_ENABLED` stages a preapproved source UAMI alongside
    APIM's unchanged system identity; `AI4IA_CLAUDE_ENABLED` independently admits
    advertisement/traffic. Exact configured target tokens flow only through the
-   existing proxy/APIM path. Never use an app key, runtime Graph calls, a shared
+   existing proxy/APIM path. Never use a Foundry account key, runtime Graph calls, a shared
    deployment credential or built-in Foundry User as a narrow inference grant.
    The custom inference role grants only
    `Microsoft.CognitiveServices/accounts/AIServices/*` data actions; the
@@ -1264,6 +1271,14 @@ Four rules follow:
    missing cache-write duration or lost cache coverage stays unknown. No hidden
    reasoning, historical repricing or Cosmos schema change is introduced. See
    [the source/activation contract](docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract).
+
+The alternative default-off `AI4IA_CLAUDE_GATEWAY_ENABLED` mode keeps the same
+proxy and source APIM, adding an existing upstream APIM hop with a dedicated
+API-scoped key. It is mutually exclusive with federation, never a failure
+fallback. Only source APIM holds its secure named value; no key or upstream
+URL reaches FastAPI/browser. Preserve the catalog/path/scope guards, disabled
+transition before a host/mode change and actual source-policy readback. It
+does not provision the upstream, grant its roles or adopt unreviewed models.
 
 The existing infra/API jobs run `scripts.tests.test_claude_binding`, and API CI
 checks `_claude_binding.py`, `_model_targets.py` and `check-claude-binding.py` with

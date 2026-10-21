@@ -135,6 +135,36 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         )
         self.assertIn("not(equals(lambdaVariables('model').format, 'Anthropic'))", self.template["variables"]["deployableCatalog"])
 
+    def test_router_subset_reaches_deployment_properties_not_only_catalog_labels(self) -> None:
+        inputs = next(row["input"] for row in self.template["variables"]["copy"]
+                      if row["name"] == "modelDeploymentsByRegion")
+        self.assertIn("__bicep.deploymentRouting", inputs)
+        module = self.template["resources"]["modelDeployments"]["properties"]["template"]
+        row = next(resource for resource in module["resources"]
+                   if resource["type"] == "Microsoft.CognitiveServices/accounts/deployments")
+        self.assertIn("'routing'", row["properties"])
+        self.assertIn(".routing", row["properties"])
+        actual = json.loads(MODELS.read_text(encoding="utf-8"))
+        router = next(model for model in actual["catalog"] if model["name"] == "model-router")
+        self.assertEqual(len(router["routing"]["models"]), 3)
+
+    def test_upstream_claude_key_stays_only_in_the_gateway_and_defaults_off(self) -> None:
+        params = self.template["parameters"]
+        self.assertFalse(params["claudeGatewayEnabled"]["defaultValue"])
+        self.assertEqual(params["claudeGatewayApiKey"]["type"], "securestring")
+        gateway = self.template["resources"]["gateway"]["properties"]
+        api = self.template["resources"]["api"]["properties"]
+        self.assertNotIn("claudeGatewayApiKey", api["parameters"])
+        self.assertNotIn("claudeGatewayUrl", api["parameters"])
+        self.assertEqual(gateway["parameters"]["claudeGatewayApiKey"]["value"], "[parameters('claudeGatewayApiKey')]")
+        resources = gateway["template"]["resources"]
+        rows = resources.values() if isinstance(resources, dict) else resources
+        key = next(row for row in rows if row["type"] == "Microsoft.ApiManagement/service/namedValues"
+                   and row["properties"].get("displayName") == "claude-gateway-key")
+        self.assertEqual(key["condition"], "[parameters('claudeGatewayEnabled')]")
+        self.assertIs(key["properties"]["secret"], True)
+        self.assertNotIn("claudeGatewayApiKey", json.dumps(self.template["outputs"]))
+
     def test_json_transports_decode_into_the_values_consumers_received_before(self) -> None:
         """azd substitutes parameter values unescaped, so JSON arrives as base64.
 

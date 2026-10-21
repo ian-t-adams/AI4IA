@@ -70,7 +70,7 @@ window.AI4IA_META = {
     { name: "Image editing", templateOn: false, observedOn: false, param: "imageEditingEnabled",
       note: "New and default-off. Requires image generation; edits run on catalog models that declare imageEditing, with GPT Image 2.5 Sunburst preferred. Not yet observed live." },
     { name: "Video generation", templateOn: true, observedOn: true, param: "videoGenerationEnabled",
-      note: "The flag stays on so existing clips stay viewable. The tool is offered only while a runtime-enabled video model exists; Sora 2 is runtime-disabled ahead of its 2026-10-15 retirement, with no Foundry successor." },
+      note: "The flag stays on so existing clips stay viewable. The October 21 subscription read extended Sora 2 to November 2; catalog re-admission restores the existing routes after rollout, with no new capacity or verified successor." },
     { name: "Document & multimodal understanding (Content Understanding)", templateOn: true, observedOn: true, param: "documentUnderstandingEnabled" },
     { name: "Document compute (Responses API code interpreter)", templateOn: true, observedOn: true, param: "documentComputeEnabled" },
     { name: "Custom (bring-your-own) MCP tools", templateOn: true, observedOn: true, param: "customToolsEnabled",

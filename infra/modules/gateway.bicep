@@ -49,6 +49,11 @@ param foundryBackends array
 
 param claudeEnabled bool = false
 param claudeExternalEnabled bool = false
+param claudeGatewayEnabled bool = false
+param claudeGatewayUrl string = ''
+
+@secure()
+param claudeGatewayApiKey string = ''
 
 @description('Validated operator binding. Never merged into source-region Foundry backends or source RBAC loops.')
 param claudeBinding object = {}
@@ -277,7 +282,9 @@ var modelPolicyFragmentDefinitions = concat(
     {
       baseName: 'claude_auth_v1'
       description: 'Default-off external Claude authentication; ordinary routes retain system identity.'
-      value: claudeEnabled && claudeExternalEnabled ? loadTextContent('../policies/claude-federated-auth.xml') : loadTextContent('../policies/claude-disabled.xml')
+      value: claudeEnabled && claudeGatewayEnabled && !claudeExternalEnabled
+        ? loadTextContent('../policies/claude-gateway-auth.xml')
+        : (claudeEnabled && claudeExternalEnabled && !claudeGatewayEnabled ? loadTextContent('../policies/claude-federated-auth.xml') : loadTextContent('../policies/claude-disabled.xml'))
     }
   ]
 )
@@ -365,7 +372,8 @@ resource sharedFoundryServicesEndpointValues 'Microsoft.ApiManagement/service/na
 // Disabled routes fail before authentication. These inert endpoint values satisfy
 // the catalog fragment references without introducing a reachable fallback.
 var claudeNamedValues = {
-  'claude-target-endpoint': claudeExternalEnabled ? 'https://${claudeBinding.targetAccountName}.services.ai.azure.com' : 'https://disabled.invalid'
+  'claude-target-endpoint': claudeGatewayEnabled ? claudeGatewayUrl : (claudeExternalEnabled ? 'https://${claudeBinding.targetAccountName}.services.ai.azure.com' : 'https://disabled.invalid')
+  'claude-gateway-url': claudeGatewayEnabled ? claudeGatewayUrl : 'https://disabled.invalid'
   'claude-target-tenant': claudeExternalEnabled ? claudeBinding.targetTenantId : 'disabled'
   'claude-app-client': claudeExternalEnabled ? claudeBinding.applicationClientId : 'disabled'
   'claude-uami-client': claudeExternalEnabled ? claudeBinding.sourceIdentityClientId : 'disabled'
@@ -380,6 +388,16 @@ resource claudeBindingValues 'Microsoft.ApiManagement/service/namedValues@2024-0
     value: item.value
   }
 }]
+
+resource claudeGatewayKey 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = if (claudeGatewayEnabled) {
+  parent: sharedApim
+  name: 'claude-gateway-key'
+  properties: {
+    displayName: 'claude-gateway-key'
+    secret: true
+    value: claudeGatewayApiKey
+  }
+}
 
 // WebSocket APIs require a WSS backend. The catalog policy references only these
 // named values, so account endpoints stay catalog-derived and never hard-coded.
@@ -405,6 +423,7 @@ resource sharedModelPolicyFragments 'Microsoft.ApiManagement/service/policyFragm
     sharedFoundryEndpointValues
     sharedFoundryServicesEndpointValues
     claudeBindingValues
+    claudeGatewayKey
   ]
 }]
 

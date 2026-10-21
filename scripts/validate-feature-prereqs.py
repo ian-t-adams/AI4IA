@@ -244,11 +244,15 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     industry = text(parameter_value(parameters, "claudeIndustry"))
     claude_enabled = truthy(parameter_value(parameters, "claudeEnabled", False))
     claude_external = truthy(parameter_value(parameters, "claudeExternalEnabled", False))
+    claude_gateway = truthy(parameter_value(parameters, "claudeGatewayEnabled", False))
     try:
         configured_binding({
             **os.environ,
             "AI4IA_CLAUDE_ENABLED": str(claude_enabled).lower(),
             "AI4IA_CLAUDE_EXTERNAL_ENABLED": str(claude_external).lower(),
+            "AI4IA_CLAUDE_GATEWAY_ENABLED": str(claude_gateway).lower(),
+            "AI4IA_CLAUDE_GATEWAY_URL": text(parameter_value(parameters, "claudeGatewayUrl")),
+            "AI4IA_CLAUDE_GATEWAY_API_KEY": text(parameter_value(parameters, "claudeGatewayApiKey")),
             "AI4IA_CLAUDE_BINDING_JSON": json_values["claudeBindingJson"],
         })
     except EvidenceError as exc:
@@ -258,7 +262,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             "claudeEnabled=true but infra/models.json contains no Anthropic deployment."
         )
     if has_anthropic and (
-        claude_enabled or claude_external or any((organization, country, industry))
+        (claude_enabled and not claude_gateway) or claude_external or any((organization, country, industry))
     ):
         if not organization or organization.casefold() in {
             "your organization",

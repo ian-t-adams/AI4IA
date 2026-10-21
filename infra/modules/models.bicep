@@ -43,7 +43,9 @@ resource modelDeployments 'Microsoft.CognitiveServices/accounts/deployments@2025
     // evaluation, or deploy and could not be undone by container rollback.
     versionUpgradeOption: 'NoAutoUpgrade'
     raiPolicyName: empty(raiPolicyName) ? null : raiPolicyName
-  }, d.format == 'Anthropic' ? {
+  }, d.?routing != null ? {
+    routing: d.routing
+  } : {}, d.format == 'Anthropic' ? {
     // Required by the Cognitive Services RP for Claude. Supplying this block
     // accepts Anthropic Marketplace terms, so values are explicit deploy
     // parameters and the preprovision validator refuses blanks/placeholders.

@@ -202,6 +202,22 @@ def test_startup_and_public_catalog_do_not_accept_claude_flag_alone():
             assert all(m["supportsTools"] is True for m in disabled)
 
 
+def test_upstream_gateway_mode_still_uses_the_existing_app_catalog_and_proxy():
+    with pytest.raises(RuntimeError, match="mutually exclusive"):
+        make_settings(
+            claude_enabled=True, claude_external_enabled=True, claude_gateway_enabled=True,
+        ).validate_runtime()
+    for enabled in (False, True):
+        settings = make_settings(claude_enabled=enabled, claude_gateway_enabled=True)
+        with TestClient(create_app(settings)) as client:
+            advertised = client.get("/api/models").json()["models"]
+            assert {row["id"] for row in advertised if row["api"] == "anthropic"} == (
+                {"claude-opus-5", "claude-sonnet-5", "claude-opus-5-5"} if enabled else set()
+            )
+            assert not hasattr(settings, "claude_gateway_api_key")
+            assert settings.model_gateway_url == make_settings().model_gateway_url
+
+
 @pytest.mark.parametrize("read", [0, 20])
 def test_exact_sku_rates_include_cached_read_and_output_without_region_guessing(read):
     book = load_pricing()

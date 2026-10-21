@@ -777,6 +777,8 @@ class Settings(BaseSettings):
     # Staging/selection, not proof of target identity or entitlement. The operator
     # preflight reads both tenants; APIM enforces the fixed binding on every call.
     claude_external_enabled: bool = False
+    # The API knows the mode, never the upstream gateway URL or subscription key.
+    claude_gateway_enabled: bool = False
 
     # Data-residency policy for model routing: "global" | "zonal" | "us" | "eu".
     #
@@ -1269,10 +1271,12 @@ class Settings(BaseSettings):
 
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
-        if self.claude_enabled and not self.claude_external_enabled:
+        if self.claude_external_enabled and self.claude_gateway_enabled:
+            raise RuntimeError("Claude gateway-key and federated authentication modes are mutually exclusive.")
+        if self.claude_enabled and not (self.claude_external_enabled or self.claude_gateway_enabled):
             raise RuntimeError(
-                "AI4IA_CLAUDE_ENABLED requires AI4IA_CLAUDE_EXTERNAL_ENABLED and "
-                "the separately verified cross-tenant gateway binding."
+                "AI4IA_CLAUDE_ENABLED requires AI4IA_CLAUDE_EXTERNAL_ENABLED or "
+                "AI4IA_CLAUDE_GATEWAY_ENABLED with its separately configured gateway credential."
             )
         self._validate_data_residency()
         if self.group_policy_enabled or self.asset_publishing_enabled or self.group_policy_json:

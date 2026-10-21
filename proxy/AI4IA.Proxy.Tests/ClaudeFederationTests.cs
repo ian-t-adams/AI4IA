@@ -36,7 +36,7 @@ public sealed class ClaudeFederationTests
         }.ToString())),
     };
 
-    private static ApimPolicyHarness Policy(WireServer provider, string? deployment = null, bool enabled = true)
+    private static ApimPolicyHarness Policy(WireServer provider, string? deployment = null, bool enabled = true, bool gateway = false)
     {
         deployment ??= Deployments()[0];
         var request = new WireRequest("/openai/deployments/" + deployment + "/chat/completions", "HTTP/1.1",
@@ -54,13 +54,17 @@ public sealed class ClaudeFederationTests
         var policy = new ApimPolicyHarness(request, provider)
         {
             ClaudeEnabled = enabled, UseCatalog = true, ProviderLoopback = provider.Url, TokenResponse = Token(),
+            ClaudeGatewayEnabled = gateway,
         };
         policy.Context.Subscription!.Id = "ai4ia-proxy-models";
         var values = policy.Context.NamedValues;
         values["claude-target-tenant"] = "11111111-1111-4111-8111-111111111111";
         values["claude-app-client"] = "22222222-2222-4222-8222-222222222222";
         values["claude-uami-client"] = "33333333-3333-4333-8333-333333333333";
-        values["claude-target-endpoint"] = "https://mf-claude-fixture.services.ai.azure.com";
+        values["claude-target-endpoint"] = gateway
+            ? "https://claude-fixture.azure-api.net/claude" : "https://mf-claude-fixture.services.ai.azure.com";
+        values["claude-gateway-url"] = "https://claude-fixture.azure-api.net/claude";
+        values["claude-gateway-key"] = "syntheticGatewayKey0123456789";
         values["claude-proxy-subscription"] = "ai4ia-proxy-models";
         var catalog = JObject.Parse(File.ReadAllText(Path.Combine(Root(), "infra", "models.json")));
         foreach (var region in ((JObject)catalog["regions"]!).Properties())
@@ -69,6 +73,55 @@ public sealed class ClaudeFederationTests
             values[$"foundry-{region.Name}-services-endpoint"] = "https://ordinary-services.invalid";
         }
         return policy;
+    }
+
+    [TestMethod]
+    public async Task UpstreamGatewayUsesOnlyItsOwnKeyAndNoIdentityExchange()
+    {
+        foreach (string deployment in Deployments())
+        {
+            await using var provider = new WireServer(_ => Task.FromResult(new WireReply(200)));
+            var policy = Policy(provider, deployment, gateway: true);
+            await policy.Run();
+            Assert.AreEqual(200, policy.Context.Response.StatusCode);
+            var sent = provider.Requests.Single();
+            Assert.AreEqual("/claude/v1/messages", sent.Path);
+            Assert.AreEqual(policy.Context.NamedValues["claude-gateway-key"], sent.Headers["x-api-key"]);
+            Assert.IsFalse(sent.Headers.ContainsKey("Authorization"));
+            Assert.IsFalse(sent.Headers.ContainsKey("api-key"));
+            Assert.AreEqual(deployment, JObject.Parse(Encoding.UTF8.GetString(sent.Body)).Value<string>("model"));
+            Assert.AreEqual(0, policy.Identities.Count);
+            Assert.AreEqual(0, policy.Exchanges.Count);
+        }
+    }
+
+    [DataTestMethod]
+    [DataRow("endpoint")]
+    [DataRow("key")]
+    [DataRow("subscription")]
+    [DataRow("path")]
+    [DataRow("model")]
+    public async Task UpstreamGatewayDefectsNeverUseCallerCredentialsOrFederation(string defect)
+    {
+        await using var provider = new WireServer(_ => Task.FromResult(new WireReply(200)));
+        var policy = Policy(provider, gateway: true);
+        switch (defect)
+        {
+            case "endpoint": policy.Context.NamedValues["claude-gateway-url"] = "https://attacker.invalid"; break;
+            case "key": policy.Context.NamedValues["claude-gateway-key"] = ""; break;
+            case "subscription": policy.Context.Subscription!.Id = "all-apis"; break;
+            case "path": policy.Context.Request.MatchedParameters["path"] = "responses"; break;
+            case "model": policy.Context.Request.Headers["x-LLMModel"] = ["not-in-catalog"]; break;
+        }
+        await policy.Run();
+        Assert.AreNotEqual(200, policy.Context.Response.StatusCode);
+        Assert.AreEqual(0, provider.Requests.Count);
+        Assert.AreEqual(0, policy.Identities.Count);
+        Assert.AreEqual(0, policy.Exchanges.Count);
+        var valid = Policy(provider, gateway: true);
+        await valid.Run();
+        Assert.AreEqual(200, valid.Context.Response.StatusCode);
+        Assert.AreEqual(1, provider.Requests.Count);
     }
 
     [TestMethod]

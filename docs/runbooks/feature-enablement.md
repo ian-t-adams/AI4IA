@@ -23,6 +23,7 @@ feature posture.
 | Feature | API flag / setting | Web flag | IaC parameter | Deployed prerequisites |
 |---|---|---|---|---|
 | Cross-tenant Claude | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_EXTERNAL_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeExternalEnabled`, `claudeBindingJsonBase64` | Defaults off/unconfigured. Separate target account/models, explicit legal/network decision, source UAMI + multitenant app/FIC, target SP + exact-account AIServices inference role, distinct target reader and fresh both-tenant readbacks. Not Private Link or live approval. |
+| Claude via an existing upstream APIM | `AI4IA_CLAUDE_ENABLED` + `AI4IA_CLAUDE_GATEWAY_ENABLED` | safe server catalog only | `claudeEnabled`, `claudeGatewayEnabled`, `claudeGatewayUrl`, secure `claudeGatewayApiKey` | Default off. Dedicated AI4IA API-scoped upstream key; existing source proxy/APIM preserved. No personal token, new Foundry model or cross-tenant enterprise-app registration. Mutually exclusive with direct federation. See [upstream gateway setup](#existing-upstream-claude-apim). |
 | Atomic request-count admission | `AI4IA_HARD_QUOTA_ENABLED` | none | `hardQuotaEnabled`, `hardQuotaRolloutId` (`AI4IA_HARD_QUOTA_ROLLOUT_ID`) | Default `false`; outside the local test fake needs Entra, Cosmos and the approved rollout record selected by `AI4IA_HARD_QUOTA_ROLLOUT_ID` (startup validates evidence shape and layout). Request-count only; owners need an operator bootstrap; drain before activation. See the note below |
 | Versioned one-attempt gateway staging | `AI4IA_GATEWAY_ATTEMPTS_V1_STAGED` | none | `gatewayAttemptsV1Staged` | Default `false`; stages only the isolated API/operations/policy/scoped proxy key on the existing APIM. Governed HTTPS native proxy ingress and S7P-KEY auth required; no shipping runtime verifier or cap activation. See [construction prerequisites](../hard-quota-admission.md#versioned-route-staging-and-construction-contract) |
 | Voice Live | `AI4IA_REALTIME_ENABLED` | `VOICE_LIVE_ENABLED` + `API_PUBLIC_URL` | `voiceLiveEnabled` | Browser Origin allowlist outside local |
@@ -39,7 +40,7 @@ feature posture.
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | server-advertised imagery controls | `imageGenerationEnabled` | Image-capable deployment and durable media Blob storage outside local; storage presence alone does not enable generation |
 | Image editing | `AI4IA_IMAGE_EDITING_ENABLED` | server-advertised `editingEnabled` from `/api/images/options` | `imageEditingEnabled` | Default `false`. Requires image generation (startup and preprovision refuse otherwise) and its durable storage. Advertisement and execution check both flags, the store and a runtime-enabled `imageEditing` catalog model together. See [Image editing](#image-editing) |
-| Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | A runtime-enabled video deployment and durable media Blob storage outside local. Advertisement and execution check the gate, the store and model availability together. Sora 2 is runtime-disabled ahead of its 2026-10-15 retirement, so the tool stays hidden. Keep the flag on: it also delivers the Blob settings that serve existing clips (see [Sora 2 runtime retirement](deployment.md#sora-2-runtime-retirement)) |
+| Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | A runtime-enabled video deployment and durable media Blob storage outside local. The 2026-10-21 subscription read extended Sora 2 to November 2; source re-admission restores the existing routes after rollout, without new capacity. Advertisement and execution still share one gate. Keep the flag on during later runtime retirement so existing clips retain Blob storage (see [Sora 2 runtime retirement](deployment.md#sora-2-runtime-retirement)) |
 | Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED` (+ per-user and live-session limits) | availability from `GET /api/photo-avatars/config` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay`, `photoAvatarLiveMaxMinutesPerSession`, `photoAvatarLiveIdleTimeoutSeconds` | Default `false`. Entra, Cosmos, durable Blob and metering outside local. Creation also needs the home account to report the Limited Access capability at runtime. Live avatar sessions also need Speech Voice Live. The approval, the RAI re-approval and the live checks come first: see [below](#custom-photo-avatars) |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
@@ -215,7 +216,10 @@ the profile default.
 
 ## Cross-tenant Claude source contract
 
-**Source-only and default-off.** This contract does not approve provider terms,
+**Direct-federation mode, source-only and default-off.** The alternative
+[existing upstream APIM mode](#existing-upstream-claude-apim) uses a separate
+explicit credential contract, never an error-triggered fallback.
+This contract does not approve provider terms,
 directory objects/consent, roles, capacity provisioning, network changes or live
 traffic. An unresolved requirement for private networking blocks activation.
 The supported source network mode is explicitly **`public-keyless`**, not Private
@@ -407,6 +411,56 @@ selection with enabled external rows refuses unsupported scope. The maximum
 planner cannot apply an externally enabled catalog; its source-only plan labels
 external coverage unknown. Reader setup cannot claim foreign coverage from a
 source-only identity.
+
+### Existing upstream Claude APIM
+
+This alternative uses an already running Claude Messages APIM gateway instead
+of the cross-tenant app/FIC/token exchange. The path remains
+**FastAPI -> SimpleL7Proxy -> source APIM -> upstream APIM -> Foundry**.
+Foundry remains keyless; the upstream APIM owns its managed-identity permission.
+Do not reuse a personal Azure login, the Desktop subscription key, or a
+master/all-API key. Request a separate AI4IA subscription scoped only to the
+upstream Claude API. This is an explicitly approved credential operation, not
+something the application or this Bicep creates automatically.
+
+The server-owned endpoint must be an HTTPS `*.azure-api.net/claude` base without
+credentials or query. The source APIM accepts only catalog-selected
+deployment/chat-completions requests from its existing API-scoped proxy
+subscription, rewrites to `/claude/v1/messages`, replaces incoming credentials
+with its own `x-api-key`, and preserves streamed Messages and tool payloads.
+It never exposes upstream `count_tokens` or arbitrary operations. Invalid
+configuration refuses without falling back to federation, another model,
+system identity, or a direct provider call. Ordinary model routes are unchanged.
+
+To configure the separately approved connection:
+
+1. Store its dedicated key as deployment secret `AI4IA_CLAUDE_GATEWAY_API_KEY`.
+   Bicep accepts a secure parameter and stores an APIM secret named value;
+   neither FastAPI nor the browser receives the key or upstream endpoint.
+2. Set `AI4IA_CLAUDE_GATEWAY_URL` to the exact upstream base. Keep
+   `AI4IA_CLAUDE_EXTERNAL_ENABLED=false` and `AI4IA_CLAUDE_ENABLED=false`, then
+   set `AI4IA_CLAUDE_GATEWAY_ENABLED=true`.
+3. Run the approved normal deployment. Preflight requires the old Claude route
+   disabled before changing its endpoint. Postprovision reads the actual source
+   wrapper/fragments, named values and protected secret metadata through bounded
+   ARM GETs; it does not retrieve the key. The same route check runs before image
+   rollout even when provisioning is skipped.
+4. After staging succeeds, approve `AI4IA_CLAUDE_ENABLED=true` and redeploy.
+   Verify the advertised catalog and a bounded app-path Messages request.
+   Metadata readback is not live inference proof.
+
+Both modes cannot be enabled together. Turning off `AI4IA_CLAUDE_ENABLED` hides
+the models and installs the disabled auth fragment while retaining data and the
+upstream gateway. Disable and read back the old route before switching
+authentication mode or upstream host. Rotation of a dedicated key does not
+require deleting models, accounts, the Desktop key or user data.
+
+This mode exposes the app's existing reviewed profiles: Opus 5, Sonnet 5, and
+adaptive text-only Opus 5.5. It does not automatically advertise every deployment
+on the upstream account. Additional Haiku/Sonnet/fast rows need their own
+catalog/profile/pricing adoption. In particular, Haiku 4.5 has a different effort
+contract and Haiku 5.5 has context-tiered pricing; copying another Claude row
+would not establish a working integration.
 
 ### Supported application profile and pricing evidence
 

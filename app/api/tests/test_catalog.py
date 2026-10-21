@@ -192,21 +192,26 @@ def test_conversational_models_helper_excludes_capability_models():
     assert "whisper" not in conv_ids
 
 
-def test_shipped_catalog_keeps_sora_2_inventory_but_routes_no_video_model():
-    """Sora 2 retires 2026-10-15 with no Foundry successor: runtime-disabled, not deleted."""
+def test_sora_readmission_preserves_existing_deployments_and_the_runtime_gate(client):
+    """The subscription extended Sora to November 2; no replacement deployment is needed."""
     catalog = load_catalog()
     entry = catalog.get("sora-2")
     assert entry is not None
-    assert entry.runtimeEnabled is False
+    assert entry.runtimeEnabled is True
     assert [(o.region, o.sku, o.modelVersion) for o in entry.options] == [
         ("eastus2", "GlobalStandard", "2025-12-08"),
         ("swedencentral", "GlobalStandard", "2025-12-08"),
     ]
-    assert not catalog.available(entry)
-    assert catalog.resolve_deployment("sora-2") is None
-    assert [m.id for m in catalog.models if m.category == "video" and catalog.available(m)] == []
-    # The only other runtime-disabled row is gpt-realtime-2 (its own retirement).
-    assert [m.id for m in catalog.models if not m.runtimeEnabled] == ["gpt-realtime-2", "sora-2"]
+    assert catalog.available(entry)
+    assert catalog.resolve_deployment("sora-2") is not None
+    assert "sora-2" in {model["id"] for model in client.get("/api/models").json()["models"]}
+    entry.runtimeEnabled = False
+    try:
+        assert not catalog.available(entry)
+        assert catalog.resolve_deployment("sora-2") is None
+    finally:
+        entry.runtimeEnabled = True
+    assert [m.id for m in catalog.models if not m.runtimeEnabled] == ["gpt-realtime-2"]
     assert catalog.resolve_deployment("gpt-5.4") is not None
 
 
