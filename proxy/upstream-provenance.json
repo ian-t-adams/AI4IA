@@ -1353,7 +1353,7 @@
       "upstreamCanonicalSha256": "f5874823b8278f77acb55627c7f14c433b4e75cd6bdfac767b0b891d6b3af3fd"
     },
     "CompanionApp/packages.lock.json": {
-      "localCanonicalSha256": "1d5d7862015294a16f792547905d1e6901178a766d4449b267b2f299ec311e4d",
+      "localCanonicalSha256": "de03c54436ccf5c317c649073a755e03ac5c1620621179dae9991cd97e9a5259",
       "disposition": "ai4ia-added"
     },
     "CompanionApp/readme.md": {
@@ -2655,7 +2655,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "213d838e59df7ab345729ade724c3121620d3ce65211d8dd88129ee27fd25b59",
+      "localCanonicalSha256": "d951eef7f98376850855af14d6ac2b0179a8d7d83b616d3ad3c29b70e3c69e44",
       "upstreamRawSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "upstreamCanonicalSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "disposition": "ai4ia-patched"
@@ -2733,7 +2733,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/packages.lock.json": {
-      "localCanonicalSha256": "2deca7caadcd60b6a0b6a416172658d9d6ae2d9257a0b9ac7fa704cb8493fd92",
+      "localCanonicalSha256": "2efb1c7516b8c99346f2c789bddfe177792092606541626f771c99099b7537aa",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/sample-deployment.yaml": {
