@@ -54,7 +54,6 @@ class Transport:
 # existed. The modules still receive a value under that name.
 TRANSPORTS: tuple[Transport, ...] = (
     Transport("AI4IA_CLAUDE_BINDING_JSON", "claudeBindingJson"),
-    Transport("AI4IA_PROXY_PROFILE_PROJECTION_JSON", "proxyProfileProjectionJson", secret=True),
     Transport("AI4IA_GROUP_POLICY_JSON", "groupPolicyJson", max_bytes=65536),
 )
 

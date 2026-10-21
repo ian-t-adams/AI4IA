@@ -458,8 +458,8 @@ hosted-agent only.
 - **Rubric evaluators, synthetic and traces-to-dataset generation, and the agent
   optimizer** introduce paid judges, production-trace datasets and generated
   candidates. The offline program refuses live calls, judges and production
-  content, and the live authored-synthetic driver has its own gates (see
-  [reports, variance and remaining decisions](behavioral-evaluations.md#reports-variance-and-remaining-decisions)).
+  content; the dormant live authored-synthetic client and schedule are retired
+  (see [retained identity safeguards](behavioral-evaluations.md#retired-live-client-and-retained-identity-safeguards)).
   Adoption needs those judge and production-trace decisions. Optimizer output
   would enter normal review through the catalog and reviewed publication; it is
   never applied automatically.

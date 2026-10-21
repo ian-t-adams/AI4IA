@@ -342,7 +342,6 @@ class DeployWorkflowOperationalScriptTriggers(unittest.TestCase):
                 "scripts/postprovision.ps1",
                 "scripts/post-deploy-verify.py",
                 "scripts/verify-image-provenance.py",
-                "scripts/verify-companion-image.py",
                 "scripts/_image_refs.py",
                 "scripts/check-resource-providers.py",
                 "scripts/check-model-availability.py",
@@ -534,7 +533,6 @@ DERIVE_COMMAND = "python scripts/derive-json-transport.py --github-env"
 TRANSPORT_RAW_VALUES = {
     "AI4IA_GROUP_POLICY_JSON": '{"version": 1, "domains": {}}',
     "AI4IA_CLAUDE_BINDING_JSON": '{"networkMode": "public-keyless"}',
-    "AI4IA_PROXY_PROFILE_PROJECTION_JSON": '[{"appId": "synthetic-app"}]',
 }
 
 
@@ -608,7 +606,7 @@ class DeployJsonTransportTests(unittest.TestCase):
             "moved before Python": move(None),
             "conditional": edit(**{"if": "${{ inputs.provision }}"}),
             "suppressed failure": edit(**{"continue-on-error": True}),
-            "extra environment": edit(env={"AI4IA_PROXY_PROFILE_PROJECTION_JSON": "${{ secrets.OTHER }}"}),
+            "extra environment": edit(env={"AI4IA_GROUP_POLICY_JSON": "{}"}),
             "hook mode instead of GITHUB_ENV": edit(run="python scripts/derive-json-transport.py --azd-env"),
             "an action": edit(uses="actions/github-script@v7"),
         }
@@ -621,7 +619,7 @@ class DeployJsonTransportTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.assert_derivation_contract(steps)
 
-    def test_the_step_masks_the_secret_before_anything_else_it_prints(self) -> None:
+    def test_the_step_derives_only_current_transports_without_printing_values(self) -> None:
         step = next(step for step in self.steps if step.get("name") == DERIVE_TRANSPORTS)
         program, script, mode = step["run"].split()
         self.assertEqual(program, "python")
@@ -642,10 +640,9 @@ class DeployJsonTransportTests(unittest.TestCase):
         self.assertEqual(set(written), {f"{name}_B64" for name in TRANSPORT_RAW_VALUES})
         for name, raw in TRANSPORT_RAW_VALUES.items():
             self.assertEqual(base64.b64decode(written[f"{name}_B64"], validate=True).decode("utf-8"), raw)
-        secret = written["AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64"]
-        self.assertEqual(result.stdout.splitlines()[0], f"::add-mask::{secret}")
-        self.assertEqual(result.stdout.count(secret), 1)
-        self.assertNotIn(secret, result.stderr)
+        self.assertNotIn("AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64", written)
+        for value in (*TRANSPORT_RAW_VALUES.values(), *written.values()):
+            self.assertNotIn(value, result.stdout + result.stderr)
 
     def test_the_step_needs_no_token_or_permission(self) -> None:
         step = next(step for step in self.steps if step.get("name") == DERIVE_TRANSPORTS)
@@ -659,9 +656,7 @@ class DeployJsonTransportTests(unittest.TestCase):
         env = self.job["env"]
         self.assertEqual(env["AI4IA_GROUP_POLICY_JSON"], "${{ vars.AI4IA_GROUP_POLICY_JSON }}")
         self.assertEqual(env["AI4IA_CLAUDE_BINDING_JSON"], "${{ vars.AI4IA_CLAUDE_BINDING_JSON }}")
-        self.assertEqual(
-            env["AI4IA_PROXY_PROFILE_PROJECTION_JSON"], "${{ secrets.AI4IA_PROXY_PROFILE_PROJECTION_JSON }}"
-        )
+        self.assertNotIn("AI4IA_PROXY_PROFILE_PROJECTION_JSON", env)
         self.assertEqual([name for name in env if name.endswith("_B64")], [], "transports are derived, never configured")
         reader = next(step for step in self.steps if step.get("name") == "Log in isolated Claude target reader (OIDC)")
         for value in reader["with"].values():

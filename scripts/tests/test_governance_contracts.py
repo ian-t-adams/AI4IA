@@ -114,19 +114,32 @@ class WorkflowWiringTests(unittest.TestCase):
             self.assertNotIn(stored, workflow)
 
 class DeployableSurfaceTests(unittest.TestCase):
-    def test_network_isolation_parameters_are_unreachable_from_a_deploy(self) -> None:
-        """The private-network graph is incomplete scaffolding.
-
-        Bicep still carries the parameters, but neither the parameter file nor
-        the workflow may set them: a partially wired isolation mode would look
-        enabled while leaving the control and data planes publicly reachable.
-        """
+    def test_retired_network_and_profile_parameters_cannot_reenter_deployment(self) -> None:
         parameters = read("infra/main.parameters.json")
         deploy = read(".github/workflows/deploy.yml")
-        for unreachable in ("vnetIsolationEnabled", "dataTierPrivate"):
+        main = read("infra/main.bicep")
+        for unreachable in (
+            "vnetIsolationEnabled", "dataTierPrivate", "proxyProfilesEnabled",
+            "proxyProfileProjectionJsonBase64", "proxyAsyncEnabled",
+            "proxyEventHubTelemetryEnabled", "companionAppEnabled",
+        ):
             with self.subTest(parameter=unreachable):
                 self.assertNotIn(f'"{unreachable}"', parameters)
                 self.assertNotIn(unreachable, deploy)
+                self.assertNotRegex(main, rf"(?m)^param {unreachable}\b")
+
+    def test_retired_clients_leave_offline_evaluations_and_actor_controls_in_place(self) -> None:
+        for name in ("companion-image", "live-evaluations"):
+            self.assertFalse((ROOT / ".github" / "workflows" / f"{name}.yml").exists())
+        for name in ("live.py", "live_contracts.py", "live_http.py", "live_oracles.py"):
+            self.assertFalse((ROOT / "scripts" / "evaluations" / name).exists())
+        app_ci = read(".github/workflows/app-ci.yml")
+        self.assertIn("python -m scripts.evaluations run", app_ci)
+        self.assertIn("scripts/tests/test_behavioral_evaluations.py", app_ci)
+        self.assertNotIn("AI4IA_LIVE_EVAL_TOKEN", app_ci)
+        self.assertTrue((ROOT / "proxy" / "CompanionApp" / "Program.cs").is_file())
+        for marker in ("canaryActor", "evaluationActor", "realtimeCanaryActor"):
+            self.assertIn(marker, read("app/api/src/ai4ia_api/policy/models.py"))
 
     def test_apim_identifiers_are_template_outputs(self) -> None:
         """Key rotation derives APIM from outputs rather than a name search."""

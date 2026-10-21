@@ -110,19 +110,19 @@ window.AI4IA_SERVICES = [
     docs: [["Azure API Center", "https://learn.microsoft.com/azure/api-center/overview"]],
   },
   {
-    key: "eventhubs", name: "Event Hubs Namespace", azureType: "Microsoft.EventHub/namespaces",
-    group: "Messaging", icon: "📨", module: "eventhubs.bicep", resourcePattern: "evhns-ai4ia-*",
-    summary: "Optional identity-only telemetry export, provisioned only when proxyEventHubTelemetryEnabled is true. Fresh " +
-      "default-off deployments create no namespace, diagnostics, or data-plane roles.",
-    identity: "id-proxy gets Data Sender only when proxy telemetry is enabled; the API has no Event Hubs role",
+    key: "eventhubs", name: "Retained Event Hubs Namespace", azureType: "Microsoft.EventHub/namespaces",
+    group: "Messaging", icon: "📨", module: "Retired (not in IaC)", resourcePattern: "evhns-ai4ia-*",
+    summary: "Proxy Event Hub export and its hosted console integration are retired. Any observed namespace, hub, " +
+      "consumer group or role is retained inventory requiring exact-ID review and separate cleanup approval.",
+    identity: "No grant declared by current IaC; earlier sender/receiver assignments are not automatically revoked",
     docs: [["Azure Event Hubs", "https://learn.microsoft.com/azure/event-hubs/event-hubs-about"]],
   },
   {
-    key: "servicebus", name: "Service Bus Namespace (optional async)", azureType: "Microsoft.ServiceBus/namespaces",
-    group: "Messaging", icon: "📬", module: "proxyasync.bicep", resourcePattern: "sb-ai4ia-*-proxy-async",
-    summary: "Default-off durable async request queue for SimpleL7Proxy. It is separate from the synchronous in-memory " +
-      "priority queue, disables local auth, follows the private-data-tier posture, and sends diagnostics to Log Analytics.",
-    identity: "id-proxy granted Service Bus Data Sender + Receiver only when async is enabled",
+    key: "servicebus", name: "Retained Service Bus Namespace", azureType: "Microsoft.ServiceBus/namespaces",
+    group: "Messaging", icon: "📬", module: "Retired (not in IaC)", resourcePattern: "sb-ai4ia-*-proxy-async-*",
+    summary: "Proxy async is retired, not the ordinary Durable Task workflow service. Any remaining queue, result Blob " +
+      "or assignment needs dependency/data-retention review and separate exact-ID cleanup approval.",
+    identity: "No grant declared by current IaC; historical proxy Sender/Receiver roles may remain until approved cleanup",
     docs: [["Azure Service Bus", "https://learn.microsoft.com/azure/service-bus-messaging/service-bus-messaging-overview"]],
   },
   {

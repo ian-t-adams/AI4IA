@@ -2835,16 +2835,12 @@ class GatewayPolicyTests(unittest.TestCase):
         parameters = json.loads(
             (ROOT / "infra/main.parameters.json").read_text(encoding="utf-8")
         )["parameters"]
-        for name in (
-            "proxyProfilesEnabled",
-            "proxyPrioritiesEnabled",
-            "proxyEventHubTelemetryEnabled",
-            "proxyAsyncEnabled",
-        ):
-            self.assertIn(f"param {name} bool = false", main)
-            self.assertEqual(parameters[name]["value"].rsplit("=", 1)[-1], "false}")
-        self.assertIn("@secure()\n@description('Minimal server-owned", main)
-        self.assertIn("UserConfigUrl', value: 'file:/mnt/ai4ia-profiles/", gateway)
+        self.assertIn("param proxyPrioritiesEnabled bool = false", main)
+        self.assertEqual(parameters["proxyPrioritiesEnabled"]["value"].rsplit("=", 1)[-1], "false}")
+        for name in ("UseProfiles", "AsyncModeEnabled"):
+            self.assertIn(f"{{ name: '{name}', value: 'false' }}", gateway)
+        self.assertIn("{ name: 'EVENT_LOGGERS', value: 'none' }", gateway)
+        self.assertNotIn("UserConfigUrl", gateway)
         self.assertIn("LogAllRequestHeaders', value: 'false'", gateway)
         self.assertIn("LogAllResponseHeaders', value: 'false'", gateway)
 
@@ -2869,25 +2865,6 @@ class GatewayPolicyTests(unittest.TestCase):
         # braces" entry -- two variables that look interchangeable but are not is
         # exactly what made this inert the first time.
         self.assertNotIn("name: 'PriorityWorker'", gateway)
-
-    def test_async_iac_follows_diagnostics_and_private_data_posture(self) -> None:
-        main = (ROOT / "infra/main.bicep").read_text(encoding="utf-8")
-        async_module = (ROOT / "infra/modules/proxyasync.bicep").read_text(
-            encoding="utf-8"
-        )
-        network = (ROOT / "infra/modules/network.bicep").read_text(encoding="utf-8")
-        self.assertGreaterEqual(async_module.count("diagnosticSettings:"), 2)
-        self.assertGreaterEqual(
-            async_module.count("publicNetworkAccess: publicNetworkAccess"), 2
-        )
-        self.assertIn("name: 'proxyasyncblob'", main)
-        self.assertIn("name: 'proxyasyncbus'", main)
-        self.assertIn("serviceBusDnsZoneId", network)
-        self.assertIn(
-            "module eventhubs 'modules/eventhubs.bicep' = if (proxyEventHubTelemetryEnabled)",
-            main,
-        )
-        self.assertNotIn("telemetrySenderPrincipalIds", main)
 
     def test_proxy_pin_is_consistent(self) -> None:
         pin = "b0066b0e53f89abb5e84cfeacda2fdcaca8b081e"

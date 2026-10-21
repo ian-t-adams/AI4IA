@@ -27,12 +27,15 @@ APIM injects the managed-identity bearer, the static
 | `toolbox.manifest.schema.json` | JSON Schema for the manifest; validated in CI (`infra-validate`). |
 | `skills/<name>/SKILL.md` | Repository-owned source for an unpinned active skill. `--create` reconciles immutable skill versions before the toolbox. |
 
-The audited provisioning SDK is `azure-ai-projects==2.7.0`. The `shell` and
+The audited provisioning SDK is `azure-ai-projects==2.8.0`. The `shell` and
 `web_iq_preview` toolbox types introduced in 2.6.0 remain unsupported pending capability
-and governance review. All 16 SDK toolbox classes are accounted for, but the manifest
+and governance review. SDK 2.8.0's new `browser_automation` GA discriminator also
+remains excluded pending its own schema, adapter, egress and approval review;
+it is not an alias for the supported `browser_automation_preview`. All 17 SDK
+toolbox classes are accounted for, but the manifest
 allowlist remains 14 types and the canonical three tools plus `evidence-review`
-skill are unchanged. The 2.7.0 release adds preview voice agents and other agent
-surfaces; the toolbox and Skills contracts the provisioner uses are unchanged. See
+skill are unchanged. The new optimization, generation and evaluator APIs are
+not adopted by this dependency update. See
 the full runbook for the SDK review and exact exclusions.
 
 ## Reconciliation

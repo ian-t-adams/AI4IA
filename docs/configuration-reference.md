@@ -160,18 +160,14 @@ the container — those names are *outputs*, not knobs you set.
 | WebIQ output limits | `AI4IA_WEB_SEARCH_MAX_RESULTS`, `AI4IA_WEB_SEARCH_MAX_CONTENT_CHARS` | `webSearchMaxResults`, `webSearchMaxContentChars` | Same names, emitted only when WebIQ is enabled | Defaults 5 results per collection and 6000 characters per content field; ranges 1-50 and 1-500000, further clamped by provider and shared output limits. Five calls per turn; each complete WebIQ response is bounded to 8192 bytes, including JSON escaping and nonce fences. The additional 100000-character turn ceiling cannot widen those limits. Safe search stays strict; no automatic retries or crawl polling. |
 | Memory / semantic recall | `AI4IA_MEMORY_STORE` | `memoryStore` (default `cosmos`) | `AI4IA_MEMORY_STORE` | Use `disabled` for the migration freeze and `cosmos` after verification. Cosmos requires its endpoint/database, `EnableNoSQLVectorSearch`, the `/userId`-partitioned `memories` container, and catalog entries for the embedding and extraction models. |
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | `autoSummarizationEnabled` | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | Profile default `true`. Off sends the full transcript and leaves manual `/summarize` working; on folds the oldest turns into a running summary once the transcript passes the model-derived threshold. |
-| Proxy application profiles | `AI4IA_PROXY_PROFILES_ENABLED`, `AI4IA_PROXY_PROFILE_PROJECTION_JSON` (secret) | `proxyProfilesEnabled`, `proxyProfileProjectionJsonBase64` (secure, decoded to `proxyProfileProjectionJson`) | `UseProfiles`, `UserConfigRequired`, secret-mounted `file:/mnt/ai4ia-profiles/profiles.json` | **Blocked by validation while shared-key ingress is used.** Requires a verified identity-aware application header; no public/unauthenticated profile URL is permitted. The secret stays raw JSON; its derived `AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64` transport is masked in the deploy log (see [JSON-valued variables](#json-valued-variables)). |
 | Proxy priority reservations | `AI4IA_PROXY_PRIORITIES_ENABLED`, `AI4IA_PROXY_PRIORITY_WORKERS` | `proxyPrioritiesEnabled`, `proxyPriorityWorkers` | `PriorityWorkers`, `PriorityKeys`, `PriorityValues`; API emits `x-S7PPriority` | Worker map must use `priority:count` pairs. Off means no reserved workers and no band header. Band is derived server-side from the authenticated principal (admins -> 1, other users -> 2); an inbound `x-S7PPriority` is never trusted. Queue fairness is per replica. Not Azure paid Priority Processing. |
-| Proxy Event Hub telemetry | `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED` | `proxyEventHubTelemetryEnabled` | Conditionally creates Event Hubs, diagnostics, proxy sender RBAC, and `EVENTHUB_*` env | Default off creates no namespace or roles and emits empty azd outputs. Metadata only: header/body logging stays disabled. Event Hub is telemetry, not the synchronous queue. |
-| CompanionApp telemetry console | `AI4IA_COMPANION_APP_ENABLED`, `AI4IA_COMPANION_APP_IMAGE`, `AI4IA_COMPANION_APP_ENTRA_CLIENT_ID`, `AI4IA_COMPANION_APP_ADMIN_GROUP_IDS`, `AI4IA_COMPANION_APP_ADMIN_PRINCIPAL_IDS`, `AI4IA_COMPANION_APP_ALLOWED_IP_RANGES`, `AI4IA_COMPANION_APP_MIN_REPLICAS` | `companionAppEnabled`, `companionAppImage`, `companionAppEntraClientId`, `companionAppAdminGroupIds`, `companionAppAdminPrincipalIds`, `companionAppAllowedIpRanges`, `companionAppMinReplicas` | Creates `ca-companion-<env>` with Easy Auth, a dedicated `id-companion-<env>` (AcrPull plus Event Hubs Data Receiver on the telemetry hub only) and a `companion` consumer group. Emits `AZURE_COMPANION_APP_URL`. | **Default `false` and unconfigured; creates nothing.** Requires proxy Event Hub telemetry, a digest from the manual `companion-image.yml` promotion (re-verified before provision), an Entra app registration and at least one admin group or principal id. Admin-only, read-only, not an azd service and never on the model path. See [the runbook](runbooks/feature-enablement.md#companionapp-telemetry-console). |
-| Proxy durable async | `AI4IA_PROXY_ASYNC_ENABLED` | `proxyAsyncEnabled` | `AsyncModeEnabled`, MI-only Blob/Service Bus config | Creates dedicated default-off AVM Storage + Service Bus resources and grants only Blob Contributor plus Service Bus Sender/Receiver to `id-proxy`. |
 | Proxy capacity | `AI4IA_PROXY_WORKERS`, `AI4IA_PROXY_MIN_REPLICAS`, `AI4IA_PROXY_MAX_REPLICAS` | `proxyWorkers`, `proxyMinReplicas`, `proxyMaxReplicas` | `Workers` + Container App scale | Minimum replicas cannot be zero on the active model path. More replicas increase capacity but split in-memory fairness state. |
 | Proxy App Configuration label | `AI4IA_PROXY_APPCONFIG_LABEL` | `proxyAppConfigLabel` | `AZURE_APP_CONFIG_LABEL`, `AZURE_APPCONFIG_ENDPOINT`, label-aware `Warm:Sentinel`, 30-second refresh | Postprovision reconciles the sentinel with Entra auth through the deployment identity's narrow store-scoped Data Owner role; the proxy remains Data Reader only. The proxy applies only `Warm:Sentinel` and two reviewed request limits from the store, each within a reviewed range (`Request:DefaultTimeout` 180,000 to 1,200,000 ms, `Request:DefaultTTLSecs` 300 to 1,200 s), at startup and on refresh. Every other key, including every `Cold:` key and the circuit-breaker settings, is refused, and its setting comes from the Container App environment. See [the key policy](../proxy/README.md#app-configuration-key-policy). |
 
 ### JSON-valued variables
 
-`AI4IA_GROUP_POLICY_JSON`, `AI4IA_CLAUDE_BINDING_JSON` and the secret
-`AI4IA_PROXY_PROFILE_PROJECTION_JSON` hold JSON. Set each one to the raw JSON,
+`AI4IA_GROUP_POLICY_JSON` and `AI4IA_CLAUDE_BINDING_JSON` hold JSON.
+Set each one to the raw JSON,
 exactly as the runtime reads it, and never set its transport yourself.
 
 azd substitutes environment values into `infra/main.parameters.json` without JSON
@@ -185,7 +181,6 @@ The parameters file therefore reads a transport of each variable, and
 | --- | --- | --- | --- | --- |
 | Group policy | `AI4IA_GROUP_POLICY_JSON` | `AI4IA_GROUP_POLICY_JSON_B64` | `groupPolicyJsonBase64` | API env `AI4IA_GROUP_POLICY_JSON` |
 | Claude binding | `AI4IA_CLAUDE_BINDING_JSON` | `AI4IA_CLAUDE_BINDING_JSON_B64` | `claudeBindingJsonBase64` | The APIM source identity and the gateway's external Claude routes, only while external Claude is staged |
-| Proxy profile projection | `AI4IA_PROXY_PROFILE_PROJECTION_JSON` (secret) | `AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64` (masked) | `proxyProfileProjectionJsonBase64` (secure) | The proxy's secret-mounted `profiles.json` |
 
 A transport is padded standard base64 of the raw value's UTF-8 bytes. Its
 alphabet needs no JSON, dotenv or shell escaping. An unset or empty raw variable
@@ -193,9 +188,8 @@ gives an empty transport, which stays an empty string, so the defaults are
 unchanged.
 
 - **CI.** Before `azd provision`, `deploy.yml` runs
-  `python scripts/derive-json-transport.py --github-env`. It writes all three
-  transports to `$GITHUB_ENV` and masks the secret-derived one with
-  `::add-mask::` before writing it. The raw variables stay exported, so the
+  `python scripts/derive-json-transport.py --github-env`. It writes both
+  transports to `$GITHUB_ENV` without printing their values. The raw variables stay exported, so the
   `fromJSON(...)` login inputs and `check-claude-binding.py` read them unchanged.
 - **Local `azd provision`.** The first `preprovision` hook entry runs
   `python scripts/derive-json-transport.py --azd-env`. It stores each transport
@@ -624,27 +618,20 @@ SimpleL7Proxy makes one attempt per dispatch against its single catch-all host
 (`SinglePass`, with `MaxAttempts=1` bounding `MultiPass`) and owns delayed
 requeue, avoiding retry multiplication.
 
-### Multi-application onboarding status
+### Retired optional integrations
 
-The infrastructure exposes the profile/priority/telemetry/async knobs, but shared
-key ingress is not a sufficient application identity boundary. A new independent
-application is therefore **not onboarded by adding a profile JSON row**.
+Incomplete private networking, multi-application proxy profiles, proxy async,
+Event Hub export and the hosted CompanionApp console are removed, not
+enableable configuration. Shared-key ingress is still not a verified application
+identity boundary. The proxy explicitly disables those runtime paths; its
+authentication, header stripping, App Insights, reviewed App Configuration
+limits and synchronous priority reservations remain.
 
-Before enabling `proxyProfilesEnabled`, an operator must:
-
-1. give each application a verifiable Entra workload identity (or equivalent
-   cryptographically verified identity) at the proxy edge;
-2. derive the profile lookup header at that trusted boundary rather than accepting
-   a caller-supplied value;
-3. export only the minimal app projection from canonical Cosmos into the
-   secret-mounted snapshot; and
-4. enforce per-app allowed paths/models and quotas at the proxy/APIM boundary.
-
-The current upstream profile subsystem can add flat profile fields and influence
-priority, but it does not securely authenticate `UserConfigUrl`, provide a Cosmos
-projection job, or independently enforce the full allowed-path/model/quota
-contract. `validate-feature-prereqs.py` intentionally rejects profile enablement
-until that work exists.
+The preprovision validator refuses stale retired parameters or populated
+unsupported configuration instead of silently applying another posture.
+See [the retired-input inventory and retained cleanup boundary](runbooks/feature-enablement.md#retired-scaffolding-and-operational-add-ons).
+Removing a client or setting never removes actor restrictions, Azure resources,
+identities, RBAC or user data.
 
 ## Validation
 
@@ -654,7 +641,7 @@ catch: prod with dev auth, Entra without tenant/audience/client ID, Voice Live
 tools without Voice Live, Speech Voice Live enabled without Voice Live or without
 its allowlist/URL/key prerequisites, document compute without document
 understanding, broken custom-domain/cert combinations, proxy scale/priority
-errors, unsafe profile enablement, and personal ownership defaults. It also
+errors, retired configuration, and personal ownership defaults. It also
 decodes each [JSON transport](#json-valued-variables) and refuses one that does
 not carry its raw variable exactly. CI also
 regenerates and tests the HTTP/SSE endpoint fragment and realtime routing policy
@@ -662,8 +649,8 @@ against `infra/models.json`, and the voice provider catalog
 (`scripts/gen-voice-provider-catalog.py --check`) against
 `infra/voice-providers.json`.
 The proxy Container App also uses the upstream listener on port `8080` for
-startup, liveness, and readiness. Optional async resources inherit the data-tier
-public/private posture and emit diagnostics to the shared Log Analytics workspace.
+startup, liveness, and readiness. The public, identity-gated data tier and the
+existing durable workflow scheduler are unchanged.
 
 ### Gateway credential boundaries
 
