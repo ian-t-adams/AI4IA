@@ -8,6 +8,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
+from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import _claude_gateway as gateway
@@ -115,6 +116,16 @@ class ClaudeGatewayTests(unittest.TestCase):
                 "claude-proxy-subscription": "ai4ia-proxy-models",
             }.items()
         ] + [{"name": "claude-gateway-key", "properties": {"secret": True}}]
+        # APIM drops XML comments and reformats an otherwise branch that then
+        # contains no operations. Exercise that actual export, not authored XML.
+        for (target, path), response in reader.responses.items():
+            if target or not ("/policyFragments/" in path or "/policies/" in path):
+                continue
+            tree = ET.fromstring(response["properties"]["value"])
+            for node in tree.iter("otherwise"):
+                if not list(node) and not (node.text or "").strip():
+                    node.text = "\n  "
+            response["properties"]["value"] = ET.tostring(tree, encoding="unicode")
         with patch.object(gateway, "SourceRouteReader", return_value=reader):
             gateway.verify_gateway_routes(apim, env)
             good = deepcopy(reader.responses[named])

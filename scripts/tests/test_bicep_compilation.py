@@ -161,7 +161,11 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         rows = resources.values() if isinstance(resources, dict) else resources
         key = next(row for row in rows if row["type"] == "Microsoft.ApiManagement/service/namedValues"
                    and row["properties"].get("displayName") == "claude-gateway-key")
-        self.assertEqual(key["condition"], "[parameters('claudeGatewayEnabled')]")
+        self.assertNotIn("condition", key)
+        self.assertEqual(
+            key["properties"]["value"],
+            "[if(parameters('claudeGatewayEnabled'), parameters('claudeGatewayApiKey'), 'disabled')]",
+        )
         self.assertIs(key["properties"]["secret"], True)
         self.assertNotIn("claudeGatewayApiKey", json.dumps(self.template["outputs"]))
 
