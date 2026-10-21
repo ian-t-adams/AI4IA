@@ -206,7 +206,10 @@ class Reader:
         query = "" if graph else f"?api-version={version}"
         if not graph and (path.endswith("/policies/policy") or "/policyFragments/" in path):
             query += "&format=rawxml"
-        return self.command(target, ["rest", "--method", "GET", "--url", host + path + query])
+        return self.command(target, [
+            "rest", "--method", "GET", "--url", host + path + query,
+            "--headers", "Accept=application/json",
+        ])
 
 
 def verify_identity(binding: Binding, reader: Reader, *, attached: bool) -> None:

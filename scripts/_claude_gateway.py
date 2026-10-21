@@ -56,6 +56,7 @@ class SourceRouteReader:
             query += "&format=rawxml"
         result = run_bounded(
             [*az_command(), "rest", "--method", "GET", "--url", "https://management.azure.com" + path + query,
+             "--headers", "Accept=application/json",
              "--subscription", self.subscription, "--only-show-errors", "--output", "json"],
             min(20, remaining), min(1024 * 1024, 8 * 1024 * 1024 - self.bytes),
         )

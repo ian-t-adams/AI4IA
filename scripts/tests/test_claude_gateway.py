@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -11,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import _claude_gateway as gateway
 from _capacity_evidence import EvidenceError, ProcessResult
-from _claude_binding import configured_binding
+from _claude_binding import Reader, configured_binding
 from scripts.tests._claude_fixture import FixtureReader, binding
 from scripts.tests.test_feature_prereqs import REAL_PARAMETERS, _environment, _run
 
@@ -28,6 +29,35 @@ def environment():
 
 
 class ClaudeGatewayTests(unittest.TestCase):
+    def test_policy_get_negotiates_json_instead_of_the_clis_raw_xml_export(self):
+        value = binding()
+        apim = value["sourceApimResourceId"]
+        observed = []
+
+        def transport(command, timeout, limit, **kwargs):
+            observed.append(command)
+            body = (
+                b'{"properties":{"value":"<policies/>"}}'
+                if "--headers" in command and command[command.index("--headers") + 1] == "Accept=application/json"
+                else b"\xef\xbb\xbf<policies/>"
+            )
+            return ProcessResult(body, False)
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(gateway, "az_command", return_value=["az"]), patch.object(
+            gateway, "run_bounded", side_effect=transport,
+        ):
+            readers = (
+                gateway.SourceRouteReader(apim, value["sourceSubscriptionId"]),
+                Reader(value, directory, runner=transport),
+            )
+            for reader in readers:
+                result = reader.get(False, apim + "/apis/openai/policies/policy", "2024-05-01")
+                self.assertEqual(result, {"properties": {"value": "<policies/>"}})
+        self.assertEqual(len(observed), 2)
+        for command in observed:
+            self.assertIn("format=rawxml", command[command.index("--url") + 1])
+            self.assertIn("--subscription", command)
+
     def test_plan_time_gate_requires_the_secret_and_does_not_accept_provider_urls(self):
         env = {
             **environment(), "AI4IA_CLAUDE_ORGANIZATION_NAME": "",
