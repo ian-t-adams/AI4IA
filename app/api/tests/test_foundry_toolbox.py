@@ -48,7 +48,7 @@ def _valid_manifest() -> dict:
         "owner": "repository-owner",
         "sdkContract": {
             "package": "azure-ai-projects",
-            "version": "2.8.0",
+            "version": "2.9.0",
             "status": "validated",
             "surface": "project.toolboxes",
         },

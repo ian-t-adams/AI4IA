@@ -200,7 +200,7 @@ the API's `snake_case` by `scripts/provision-foundry-toolbox.py`.
 
 ## Per-tool configuration
 
-These are the tool types AI4IA supports **in a toolbox** via `azure-ai-projects` (2.8.0),
+These are the tool types AI4IA supports **in a toolbox** via `azure-ai-projects` (2.9.0),
 mapped one-to-one to the SDK's discriminated `*ToolboxTool` models by
 `scripts/provision-foundry-toolbox.py`:
 
@@ -259,7 +259,7 @@ manifest leaves it omitted, so this upgrade changes no active search behavior.
 > fails if a future SDK field or type is left uncovered.
 
 > **Available vs. deployed:** this table is every tool type the schema/provisioning script
-> support (14 as of azure-ai-projects 2.8.0). The live canonical `ai4ia-toolbox`
+> support (14 as of azure-ai-projects 2.9.0). The live canonical `ai4ia-toolbox`
 > (`foundry/toolbox.manifest.json`) currently uses only three: `web_search`, `code_interpreter`,
 > and `toolbox_search_preview`. See `foundry/toolbox.manifest.example.json` for a populated
 > reference covering all 14 types (18 tools total, including both the
@@ -375,8 +375,22 @@ The existing concrete toolbox constructors retain their fields in the verified
 requirements move with the exact `2.8.0` pin. Regeneration confirms the official
 MCP catalog stays unchanged: `sdkContract` is non-executable metadata and the
 active three-tool surface is unchanged. The wheel installs only its own package
-and dist-info; no top-level `scripts` package is admitted. Routine and inbound
-A2A artifacts remain validation-only.
+and dist-info; no top-level `scripts` package is admitted. Retired routine and
+inbound A2A designs are not restored by this SDK update.
+
+**SDK 2.9.0 minor review:** the
+[official release](https://github.com/Azure/azure-sdk-for-python/releases/tag/azure-ai-projects_2.9.0)
+adds experimental Voice Agents tracing, a realtime transport selector and preview
+managed-harness APIs, and normalizes terminal cancellation statuses in SDK
+long-running operations. None is adopted by this provisioning-only dependency
+update. AI4IA's existing voice relay, WebSocket-only avatar transport, telemetry
+ownership and content-recording controls are unchanged. All 17 toolbox classes
+retain the existing reflected contract: 14 supported and three explicitly
+excluded, with no new tools or permissions. The public-lock wheel hash and
+installed package inventory are verified, and the real constructor, wire and
+parity controls pass without weakening their assertions. Manifest/schema
+metadata, both install hints and documentation use the exact `2.9.0` pin;
+non-executable SDK metadata does not change the active MCP catalog identity.
 
 > **Not toolbox tools:** `computer_use` and `bing_custom_search` exist only as *agent-level* tools
 > in the SDK (`ComputerUsePreviewTool` / `BingCustomSearchPreviewTool`) with no `*ToolboxTool`
@@ -457,7 +471,7 @@ API currently does not support private-network-only projects. See Microsoft's
 
 ## Operator runbook (end to end)
 
-1. **Install the provisioning extra.** It pins `azure-ai-projects==2.8.0` exactly, not a
+1. **Install the provisioning extra.** It pins `azure-ai-projects==2.9.0` exactly, not a
    floating floor, because the toolbox model classes this script constructs have already
    changed shape once between 2.x releases; every install path should land on the one version
    the manifest schema, provisioner, and tests were reviewed against:
