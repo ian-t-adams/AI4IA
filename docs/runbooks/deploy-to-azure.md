@@ -452,10 +452,29 @@ python scripts/sync-model-capacity.py `
 The planner reads existing deployments and uses quota/`modelCapacities` numbers,
 SKU and publisher heuristics to choose global, data-zone or regional pools.
 Those heuristics and a recorded `maxCapacityPool` are not independent evidence
-that the same scope holds in another subscription or at another time. It never
-reduces a live deployment; that is not proof that its maximum is a safe production
-reserve policy. Use the read-only evidence report and a separate scope review
-before approving any capacity change.
+that the same scope holds in another subscription or at another time. The normal
+planner never reduces a live deployment; that is not proof that its maximum is a
+safe production reserve policy. Use the read-only evidence report and a separate
+scope review before approving any capacity change.
+
+When an existing recorded pool exceeds a newly reduced quota, use the separate
+reduction-only mode:
+
+```powershell
+python scripts/sync-model-capacity.py `
+  --subscription <subscription-guid> `
+  --resource-group <resource-group> `
+  --environment-name <azd-environment> `
+  --reduce-to-quota
+# Review the reductions, then repeat with --apply to record them in source.
+```
+
+This mode retains each recorded pool, subtracts observed outside allocation,
+and refuses missing/contradictory evidence or a quota below portable baselines.
+It never increases a live/desired capacity or changes regions, versions, SKUs or
+pool membership. `--apply` edits only the catalog; Azure changes still require
+the normal approved provision. Every subsequent read is bound to the checked
+subscription. A reduced catalog is not evidence that the live allocation changed.
 
 Commit the resulting `infra/models.json`, set the repository variable
 `AI4IA_MODEL_CAPACITY_PROFILE=maximum`, and run the deploy workflow with
