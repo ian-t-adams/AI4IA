@@ -109,9 +109,20 @@ class _UnsupportedToolboxType(NamedTuple):
     rationale: str
 
 
-# SDK 2.6.0 additions require deliberate capability review, not automatic exposure.
+# New SDK capabilities require deliberate review, not automatic exposure.
 # Keep exact field inventories so excluded models still participate in SDK parity.
 _UNSUPPORTED_TOOL_TYPES = {
+    "browser_automation": _UnsupportedToolboxType(
+        model_class="BrowserAutomationToolboxTool",
+        sdk_fields=frozenset({
+            "type", "name", "description", "tool_configs", "browser_automation",
+        }),
+        rationale=(
+            "The GA browser automation discriminator and connection payload require "
+            "a separate schema, adapter, egress, and approval review; an SDK update "
+            "does not authorize it or alias the existing preview contract."
+        ),
+    ),
     "shell": _UnsupportedToolboxType(
         model_class="ShellToolboxTool",
         sdk_fields=frozenset({
@@ -588,7 +599,7 @@ def _project_client(project_endpoint: str) -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only on live provisioning
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.7.0 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.8.0 azure-identity'
         ) from exc
     return AIProjectClient(endpoint=project_endpoint, credential=DefaultAzureCredential())
 
@@ -599,7 +610,7 @@ def _sdk_models() -> Any:
     except ImportError as exc:  # pragma: no cover - exercised only without provisioning extra
         raise SystemExit(
             "azure-ai-projects is not installed. Install the optional provisioning group:\n"
-            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.7.0 azure-identity'
+            '  uv pip install -e "app/api[foundry]"   # or: pip install azure-ai-projects==2.8.0 azure-identity'
         ) from exc
     return models
 

@@ -43,7 +43,7 @@
       "required": ["package", "version", "status", "surface"],
       "properties": {
         "package": { "const": "azure-ai-projects" },
-        "version": { "const": "2.7.0" },
+        "version": { "const": "2.8.0" },
         "status": { "const": "validated" },
         "surface": {
           "const": "project.toolboxes",
@@ -96,7 +96,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "description": "AI4IA-supported tool type. SDK 2.7.0's shell (ShellToolboxTool) and web_iq_preview (WebIQPreviewToolboxTool) are deliberately excluded pending sandbox/egress/approval and WebIQ governance review respectively. See docs/foundry-toolbox.md.",
+            "description": "AI4IA-supported tool type. SDK 2.8.0's browser_automation (BrowserAutomationToolboxTool), shell (ShellToolboxTool) and web_iq_preview (WebIQPreviewToolboxTool) are deliberately excluded pending their separate schema/adapter/egress/approval, sandbox, and WebIQ governance reviews. The existing browser_automation_preview contract is unchanged. See docs/foundry-toolbox.md.",
             "enum": [
               "web_search",
               "azure_ai_search",
