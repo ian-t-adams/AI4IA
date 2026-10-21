@@ -439,6 +439,85 @@
     }).join("");
   }
 
+  // ---------- anonymous uptime ----------
+  var UPTIME_STALE_MS = 45 * 60 * 1000;
+  var UPTIME_ENDPOINTS = [
+    ["web", "Web"], ["proxy", "Proxy liveness"],
+    ["api_live", "API liveness"], ["api_ready", "API readiness"]
+  ];
+
+  function renderUptime(report, problem) {
+    var host = el("uptime-endpoints");
+    var updated = el("uptime-updated");
+    if (!host || !updated) return;
+    var checked = report && typeof report.checkedAt === "string" ? Date.parse(report.checkedAt) : NaN;
+    var age = Date.now() - checked;
+    var fresh = Number.isFinite(age) && age >= 0 && age <= UPTIME_STALE_MS;
+    var rows = report && report.version === 1 && Array.isArray(report.endpoints)
+      && report.endpoints.length === UPTIME_ENDPOINTS.length ? report.endpoints : [];
+    updated.innerHTML = fresh && rows.length
+      ? stateBadge("current", "observations current") + "<span>Checked " + esc(fmtDate(report.checkedAt)) + "</span>"
+      : stateBadge("unknown", Number.isFinite(age) ? "observations stale" : "not observed") +
+        "<span>" + esc(problem || "No current uptime evidence. The last check is unknown.") + "</span>";
+    if (fresh && report.history !== "available") {
+      updated.innerHTML += "<span>Alert history unavailable or changed; current checks still run.</span>";
+    }
+    host.innerHTML = UPTIME_ENDPOINTS.map(function (definition, index) {
+      var row = rows[index];
+      var observed = row && typeof row.observedAt === "string" ? Date.parse(row.observedAt) : NaN;
+      var valid = row && row.id === definition[0] && fresh && Number.isFinite(observed) &&
+        observed <= checked && Date.now() - observed <= UPTIME_STALE_MS;
+      var state = valid && (row.state === "down" || row.state === "up") ? row.state : "unknown";
+      if (state === "up" && (row.httpStatus !== 200 || row.reason !== "healthy")) state = "unknown";
+      var detail = !fresh ? "No current observation." : !valid ? "Health not established."
+        : row.reason === "healthy" ? "Expected anonymous health response."
+        : row.reason === "http_error" ? "Endpoint returned a non-passing HTTP status."
+        : row.reason === "invalid_response" ? "The expected health response was not received."
+        : "Health could not be verified.";
+      var timing = valid ? "Checked " + fmtDate(row.observedAt) : "No current observation recorded";
+      if (valid && Number.isInteger(row.latencyMs) && row.latencyMs >= 0 && row.latencyMs <= 30000) {
+        timing += " \u00b7 " + row.latencyMs + " ms";
+      }
+      var incident = row && row.alerting === true ? " Incident active."
+        : row && row.transition === "recovered" ? " Incident recovered automatically." : "";
+      return '<div class="card"><h3>' + stateBadge(state) + " " + esc(definition[1]) +
+        "</h3><p>" + esc(detail + incident) + '</p><p class="meta">' + esc(timing) + "</p></div>";
+    }).join("");
+  }
+
+  async function loadUptime() {
+    if (!el("uptime-endpoints")) return;
+    var controller = new AbortController();
+    var deadline = setTimeout(function () { controller.abort(); }, 10000);
+    try {
+      var response = await fetch("data/uptime.json", {
+        cache: "no-store", credentials: "omit", redirect: "error", signal: controller.signal
+      });
+      if (!response.ok || !response.body) throw new Error("Uptime data unavailable");
+      var reader = response.body.getReader();
+      var chunks = [];
+      var bytes = 0;
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > 16384) {
+          await reader.cancel();
+          throw new Error("Uptime data exceeds its bound");
+        }
+        chunks.push(chunk.value);
+      }
+      var body = new Uint8Array(bytes);
+      var offset = 0;
+      chunks.forEach(function (chunk) { body.set(chunk, offset); offset += chunk.byteLength; });
+      renderUptime(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)));
+    } catch (_) {
+      renderUptime(null, "Uptime data unavailable. No healthy result is assumed.");
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
   // ---------- diagrams ----------
   function initMermaid() {
     if (!window.mermaid || !document.querySelector(".mermaid")) return;
@@ -452,6 +531,10 @@
   document.addEventListener("DOMContentLoaded", function () {
     renderMeta();
     renderStatus();
+    if (el("uptime-endpoints")) {
+      loadUptime();
+      setInterval(loadUptime, 60000);
+    }
     renderServices();
     renderRequirements();
     renderDocs();
