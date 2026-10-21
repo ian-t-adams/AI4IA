@@ -18,10 +18,10 @@ Vendored (not a submodule) from microsoft/SimpleL7Proxy @
 - `Shared/` — shared library (PackageReferences only).
 - `Shared-parser/` — config parser library (PackageReferences only).
 - `SimpleL7Proxy/` — the proxy worker (.NET 10), references the two libraries above.
-- `CompanionApp/` — an optional, hosted subset of upstream's Blazor telemetry console: the
+- `CompanionApp/` — a retained, unhosted snapshot of upstream's Blazor telemetry console: the
   Event Hub monitor and Insights pages only. Every upstream page and asset AI4IA does not
   vendor is recorded as `ai4ia-excluded` with its upstream hash and reason. See
-  [CompanionApp telemetry console](#companionapp-telemetry-console-optional).
+  [retained CompanionApp source](#retained-companionapp-source-unhosted).
 - `Dockerfile` — AI4IA-maintained multi-stage build with **build context = `./proxy`**. It uses
   digest-pinned .NET 10 SDK/chiseled-runtime bases, restores the checked-in NuGet locks with
   `--locked-mode`, exposes AI4IA's `8080` listener, and starts the worker without the upstream
@@ -200,8 +200,7 @@ AI4IA does about each:
   in the 60-second window, so this is inert for AI4IA.
 - **Configuration.** Staged backend configuration now swaps atomically and keeps
   the last good snapshot on error. `EVENT_LOGGERS` defaults to `none` instead of
-  `file`, so no local event file is written unless Event Hub export sets
-  `eventhub`. The new named `Path_*` routes, `prioritygroup`,
+  `file`; AI4IA explicitly pins it to `none`. The new named `Path_*` routes, `prioritygroup`,
   `acceptablepriorities`, `mode=indirect`, profile rules, suspended users and
   `AuthProviders` are all inert unless configured, and AI4IA configures none of
   them. None of the keys AI4IA sets was renamed.
@@ -213,12 +212,12 @@ AI4IA does about each:
 The generated APIM policies remain derived from upstream's APIM Policy v3.0 at the
 previous pin. They are a separate artifact from this source vendoring.
 Regenerate the manifest whenever the pin, explicit patch list, or vendored file
-contents change. For runtime dependency updates, first refresh both complete graphs
-from the repository root, with
-`dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate` and
-`dotnet restore proxy/AI4IA.CompanionApp.Tests/AI4IA.CompanionApp.Tests.csproj --force-evaluate`,
-and commit every changed lockfile. A referenced project's updated lock does not
-automatically refresh either top-level test project's lock.
+contents change. For runtime dependency updates, refresh the complete active graph
+from the repository root with
+`dotnet restore proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --force-evaluate`
+and commit every changed runtime lockfile. A referenced project's updated lock
+does not automatically refresh the top-level test project's lock. The unbuilt
+CompanionApp snapshot is not an active runtime dependency-update target.
 
 To refresh the vendored copy, check out the audited upstream commit and mirror the four project
 directories from upstream `src/` (excluding `bin/`/`obj/`). For `CompanionApp/`, copy only files
@@ -241,7 +240,7 @@ is byte-for-byte identical to upstream, and update both pin references.
   `CompanionApp.csproj` and CompanionApp `Dockerfile` still reference
   `deployment/deploy.parameters.example.sh`, which upstream commit `714b39f` moved to
   `deployment/interactive/`. AI4IA's vendored csproj does not embed that resource, and
-  AI4IA builds its own `CompanionApp.Dockerfile`.
+  its former AI4IA image path is retired and the snapshot is no longer built.
 - **Circuit-breaker settings do not refresh live.** `Backend/CircuitBreaker.cs` copies
   `CBErrorThreshold` and `CBTimeslice` only in its constructor. A warm refresh changes the
   option but not a running breaker, so the value applies only to breakers built later, at a
@@ -328,15 +327,14 @@ every edge.
 
 - App Configuration is read with `id-proxy` for the sentinel-driven warm refresh, restricted
   by the [App Configuration key policy](#app-configuration-key-policy). Every other proxy
-  setting, including Event Hub and async settings, comes from the Container App environment.
-- Event Hub export is default-off and emits routing/status/latency metadata with
-  request/response header logging disabled. It is not a work queue.
-- Durable async is default-off and provisions dedicated MI-only Blob + Service Bus
-  resources. It does not make the synchronous queue durable.
-- Profiles are default-off and `UserConfigRequired=true` when enabled. The only
-  supported source is the secret-mounted local snapshot. Validation blocks
-  enablement until the edge derives a verified app identity; the proxy never
-  reads Cosmos directly.
+  setting comes from the Container App environment.
+- The former profile projection, durable proxy async and Event Hub export integrations are
+  removed. Container env explicitly fixes `UseProfiles=false`, `AsyncModeEnabled=false` and
+  `EVENT_LOGGERS=none`, with no profile mount or async/telemetry endpoints. Shared-key auth,
+  identity/header checks, App Insights and synchronous priority reservations are unchanged.
+- A caller-supplied application id never establishes another application's identity.
+  The proxy does not read canonical Cosmos profiles, and no user identity or record is
+  deleted by retiring the projection.
 
 ## App Configuration key policy
 
@@ -404,72 +402,31 @@ each limit only within its range:
   refusal is paired with a control that runs the same write through upstream's download and
   shows it applying.
 
-## CompanionApp telemetry console (optional)
+## Retained CompanionApp source (unhosted)
 
-`AI4IA_COMPANION_APP_ENABLED` (default `false`) hosts the vendored CompanionApp
-subset as an admin-only, read-only view of this proxy's Event Hub telemetry. It
-needs `AI4IA_PROXY_EVENTHUB_TELEMETRY_ENABLED=true`, which is a paid resource.
-The operator procedure is in
-[the feature runbook](../docs/runbooks/feature-enablement.md#companionapp-telemetry-console).
+The `CompanionApp` subset remains at the same audited pin and hashes, including
+its five historical hosted-mode patches and AI4IA-owned `Ai4ia/HostedGuard.cs`.
+Those patches retain the admin gate, refused outbound HTTP, excluded tool pages,
+empty metrics catalog, serialized Event Hub ingestion and no raw-event file
+writer. The recorded source is not restored to a broader upstream console.
 
-- **Retained:** the Event Hub monitor (`/eventhub`) and Insights (`/insights`),
-  which parse the same event schema this pin emits.
-- **Not vendored:** chat, the URL tester, stress, abort, investigator, vision,
-  history, preferences, the App Configuration editor and deployment generation.
-  They would send server-side requests to caller-chosen URLs with caller-chosen
-  headers, create load and model cost, write shared history, or publish proxy
-  configuration with the server identity. Each file is an `ai4ia-excluded`
-  provenance entry. The subset ships only Bootstrap's minified stylesheet, because
-  that is the only asset the retained pages load.
-- **Patches:**
-  - `Program.cs` puts an admin gate first in the pipeline. The gate re-checks the
-    principal Container Apps authentication injects against the configured
-    allowlist, and startup fails when that list is empty. It also replaces the DI
-    `HttpClient` with one that refuses before connecting, and fails startup when an
-    Event Hubs connection string or checkpoint store is configured, so managed
-    identity is the only credential. It drops the App Configuration editor, chat
-    stores and model presets. It removes upstream's fabricated "contoso" sample
-    metrics, so nothing appears until real events arrive. It also lets the Data
-    Protection key ring live outside the content root.
-  - `CompanionApp.csproj` drops the embedded resources and content items of the
-    excluded pages. It also references `Microsoft.AspNetCore.App.Internal.Assets`
-    explicitly, at the runtime image's ASP.NET patch, because that package serves
-    `_framework/blazor.web.js`. The Web SDK would otherwise add it implicitly, but
-    only when `.razor` files exist at restore time, which the Docker restore layer
-    lacks, and only at the SDK's own bundled patch. That would make a locked
-    restore depend on layering and on the SDK version.
-  - `Home.razor` and `NavMenu.razor` link only the retained pages.
-  - `EventHubReader.cs` has two changes:
-    - It serializes the pipeline. Upstream reads every partition concurrently and
-      mutates shared request dictionaries without a lock, so a four-partition hub
-      corrupted them and dropped events.
-    - It no longer appends the raw JSON of unlabeled backend attempts to an unbounded
-      `incomplete.json`. That JSON carries user id, path and backend hosts, and only
-      the excluded `/incomplete` page read it.
-  - The AI4IA-owned guard is `Ai4ia/HostedGuard.cs`.
-  - `AI4IA.CompanionApp.Tests` drives the real host. Each of these checks runs
-    against a control:
-    - the admin gate;
-    - the refused empty allowlist;
-    - the compiled route allowlist, and the 404s for every upstream tool route;
-    - the refused outbound request;
-    - the empty startup catalog;
-    - the refused shared-access secrets.
-- **Image:** `CompanionApp.Dockerfile` reuses this proxy's digest-pinned bases, its
-  locked restore and the build context's recursive `**/.env*` exclusion. It lays the
-  application down as root and runs as the non-root app user. The only path the app
-  user owns is the ephemeral key ring. The PR image job proves this on the built
-  image by exporting its filesystem, because the chiseled runtime has no shell, and
-  checking it with `scripts/check-image-ownership.py`.
-- **Not an azd service:** the manual `companion-image.yml` workflow promotes an
-  attested digest, and deploy.yml re-verifies that digest before provisioning.
+AI4IA's optional console image, IaC, image promotion/verification workflow,
+dedicated host tests and build/update integrations are retired. The source is
+neither built nor hosted by current CI or deployment; the retained guards are
+not a current hosted-service verification claim. Do not add it to `azure.yaml`
+or the three-image production proof set.
+
+Removing source does not stop a previously deployed console, revoke its identity,
+or delete an Event Hub, role, image or user record. Such work needs separate
+exact-resource approval under
+[the retained cleanup boundary](../docs/runbooks/feature-enablement.md#retired-scaffolding-and-operational-add-ons).
 
 ## Build and supply-chain verification
 
-CI restores the four proxy projects and the two CompanionApp projects from
-checked-in NuGet locks, builds and tests them, and CodeQL analyzes the C# source.
+CI restores the four active proxy projects from checked-in NuGet locks,
+builds and tests them, and CodeQL analyzes the active C# build.
 The PR image build resolves both digest-pinned base images, then scans the final
-loaded proxy and CompanionApp images for HIGH/CRITICAL findings using the
+loaded proxy image for HIGH/CRITICAL findings using the
 CVE-specific `proxy/.trivyignore` policy. It retains SPDX SBOMs, plus the proxy's
 build metadata, for 30 days.
 
@@ -479,14 +436,14 @@ against `upstream-provenance.json` as unpatched blobs.
 
 The PR build evidence is deliberately marked unsigned and is never deployed.
 Production images are signed separately. deploy.yml attests and verifies the
-web, api and proxy digests, and `companion-image.yml` does the same for the
-optional CompanionApp image. See
+web, api and proxy digests. See
 [the release runbook](../docs/runbooks/deployment.md#production-image-attestations).
 
 ## Current scope
 
 - SimpleL7Proxy + APIM front the Foundry endpoints with a `models.json`-derived
   allowlist, auth, routing, request IDs, multi-region selection, queueing/requeue,
-  and App Insights. Priority reservations, Event Hub export, durable async, and
-  profiles are optional and default off.
+  and App Insights. Priority reservations remain optional and default off.
+  Profiles, proxy async and Event Hub export are explicitly disabled, not
+  supported feature toggles.
 - Custom domain: `genaiproxy.nomad-analytics.com` (public, governed).

@@ -8,7 +8,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
-EVENTHUBS = (ROOT / "infra" / "modules" / "eventhubs.bicep").read_text(encoding="utf-8")
 KEYVAULT = (ROOT / "infra" / "modules" / "keyvault.bicep").read_text(encoding="utf-8")
 MONITORING = (ROOT / "infra" / "modules" / "monitoring.bicep").read_text(encoding="utf-8")
 APICENTER = (ROOT / "infra" / "modules" / "apicenter.bicep").read_text(encoding="utf-8")
@@ -40,43 +39,17 @@ def _block(text: str, start_pattern: str) -> str:
     raise AssertionError(f"unterminated block: {start_pattern}")
 
 
-class EventHubsPostureTests(unittest.TestCase):
-    def test_default_off_gates_the_entire_module_and_api_has_no_roles(self) -> None:
-        self.assertIn("param proxyEventHubTelemetryEnabled bool = false", MAIN)
-        call = _block(
-            MAIN,
-            r"module eventhubs 'modules/eventhubs\.bicep' = if \(proxyEventHubTelemetryEnabled\)",
-        )
-        self.assertIn("proxyIdentity.principalId", call)
-        self.assertIn("receiverPrincipalIds: []", call)
-        self.assertNotIn("apiIdentity.principalId", call)
-        for capability in (
-            "Microsoft.EventHub/namespaces@",
-            "Microsoft.Authorization/roleAssignments@",
-            "Microsoft.Insights/diagnosticSettings@",
-        ):
-            self.assertIn(capability, EVENTHUBS)
-
-    def test_gateway_inputs_and_operator_outputs_are_safe_when_disabled(self) -> None:
-        for name, output in (
-            ("eventHubNamespaceFqdn", "namespaceFqdn"),
-            ("eventHubName", "telemetryHubName"),
-        ):
-            self.assertRegex(
-                MAIN,
-                rf"{name}:\s*proxyEventHubTelemetryEnabled\s*\?\s*"
-                rf"eventhubs\.outputs\.{output}\s*:\s*''",
-            )
-        self.assertRegex(
-            MAIN,
-            r"output AZURE_EVENTHUBS_NAMESPACE_FQDN string = "
-            r"proxyEventHubTelemetryEnabled \? eventhubs\.outputs\.namespaceFqdn : ''",
-        )
-        self.assertRegex(
-            MAIN,
-            r"output AZURE_EVENTHUBS_TELEMETRY_HUB string = "
-            r"proxyEventHubTelemetryEnabled \? eventhubs\.outputs\.telemetryHubName : ''",
-        )
+class RetiredOperationalPlanesTests(unittest.TestCase):
+    def test_optional_proxy_planes_are_removed_without_removing_durable_workflows(self) -> None:
+        for name in ("network", "privateendpoints", "eventhubs", "proxyasync", "companion"):
+            self.assertFalse((ROOT / "infra" / "modules" / f"{name}.bicep").exists())
+            self.assertNotIn(f"modules/{name}.bicep", MAIN)
+        for name in ("AZURE_EVENTHUBS_NAMESPACE_FQDN", "AZURE_EVENTHUBS_TELEMETRY_HUB", "AZURE_COMPANION_APP_URL"):
+            self.assertNotIn(name, MAIN)
+        self.assertIn("module durabletask 'modules/durabletask.bicep'", MAIN)
+        self.assertIn("enableDurableWorkflows", MAIN_PARAMETERS)
+        self.assertIn("workflowApprovalsEnabled", MAIN_PARAMETERS)
+        self.assertIn("workflowSchedulingEnabled", MAIN_PARAMETERS)
 
 
 class ActiveConfigurationTests(unittest.TestCase):

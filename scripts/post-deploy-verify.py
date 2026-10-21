@@ -1263,7 +1263,7 @@ def _cleanup_http_request(
     method: str, url: str, *, headers: dict[str, str] | None, body: bytes | None,
     timeout: float, deadline: Deadline, body_limit: int,
 ) -> HttpOutcome:
-    # As in evaluations.live_http, socket timeouts alone cannot bound DNS or
+    # Socket timeouts alone cannot bound DNS or
     # trickling headers/body. Supervise one attempt, never a background retry.
     results: queue.Queue[HttpOutcome] = queue.Queue(maxsize=1)
     cancelled = threading.Event()

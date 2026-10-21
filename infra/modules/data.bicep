@@ -55,17 +55,6 @@ param deployPhotoAvatarStorage bool = false
 @description('Blob container holding copied photo avatar previews, scoped per-user as {userId}/avatars/{recordId}.png.')
 param photoAvatarBlobContainer string = 'avatars'
 
-@description('''Public network access for the data tier (Cosmos + both storage
-accounts). 'Enabled' (default) keeps today's public + identity-gated posture.
-'Disabled' makes the data tier private-only: only valid once
-the private endpoints exist AND the deployer has a VNet path, or azd loses the
-ability to manage these resources. Driven by main.bicep's `dataTierPrivate` flag.''')
-@allowed([
-  'Enabled'
-  'Disabled'
-])
-param dataPublicNetworkAccess string = 'Enabled'
-
 // ---------------- Cosmos DB (NoSQL) ----------------
 var cosmosAccountName = take('cosmos-${workload}-${environmentName}-${uniqueSuffix}', 44)
 
@@ -140,7 +129,7 @@ resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
     // when VNet isolation is enabled. Re-running `azd provision` re-asserts
     // 'Enabled'. To be drift-proof / policy-compliant instead, move to a VNet-integrated
     // Container Apps environment + a Cosmos private endpoint (a later hardening pass).
-    publicNetworkAccess: dataPublicNetworkAccess
+    publicNetworkAccess: 'Enabled'
   }
 }
 
@@ -354,9 +343,9 @@ resource documentStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (de
     allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    publicNetworkAccess: dataPublicNetworkAccess
+    publicNetworkAccess: 'Enabled'
     networkAcls: {
-      defaultAction: dataPublicNetworkAccess == 'Disabled' ? 'Deny' : 'Allow'
+      defaultAction: 'Allow'
       bypass: 'AzureServices'
     }
   }
@@ -482,9 +471,9 @@ resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deplo
     allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    publicNetworkAccess: dataPublicNetworkAccess
+    publicNetworkAccess: 'Enabled'
     networkAcls: {
-      defaultAction: dataPublicNetworkAccess == 'Disabled' ? 'Deny' : 'Allow'
+      defaultAction: 'Allow'
       bypass: 'AzureServices'
     }
   }

@@ -524,7 +524,7 @@ whatever happens to be live.
 
 | Choice or gap | Implication |
 | --- | --- |
-| Public endpoints with identity-based access | This is not private networking. The partial `vnetIsolationEnabled` / `dataTierPrivate` scaffolding is not exposed by the supported deployment path |
+| Public endpoints with identity-based access | This is not private networking. The incomplete isolation scaffold is removed; any private endpoint/DNS design requires a new reviewed implementation, not a flag flip |
 | One shared APIM and an in-memory proxy queue | Lower operational complexity, with shared failure domains and per-replica rather than global fairness |
 | Optional paid capabilities | Search, durable orchestration, model capacity, and supporting services need explicit cost/quota review; a budget alert is not a spending cap |
 | Library without an Azure Search endpoint | An in-memory chunk store is allowed outside local development, so vector retrieval becomes replica-local/restart-volatile even while manifests and source bytes remain durable |

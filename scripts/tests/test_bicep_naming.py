@@ -224,8 +224,6 @@ class GloballyUniqueNamingTests(unittest.TestCase):
     def test_length_capped_names_preserve_the_complete_suffix(self) -> None:
         targets = (
             (INFRA / "modules" / "keyvault.bicep", "keyVaultName"),
-            (INFRA / "modules" / "proxyasync.bicep", "storageName"),
-            (INFRA / "modules" / "proxyasync.bicep", "serviceBusName"),
         )
         for path, variable in targets:
             text = path.read_text(encoding="utf-8")

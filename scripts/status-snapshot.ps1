@@ -122,7 +122,8 @@ $TypeMap = @{
     'microsoft.durabletask/schedulers'                       = @{ label = 'Durable Task Scheduler';        group = 'Compute' }
     'microsoft.search/searchservices'                       = @{ label = 'Azure AI Search';               group = 'Data' }
     'microsoft.eventgrid/systemtopics'                      = @{ label = 'Defender for Storage Event Topic'; group = 'Security' }
-    'microsoft.eventhub/namespaces'                         = @{ label = 'Event Hubs (optional telemetry)'; group = 'Messaging' }
+    'microsoft.eventhub/namespaces'                          = @{ label = 'Retained Event Hubs (not in IaC)'; group = 'Messaging' }
+    'microsoft.servicebus/namespaces'                        = @{ label = 'Retained Service Bus (not in IaC)'; group = 'Messaging' }
     'microsoft.insights/components'                         = @{ label = 'Application Insights';           group = 'Observability' }
     'microsoft.insights/actiongroups'                       = @{ label = 'Monitor Action Group';          group = 'Observability' }
     'microsoft.keyvault/vaults'                             = @{ label = 'Key Vault';                     group = 'Security' }

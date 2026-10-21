@@ -70,22 +70,6 @@ param appConfigLabel string = ''
 @description('Warm-setting refresh interval in seconds.')
 param appConfigRefreshIntervalSeconds int = 30
 
-@description('Enable metadata-only proxy Event Hub telemetry. Default OFF.')
-param proxyEventHubTelemetryEnabled bool = false
-
-@description('Event Hubs namespace FQDN used with managed identity.')
-param eventHubNamespaceFqdn string = ''
-
-@description('Event Hub name used for proxy telemetry.')
-param eventHubName string = ''
-
-@description('Enable the server-owned multi-application profile snapshot. Default OFF.')
-param proxyProfilesEnabled bool = false
-
-@secure()
-@description('Minimal profile projection JSON. Mounted as an ACA secret file only when profiles are enabled.')
-param proxyProfileProjectionJson string = ''
-
 @description('Enable priority-key mapping and reserved workers. Default OFF.')
 param proxyPrioritiesEnabled bool = false
 
@@ -103,18 +87,6 @@ param proxyMinReplicas int = 1
 @minValue(1)
 @description('Maximum proxy replicas.')
 param proxyMaxReplicas int = 3
-
-@description('Enable durable async Blob + Service Bus integration. Default OFF.')
-param proxyAsyncEnabled bool = false
-
-@description('Managed-identity Blob service URI for durable async results.')
-param proxyAsyncBlobUri string = ''
-
-@description('Managed-identity Service Bus namespace FQDN for durable async requests.')
-param proxyAsyncServiceBusNamespace string = ''
-
-@description('Service Bus queue used by durable async mode.')
-param proxyAsyncServiceBusQueue string = 'requeststatus'
 
 @description('Custom domain bound to the proxy ingress (empty disables custom-domain binding).')
 param customDomain string = ''
@@ -1043,6 +1015,9 @@ var staticEnv = [
   { name: 'Port', value: '8080' }
   { name: 'Workers', value: string(proxyWorkers) }
   { name: 'MaxAttempts', value: '1' }
+  { name: 'UseProfiles', value: 'false' }
+  { name: 'AsyncModeEnabled', value: 'false' }
+  { name: 'EVENT_LOGGERS', value: 'none' }
   // MUST be `PriorityWorkers` (plural). ConfigParser.ApplyEnv builds
   // PriorityWorkerDict -- the dictionary WorkerFactory actually reserves from --
   // by reading the plural key only. ProxyConfig also declares a SINGULAR
@@ -1117,31 +1092,6 @@ var priorityEnv = proxyPrioritiesEnabled ? [
   { name: 'PriorityValues', value: string([1, 2, 3]) }
 ] : []
 
-var eventHubEnv = proxyEventHubTelemetryEnabled ? [
-  { name: 'EVENTHUB_NAMESPACE', value: eventHubNamespaceFqdn }
-  { name: 'EVENTHUB_NAME', value: eventHubName }
-  { name: 'EVENT_LOGGERS', value: 'eventhub' }
-] : []
-
-var profileEnv = proxyProfilesEnabled ? [
-  { name: 'UseProfiles', value: 'true' }
-  { name: 'UserConfigRequired', value: 'true' }
-  { name: 'UserConfigUrl', value: 'file:/mnt/ai4ia-profiles/profiles.json' }
-  { name: 'UserProfileHeader', value: 'X-AI4IA-App-Id' }
-  { name: 'UserIDFieldName', value: 'appId' }
-] : [
-  { name: 'UseProfiles', value: 'false' }
-]
-
-var asyncEnv = proxyAsyncEnabled ? [
-  { name: 'AsyncModeEnabled', value: 'true' }
-  { name: 'AsyncBlobStorageConfig', value: 'uri=${proxyAsyncBlobUri},mi=true' }
-  { name: 'AsyncSBConfig', value: 'ns=${proxyAsyncServiceBusNamespace},q=${proxyAsyncServiceBusQueue},mi=true' }
-  { name: 'StorageDbContainerName', value: 'requests' }
-] : [
-  { name: 'AsyncModeEnabled', value: 'false' }
-]
-
 var proxySecrets = concat([
   {
     name: 'proxy-apim-subscription-key'
@@ -1161,32 +1111,7 @@ var proxySecrets = concat([
     name: 'proxy-apim-photo-avatars-key'
     value: sharedProxyPhotoAvatarSubscription!.listSecrets().primaryKey
   }
-] : [], proxyProfilesEnabled ? [
-  {
-    name: 'profile-projection-json'
-    value: proxyProfileProjectionJson
-  }
 ] : [])
-
-var profileVolumes = proxyProfilesEnabled ? [
-  {
-    name: 'profile-projection'
-    storageType: 'Secret'
-    secrets: [
-      {
-        secretRef: 'profile-projection-json'
-        path: 'profiles.json'
-      }
-    ]
-  }
-] : []
-
-var profileVolumeMounts = proxyProfilesEnabled ? [
-  {
-    volumeName: 'profile-projection'
-    mountPath: '/mnt/ai4ia-profiles'
-  }
-] : []
 
 var proxyManagedCertName = !empty(managedCertificateName) ? managedCertificateName : 'mc-${replace(customDomain, '.', '-')}'
 
@@ -1261,7 +1186,7 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
       ]
     }
     template: {
-      volumes: profileVolumes
+      volumes: []
       containers: [
         {
           name: 'proxy'
@@ -1270,8 +1195,8 @@ resource proxyApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
-          env: concat(hostEnv, staticEnv, appConfigEnv, priorityEnv, eventHubEnv, profileEnv, asyncEnv)
-          volumeMounts: profileVolumeMounts
+          env: concat(hostEnv, staticEnv, appConfigEnv, priorityEnv)
+          volumeMounts: []
           probes: [
             {
               type: 'Startup'

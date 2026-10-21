@@ -203,6 +203,72 @@ class CapacityAllocationTests(unittest.TestCase):
             )
 
 
+class QuotaReductionTests(unittest.TestCase):
+    def models(self, sku="GlobalStandard"):
+        models = _models(sku)
+        for deployment in models["catalog"][0]["deployments"]:
+            deployment["maxCapacity"] = 500
+            deployment["maxCapacityPool"] = (
+                f"data-zone:{models['regions'][deployment['region']]['dataZone']}"
+                if sku == "DataZoneStandard" else "global"
+            )
+        return models
+
+    def test_recorded_global_pool_is_reduced_without_platform_increase_or_reassignment(self):
+        models = self.models()
+        before = copy.deepcopy(models)
+        plan, pools, diagnostics = capacity.reduce_capacity_to_quota(
+            models, _live("GlobalStandard", 500, 500),
+            _quota("GlobalStandard", 1000, 250),
+        )
+        self.assertEqual(set(plan.values()), {125})
+        self.assertEqual(sum(plan.values()), 250)
+        self.assertEqual(set(pools.values()), {"global"})
+        self.assertIn("outside allocation 0", diagnostics[0])
+        self.assertEqual(models, before)
+
+    def test_outside_allocation_is_not_spent_by_the_reduction(self):
+        plan, _, _ = capacity.reduce_capacity_to_quota(
+            self.models(), _live("GlobalStandard", 500, 500),
+            _quota("GlobalStandard", 1050, 250),
+        )
+        self.assertEqual(sum(plan.values()), 200)
+        self.assertEqual(set(plan.values()), {100})
+
+    def test_data_zones_remain_independent_and_healthy_pools_are_untouched(self):
+        plan, pools, _ = capacity.reduce_capacity_to_quota(
+            self.models("DataZoneStandard"), _live("DataZoneStandard", 500, 500),
+            _quota("DataZoneStandard", 500, 100),
+        )
+        self.assertEqual(set(plan.values()), {100})
+        self.assertEqual(set(pools.values()), {"data-zone:US", "data-zone:EU"})
+        self.assertEqual(capacity.reduce_capacity_to_quota(
+            self.models(), _live("GlobalStandard", 500, 500),
+            _quota("GlobalStandard", 1000, 1000),
+        ), ({}, {}, []))
+
+    def test_unknown_contradictory_or_insufficient_evidence_refuses(self):
+        for change in ("missing", "replicas", "usage", "baseline", "live", "pool"):
+            models = self.models()
+            live = _live("GlobalStandard", 500, 500)
+            quota = _quota("GlobalStandard", 1000, 250)
+            if change == "missing":
+                quota["eastus2"] = []
+            elif change == "replicas":
+                quota["swedencentral"] = [{**quota["swedencentral"][0], "limit": 300}]
+            elif change == "usage":
+                quota = _quota("GlobalStandard", 999, 250)
+            elif change == "baseline":
+                quota = _quota("GlobalStandard", 1000, 99)
+            elif change == "live":
+                live["eastus2"].clear()
+            else:
+                for deployment in models["catalog"][0]["deployments"]:
+                    deployment["maxCapacityPool"] = "unrecognized"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                capacity.reduce_capacity_to_quota(models, live, quota)
+
+
 class CapacityIacTests(unittest.TestCase):
     def test_bicep_selects_maximum_profile_explicitly(self) -> None:
         main = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
