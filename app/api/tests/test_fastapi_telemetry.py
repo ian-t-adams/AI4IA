@@ -101,6 +101,7 @@ def _native(variant: str) -> None:
         stack.enter_context(redirect_stdout(io.StringIO()))
         stack.enter_context(patch.dict(os.environ, {
             "OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.invalid",
+            "FASTAPI_OTEL_AUTO_CONFIGURE": "true",
         }))
         stack.enter_context(patch.object(DotEnvSettingsSource, "_read_env_files", return_value={}))
         stack.enter_context(patch.object(_runtime, "_export_endpoint", export_endpoint))
