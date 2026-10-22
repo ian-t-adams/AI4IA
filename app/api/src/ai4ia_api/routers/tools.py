@@ -14,7 +14,7 @@ from ..agents.mcp_servers import namespaced_tool_name
 from ..agents.tools import ToolRisk
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..conversations.policy import resolve_conversation_policy
+from ..conversations.policy import default_conversation_tools, resolve_conversation_policy
 from ..images.availability import NO_IMAGE_EDIT_MODEL_DETAIL, state_image_edit_availability
 from ..memory.context import MemoryContextGuard
 from ..videos.availability import NO_VIDEO_MODEL_DETAIL, state_video_availability
@@ -146,10 +146,8 @@ async def list_tools(
                 voice=False,
             )
         )
-    web_available = bool(
-        settings.web_search_enabled
-        and getattr(request.app.state, "web_search", None) is not None
-    )
+    default_tools = default_conversation_tools(request.app.state)
+    web_available = bool(default_tools)
     for name in sorted(WEBIQ_TOOL_NAMES):
         spec = synthetic_spec(name)
         schema = tool_schema(
@@ -168,9 +166,9 @@ async def list_tools(
                 ) if spec is not None else None
             ),
             scopes=sorted(spec.scopes) if spec is not None else None,
-            available=available, selectable=False, typed=True, voice=False,
+            available=available, selectable=available, typed=True, voice=False,
             detail=(
-                "Automatically available on WebIQ-enabled turns."
+                "On by default in chat. You can turn it off for this conversation."
                 if available else "WebIQ is disabled or unavailable on this server."
             ),
         ))
@@ -259,7 +257,7 @@ async def list_tools(
                     ownership="application",
                 )
             )
-    inherited_tools: tuple[str, ...] = ()
+    inherited_tools: tuple[str, ...] = default_tools
     if session_id:
         session = await request.app.state.session_repo.get_session(
             user.internal_user_id, session_id
@@ -267,7 +265,7 @@ async def list_tools(
         policy = await resolve_conversation_policy(
             request.app.state, user.internal_user_id, session
         )
-        inherited_tools = policy.inherited_tools
+        inherited_tools = tuple(dict.fromkeys((*policy.inherited_tools, *default_tools)))
         known = {item.name for item in items}
         for name in sorted(set(policy.effective_tools) - known):
             items.append(
@@ -292,7 +290,7 @@ async def list_tools(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="The selected agent is unavailable.",
             )
-        inherited_tools = tuple(dict.fromkeys(agent.tools))
+        inherited_tools = tuple(dict.fromkeys((*agent.tools, *default_tools)))
         known = {item.name for item in items}
         for name in sorted(set(inherited_tools) - known):
             items.append(

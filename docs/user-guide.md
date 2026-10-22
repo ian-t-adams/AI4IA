@@ -464,8 +464,15 @@ authentication or replays a tool call; change the saved selection explicitly if
 you need to return to legacy. Official/Foundry protocol selection is catalog-owned,
 not editable through the BYO server builder.
 
-Ask for live information in chat, or use `/research <query>`. WebIQ is a tool
-provider, not an `@webiq` agent. The available model tools are:
+Ask for live information in chat, or use `/research <query>`. Web search and
+browsing are on by default when WebIQ is available, including with **Generic
+assistant**; you do not need to create a saved agent. **Setup > Agent & tools**
+shows those tools as enabled and lets you turn individual tools off or back on,
+even while setting up a new conversation. Your selections apply when that
+conversation starts. Selecting a tool does not skip a required approval.
+An explicit `/research` request uses the web tools for that turn.
+
+WebIQ is a tool provider, not an `@webiq` agent. The available model tools are:
 
 | Tool | Purpose |
 | --- | --- |
@@ -508,6 +515,8 @@ ten minutes, and cannot authorize a different call or conversation.
 When available, **Setup > Agent & tools** lets you opt in for the current saved
 conversation. **Run & test** has a separate per-run workflow choice that resets
 for the next invocation. Consent is not active until the server confirms it.
+Auto-approval is optional: tools work with individual confirmations when it is
+off. Its help explains the tradeoff without blocking new-chat tool selection.
 
 Consent covers only the recorded enabled-tool contracts, lasts at most eight
 hours, and can be revoked. New tools or changed contracts need renewed consent.

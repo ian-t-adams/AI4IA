@@ -1826,6 +1826,7 @@ async def chat(
         # chat router drains).
         shared = build_shared_capabilities(
             attached_tool_names=agent.tools,
+            excluded_web_tools=policy.removed_tools if tool_agent is None else (),
             user_id=user.internal_user_id,
             nonce=library_nonce,
             session_id=body.sessionId,
@@ -2466,6 +2467,7 @@ async def chat(
             # attach-gated memory tools are correctly not offered here.
             shared = build_shared_capabilities(
                 attached_tool_names=(),
+                excluded_web_tools=policy.removed_tools,
                 user_id=user.internal_user_id,
                 nonce=library_nonce,
                 session_id=body.sessionId,

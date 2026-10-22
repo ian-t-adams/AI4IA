@@ -872,7 +872,7 @@ export function ConversationInspector({
             <SectionDisclosure
               id="tools"
               label="Agent & tools"
-              help="The agent provides an inherited tool set. Conversation overrides can add only server-approved tools or remove inherited tools. Authorization, approval, scope, egress, and SSRF checks run again when a tool executes."
+              help="Choose an agent or use the generic assistant, then choose its tools. Enabled app tools work without a pre-built agent. Permissions and any required confirmation still apply when a tool runs."
               expanded={section === "tools"}
               siblings={SETUP_SECTION_IDS}
               onToggle={() => toggleSection("tools")}
@@ -901,6 +901,11 @@ export function ConversationInspector({
                   </select>
                 </label>
                 {agentDescription ? <p className="inspector-note">{agentDescription}</p> : null}
+                {tools.some((tool) => tool.source === "WebIQ" && tool.available) ? (
+                  <p className="inspector-note">
+                    Web search and browsing are on by default. No saved agent is required.
+                  </p>
+                ) : null}
                 <SessionToolConsentControls
                   sessionId={sessionId}
                   consent={consentSummary}
@@ -958,7 +963,7 @@ export function ConversationInspector({
                     <span>Tools</span>
                     <HelpTooltip label="How to read the tool list" size="sm">
                       Each row shows, in order: whether it&apos;s <strong>inherited</strong>{" "}
-                      from the agent, <strong>added</strong>/<strong>removed</strong> by
+                      from the agent or app defaults, <strong>added</strong>/<strong>removed</strong> by
                       this conversation&apos;s overrides, and whether it&apos;s{" "}
                       <strong>effective</strong> right now. Then its{" "}
                       <strong>source</strong> and <strong>ownership</strong>; its{" "}
@@ -1092,9 +1097,7 @@ export function ConversationInspector({
                           </small>
                           {lockedOut ? (
                             <small id={toolLockedId}>
-                              Can&apos;t enable from here — it needs approval, scopes, or
-                              restricted access that only a pre-built agent can grant, not
-                              an ad-hoc conversation toggle.
+                              {tool.detail || "This tool is not available for conversation selection."}
                             </small>
                           ) : null}
                           {modelLockedOut ? (

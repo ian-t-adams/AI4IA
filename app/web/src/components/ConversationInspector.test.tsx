@@ -260,6 +260,7 @@ describe("ConversationInspector", () => {
       maxDocuments: 8,
       modalities: ["document"],
     });
+
     const user = userEvent.setup();
     const { rerender } = render(
       <ConversationInspector
@@ -320,6 +321,48 @@ describe("ConversationInspector", () => {
     });
     expect(mocks.updateSession).not.toHaveBeenCalled();
     expect(mocks.associateLibraryDocument).not.toHaveBeenCalled();
+  });
+
+  it("shows default search and browse as usable before a chat exists and saves only explicit changes", async () => {
+    const webTools: ToolCatalogItem[] = ["web_search", "browse_url"].map((name) => ({
+      name, label: name === "web_search" ? "Web search" : "Browse page",
+      description: "Use the configured WebIQ service.", source: "WebIQ",
+      risk: "external", requiresApproval: true, scopes: [], available: true,
+      selectable: true, detail: null, ownership: "application", typed: true, voice: false,
+    }));
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: webTools, inheritedTools: ["web_search", "browse_url"],
+    });
+    const changed = vi.fn();
+    function Harness() {
+      const [defaults, setDefaults] = useState(props(null).draftDefaults);
+      return <ConversationInspector {...props(null)} draftDefaults={defaults}
+        onDraftDefaultsChange={(value) => { changed(value); setDefaults(value); }} />;
+    }
+    render(<Harness />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+    const search = await screen.findByRole("checkbox", { name: "Web search" });
+    const browse = screen.getByRole("checkbox", { name: "Browse page" });
+    expect(search).toBeChecked();
+    expect(browse).toBeChecked();
+    expect(search).toBeEnabled();
+    expect(browse).toBeEnabled();
+    expect(screen.getByText(/No saved agent is required/)).toBeVisible();
+    expect(screen.queryByText(/only a pre-built agent can grant/)).toBeNull();
+    expect(screen.queryByText(/Hostile retrieved content/)).toBeNull();
+    await user.click(browse);
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({
+      agentName: null, toolOverrides: { added: [], removed: ["browse_url"] },
+    }));
+    expect(search).toBeChecked();
+    expect(browse).not.toBeChecked();
+    await user.click(browse);
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({
+      toolOverrides: { added: [], removed: [] },
+    }));
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+    expect(mocks.setSessionToolConsent).not.toHaveBeenCalled();
   });
 
   it("roves the group tablist and the section accordion by their own rules", async () => {
@@ -707,8 +750,8 @@ describe("ConversationInspector", () => {
       "Runs a shell command on the host.",
     );
 
-    const lockedReason = within(row).getByText(/Can't enable from here/);
-    expect(lockedReason).toHaveTextContent(/only a pre-built agent can grant/);
+    const lockedReason = within(row).getByText(/not available for conversation selection/);
+    expect(screen.queryByText(/only a pre-built agent can grant/)).toBeNull();
     // The rich status/lockout detail is wired to the checkbox for screen
     // readers via aria-describedby rather than folded into its name.
     expect(checkbox).toHaveAccessibleName("Shell");
@@ -750,7 +793,7 @@ describe("ConversationInspector", () => {
     // generated independent of the tool name (e.g. by row index) so this
     // keeps resolving correctly no matter what a discovered tool is named.
     expect(checkbox).toHaveAccessibleDescription(/external/);
-    expect(checkbox).toHaveAccessibleDescription(/Can't enable from here/);
+    expect(checkbox).toHaveAccessibleDescription(/not available for conversation selection/);
   });
 
   it("explains the tool list's dot-joined columns via a glossary tooltip", async () => {

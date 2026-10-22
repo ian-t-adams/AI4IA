@@ -62,7 +62,7 @@ def test_research_metadata_tracks_the_entire_webiq_contract_catalog():
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_tool_catalog_describes_every_webiq_capability_without_granting_it(client, enabled):
+def test_tool_catalog_describes_selectable_webiq_defaults_without_granting_approval(client, enabled):
     class Service:
         async def close(self):
             return None
@@ -73,12 +73,14 @@ def test_tool_catalog_describes_every_webiq_capability_without_granting_it(clien
     assert response.status_code == 200, response.text
     items = {item["name"]: item for item in response.json()["tools"]}
     assert WEBIQ_TOOL_NAMES <= items.keys()
+    assert set(response.json()["inheritedTools"]) == (WEBIQ_TOOL_NAMES if enabled else set())
     for name in WEBIQ_TOOL_NAMES:
         assert items[name]["available"] is enabled
         assert items[name]["risk"] == "external"
         assert items[name]["requiresApproval"] is True
-        assert items[name]["selectable"] is False
+        assert items[name]["selectable"] is enabled
         assert items[name]["description"]
+    assert client.get("/api/sessions").json() == []
 
 
 def test_session_consent_snapshots_every_enabled_webiq_contract(client):

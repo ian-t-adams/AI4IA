@@ -171,6 +171,134 @@ def _inject_web(client: TestClient, web_client: FakeWebClient) -> None:
     )
 
 
+def test_web_tools_are_enabled_in_new_chat_settings_without_a_prebuilt_agent():
+    client = _make_client()
+    try:
+        _inject_web(client, FakeWebClient())
+        preview = client.get("/api/tools").json()
+        web_tools = {tool["name"]: tool for tool in preview["tools"] if tool["name"] in WEBIQ_TOOL_NAMES}
+        assert set(web_tools) == WEBIQ_TOOL_NAMES
+        assert all(tool["available"] and tool["selectable"] for tool in web_tools.values())
+        assert WEBIQ_TOOL_NAMES <= set(preview["inheritedTools"])
+        sid = _new_session(client)
+        inspector = client.get(f"/api/sessions/{sid}/inspector").json()
+        assert inspector["agent"]["name"] is None
+        assert WEBIQ_TOOL_NAMES <= set(inspector["tools"]["effective"])
+        assert WEBIQ_TOOL_NAMES <= set(inspector["tools"]["inherited"])
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("route", ["main", "conversation-tools", "mentioned-agent"])
+def test_web_tool_selection_matches_the_actual_chat_offer(route, stream):
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        body = {
+            "model": "gpt-5.2",
+            "toolOverrides": {"added": ["calculator"] if route == "conversation-tools" else [], "removed": ["browse_url"]},
+        }
+        created = client.post("/api/sessions", json=body)
+        assert created.status_code == 201, created.text
+        sid = created.json()["id"]
+        inspector = client.get(f"/api/sessions/{sid}/inspector").json()
+        assert "browse_url" in inspector["tools"]["removed"]
+        assert "browse_url" not in inspector["tools"]["effective"]
+        assert "web_search" in inspector["tools"]["effective"]
+        gateway = ScriptedWebGateway(call_tool=False)
+        client.app.state.gateway = gateway
+        content = "@general Hello" if route == "mentioned-agent" else "Hello"
+        response = client.post("/api/chat", json={"sessionId": sid, "content": content, "stream": stream})
+        assert response.status_code == 200, response.text
+        assert gateway.first_tools is not None
+        offered = {tool["function"]["name"] for tool in gateway.first_tools}
+        assert "browse_url" not in offered
+        assert WEBIQ_TOOL_NAMES - {"browse_url"} <= offered
+        assert web.calls == []
+        restored = client.patch(f"/api/sessions/{sid}", json={"toolOverrides": {"added": [], "removed": []}})
+        assert restored.status_code == 200, restored.text
+        gateway = ScriptedWebGateway(call_tool=False)
+        client.app.state.gateway = gateway
+        response = client.post("/api/chat", json={"sessionId": sid, "content": content, "stream": stream})
+        assert response.status_code == 200, response.text
+        assert "browse_url" in {tool["function"]["name"] for tool in gateway.first_tools or []}
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("removed", [False, True])
+def test_a_removed_web_tool_cannot_be_invoked_even_if_the_model_requests_it(removed):
+    client = _make_client()
+    try:
+        web = FakeWebClient()
+        _inject_web(client, web)
+        created = client.post("/api/sessions", json={
+            "model": "gpt-5.2",
+            "toolOverrides": {"removed": ["web_search"] if removed else []},
+        })
+        assert created.status_code == 201, created.text
+        gateway = ScriptedWebGateway()
+        client.app.state.gateway = gateway
+        response = client.post("/api/chat", json={
+            "sessionId": created.json()["id"], "content": "Look this up.", "stream": False,
+        })
+        assert response.status_code == 200, response.text
+        assert len(web.calls) == (0 if removed else 1)
+        assert gateway.first_tools is not None
+        assert ("web_search" in {tool["function"]["name"] for tool in gateway.first_tools}) is not removed
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_selecting_web_tools_does_not_grant_consent_and_changes_require_renewal():
+    client = _make_client(tool_auto_approve_enabled=True)
+    try:
+        _inject_web(client, FakeWebClient())
+        created = client.post("/api/sessions", json={
+            "model": "gpt-5.2", "toolOverrides": {"added": ["browse_url"]},
+        })
+        assert created.status_code == 201, created.text
+        assert created.json().get("toolConsent") is None
+        sid = created.json()["id"]
+        grant = client.post(f"/api/sessions/{sid}/tool-consent", json={"enabled": True})
+        assert grant.status_code == 200, grant.text
+        assert grant.json()["toolConsent"]["toolCount"] == len(WEBIQ_TOOL_NAMES)
+        changed = client.patch(f"/api/sessions/{sid}", json={
+            "toolOverrides": {"added": [], "removed": ["browse_url"]},
+        })
+        assert changed.status_code == 200, changed.text
+        snapshot = client.get(f"/api/sessions/{sid}/inspector").json()
+        assert snapshot["toolConsentActive"] is False
+        assert snapshot["toolConsentStatus"] == "changed"
+        renewed = client.post(f"/api/sessions/{sid}/tool-consent", json={"enabled": True})
+        assert renewed.status_code == 200, renewed.text
+        assert renewed.json()["toolConsent"]["toolCount"] == len(WEBIQ_TOOL_NAMES) - 1
+        assert client.patch(f"/api/sessions/{sid}", json={"toolOverrides": {"removed": []}}).status_code == 200
+        assert client.get(f"/api/sessions/{sid}/inspector").json()["toolConsentStatus"] == "changed"
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_server_disabled_web_tools_stay_unavailable_and_cannot_be_added():
+    client = _make_client()
+    try:
+        catalog = client.get("/api/tools").json()
+        assert all(
+            not tool["available"] and not tool["selectable"]
+            for tool in catalog["tools"] if tool["name"] in WEBIQ_TOOL_NAMES
+        )
+        assert WEBIQ_TOOL_NAMES.isdisjoint(catalog["inheritedTools"])
+        response = client.post("/api/sessions", json={
+            "model": "gpt-5.2", "toolOverrides": {"added": ["browse_url"]},
+        })
+        assert response.status_code == 422
+        assert "not available" in response.text
+    finally:
+        client.__exit__(None, None, None)
+
+
 @pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
 @pytest.mark.parametrize("tool", [
     "classic_search", "finance_search", "places_search", "sports_search",
