@@ -874,6 +874,11 @@ dotnet build   proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration 
 dotnet test    proxy/AI4IA.Proxy.Tests/AI4IA.Proxy.Tests.csproj --configuration Release --no-build --no-restore --nologo -- --minimum-expected-tests 40
 ```
 
+If public NuGet v3 is unreachable on a corporate network, the official v2
+endpoint can satisfy the same locked restore:
+`dotnet restore proxy\AI4IA.Proxy.Tests\AI4IA.Proxy.Tests.csproj --locked-mode --source https://www.nuget.org/api/v2`.
+Do not change versions, lockfiles or TLS verification to work around that network.
+
 CompanionApp is retained only as a provenance-bound source snapshot. Its upstream
 exclusions and recorded AI4IA patches stay intact; do not add an image, runtime
 roles, CI build or hosted route without a new reviewed feature decision.

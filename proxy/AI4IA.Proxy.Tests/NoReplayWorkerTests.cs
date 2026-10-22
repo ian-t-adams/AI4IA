@@ -566,7 +566,7 @@ public sealed class NoReplayWorkerTests
 }
 
 internal sealed record WireRequest(string Path, string Version, Dictionary<string, string> Headers, byte[] Body, string Method = "POST");
-internal sealed record WireReply(int Status, bool Drop = false, bool Requeue = false, bool Ack = true, string? Location = null, string Body = "{}", Dictionary<string, string[]>? Headers = null, bool AllowDisconnect = false, bool Chunked = false);
+internal sealed record WireReply(int Status, bool Drop = false, bool Requeue = false, bool Ack = true, string? Location = null, string Body = "{}", Dictionary<string, string[]>? Headers = null, bool AllowDisconnect = false, bool Chunked = false, byte[]? RawBody = null, bool EofDelimited = false);
 
 internal sealed class WireServer : IAsyncDisposable
 {
@@ -635,10 +635,14 @@ internal sealed class WireServer : IAsyncDisposable
                 foreach (var pair in response.Headers)
                     if (!new[] { "Content-Length", "Content-Type", "Connection", "Transfer-Encoding" }.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
                         extra += $"{pair.Key}: {string.Join(",", pair.Value)}\r\n";
-            var content = Encoding.UTF8.GetBytes(response.Body);
+            var content = response.RawBody ?? Encoding.UTF8.GetBytes(response.Body);
             // Chunked framing matches APIM's streamed token-processor responses, which carry no length.
-            string framing = response.Chunked ? "Transfer-Encoding: chunked" : $"Content-Length: {content.Length}";
-            var head = Encoding.ASCII.GetBytes($"HTTP/1.1 {response.Status} Fixture\r\nContent-Type: application/json\r\n{framing}\r\nConnection: close\r\n{ack}{extra}\r\n");
+            string framing = response.Chunked ? "Transfer-Encoding: chunked\r\n"
+                : response.EofDelimited ? "" : $"Content-Length: {content.Length}\r\n";
+            string contentType = response.Headers?.FirstOrDefault(
+                pair => pair.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)).Value?.SingleOrDefault()
+                ?? "application/json";
+            var head = Encoding.ASCII.GetBytes($"HTTP/1.1 {response.Status} Fixture\r\nContent-Type: {contentType}\r\n{framing}Connection: close\r\n{ack}{extra}\r\n");
             if (response.Chunked)
                 content = [.. Encoding.ASCII.GetBytes($"{content.Length:X}\r\n"), .. content, .. "\r\n0\r\n\r\n"u8.ToArray()];
             try

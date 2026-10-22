@@ -696,6 +696,11 @@
 
 				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Response != null &amp;&amp; context.Response.StatusCode == 200)">
 					<choose>
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase))">
+
+							<set-variable name="RetryRemaining" value="@(false)" />
+							<set-variable name="Return429" value="@(false)" />
+						</when>
 						<when condition="@(context.Response.Headers.ContainsKey(&quot;Transfer-Encoding&quot;) &amp;&amp; context.Response.Headers[&quot;Transfer-Encoding&quot;].Contains(&quot;chunked&quot;))">
 
 							<set-variable name="RetryRemaining" value="@(false)" />

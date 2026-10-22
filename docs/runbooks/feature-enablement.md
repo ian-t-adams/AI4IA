@@ -428,6 +428,11 @@ Foundry remains keyless; the upstream APIM owns its managed-identity permission.
 The API catalog and native HTTP/SSE adapter share one runtime gate: Claude
 admission must be enabled with exactly one authentication mode. A successful
 catalog read alone is not proof that a model request works.
+The source APIM leaves encoded responses on SimpleL7Proxy's byte-preserving
+processor; `application/json` alone does not make gzip bytes UTF-8 text. The API
+owns decompression and native usage parsing. A successful Messages response is
+terminal even without length/transfer headers, never a reason to replay accepted
+work. Ordinary failure handling and the default-absent attempt contract are unchanged.
 Do not reuse a personal Azure login, the Desktop subscription key, or a
 master/all-API key. Request a separate AI4IA subscription scoped only to the
 upstream Claude API. This is an explicitly approved credential operation, not
