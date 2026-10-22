@@ -83,7 +83,10 @@ def build_catalog(models: dict) -> dict:
                 **({"imageEditingDefault": True} if image_editing_default(model) else {}),
                 "reasoningEffort": model.get("reasoningEffort"),
                 **({"deploymentTarget": target} if target != "source" else {}),
-                **{key: model[key] for key in ("samplingSupported", "anthropicThinking") if key in model},
+                **{key: model[key] for key in (
+                    "samplingSupported", "samplingRequiresNoReasoning", "maxTokensParameter",
+                    "defaultMaxOutputTokens", "anthropicThinking",
+                ) if key in model},
                 "options": options,
             }
         )

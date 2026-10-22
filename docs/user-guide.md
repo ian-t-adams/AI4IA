@@ -38,6 +38,20 @@ Check citations against the original source before relying on an answer.
 
 Model controls reflect the server's catalog. Context size, output limits,
 reasoning effort, sampling, input modalities, and tool support vary by model.
+GPT-6.1 Sol uses Responses with low through maximum effort, without a skip-reasoning
+setting. GPT-6 Astra also starts at low; GPT-6 Sol and Luna retain an explicit
+**None (skip reasoning)** option, which enables their Temperature and Top P controls.
+Other effort settings leave those sampling controls inactive rather than pretending
+they were applied. GPT-6 and GPT-5.6 Responses profiles also offer **Maximum** effort.
+Existing live-supported choices on older models, such as GPT-5.4's minimal effort,
+are retained.
+
+Grok 4.7 supports text, images and tools with low, medium, high or extra-high effort.
+Its 500,000-token context is shared by input and output, not two additive limits.
+The application uses a 16,384-token default output budget to leave room for input;
+the published output ceiling remains visible. A larger explicit output limit
+reduces the context left for the conversation.
+
 **Plain chat only** models can answer ordinary questions but cannot run agents
 or workflows that need tools. A larger context window is a capacity limit, not
 a promise that every document will be included or every fact recalled.
@@ -129,7 +143,7 @@ Long workflows also retain independently bounded step receipts.
 Completed replies show **Answered by** beside the assistant when response-model
 evidence is available. For Model Router this distinguishes the requested router
 from the model reported in the provider response, including its version when
-reported. Open **Execution receipt > Runtime > Model calls and parameters** for
+reported. Open **Execution receipt > Model calls and parameters** for
 each call: a tool-using turn can route its successive calls to different models.
 The summary uses the final call, never a preceding call retained in a capped receipt.
 Old turns show **Not recorded**; missing, unrecognized or conflicting provider
@@ -138,11 +152,19 @@ the prompt, or token cost, and cannot recover metadata it did not record.
 Empty model fields on stream setup or usage frames are not identity reports;
 they do not erase a model reported elsewhere in that same call.
 
-Under **Runtime**, **Model calls and parameters** also shows the controls
+**Model calls and parameters**, beside **Runtime**, also shows the controls
 actually sent for each model call after the application adapted them for the
 chosen model. An omitted control says its provider default is unknown. Workflow
 steps and delegated agents show their own defaults rather than inheriting the
 parent turn's sliders.
+Long values, source excerpts and tool descriptions wrap instead of being clipped.
+Payload digests are shown in full and can be selected for copying. Controls that
+were not sent are grouped once per call; unknown historical controls stay unknown.
+New tool-description snapshots retain up to the existing 2 KiB payload limit with
+their redacted original size and digest. A saved truncation is labelled explicitly,
+and descriptions are compacted before larger operational payloads when the unchanged
+32 KiB receipt budget needs space. Older saved descriptions may already be shortened;
+the app does not reconstruct them from today's tool definitions.
 
 **Estimated model cost** uses the token rates and price version recorded during
 execution. **Known subtotal** means some calls could be priced but the total is

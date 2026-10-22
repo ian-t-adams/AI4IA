@@ -65,6 +65,30 @@ describe("ParamControls", () => {
     expect(screen.getByRole("button", { name: "Help: Max tokens" })).toBeInTheDocument();
   });
 
+  it("enables conditional sampling only after explicitly choosing supported none effort", () => {
+    const model: ModelEntry = {
+      ...MODEL, samplingRequiresNoReasoning: true, reasoningEffortOptions: ["none", "low", "high", "max"],
+    };
+    const onChange = vi.fn();
+    const { rerender } = render(<ParamControls params={{ reasoning_effort: "high" }} onChange={onChange} model={model} />);
+    expect(screen.getByLabelText(/Temperature:/)).toBeDisabled();
+    expect(screen.getByLabelText(/Top P:/)).toBeDisabled();
+    expect(screen.getByText(/only with.*None \(skip reasoning\)/)).toBeInTheDocument();
+    rerender(<ParamControls params={{ reasoning_effort: "none" }} onChange={onChange} model={model} />);
+    expect(screen.getByLabelText(/Temperature:/)).toBeEnabled();
+    expect(screen.getByLabelText(/Top P:/)).toBeEnabled();
+    rerender(<ParamControls params={{}} onChange={onChange} model={model} />);
+    expect(screen.getByLabelText(/Temperature:/)).toBeDisabled();
+  });
+
+  it("explains a separate application output default without inventing a lower model ceiling", async () => {
+    setup({}, { ...MODEL, maxOutputTokens: 500000, defaultMaxOutputTokens: 16384 });
+    expect(screen.getByRole("spinbutton")).toHaveAttribute("max", "500000");
+    await userEvent.click(screen.getByRole("button", { name: "Help: Max tokens" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/application default of 16,384/);
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent(/expands to the model.s full ceiling/);
+  });
+
   it("offers no reasoning-effort control for a model that does not accept one", () => {
     setup({}, MODEL);
     expect(screen.queryByLabelText("Reasoning effort")).toBeNull();

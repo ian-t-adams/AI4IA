@@ -57,6 +57,20 @@
             "description": "Defaults to source. external-claude belongs only to the separately approved target account, never the main-stack subscription."
           },
           "samplingSupported": { "type": "boolean" },
+          "samplingRequiresNoReasoning": {
+            "type": "boolean",
+            "default": false,
+            "description": "Temperature/top_p require an explicitly selected none effort, never an assumed provider default."
+          },
+          "maxTokensParameter": {
+            "enum": ["max_tokens", "max_completion_tokens"],
+            "description": "Catalog-owned Chat Completions output-limit spelling; omitted retains the existing family rule."
+          },
+          "defaultMaxOutputTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional application output default, no greater than maxOutputTokens and strictly below contextWindow. The published output ceiling remains unchanged."
+          },
           "anthropicThinking": {
             "enum": ["disabled", "adaptive"],
             "description": "Explicit external-Claude profile. disabled sends thinking disabled and supports the governed text/tool loop. adaptive omits thinking (provider adaptive thinking), is text-only (toolCalling false) and never captures or replays signed thinking blocks."
@@ -136,7 +150,7 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "enum": ["none", "minimal", "low", "medium", "high", "xhigh"]
+              "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
             }
           },
           "deployments": {
@@ -189,6 +203,24 @@
           }
         },
         "allOf": [
+          {
+            "if": {
+              "required": ["samplingRequiresNoReasoning"],
+              "properties": { "samplingRequiresNoReasoning": { "const": true } }
+            },
+            "then": {
+              "required": ["api", "samplingSupported", "reasoningEffort"],
+              "properties": {
+                "api": { "const": "responses" },
+                "samplingSupported": { "const": true },
+                "reasoningEffort": { "contains": { "const": "none" } }
+              }
+            }
+          },
+          {
+            "if": { "required": ["maxTokensParameter"] },
+            "then": { "properties": { "api": { "const": "chat" } } }
+          },
           {
             "if": { "required": ["routing"] },
             "then": {

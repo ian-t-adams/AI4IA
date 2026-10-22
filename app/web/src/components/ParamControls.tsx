@@ -17,6 +17,7 @@ const DEFAULT_MAX_OUTPUT = 32000;
 const EFFORT_LABELS: Record<string, string> = {
   none: "None (skip reasoning)",
   xhigh: "Extra high",
+  max: "Maximum",
 };
 
 function Slider({
@@ -91,6 +92,7 @@ export function ParamControls({
   const effortValue = effortOptions.includes(params.reasoning_effort ?? "")
     ? (params.reasoning_effort as string)
     : "";
+  const samplingDisabled = disabled || Boolean(model?.samplingRequiresNoReasoning && effortValue !== "none");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {effortOptions.length > 0 && (
@@ -133,6 +135,12 @@ export function ParamControls({
           </select>
         </div>
       )}
+      {showSampling && model?.samplingRequiresNoReasoning && (
+        <p className="inspector-note">
+          Temperature and Top P apply only with &ldquo;None (skip reasoning)&rdquo;.
+          Other effort settings use the model&apos;s sampling behavior.
+        </p>
+      )}
       {showSampling && (
         <Slider
           label="Temperature"
@@ -140,7 +148,7 @@ export function ParamControls({
           min={0}
           max={2}
           step={0.1}
-          disabled={disabled}
+          disabled={samplingDisabled}
           onChange={(v) => onChange({ ...params, temperature: v })}
           help={
             <>
@@ -160,7 +168,7 @@ export function ParamControls({
           min={0}
           max={1}
           step={0.05}
-          disabled={disabled}
+          disabled={samplingDisabled}
           onChange={(v) => onChange({ ...params, top_p: v })}
           help={
             <>
@@ -193,10 +201,14 @@ export function ParamControls({
               <>
                 This value is capped by the selected model&apos;s published maximum
                 output (currently {model.maxOutputTokens.toLocaleString()}). Leaving it
-                at the default, 1024, is treated as &ldquo;no preference&rdquo; and
-                expands to the model&apos;s full ceiling instead of actually capping the
-                reply at 1024 &mdash; pick a different value if you want a genuinely
-                short reply.
+                at the default, 1024, is treated as &ldquo;no preference&rdquo; and{" "}
+                {model.defaultMaxOutputTokens != null ? (
+                  <>uses an application default of {model.defaultMaxOutputTokens.toLocaleString()} tokens,
+                    leaving room for input in the shared context window</>
+                ) : (
+                  <>expands to the model&apos;s full ceiling instead of actually capping the reply at 1024</>
+                )}{" "}
+                &mdash; pick a different value if you want a genuinely short reply.
               </>
             ) : (
               <>

@@ -235,8 +235,7 @@ def test_reasoning_models_do_not_advertise_sampling():
     catalog = load_catalog()
     for model_id in (
         "gpt-6-astra",
-        "gpt-6-sol",
-        "gpt-6-luna",
+        "gpt-6.1-sol",
         "gpt-5.6-sol",
         "gpt-5.5",
         "gpt-5.4",
@@ -250,6 +249,16 @@ def test_reasoning_models_do_not_advertise_sampling():
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert entry.supportsSampling is False, model_id
+
+
+@pytest.mark.parametrize("model_id", ["gpt-6-sol", "gpt-6-luna"])
+def test_conditional_sampling_is_advertised_with_its_execution_time_requirement(model_id):
+    entry = load_catalog().get(model_id)
+    assert entry is not None
+    assert entry.supportsSampling is True and entry.samplingRequiresNoReasoning is True
+    assert entry.allows_sampling({"reasoning_effort": "none"}) is True
+    assert entry.allows_sampling({"reasoning_effort": "high"}) is False
+    assert entry.allows_sampling({}) is False
 
 
 def test_non_reasoning_models_still_advertise_sampling():
@@ -279,13 +288,11 @@ def test_new_gpt_models_use_responses_and_reject_minimal():
         entry = catalog.get(model_id)
         assert entry is not None, model_id
         assert "minimal" not in entry.reasoningEffortOptions, model_id
-        assert entry.reasoningEffortOptions == [
-            "none",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-        ], model_id
+        assert entry.reasoningEffortOptions == (
+            ([] if model_id == "gpt-6-astra" else ["none"])
+            + ["low", "medium", "high", "xhigh"]
+            + ([] if model_id == "gpt-5.5" else ["max"])
+        ), model_id
         assert entry.api == "responses", model_id
 
     for model_id in ("gpt-5-mini", "gpt-5.2", "gpt-5.4"):
@@ -341,7 +348,7 @@ def test_models_api_advertises_the_astra_zone_row_exactly_where_policy_routes_it
 
 _TEXT_PROFILE = (
     "format", "category", "api", "contextWindow", "maxOutputTokens", "toolCalling",
-    "inputModalities", "reasoningEffortOptions", "supportsSampling", "supportsTools", "conversational",
+    "inputModalities", "supportsTools", "conversational",
 )
 
 
@@ -357,6 +364,12 @@ def test_new_ga_text_models_carry_the_learn_verified_gpt6_profile(model_id, vers
     }
     assert (entry.api, entry.contextWindow, entry.maxOutputTokens) == ("responses", 1_050_000, 128_000)
     assert entry.inputModalities == ["text", "image"] and entry.supportsTools is True
+    assert entry.reasoningEffortOptions == (
+        ["none", "low", "medium", "high", "xhigh"] + ([] if model_id == "gpt-5.5" else ["max"])
+    )
+    assert (entry.supportsSampling, entry.samplingRequiresNoReasoning) == (
+        (False, False) if model_id == "gpt-5.5" else (True, True)
+    )
     assert [
         (option.region, option.sku, option.residency, option.modelVersion) for option in entry.options
     ] == [
@@ -475,7 +488,7 @@ def test_every_reasoning_model_has_probed_effort_values():
 
 def test_catalog_effort_values_are_known_tokens():
     catalog = load_catalog()
-    known = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    known = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
     for entry in catalog.models:
         assert set(entry.reasoningEffortOptions) <= known, entry.id
 
@@ -701,6 +714,7 @@ def test_request_shape_traits_are_serialized():
         "medium",
         "high",
         "xhigh",
+        "max",
     ]
     assert dumped["api"] == "responses"
 
@@ -711,25 +725,27 @@ def test_catalog_traits_agree_with_the_gateway_normalizer():
     Asserted against the gateway's real normalizer rather than a second copy of
     the rule, so the two cannot drift.
     """
-    from ai4ia_api.gateway.client import ModelGatewayClient, _normalize_params_for_deployment
+    from ai4ia_api.gateway.client import ModelGatewayClient
     from tests.conftest import make_settings
 
     catalog = load_catalog()
+    client = ModelGatewayClient(make_settings(claude_enabled=True, claude_external_enabled=True))
     checked = 0
     for entry in catalog.conversational_models():
         deployment = entry.options[0].deploymentName
-        kept = {"temperature": 0.5, "top_p": 0.9}
-        if entry.api == "anthropic":
-            # Anthropic does not use the OpenAI normalizer; exercise the actual
-            # request adapter rather than a proxy for its sampling behavior.
-            client = ModelGatewayClient(make_settings(claude_enabled=True, claude_external_enabled=True))
-            kept = client.build_anthropic_request(
-                deployment=deployment, messages=[{"role": "user", "content": "synthetic"}], params=kept,
+        for effort in (None, *entry.reasoningEffortOptions):
+            params = {"temperature": 0.5, "top_p": 0.9}
+            if effort is not None:
+                params["reasoning_effort"] = effort
+            build = {
+                "anthropic": client.build_anthropic_request,
+                "responses": client.build_responses_request,
+            }.get(entry.api, client.build_request)
+            kept = build(
+                deployment=deployment, messages=[{"role": "user", "content": "synthetic"}], params=params,
             ).json
-        else:
-            _normalize_params_for_deployment(kept, deployment)
-        survived = "temperature" in kept and "top_p" in kept
-        assert survived is entry.supportsSampling, entry.id
+            survived = "temperature" in kept and "top_p" in kept
+            assert survived is entry.allows_sampling(params), (entry.id, effort)
         checked += 1
     assert checked >= 15, f"expected the full conversational set, saw {checked}"
 

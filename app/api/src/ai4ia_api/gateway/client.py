@@ -14,7 +14,7 @@ import json
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import httpx
 
@@ -48,6 +48,9 @@ from .attempts import (
     GatewayCapabilityVerifier, bounded_http_client, no_replay_selected, prepare_attempt,
     versioned_target,
 )
+
+if TYPE_CHECKING:
+    from ..catalog import ModelEntry
 
 # Azure OpenAI reasoning models (the GPT-5 family and the o-series) reject the
 # classic Chat Completions sampling/limit parameters. The predicate lives in
@@ -101,7 +104,9 @@ def _without_server_owned(params: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> None:
+def _normalize_params_for_deployment(
+    body: dict[str, Any], deployment: str, profile: ModelEntry | None = None,
+) -> None:
     """In place: adapt chat params to a reasoning model's constraints.
 
     Translates ``max_tokens`` -> ``max_completion_tokens`` (preserving any
@@ -109,10 +114,14 @@ def _normalize_params_for_deployment(body: dict[str, Any], deployment: str) -> N
     parameters that reasoning models reject. No-op for non-reasoning models, so
     gpt-4.1/4o and non-OpenAI deployments (e.g. DeepSeek) keep ``max_tokens``.
     """
-    if not supports_sampling(deployment):
+    sampling = profile.allows_sampling(body) if profile is not None else supports_sampling(deployment)
+    if not sampling:
         for key in _REASONING_UNSUPPORTED_PARAMS:
             body.pop(key, None)
-    if _is_reasoning_deployment(deployment):
+    token_field = profile.maxTokensParameter if profile is not None else None
+    if token_field == "max_completion_tokens" or (
+        token_field is None and _is_reasoning_deployment(deployment)
+    ):
         if "max_tokens" in body:
             value = body.pop("max_tokens")
             if value is not None:
@@ -240,7 +249,9 @@ def _flatten_responses_tools(tools: Any) -> Any:
     return flattened
 
 
-def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, Any]:
+def _normalize_params_for_responses(
+    params: dict[str, Any] | None, *, sampling_allowed: bool = False,
+) -> dict[str, Any]:
     """Map chat-completions params onto a Responses request body.
 
     - ``max_output_tokens``/``max_completion_tokens``/``max_tokens`` ->
@@ -294,7 +305,8 @@ def _normalize_params_for_responses(params: dict[str, Any] | None) -> dict[str, 
         out["tools"] = _flatten_responses_tools(out["tools"])
 
     for key in _REASONING_UNSUPPORTED_PARAMS:
-        out.pop(key, None)
+        if not sampling_allowed or key not in ("temperature", "top_p"):
+            out.pop(key, None)
     out.pop("stream", None)
     out.pop("stream_options", None)
     return out
@@ -695,7 +707,10 @@ class ModelGatewayClient:
             **_without_server_owned(params),
             "messages": list(messages),
         }
-        _normalize_params_for_deployment(body, deployment)
+        from ..catalog import load_catalog
+
+        profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        _normalize_params_for_deployment(body, deployment, profile)
         if stream:
             body["stream"] = True
             # Set after merging caller params so it can't be accidentally
@@ -767,13 +782,19 @@ class ModelGatewayClient:
         """
         url = f"{self._base}{_RESPONSES_PATH}"
         instructions, input_items = _messages_to_responses_input(messages)
+        from ..catalog import load_catalog
+
+        profile = load_catalog(self._catalog_path).for_deployment(deployment)
         body: dict[str, Any] = {
             # Caller params FIRST so every server-owned field below wins. This
             # surface is the sharper of the two: ``model``, ``input`` and
             # ``store`` are all real Responses fields, so spreading caller params
             # last would let a caller re-target the deployment, replace the
             # server-built input, and switch provider retention back on.
-            **_normalize_params_for_responses(_without_server_owned(params)),
+            **_normalize_params_for_responses(
+                _without_server_owned(params),
+                sampling_allowed=profile is not None and profile.allows_sampling(params),
+            ),
             "model": deployment,
             "input": input_items,
             # Opt OUT of provider-side conversation storage. ``store`` defaults to

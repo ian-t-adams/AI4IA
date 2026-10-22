@@ -41,15 +41,16 @@ export interface ModelEntry {
   // it for a model (e.g. model-router); callers fall back to fixed defaults.
   contextWindow: number | null;
   maxOutputTokens: number | null;
+  defaultMaxOutputTokens?: number | null;
+  maxTokensParameter?: "max_tokens" | "max_completion_tokens" | null;
   supportsTools?: boolean;
   inputModalities?: string[];
   imageSizes?: string[] | null;
   imageQualities?: string[] | null;
-  // Whether temperature/top_p actually reach the provider. False for reasoning
-  // models, whose sampling params the gateway strips because they 400 on
-  // non-default values. Server-computed so the UI never presents a control that
-  // is silently discarded.
+  // Whether the model profile supports sampling. Conditional profiles also
+  // require explicit none effort; the gateway enforces that same condition.
   supportsSampling: boolean;
+  samplingRequiresNoReasoning?: boolean;
   // Allowed reasoning_effort values; empty when the model does not accept it.
   reasoningEffortOptions: string[];
   options: DeploymentOption[];
@@ -299,6 +300,9 @@ export interface ReceiptContextSource {
 export interface ReceiptToolOffer {
   name: string;
   description?: string | null;
+  descriptionBytes?: number | null;
+  descriptionSha256?: string | null;
+  descriptionTruncated?: boolean | null;
   parametersSha256: string;
 }
 

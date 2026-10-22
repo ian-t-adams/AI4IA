@@ -1,6 +1,6 @@
 {
   "$schema": "./models.schema.json",
-  "_comment": "Every deployment pins an explicit version. Existing OpenAI effort values reflect governed live probes, not exhaustive provider capabilities. The 2026-09 gpt-6-sol, gpt-6-luna and gpt-5.5 rows carry Microsoft Learn documented values that mirror their probed gpt-6-astra/GPT-5.6 siblings; governed live probes remain a candidate-rollout step. External Claude is DEFAULT-OFF SOURCE INTENT: target offerings/version/SKU raw capacity were observed separately; its low/medium/high effort is the documented subset of the thinking-disabled text/tool profile (Opus 5, Sonnet 5) or the adaptive text-only profile (Opus 5.5, which rejects disabled thinking), NOT a live integration claim. No tenant, account or credential binding is stored here. See docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract for evidence, prerequisites and activation holds. New probes must stay SimpleL7Proxy -> APIM -> Foundry.",
+  "_comment": "Every deployment pins an explicit version. Existing OpenAI effort values retain governed live observations, including GPT-5.4 minimal (rechecked 2026-10-22). The October refresh adds the documented Responses max effort for GPT-6/GPT-5.6, removes Astra none after an app refusal and successful low-effort control, and enables Sol/Luna sampling only with explicit none effort. GPT-6.1 Sol and Grok 4.7 offerings, versions, lifecycle, SKU defaults and raw quotas were observed 2026-10-22; compatible provider profiles come from official API documentation and require rollout acceptance. Grok uses Chat Completions, its documented max_completion_tokens spelling, and an application default that leaves room within its shared input/output context. External Claude keeps its separately reviewed source/activation contract and existing target inventory unchanged. No tenant, account or credential binding is stored here. See docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract. New probes must stay SimpleL7Proxy -> APIM -> Foundry.",
   "naming": {
     "_comment": "Naming tokens for the whole stack (single source of truth). `subscriptionToken` is stamped into every model deployment name; `foundryToken` names the Foundry accounts/projects (mf-<foundryToken>-<env>-<region>). main.bicep, scripts/gen-model-catalog.py, scripts/validate-catalog.py, and app/api catalog.py all read these, so changing them here (plus AZURE_ENV_NAME) is what makes a subscription/tenant move 1:1. After changing, run scripts/gen-model-catalog.py to regenerate the runtime catalog. See docs/runbooks/greenfield-standup.md#5-select-environment-posture-and-names.",
     "subscriptionToken": "slurmfactory",
@@ -57,11 +57,11 @@
         "image"
       ],
       "reasoningEffort": [
-        "none",
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "deployments": [
         {
@@ -89,11 +89,52 @@
       ]
     },
     {
+      "name": "gpt-6.1-sol",
+      "displayName": "GPT-6.1 Sol",
+      "format": "OpenAI",
+      "category": "chat",
+      "api": "responses",
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "samplingSupported": false,
+      "toolCalling": true,
+      "inputModalities": ["text", "image"],
+      "reasoningEffort": ["low", "medium", "high", "xhigh", "max"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-09-29"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 10,
+          "version": "2026-09-29"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-09-29"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "DataZoneStandard",
+          "capacity": 10,
+          "version": "2026-09-29"
+        }
+      ]
+    },
+    {
       "name": "gpt-6-sol",
       "displayName": "GPT-6 Sol",
       "format": "OpenAI",
       "category": "chat",
       "api": "responses",
+      "samplingSupported": true,
+      "samplingRequiresNoReasoning": true,
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "toolCalling": true,
@@ -106,7 +147,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "deployments": [
         {
@@ -141,6 +183,8 @@
       "format": "OpenAI",
       "category": "chat",
       "api": "responses",
+      "samplingSupported": true,
+      "samplingRequiresNoReasoning": true,
       "contextWindow": 1050000,
       "maxOutputTokens": 128000,
       "toolCalling": true,
@@ -153,7 +197,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "deployments": [
         {
@@ -194,7 +239,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "deployments": [
         {
@@ -243,7 +289,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "deployments": [
         {
@@ -292,7 +339,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "deployments": [
         {
@@ -462,6 +510,35 @@
           "version": "2025-12-11",
           "maxCapacity": 125,
           "maxCapacityPool": "global"
+        }
+      ]
+    },
+    {
+      "name": "grok-4.7",
+      "displayName": "Grok 4.7",
+      "format": "xAI",
+      "category": "reasoning",
+      "api": "chat",
+      "contextWindow": 500000,
+      "maxOutputTokens": 500000,
+      "defaultMaxOutputTokens": 16384,
+      "maxTokensParameter": "max_completion_tokens",
+      "samplingSupported": false,
+      "toolCalling": true,
+      "inputModalities": ["text", "image"],
+      "reasoningEffort": ["low", "medium", "high", "xhigh"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "1"
+        },
+        {
+          "region": "swedencentral",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "1"
         }
       ]
     },

@@ -86,6 +86,30 @@ def main() -> int:
         ):
             errors.append(f"{name}: requiredRealtimeProtocol is only valid as 'ga' on realtime models")
         api = model.get("api", "chat")
+        conditional_sampling = model.get("samplingRequiresNoReasoning", False)
+        if type(conditional_sampling) is not bool or (
+            conditional_sampling and (
+                api != "responses" or model.get("samplingSupported") is not True
+                or "none" not in model.get("reasoningEffort", [])
+            )
+        ):
+            errors.append(f"{name}: conditional sampling requires Responses and explicit none effort")
+        token_parameter = model.get("maxTokensParameter")
+        if token_parameter is not None and (
+            api != "chat" or token_parameter not in {"max_tokens", "max_completion_tokens"}
+        ):
+            errors.append(f"{name}: invalid Chat Completions token parameter")
+        default_output = model.get("defaultMaxOutputTokens")
+        if default_output is not None and (
+            type(default_output) is not int or default_output <= 0
+            or not isinstance(model.get("maxOutputTokens"), int)
+            or default_output > model["maxOutputTokens"]
+            or (
+                isinstance(model.get("contextWindow"), int)
+                and default_output >= model["contextWindow"]
+            )
+        ):
+            errors.append(f"{name}: default output must fit the output ceiling and leave room for input")
         if api not in {
             "chat",
             "responses",

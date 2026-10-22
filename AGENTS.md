@@ -68,6 +68,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    seam offering a capability backed by such a model shares one availability
    predicate and still re-checks at execution (video:
    `app/api/src/ai4ia_api/videos/availability.py`).
+   Parameter profiles are catalog-owned too: `maxTokensParameter` selects the
+   Chat Completions output-limit spelling; `defaultMaxOutputTokens` can leave
+   input room below a shared context/output ceiling without falsifying that
+   ceiling. `samplingRequiresNoReasoning` admits Temperature/Top P only with an
+   explicit supported `none` effort, never an assumed provider default. Keep
+   generated/development catalogs, gateway adaptation and browser controls aligned.
 3. **Server-authoritative feature gates.** The web app may hide UI, but the API
    and startup validation must enforce feature posture. Never gate only in React.
 4. **Cosmos is canonical.** Sessions, messages, usage, user agents/workflows, MCP
@@ -133,6 +139,10 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Price-document versions must survive the actual receipt identifier/redaction
    path unchanged. Keep them compact and public; never weaken credential
    redaction to preserve an overlong, token-shaped version identifier.
+   Tool-description snapshots use the existing bounded redacted payload
+   size/digest contract. Compact descriptions before shedding operational
+   payloads under the unchanged escaped 32 KiB total. Historical description
+   completeness is unknown; never backfill it from today's tool definition.
    Per-call response-model identity comes only from native response metadata
    matched to the requested deployment's catalog identity or its exact router
    subset. Preserve missing, unrecognized, conflicting and historical states;

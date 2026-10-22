@@ -244,7 +244,7 @@ function SourcesPanel({
             source.speaker,
           ].filter(Boolean);
           return (
-            <div key={source.spanId} className="activity-row">
+            <div key={source.spanId} className="activity-row activity-entry">
               {/* Never colour alone: the cited state is carried by text too.
                   One text node, so the whole label is assertable as written. */}
               <span className="activity-label">

@@ -2,10 +2,70 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ExecutionReceipt, ModelCallEvidence, ReceiptCostSummary } from "@/lib/types";
 import { ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
 
 afterEach(cleanup);
+
+it("keeps long post-call values readable instead of clipping them to a fixed character count", () => {
+  const css = readFileSync(resolve("src", "app", "globals.css"), "utf8");
+  const detail = css.match(/\.activity-detail\s*\{([^}]+)\}/)?.[1];
+  expect(detail).toBeDefined();
+  expect(detail).toMatch(/overflow-wrap:\s*anywhere/);
+  expect(detail).not.toMatch(/white-space:\s*nowrap|text-overflow:\s*ellipsis|overflow:\s*hidden|max-width:\s*24ch/);
+  expect(css.match(/\.activity-trace\s*\{([^}]+)\}/)?.[1]).toMatch(/font-size:\s*var\(--text-sm/);
+});
+
+it("retains full selectable payload digests rather than shortening them in the browser", () => {
+  const sha256 = "0123456789abcdef".repeat(4);
+  render(<ExecutionReceiptPanel receipt={receipt({
+    promptMessageCount: 1, promptBytes: 12,
+    prompt: [{ role: "user", content: { text: "Synthetic", sha256, bytes: 12, truncated: false } }],
+  })} embedded />);
+  expect(screen.getByText(`sha256 ${sha256}`)).toBeInTheDocument();
+  expect(screen.queryByText(`sha256 ${sha256.slice(0, 16)}…`)).toBeNull();
+});
+
+it("keeps model-call detail beside runtime instead of adding another disclosure level", () => {
+  render(<ExecutionReceiptPanel receipt={priced()} embedded />);
+  const runtime = screen.getByText("Runtime").parentElement;
+  const calls = screen.getByText("Model calls and parameters").parentElement;
+  expect(calls?.parentElement).toBe(runtime?.parentElement);
+});
+
+it("groups absent scalar controls once without claiming unknown defaults were sent", async () => {
+  render(<ExecutionReceiptPanel receipt={priced()} embedded />);
+  await userEvent.click(screen.getByText("Model calls and parameters"));
+  const summary = screen.getByText("Model call 1 · responses · recorded");
+  await userEvent.click(summary);
+  const detail = within(summary.parentElement!);
+  expect(detail.getByText("Controls not sent").parentElement).toHaveTextContent(/Temperature.*Top p.*Effort setting.*provider defaults unknown/i);
+  expect(detail.queryAllByText("Not sent (provider default unknown)")).toHaveLength(0);
+});
+
+it("labels saved description truncation without confusing it with browser clipping", () => {
+  render(<ExecutionReceiptPanel receipt={receipt({
+    toolsOfferedCount: 1,
+    toolsOffered: [{
+      name: "long_tool_name", description: "Retained description", parametersSha256: "schema-digest",
+      descriptionBytes: 4096, descriptionSha256: "description-digest", descriptionTruncated: true,
+    }],
+  })} embedded />);
+  expect(screen.getByText("Retained description")).toBeInTheDocument();
+  expect(screen.getByText(/Description shortened.*4\.0 KB/)).toBeInTheDocument();
+  expect(screen.getByText("sha256 description-digest")).toBeInTheDocument();
+});
+
+it("does not infer description completeness on historical receipts", () => {
+  render(<ExecutionReceiptPanel receipt={receipt({
+    toolsOfferedCount: 1,
+    toolsOffered: [{ name: "old_tool", description: "Old saved description", parametersSha256: "" }],
+  })} embedded />);
+  expect(screen.getByText(/Older descriptions may have been shortened without a recorded marker/)).toBeInTheDocument();
+  expect(screen.queryByText(/Description shortened.*original/)).toBeNull();
+});
 
 function receipt(overrides: Partial<ExecutionReceipt> = {}): ExecutionReceipt {
   return {
@@ -69,7 +129,7 @@ it("progressively renders initial and later adapted controls and immutable price
     expect(panel.getByText("original-prices")).toBeVisible();
     expect(panel.getByText("2 / 8 USD per million input / output tokens")).toBeVisible();
     expect(panel.getByText("session")).toBeVisible();
-    expect(panel.getAllByText("Not sent (provider default unknown)").length).toBeGreaterThan(0);
+    expect(panel.getByText("Controls not sent").parentElement).toHaveTextContent("provider defaults unknown");
   }
   expect(screen.getByText(/Provider-internal values are unknown/)).toBeVisible();
 });

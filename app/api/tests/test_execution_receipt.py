@@ -19,6 +19,7 @@ merely present:
 from __future__ import annotations
 
 import json
+import hashlib
 
 from ai4ia_api.agents.receipt import ReceiptDraft, receipt_tool_calls
 from ai4ia_api.agents.runtime import AgentStep, DelegatedRunTrace
@@ -30,6 +31,7 @@ from ai4ia_api.receipts import (
     RECEIPT_VERSION,
     ExecutionReceipt,
     ReceiptRuntime,
+    ReceiptToolOffer,
     build_receipt,
     json_payload,
     text_payload,
@@ -210,6 +212,53 @@ def test_a_turn_with_no_tools_records_an_empty_offer_not_a_missing_one():
     receipt = _draft().build()
     assert receipt.toolsOffered == [] and receipt.toolsOfferedCount == 0
     assert receipt.toolCalls == [] and receipt.toolCallCount == 0
+
+
+def test_offered_description_keeps_readable_text_and_records_its_redacted_identity():
+    description = "Search current public pages and return source-linked passages. " * 12
+    schema = _offered("web_search")
+    schema[0]["function"]["description"] = description
+    offer = _draft(offered=schema).build().toolsOffered[0]
+    assert offer.description == description
+    assert offer.descriptionTruncated is False
+    assert offer.descriptionBytes == len(description.encode("utf-8"))
+    assert offer.descriptionSha256 == hashlib.sha256(description.encode("utf-8")).hexdigest()
+
+
+def test_oversized_offered_description_retains_redacted_size_digest_and_explicit_truncation():
+    description = "Search safe public sources. " * 300 + " password: synthetic-secret-value"
+    schema = _offered("web_search")
+    schema[0]["function"]["description"] = description
+    offer = _draft(offered=schema).build().toolsOffered[0]
+    expected = text_payload(description)
+    assert offer.description == expected.text
+    assert offer.descriptionTruncated is True
+    assert offer.descriptionBytes == expected.bytes
+    assert offer.descriptionSha256 == expected.sha256
+    assert "synthetic-secret-value" not in json.dumps(offer.model_dump())
+
+
+def test_large_descriptions_shorten_before_they_displace_tool_result_bodies():
+    schema = _offered(*(f"tool_{index}" for index in range(15)))
+    description = "Read the public source and return the requested evidence. " * 30
+    for tool in schema:
+        tool["function"]["description"] = description
+    steps = [
+        AgentStep(kind="tool_result", tool=f"tool_{index}", result={"body": "result evidence " * 100})
+        for index in range(10)
+    ]
+    receipt = _draft(offered=schema).build(steps=steps)
+    assert receipt.truncated and "receipt_size_capped" in receipt.notes
+    assert all(offer.descriptionTruncated for offer in receipt.toolsOffered)
+    assert all(call.result is not None and call.result.text for call in receipt.toolCalls)
+    assert all(offer.descriptionBytes == len(description.encode("utf-8")) for offer in receipt.toolsOffered)
+    assert len(json.dumps(receipt.model_dump(mode="json"), ensure_ascii=True).encode("ascii")) <= MAX_RECEIPT_BYTES
+
+
+def test_historical_tool_descriptions_keep_completeness_unknown_and_their_original_shape():
+    offer = ReceiptToolOffer.model_validate({"name": "old_tool", "description": "saved text"})
+    assert offer.descriptionTruncated is None
+    assert offer.model_dump() == {"name": "old_tool", "description": "saved text", "parametersSha256": ""}
 
 
 def test_unsafe_tool_names_are_sentineled_at_the_receipt_boundary():
