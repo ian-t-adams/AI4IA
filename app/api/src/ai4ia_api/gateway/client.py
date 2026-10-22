@@ -526,7 +526,7 @@ class ModelGatewayClient:
         settings.validate_gateway_attempts_v1()
         self._attempt_staged = settings.gateway_attempts_v1_staged
         self._catalog_path = settings.model_catalog_path
-        self._claude_enabled = settings.claude_enabled and settings.claude_external_enabled
+        self._claude_enabled = settings.claude_runtime_enabled
 
     @property
     def attempt_capability(self) -> AttemptEnvelope | None:

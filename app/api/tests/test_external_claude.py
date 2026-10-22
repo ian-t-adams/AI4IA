@@ -36,8 +36,12 @@ def adaptive_entries():
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high"])
-def test_supported_profile_reaches_native_payload_and_receipt(effort):
-    gateway = ModelGatewayClient(make_settings(claude_enabled=True, claude_external_enabled=True))
+@pytest.mark.parametrize("mode", ["federated", "gateway"])
+def test_supported_profile_reaches_native_payload_and_receipt(effort, mode):
+    gateway = ModelGatewayClient(make_settings(
+        claude_enabled=True, claude_external_enabled=mode == "federated",
+        claude_gateway_enabled=mode == "gateway",
+    ))
     for model in disabled_entries():
         for option in model.options:
             body = gateway.build_anthropic_request(
@@ -56,6 +60,29 @@ def test_supported_profile_reaches_native_payload_and_receipt(effort):
             assert snapshot.cost.coverage == "known"
             assert not supported_attempt_payload("chat", body)
             assert gateway.attempt_capability_for("anthropic") is None
+
+
+@pytest.mark.parametrize(("enabled", "federated", "upstream", "allowed"), [
+    (False, False, False, False), (True, False, False, False),
+    (False, True, False, False), (False, False, True, False),
+    (True, True, True, False), (True, True, False, True), (True, False, True, True),
+])
+def test_advertisement_and_execution_share_one_effective_claude_gate(enabled, federated, upstream, allowed):
+    settings = make_settings(
+        claude_enabled=enabled, claude_external_enabled=federated, claude_gateway_enabled=upstream,
+    )
+    assert settings.claude_runtime_enabled is allowed
+    model = disabled_entries()[0]
+    gateway = ModelGatewayClient(settings)
+    request = {
+        "deployment": model.options[0].deploymentName,
+        "messages": [{"role": "user", "content": "synthetic"}],
+    }
+    if allowed:
+        assert gateway.build_anthropic_request(**request).json["thinking"] == {"type": "disabled"}
+    else:
+        with pytest.raises(ValueError, match="disabled"):
+            gateway.build_anthropic_request(**request)
 
 
 @pytest.mark.parametrize("effort", ["xhigh", "max", "none", "minimal", "HIGH", ""])

@@ -1275,7 +1275,9 @@ The shipped Balanced pool is Astra/Sol/Luna, not a restriction on other app choi
 The alternative default-off `AI4IA_CLAUDE_GATEWAY_ENABLED` mode keeps the same
 proxy and source APIM, adding an existing upstream APIM hop with a dedicated
 API-scoped key. It is mutually exclusive with federation, never a failure
-fallback. Only source APIM holds its secure named value; no key or upstream
+fallback. API catalog construction and native HTTP/SSE dispatch share
+`Settings.claude_runtime_enabled`: admission must be on with exactly one mode.
+Only source APIM holds its secure named value; no key or upstream
 URL reaches FastAPI/browser. Preserve the catalog/path/scope guards, disabled
 transition before a host/mode change and actual source-policy readback. It
 does not provision the upstream, grant its roles or adopt unreviewed models.

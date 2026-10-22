@@ -103,10 +103,10 @@ class Provider:
 
 @contextmanager
 def claude_client(
-    *, provider: Provider | None = None, **overrides,
+    *, provider: Provider | None = None, gateway_mode: bool = False, **overrides,
 ) -> Iterator[tuple[TestClient, Provider]]:
     settings = make_settings(
-        claude_enabled=True, claude_external_enabled=True,
+        claude_enabled=True, claude_external_enabled=not gateway_mode, claude_gateway_enabled=gateway_mode,
         model_gateway_url="https://proxy.test/openai", **overrides,
     )
     provider = provider or Provider()
@@ -156,8 +156,9 @@ def _keys(value) -> set[str]:
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_adaptive_turn_never_exposes_thinking_blocks(stream, caplog):
-    with claude_client() as (client, provider), captured_logs(caplog):
+@pytest.mark.parametrize("gateway_mode", [False, True])
+def test_adaptive_turn_never_exposes_thinking_blocks(stream, gateway_mode, caplog):
+    with claude_client(gateway_mode=gateway_mode) as (client, provider), captured_logs(caplog):
         sid = _session(client, ADAPTIVE)
         response = client.post("/api/chat", json={
             "sessionId": sid, "content": "Hello", "stream": stream, "params": {"reasoning_effort": "low"},
