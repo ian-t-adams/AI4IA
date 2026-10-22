@@ -474,9 +474,19 @@ def test_adaptive_rows_cannot_move_default_off_or_ordinary_model_digests(tmp_pat
     assert digests("with", False) == digests("without", False)
     # Control: the enabled catalog does see the row, so the comparison is sensitive.
     assert digests("with", True) != digests("without", True)
+    disabled_models = {
+        model.id: model.model_dump(mode="json")
+        for model in load_catalog(str(paths["with"]), "global", False).models
+    }
+    declared = {model["id"]: model for model in raw["models"]}
     for model in load_catalog(str(paths["with"]), "global", True).models:
         dumped = model.model_dump(mode="json")
         if model.deploymentTarget == "external-claude":
             assert dumped["anthropicThinking"] in {"disabled", "adaptive"}
         else:
-            assert not {"anthropicThinking", "deploymentTarget", "samplingSupported"} & dumped.keys(), model.id
+            assert not {"anthropicThinking", "deploymentTarget"} & dumped.keys(), model.id
+            assert dumped == disabled_models[model.id]
+            if "samplingSupported" in declared[model.id]:
+                assert dumped["samplingSupported"] is declared[model.id]["samplingSupported"]
+            else:
+                assert "samplingSupported" not in dumped

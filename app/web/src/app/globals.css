@@ -1168,7 +1168,8 @@ select {
 }
 .activity-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 2px 0;
   color: var(--fg-muted);
@@ -1181,17 +1182,51 @@ select {
   width: 1em;
   justify-content: center;
   opacity: 0.8;
+  flex: none;
 }
 .activity-label {
   font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .activity-detail {
-  opacity: 0.65;
-  font-style: italic;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 24ch;
+  flex: 1 1 18ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.activity-row.receipt-row {
+  display: grid;
+  grid-template-columns: minmax(8em, 0.4fr) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px 16px;
+  padding: 5px 0;
+}
+.activity-entry {
+  display: block;
+  min-width: 0;
+  margin-top: 12px;
+}
+.activity-entry > .activity-detail {
+  display: block;
+  margin: 4px 0;
+  max-inline-size: 75ch;
+}
+.receipt-digest {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg-muted);
+  font-size: 0.9em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+@media (max-width: 560px) {
+  .activity-row.receipt-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding: 6px 0;
+  }
 }
 .activity-spinner {
   width: 12px;
@@ -1206,6 +1241,13 @@ select {
   to {
     transform: rotate(360deg);
   }
+}
+.activity-trace {
+  font-size: var(--text-sm, 0.875rem);
+}
+.activity-trace .safety-note,
+.activity-trace .safety-row {
+  font-size: inherit;
 }
 .activity-trace > summary {
   cursor: pointer;
@@ -1228,6 +1270,7 @@ select {
 }
 .activity-rows {
   margin-top: 4px;
+  min-width: 0;
 }
 
 /* --- Content-safety annotations ---------------------------------------------
@@ -1257,7 +1300,8 @@ select {
 .safety-scope,
 .safety-verdict {
   font-size: 0.92em;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .safety-verdict {
   font-variant-numeric: tabular-nums;

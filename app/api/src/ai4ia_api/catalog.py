@@ -137,6 +137,8 @@ class ModelEntry(BaseModel):
     routing: ModelRouting | None = None
     deploymentTarget: Literal["source", "external-claude"] = "source"
     samplingSupported: bool | None = None
+    samplingRequiresNoReasoning: StrictBool = False
+    maxTokensParameter: Literal["max_tokens", "max_completion_tokens"] | None = None
     # External Claude profile: "disabled" is text plus the governed tool loop;
     # "adaptive" is text-only because signed thinking blocks are not replayed.
     anthropicThinking: Literal["disabled", "adaptive"] | None = None
@@ -149,6 +151,9 @@ class ModelEntry(BaseModel):
     # app can show the cap and clamp the max-tokens input from one source of truth.
     contextWindow: int | None = None
     maxOutputTokens: int | None = None
+    # Some providers share the entire context between input and output. Using
+    # their output ceiling as the default would leave no room for the prompt.
+    defaultMaxOutputTokens: int | None = Field(default=None, gt=0, strict=True)
     toolCalling: bool | None = None
     inputModalities: list[str] = Field(default_factory=lambda: ["text"])
     # Optional provider-specific image controls. Absent means the shared image
@@ -176,6 +181,8 @@ class ModelEntry(BaseModel):
             ("deploymentTarget", "source"), ("samplingSupported", None), ("anthropicThinking", None),
             ("runtimeEnabled", True), ("imageEditing", False), ("imageEditingDefault", False),
             ("routing", None),
+            ("samplingRequiresNoReasoning", False), ("maxTokensParameter", None),
+            ("defaultMaxOutputTokens", None),
         ):
             if result.get(key) == default:
                 result.pop(key, None)
@@ -184,6 +191,18 @@ class ModelEntry(BaseModel):
     @model_validator(mode="after")
     def external_profile(self) -> ModelEntry:
         self.require_external_profile()
+        if self.samplingRequiresNoReasoning and (
+            self.api != "responses" or self.samplingSupported is not True
+            or "none" not in self.reasoningEffortOptions
+        ):
+            raise ValueError("Conditional sampling requires a Responses profile with explicit none effort.")
+        if self.maxTokensParameter is not None and self.api != "chat":
+            raise ValueError("maxTokensParameter applies only to Chat Completions.")
+        if self.defaultMaxOutputTokens is not None and (
+            self.maxOutputTokens is None or self.defaultMaxOutputTokens > self.maxOutputTokens
+            or (self.contextWindow is not None and self.defaultMaxOutputTokens >= self.contextWindow)
+        ):
+            raise ValueError("The default output must fit the model limit and leave room for input.")
         if self.imageEditing and (
             self.category != "image" or self.api != "chat" or self.format != "OpenAI"
         ):
@@ -237,15 +256,18 @@ class ModelEntry(BaseModel):
     @computed_field
     @property
     def supportsSampling(self) -> bool:
-        """Whether ``temperature``/``top_p`` actually reach the provider.
+        """Whether this profile supports sampling in at least one mode.
 
-        Reasoning models 400 on non-default sampling values, so the gateway
-        strips them from the outgoing body. Serializing that here lets the web
-        app hide the sliders instead of presenting controls that are silently
-        discarded -- which is what it did for 11 of the 15 conversational models,
-        including the whole GPT-5.6 family.
+        ``samplingRequiresNoReasoning`` narrows it to explicit none effort.
+        The gateway and UI must apply that condition, not infer a provider default.
         """
         return self.samplingSupported if self.samplingSupported is not None else supports_sampling(self.id)
+
+    def allows_sampling(self, params: dict[str, Any] | None) -> bool:
+        return self.supportsSampling and (
+            not self.samplingRequiresNoReasoning
+            or (params or {}).get("reasoning_effort") == "none"
+        )
 
     @computed_field
     @property
@@ -406,6 +428,9 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "reasoningEffort": model.get("reasoningEffort"),
                 "deploymentTarget": model.get("deploymentTarget", "source"),
                 "samplingSupported": model.get("samplingSupported"),
+                "samplingRequiresNoReasoning": model.get("samplingRequiresNoReasoning", False),
+                "maxTokensParameter": model.get("maxTokensParameter"),
+                "defaultMaxOutputTokens": model.get("defaultMaxOutputTokens"),
                 "anthropicThinking": model.get("anthropicThinking"),
                 "toolCalling": model.get("toolCalling"),
                 "inputModalities": model.get("inputModalities", ["text"]),

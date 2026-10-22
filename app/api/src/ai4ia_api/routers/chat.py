@@ -357,8 +357,8 @@ def _effective_params(params: dict, entry: ModelEntry | None) -> dict:
     ever lowers a too-high request. When the model exposes that metadata:
 
     * if the caller left the global default (or sent nothing), adopt the model's
-      own max-output as the per-turn ceiling, so a high-capacity model isn't
-      pinned to the 1024-token default; and
+      application default (or its max-output when no default is recorded),
+      so a high-capacity model isn't pinned to the 1024-token default; and
     * otherwise clamp the requested value DOWN to that ceiling (never up).
 
     ``reasoning_effort`` is dropped when the model does not accept it, or when
@@ -400,7 +400,7 @@ def _effective_params(params: dict, entry: ModelEntry | None) -> dict:
         return out
     requested = out.get("max_tokens")
     if requested is None or requested == GLOBAL_DEFAULT_MAX_TOKENS:
-        out["max_tokens"] = model_max
+        out["max_tokens"] = (entry.defaultMaxOutputTokens if entry is not None else None) or model_max
     else:
         try:
             out["max_tokens"] = min(int(requested), model_max)

@@ -49,11 +49,11 @@
       "imageSizes": null,
       "imageQualities": null,
       "reasoningEffort": [
-        "none",
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "options": [
         {
@@ -80,6 +80,61 @@
       ]
     },
     {
+      "id": "gpt-6.1-sol",
+      "displayName": "GPT-6.1 Sol",
+      "category": "chat",
+      "format": "OpenAI",
+      "api": "responses",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 1050000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "samplingSupported": false,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-29",
+          "deploymentName": "gpt-6.1-sol-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-29",
+          "deploymentName": "gpt-6.1-sol-slurmfactory-eastus2-dz"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-09-29",
+          "deploymentName": "gpt-6.1-sol-slurmfactory-swedencentral-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2026-09-29",
+          "deploymentName": "gpt-6.1-sol-slurmfactory-swedencentral-dz"
+        }
+      ]
+    },
+    {
       "id": "gpt-6-sol",
       "displayName": "GPT-6 Sol",
       "category": "chat",
@@ -100,8 +155,11 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
+      "samplingSupported": true,
+      "samplingRequiresNoReasoning": true,
       "options": [
         {
           "region": "eastus2",
@@ -154,8 +212,11 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
+      "samplingSupported": true,
+      "samplingRequiresNoReasoning": true,
       "options": [
         {
           "region": "eastus2",
@@ -207,7 +268,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "options": [
         {
@@ -260,7 +322,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "options": [
         {
@@ -313,7 +376,8 @@
         "low",
         "medium",
         "high",
-        "xhigh"
+        "xhigh",
+        "max"
       ],
       "options": [
         {
@@ -498,6 +562,48 @@
           "sku": "GlobalStandard",
           "modelVersion": "2025-12-11",
           "deploymentName": "gpt-5.2-slurmfactory-swedencentral-glbl"
+        }
+      ]
+    },
+    {
+      "id": "grok-4.7",
+      "displayName": "Grok 4.7",
+      "category": "reasoning",
+      "format": "xAI",
+      "api": "chat",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 500000,
+      "maxOutputTokens": 500000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "samplingSupported": false,
+      "maxTokensParameter": "max_completion_tokens",
+      "defaultMaxOutputTokens": 16384,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "1",
+          "deploymentName": "grok-4.7-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "swedencentral",
+          "dataZone": "EU",
+          "sku": "GlobalStandard",
+          "modelVersion": "1",
+          "deploymentName": "grok-4.7-slurmfactory-swedencentral-glbl"
         }
       ]
     },

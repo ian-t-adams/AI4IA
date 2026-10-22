@@ -253,9 +253,21 @@ class ReceiptToolOffer(BaseModel):
 
     name: str
     description: str | None = None
+    # Absent on historical receipts: their description completeness is unknown.
+    descriptionBytes: int | None = None
+    descriptionSha256: str | None = None
+    descriptionTruncated: bool | None = None
     # Digest of the advertised parameter schema, so a changed tool contract is
     # detectable without storing every schema verbatim.
     parametersSha256: str = ""
+
+    @model_serializer(mode="wrap")
+    def preserve_description_history(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        result = handler(self)
+        for key in ("descriptionBytes", "descriptionSha256", "descriptionTruncated"):
+            if result.get(key) is None:
+                result.pop(key, None)
+        return result
 
 
 class ReceiptToolCall(BaseModel):
@@ -438,8 +450,8 @@ def _note(receipt: ExecutionReceipt, marker: str) -> None:
 def enforce_receipt_budget(receipt: ExecutionReceipt) -> ExecutionReceipt:
     """Shed payload bodies until the receipt fits :data:`MAX_RECEIPT_BYTES`.
 
-    Deterministic and ordered: tool results first (the largest and least
-    trustworthy), then tool arguments, then prompt bodies, then context bodies.
+    Deterministic and ordered: compact verbose tool descriptions first, then
+    tool results, tool arguments, prompt bodies and context bodies.
     Digests and byte counts are never shed, so the receipt keeps asserting the
     same facts with less of the text behind them.
     """
@@ -454,6 +466,14 @@ def enforce_receipt_budget(receipt: ExecutionReceipt) -> ExecutionReceipt:
     # Include the marker in every subsequent size decision, including exact
     # boundary cases where adding it after shedding would exceed the limit.
     _note(receipt, "receipt_size_capped")
+
+    # Prefer compact descriptions to discarding actual tool results or prompts.
+    for offer in receipt.toolsOffered:
+        if offer.description is not None and len(offer.description) > MAX_DESCRIPTION_CHARS:
+            offer.description = offer.description[:MAX_DESCRIPTION_CHARS]
+            offer.descriptionTruncated = True
+    if size() <= MAX_RECEIPT_BYTES:
+        return receipt
 
     for call in receipt.toolCalls:
         if call.result is not None:
@@ -518,6 +538,8 @@ def enforce_receipt_budget(receipt: ExecutionReceipt) -> ExecutionReceipt:
     # Last resort: descriptions are the only remaining free text.
     for offer in receipt.toolsOffered:
         offer.description = None
+        if offer.descriptionBytes is not None:
+            offer.descriptionTruncated = True
     # Metadata alone can exceed the cap after adding per-call evidence. Keep
     # original counts and the immutable cost subtotal/version evidence, rather
     # than allowing large tool/schema inventories to bypass the total bound.
@@ -664,10 +686,15 @@ def tool_offers(schema: list[dict[str, Any]] | None) -> tuple[list[ReceiptToolOf
     for entry in source[:MAX_TOOLS_OFFERED]:
         function = entry.get("function") if isinstance(entry, dict) else None
         function = function if isinstance(function, dict) else {}
+        raw_description = function.get("description")
+        description = text_payload(raw_description) if isinstance(raw_description, str) and raw_description else None
         offers.append(
             ReceiptToolOffer(
                 name=safe_tool_label(function.get("name")),
-                description=_short(function.get("description"), MAX_DESCRIPTION_CHARS),
+                description=description.text if description is not None else None,
+                descriptionBytes=description.bytes if description is not None else None,
+                descriptionSha256=description.sha256 if description is not None else None,
+                descriptionTruncated=description.truncated if description is not None else None,
                 parametersSha256=_sha256(_canonical(function.get("parameters") or {})),
             )
         )
@@ -800,6 +827,8 @@ def build_receipt(
         _note(receipt, "tools_offered_capped")
     if len(all_calls) > len(receipt.toolCalls):
         _note(receipt, "tool_calls_capped")
+    if any(offer.descriptionTruncated for offer in receipt.toolsOffered):
+        _note(receipt, "tool_descriptions_truncated")
     if any(m.content.truncated for m in receipt.prompt):
         _note(receipt, "prompt_payload_truncated")
     if any(

@@ -38,7 +38,7 @@ function PayloadView({ payload, label }: { payload: ReceiptPayload; label: strin
             border: "1px solid var(--border)",
             background: "var(--bg-elevated)",
             color: "var(--fg-muted)",
-            fontSize: "0.78em",
+            fontSize: "0.9em",
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",
             overflowX: "auto",
@@ -51,7 +51,7 @@ function PayloadView({ payload, label }: { payload: ReceiptPayload; label: strin
           Body not retained — recorded by digest and size only.
         </span>
       )}
-      <span className="activity-detail">{`sha256 ${payload.sha256.slice(0, 16)}…`}</span>
+      <code className="receipt-digest">{`sha256 ${payload.sha256}`}</code>
     </div>
   );
 }
@@ -125,10 +125,16 @@ const PARAMETER_SOURCES = {
 
 function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
   const parameters = call.parameters;
-  const missing = !parameters ? "Not recorded" : call.coverage === "recorded"
-    ? "Not sent (provider default unknown)" : "Not recorded (or not sent)";
-  const scalar = (value: string | number | boolean | null | undefined) =>
-    value == null ? missing : String(value);
+  const controls: [string, string | number | boolean | null | undefined][] = [
+    ["Temperature", parameters?.temperature],
+    ["Top p", parameters?.topP],
+    ["Output-token limit", parameters?.maxOutputTokens != null
+      ? `${parameters.maxOutputTokens} (${parameters.outputTokenField})` : null],
+    ["Effort setting", parameters?.reasoningEffort],
+    ["Tool choice", parameters?.toolChoice],
+    ["Parallel tool calls", parameters?.parallelToolCalls],
+  ];
+  const missing = controls.filter(([, value]) => value == null).map(([label]) => label);
   const cost = call.cost;
   const rows: [string, string][] = [
     ["Requested model", call.modelId ?? "Not recorded"],
@@ -136,13 +142,12 @@ function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
     ["Model selection source", call.modelSource],
     ["Parameter source", PARAMETER_SOURCES[call.parameterSource]],
     ["Request overrides supplied", call.requestOverrides.join(", ") || "None"],
-    ["Temperature", scalar(parameters?.temperature)],
-    ["Top p", scalar(parameters?.topP)],
-    ["Output-token limit", parameters?.maxOutputTokens != null
-      ? `${parameters.maxOutputTokens} (${parameters.outputTokenField})` : missing],
-    ["Effort setting", scalar(parameters?.reasoningEffort)],
-    ["Tool choice", scalar(parameters?.toolChoice)],
-    ["Parallel tool calls", scalar(parameters?.parallelToolCalls)],
+    ...controls.filter(([, value]) => value != null).map(([label, value]): [string, string] => [label, String(value)]),
+    ...(missing.length ? [[
+      parameters && call.coverage === "recorded" ? "Controls not sent" : "Controls not recorded",
+      `${missing.join(", ")}; ${parameters && call.coverage === "recorded"
+        ? "provider defaults unknown" : "absence does not establish provider defaults"}`,
+    ] as [string, string]] : []),
     ["HTTP attempts", String(call.httpAttempts)],
     ["Provider completion", call.providerCompleted ? "Observed" : "Not observed"],
     ["Call cost", cost.coverage === "known" && cost.estCostMicroUsd != null
@@ -159,7 +164,7 @@ function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
       </summary>
       <div className="activity-rows">
         {rows.map(([label, value]) => (
-          <div key={label} className="activity-row">
+          <div key={label} className="activity-row receipt-row">
             <span className="activity-label">{label}</span>
             <span className={label === "Response model" ? "response-model-detail" : "activity-detail"}>{value}</span>
           </div>
@@ -201,7 +206,7 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
         ? "See workflow step receipts (no parent parameter defaults)"
         : "Model parameters not recorded"
       : modelCalls.length
-        ? `${modelCalls.length} of ${runtime.modelCallCount ?? modelCalls.length} model calls retained`
+        ? null
         : "No gateway parameter snapshot recorded"],
     ["Estimated model cost", costLabel(cost)],
     ["Cost coverage", cost ? `${cost.pricedCalls} of ${cost.totalCalls} model calls priced` : null],
@@ -294,7 +299,7 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
               {avatarRows
                 .filter(([, value]) => Boolean(value))
                 .map(([label, value]) => (
-                  <div key={label} className="activity-row">
+                  <div key={label} className="activity-row receipt-row">
                     <span className="activity-label">{label}</span>
                     <span className="activity-detail">{value}</span>
                   </div>
@@ -313,7 +318,7 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
             {runtimeRows
               .filter(([, value]) => Boolean(value))
               .map(([label, value]) => (
-                <div key={label} className="activity-row">
+                <div key={label} className="activity-row receipt-row">
                   <span className="activity-label">{label}</span>
                   <span className={label === "Response model" ? "response-model-detail" : "activity-detail"}>{value}</span>
                 </div>
@@ -323,22 +328,6 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
                 Estimates use the recorded input/output token rates, not today&apos;s prices.
                 They cover model tokens only, not tool, media or other service charges, and are not a bill.
               </p>
-            ) : null}
-            {modelCalls.length > 0 ? (
-              <details>
-                <summary className="activity-label">Model calls and parameters</summary>
-                <div className="activity-rows">
-                  <p className="safety-note">
-                    Scalar controls the application sent after model-capability adaptation.
-                    Provider-internal values are unknown. An omitted control does not record
-                    a provider default. Request overrides may have been changed or removed.
-                    {" "}Response models are provider-reported metadata, not hidden reasoning.
-                    Each call can use a different model. Missing or conflicting reports are
-                    not inferred from the requested router, answer, or token cost.
-                  </p>
-                  {modelCalls.map((call) => <ModelCallPanel key={call.iteration} call={call} />)}
-                </div>
-              </details>
             ) : null}
             <div className="activity-row">
               <span className="activity-label">Outcome</span>
@@ -388,6 +377,22 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
             )}
           </div>
         </details>
+
+        {modelCalls.length > 0 ? (
+          <details>
+            <summary className="activity-label">Model calls and parameters</summary>
+            <div className="activity-rows">
+              <p className="safety-note">
+                {`${modelCalls.length} of ${runtime.modelCallCount ?? modelCalls.length} model calls retained. `}
+                Controls shown were sent after application adaptation. Provider-internal values are unknown,
+                as are omitted defaults. Request overrides may have been changed or removed.
+                Response models are provider-reported metadata, not hidden reasoning.
+                Each call can use a different model; missing or conflicting reports are not inferred.
+              </p>
+              {modelCalls.map((call) => <ModelCallPanel key={call.iteration} call={call} />)}
+            </div>
+          </details>
+        ) : null}
 
         {delegations.length > 0 ? (
           <details>
@@ -513,19 +518,35 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
               invoked: a tool listed here that never appears below is one the
               model could have used and did not.
             </p>
+            {offered.some((offer) => offer.description && offer.descriptionTruncated == null) ? (
+              <p className="safety-note">
+                Older descriptions may have been shortened without a recorded marker.
+                These are saved snapshots, not current tool documentation.
+              </p>
+            ) : null}
             {offered.length === 0 ? (
               <div className="activity-row">
                 <span className="activity-label">{receipt.toolsOfferedCount === 0 ? "No tools were offered" : "Offered-tool details were not retained"}</span>
               </div>
             ) : (
               offered.map((offer, index) => (
-                <div key={`${offer.name}-${index}`} className="activity-row">
+                <div key={`${offer.name}-${index}`} className="activity-entry">
                   {/* One text node, so the whole label reads as written. */}
                   <span className="activity-label">
                     {`${offer.name} · ${invoked.has(offer.name) ? "invoked" : receipt.toolCallCount > calls.length ? "not shown among retained calls" : "not invoked"}`}
                   </span>
                   {offer.description ? (
                     <span className="activity-detail">{offer.description}</span>
+                  ) : offer.descriptionBytes ? (
+                    <span className="activity-detail">Description not retained.</span>
+                  ) : null}
+                  {offer.descriptionTruncated ? (
+                    <p className="safety-note">
+                      Description shortened{offer.descriptionBytes != null ? ` · original ${formatBytes(offer.descriptionBytes)}` : ""}.
+                    </p>
+                  ) : null}
+                  {offer.descriptionTruncated && offer.descriptionSha256 ? (
+                    <code className="receipt-digest">{`sha256 ${offer.descriptionSha256}`}</code>
                   ) : null}
                 </div>
               ))
