@@ -179,7 +179,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.catalog = load_catalog(
             settings.model_catalog_path,
             settings.data_residency,
-            settings.claude_enabled,
+            settings.claude_runtime_enabled,
         )
         app.state.agents = load_agent_catalog(settings.agent_catalog_path)
         # Tool-safety registry (governs) + executor (runs). Separate objects,

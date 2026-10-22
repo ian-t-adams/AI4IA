@@ -425,6 +425,9 @@ This alternative uses an already running Claude Messages APIM gateway instead
 of the cross-tenant app/FIC/token exchange. The path remains
 **FastAPI -> SimpleL7Proxy -> source APIM -> upstream APIM -> Foundry**.
 Foundry remains keyless; the upstream APIM owns its managed-identity permission.
+The API catalog and native HTTP/SSE adapter share one runtime gate: Claude
+admission must be enabled with exactly one authentication mode. A successful
+catalog read alone is not proof that a model request works.
 Do not reuse a personal Azure login, the Desktop subscription key, or a
 master/all-API key. Request a separate AI4IA subscription scoped only to the
 upstream Claude API. This is an explicitly approved credential operation, not

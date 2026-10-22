@@ -819,6 +819,10 @@ class Settings(BaseSettings):
         return _csv_items(self.entra_allowed_tenants or self.entra_tenant_id)
 
     @property
+    def claude_runtime_enabled(self) -> bool:
+        return self.claude_enabled and (self.claude_external_enabled != self.claude_gateway_enabled)
+
+    @property
     def model_gateway_allowed_host_set(self) -> set[str]:
         return set(
             _csv_items(
@@ -903,7 +907,7 @@ class Settings(BaseSettings):
                 f"AI4IA_DATA_RESIDENCY={self.data_residency!r} is not a valid policy. "
                 f"Use one of: {', '.join(sorted(RESIDENCY_POLICIES))}."
             )
-        catalog = load_catalog(self.model_catalog_path, policy, self.claude_enabled)
+        catalog = load_catalog(self.model_catalog_path, policy, self.claude_runtime_enabled)
         if policy != "global" and not catalog.conversational_models():
             offered = sorted(
                 {
@@ -1123,7 +1127,7 @@ class Settings(BaseSettings):
             from .catalog import load_catalog
 
             catalog = load_catalog(
-                self.model_catalog_path, self.data_residency, self.claude_enabled
+                self.model_catalog_path, self.data_residency, self.claude_runtime_enabled
             )
         entry = catalog.get(self.memory_embedding_model)
         deployment = catalog.resolve_deployment(self.memory_embedding_model)
