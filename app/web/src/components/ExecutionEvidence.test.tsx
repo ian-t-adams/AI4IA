@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExecutionReceipt, ModelCallEvidence, ReceiptCostSummary } from "@/lib/types";
 import { ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
+import tokenUsageAccounting from "../../test-fixtures/token_usage_accounting.json";
 
 afterEach(cleanup);
 
@@ -148,6 +149,62 @@ it("distinguishes a known subtotal, unknown total, and an explicitly reported ze
   expect(screen.getByText("Estimated $0.00")).toBeInTheDocument();
   rerender(<ExecutionReceiptPanel receipt={priced({ estCostMicroUsd: 1 })} embedded />);
   expect(screen.getByText("Estimated <$0.0001")).toBeInTheDocument();
+});
+
+it.each(tokenUsageAccounting.cases)("renders truthful per-call usage and cost for $name", async (fixture) => {
+  const modelCall: ModelCallEvidence = {
+    ...call(1, 1024), modelId: "grok-4.7", api: "chat",
+    promptTokens: fixture.usage.prompt_tokens,
+    completionTokens: fixture.usage.completion_tokens,
+    totalTokens: fixture.usage.total_tokens,
+    cost: {
+      ...call(1, 1024).cost,
+      coverage: fixture.costKnown ? "known" : "unknown",
+      estCostMicroUsd: fixture.costMicroUsd,
+      reason: fixture.costKnown ? null : "usage_totals_mismatch",
+    },
+  };
+  render(<ExecutionReceiptPanel receipt={receipt({
+    runtime: { modelCalls: [modelCall], modelCallCount: 1 },
+    usage: {
+      known: true, complete: true, calls: 1, totalTokens: fixture.usage.total_tokens,
+      cost: {
+        coverage: fixture.costKnown ? "known" : "unknown",
+        estCostMicroUsd: fixture.costMicroUsd, currency: "USD", pricingBasis: "model_tokens_only",
+        totalCalls: 1, pricedCalls: Number(fixture.costKnown),
+        priceVersions: ["original-prices"], priceVersionsTruncated: false,
+      },
+    },
+  })} embedded />);
+  await userEvent.click(screen.getByText("Runtime"));
+  expect(screen.getByText(`${fixture.usage.total_tokens} tokens across 1 model call`)).toBeVisible();
+  expect(screen.getByText("Estimated model cost").parentElement).toHaveTextContent(
+    fixture.costKnown ? "Estimated <$0.0001" : "Unknown (no priced model calls)",
+  );
+  await userEvent.click(screen.getByText("Model calls and parameters"));
+  const summary = screen.getByText("Model call 1 · chat · recorded");
+  await userEvent.click(summary);
+  const detail = within(summary.parentElement!);
+  expect(detail.getByText(`22 input / 5 output / ${fixture.usage.total_tokens} total tokens`)).toBeVisible();
+  expect(detail.getByText("Call cost").parentElement).toHaveTextContent(
+    fixture.costKnown ? "Estimated <$0.0001" : "Unknown",
+  );
+  const warning = detail.queryByText(/Reported total differs from input \+ output/);
+  if (fixture.costKnown) {
+    expect(warning).toBeNull();
+  } else {
+    expect(warning).toBeVisible();
+    expect(warning).toHaveTextContent("usage category and billed amount are unknown");
+    expect(detail.getByText("Call cost").parentElement).not.toHaveTextContent(/\$/);
+  }
+});
+
+it("does not derive missing per-call totals or reclassify saved historical costs", () => {
+  render(<ExecutionReceiptPanel receipt={priced()} embedded />);
+  expect(screen.getAllByText("1000 input / 250 output / total not recorded")).toHaveLength(2);
+  expect(screen.getByText("Estimated $0.0080")).toBeInTheDocument();
+  expect(screen.queryByText(/Reported total differs/)).toBeNull();
+  expect(screen.queryByText(/1250 total tokens/)).toBeNull();
 });
 
 it("uses the same recorded controls and cost in delegated and workflow step receipts", () => {
