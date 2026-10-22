@@ -4,6 +4,7 @@ import type {
   ActivityStep,
   AgentSummary,
   ChatParams,
+  ChatRequestRestrictions,
   DeletionPage,
   DeletionStatus,
   DocumentSummary,
@@ -1135,7 +1136,7 @@ export interface StreamHandlers {
 // Streams a chat completion. Returns an abort function the caller can invoke
 // to cancel the in-flight request (the backend persists a cancelled status).
 export function streamChat(
-  input: {
+  input: ChatRequestRestrictions & {
     sessionId: string;
     content: string;
     model?: string | null;

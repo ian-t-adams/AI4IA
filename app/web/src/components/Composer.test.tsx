@@ -68,6 +68,120 @@ function setup(overrides: Partial<ComposerProps> = {}) {
 }
 
 describe("Composer", () => {
+  it("names the text-only choice separately from keyboard-accessible help", async () => {
+    const onTextOnlyChange = vi.fn();
+    const { user, textarea } = setup({ onTextOnlyChange });
+    const checkbox = screen.getByRole("checkbox", { name: "Text only" });
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).toHaveAccessibleDescription(
+      "This message: no tools or automatic memory",
+    );
+    await user.click(textarea);
+    await user.tab();
+    expect(checkbox).toHaveFocus();
+    await user.keyboard(" ");
+    expect(onTextOnlyChange).toHaveBeenCalledExactlyOnceWith(true);
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Help: Text only" })).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Existing history, instructions and selected documents stay/,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /does not force a particular model/,
+    );
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(onTextOnlyChange).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["click", "Enter"])("sends both denials with text-only using %s", async (method) => {
+    const { user, onSend, textarea } = setup({
+      textOnly: true,
+      onTextOnlyChange: vi.fn(),
+    });
+    await user.type(textarea, "  keep my context  ");
+    if (method === "Enter") await user.keyboard("{Enter}");
+    else await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSend).toHaveBeenCalledExactlyOnceWith("keep my context", {
+      allowTools: false,
+      allowAutomaticMemory: false,
+    });
+    expect(textarea).toHaveValue("");
+  });
+
+  it("keeps a disabled draft and its choice without sending", async () => {
+    const onTextOnlyChange = vi.fn();
+    const { user, onSend, textarea, rerender } = setup({
+      disabled: true,
+      textOnly: true,
+      onTextOnlyChange,
+    });
+    await user.type(textarea, "wait for my model{Enter}");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("wait for my model");
+    expect(screen.getByRole("checkbox", { name: "Text only" })).toBeChecked();
+    expect(onTextOnlyChange).not.toHaveBeenCalled();
+    rerender({ disabled: false, textOnly: true });
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledExactlyOnceWith("wait for my model", {
+      allowTools: false,
+      allowAutomaticMemory: false,
+    });
+  });
+
+  it("labels changes during a stream as applying to the next message", async () => {
+    const onTextOnlyChange = vi.fn();
+    const { user } = setup({ streaming: true, disabled: true, onTextOnlyChange });
+    const checkbox = screen.getByRole("checkbox", { name: "Text only" });
+    expect(checkbox).toHaveAccessibleDescription(
+      "Next message: no tools or automatic memory",
+    );
+    await user.click(checkbox);
+    expect(onTextOnlyChange).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it.each(["/research a question", "@researcher a question"])(
+    "leaves required-tool source validation to the server for %s",
+    async (text) => {
+      const { user, onSend, textarea } = setup({
+        agents: AGENTS,
+        textOnly: true,
+        onTextOnlyChange: vi.fn(),
+      });
+      await user.type(textarea, text);
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(onSend).toHaveBeenCalledExactlyOnceWith(text, {
+        allowTools: false,
+        allowAutomaticMemory: false,
+      });
+    },
+  );
+
+  it.each([true, false])(
+    "never applies text-chat restrictions to live voice (accepted=%s)",
+    async (accepted) => {
+      const onTextOnlyChange = vi.fn();
+      const sendLive = vi.fn(() => accepted);
+      const { user, onSend, textarea } = setup({
+        textOnly: true,
+        onTextOnlyChange,
+        live: {
+          target: "live",
+          onTargetChange: vi.fn(),
+          avatarName: null,
+          onSend: sendLive,
+        },
+      });
+      expect(screen.queryByRole("checkbox", { name: "Text only" })).not.toBeInTheDocument();
+      await user.type(textarea, "live question{Enter}");
+      expect(sendLive).toHaveBeenCalledExactlyOnceWith("live question");
+      expect(onSend).not.toHaveBeenCalled();
+      expect(textarea).toHaveValue(accepted ? "" : "live question");
+      if (accepted) expect(onTextOnlyChange).toHaveBeenCalledExactlyOnceWith(false);
+      else expect(onTextOnlyChange).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders the message input with Send disabled while empty", () => {
     setup();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();

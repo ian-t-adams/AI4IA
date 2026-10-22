@@ -22,6 +22,72 @@ function sseResponse(chunks: string[]): Response {
 afterEach(() => mockApiFetch.mockReset());
 
 describe("streamChat", () => {
+  it.each([false, true])(
+    "serializes the exact chat request without changing context (text-only=%s)",
+    async (textOnly) => {
+      mockApiFetch.mockResolvedValue(sseResponse([
+        'data: {"metadata":{"userMessageId":"u1","assistantMessageId":"a1"}}\n\n',
+        "data: [DONE]\n\n",
+      ]));
+      const input: Parameters<typeof streamChat>[0] = {
+        sessionId: "existing-conversation",
+        content: "keep the question unchanged",
+        model: "catalog-model",
+        params: { max_tokens: 1024 },
+        approvals: [{ requestId: "r1", grant: "synthetic-grant" }],
+        ...(textOnly ? { allowTools: false, allowAutomaticMemory: false } : {}),
+      };
+      await new Promise<void>((resolve, reject) => {
+        streamChat(input, {
+          onMetadata: vi.fn(),
+          onDelta: vi.fn(),
+          onDone: resolve,
+          onError: (message) => reject(new Error(message)),
+        });
+      });
+      expect(mockApiFetch).toHaveBeenCalledTimes(1);
+      expect(mockApiFetch.mock.calls[0][0]).toBe("/api/chat");
+      const body = JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body));
+      expect(body).toEqual({ ...input, stream: true });
+      expect(body).not.toHaveProperty("requireFreshSession");
+      if (textOnly) {
+        expect(body.allowTools).toBe(false);
+        expect(body.allowAutomaticMemory).toBe(false);
+      } else {
+        expect(body).not.toHaveProperty("allowTools");
+        expect(body).not.toHaveProperty("allowAutomaticMemory");
+      }
+    },
+  );
+
+  it("reports a tool-free source rejection without retrying an unrestricted request", async () => {
+    mockApiFetch.mockResolvedValue(new Response("This source requires tools.", { status: 422 }));
+    const onDone = vi.fn();
+    const error = await new Promise<string>((resolve) => {
+      streamChat({
+        sessionId: "s1",
+        content: "@required-source question",
+        allowTools: false,
+        allowAutomaticMemory: false,
+      }, {
+        onMetadata: vi.fn(),
+        onDelta: vi.fn(),
+        onDone,
+        onError: resolve,
+      });
+    });
+    expect(error).toBe("422: This source requires tools.");
+    expect(onDone).not.toHaveBeenCalled();
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({
+      sessionId: "s1",
+      content: "@required-source question",
+      allowTools: false,
+      allowAutomaticMemory: false,
+      stream: true,
+    });
+  });
+
   // Audit P1-14. The span registry rides frame 0, before the model speaks, so
   // the browser can mark citations as they stream rather than showing raw
   // tokens until the durable row is refetched.

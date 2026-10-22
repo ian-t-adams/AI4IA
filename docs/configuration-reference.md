@@ -534,6 +534,13 @@ Voice Live connection opens.
 `POST /api/chat` accepts strict Boolean reduction controls. They are not
 environment variables, role assignments, or persisted user preferences.
 
+The ordinary-chat composer's **Text only** checkbox sends both `allowTools: false`
+and `allowAutomaticMemory: false` for that message. Unchecked sends omit both
+fields, preserving the defaults. The selection resets after sending or changing
+conversations; approval continuations retain the originating turn's reductions.
+It does not set `requireFreshSession`, clear existing context, revoke consent,
+edit saved preferences, or select a particular member of a model router.
+
 | Request field | Default | Effect |
 |---|---|---|
 | `allowTools` | `true` | `false` removes ambient offers and denies registry, synthetic, MCP and skill dispatch for the entire request, including SSE. A selected source that requires tools is refused rather than silently rewritten. Commands are incompatible with a tool-free request. |

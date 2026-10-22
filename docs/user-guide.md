@@ -36,6 +36,25 @@ Give the assistant a goal, constraints, and an expected output. Use attachments
 for one-off material and the library for sources you expect to reuse.
 Check citations against the original source before relying on an answer.
 
+Choose **Text only** in the composer to disable tools and automatic memory
+for **this message only**. It is off by default and resets after sending or
+choosing **New chat** or another conversation. A retry through an approval
+prompt keeps the original turn's restrictions, not your next draft's choice.
+While a reply is streaming, the checkbox applies to the next message.
+
+This does not clear history, instructions, selected documents, attachments, or
+saved memory, and it does not change saved tool permissions, consent, or memory
+preferences. Commands and selected agents or published sources that require
+tools are refused rather than silently changed into plain chat. The control is
+for text chat, not live voice; while connected, select **Send to: Text chat**
+to use it.
+
+For a tool-free routing demonstration, start a **new generic chat** with no
+selected agent, added documents, custom instructions, or earlier messages, then
+select **Text only** before each question. Balanced routing still chooses the
+model: this option does not force Astra or guarantee a difficulty-to-model
+mapping. Use the reply's recorded model evidence to see which model answered.
+
 Model controls reflect the server's catalog. Context size, output limits,
 reasoning effort, sampling, input modalities, and tool support vary by model.
 GPT-6.1 Sol uses Responses with low through maximum effort, without a skip-reasoning
