@@ -29,6 +29,8 @@ def transport_response(body, result):
                 {**call, "index": index} for index, call in enumerate(delta["tool_calls"])
             ]
         frames = [{"choices": [{"delta": delta}]}]
+        if "model" in result:
+            frames[0]["model"] = result["model"]
         if "usage" in result:
             frames.append({"choices": [], "usage": result["usage"]})
         text = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames)

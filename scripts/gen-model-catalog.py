@@ -42,7 +42,7 @@ def build_catalog(models: dict) -> dict:
     items = []
     for model in models["catalog"]:
         target = model_target(model)
-        routing_configuration(model, models)
+        routing = routing_configuration(model, models)
         options = []
         for dep in model["deployments"]:
             region = dep["region"]
@@ -69,6 +69,7 @@ def build_catalog(models: dict) -> dict:
                 **({} if runtime_enabled(model) else {"runtimeEnabled": False}),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
+                **({"routing": routing} if routing is not None else {}),
                 "requiredRealtimeProtocol": model.get("requiredRealtimeProtocol"),
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),

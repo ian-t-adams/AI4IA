@@ -833,6 +833,26 @@
       "category": "router",
       "format": "OpenAI",
       "api": "chat",
+      "routing": {
+        "mode": "balanced",
+        "models": [
+          {
+            "format": "OpenAI",
+            "name": "gpt-6-astra",
+            "version": "2026-09-03"
+          },
+          {
+            "format": "OpenAI",
+            "name": "gpt-6-sol",
+            "version": "2026-09-22"
+          },
+          {
+            "format": "OpenAI",
+            "name": "gpt-6-luna",
+            "version": "2026-09-22"
+          }
+        ]
+      },
       "requiredRealtimeProtocol": null,
       "contextWindow": null,
       "maxOutputTokens": null,

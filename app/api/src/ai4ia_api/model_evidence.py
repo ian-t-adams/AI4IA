@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, Awaitable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -20,6 +20,9 @@ from .agents.tools import redact
 from .hard_quota.models import AdmissionEvidence
 from .usage.models import TokenUsage
 from .usage.pricing import PricingBook
+
+if TYPE_CHECKING:
+    from .catalog import ModelCatalog
 
 MAX_RECORDED_MODEL_CALLS = 8
 MAX_PRICE_VERSIONS = 16
@@ -75,11 +78,20 @@ class ReceiptCostSummary(_Evidence):
     priceVersionsTruncated: bool = False
 
 
+class ResponseModelEvidence(_Evidence):
+    """Catalog-recognized response metadata, never an inference or execution grant."""
+
+    status: Literal["reported", "not_reported", "unrecognized", "conflicting"]
+    modelId: str | None = Field(default=None, max_length=128)
+    version: str | None = Field(default=None, max_length=64)
+
+
 class ModelCallEvidence(_Evidence):
     iteration: int = Field(ge=1)
     scope: Literal["application_effective"] = "application_effective"
     providerInternals: Literal["unknown"] = "unknown"
     modelId: str | None = Field(default=None, max_length=128)
+    responseModel: ResponseModelEvidence | None = None
     api: ModelApi = "unknown"
     modelSource: ModelSource = "unknown"
     parameterSource: ParameterSource = "application_default"
@@ -204,6 +216,62 @@ class CapturedModelCall:
     completed: bool = False
     usage: TokenUsage = field(default_factory=lambda: TokenUsage.parse(None))
     admissions: list[AdmissionEvidence] = field(default_factory=list)
+    response_model: ResponseModelEvidence | None = None
+    response_models: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    route_aliases: set[str] = field(default_factory=set)
+
+    def configure_response_models(self, catalog: ModelCatalog, deployment: str) -> None:
+        self.response_model = ResponseModelEvidence(status="not_reported")
+        entry = catalog.for_deployment(deployment)
+        if entry is None:
+            return
+        if entry.category == "router":
+            self.route_aliases = {entry.id, deployment}
+            for option in entry.options:
+                if option.modelVersion:
+                    self.route_aliases.add(f"{entry.id}-{option.modelVersion}")
+            identities = [
+                (member.name, member.version)
+                for member in entry.routing.models
+            ] if entry.routing is not None else []
+        else:
+            option = next(option for option in entry.options if option.deploymentName == deployment)
+            identities = [(entry.id, option.modelVersion)]
+            self.response_models[deployment] = (entry.id, None)
+        for name, version in identities:
+            if _identifier(name) is None:
+                continue
+            self.response_models[name] = (name, None)
+            if version and len(version) <= 64 and _identifier(version) is not None:
+                self.response_models[f"{name}-{version}"] = (name, version)
+
+    def response_metadata(self, body: dict[str, Any]) -> None:
+        response = body
+        if self.api == "responses" and isinstance(body.get("response"), dict):
+            response = body["response"]
+        elif self.api == "anthropic" and isinstance(body.get("message"), dict):
+            response = body["message"]
+        if "model" not in response:
+            return
+        previous = self.response_model
+        if previous is not None and previous.status in ("conflicting", "unrecognized"):
+            return
+        raw = response["model"]
+        if isinstance(raw, str) and raw in self.route_aliases:
+            return
+        identity = self.response_models.get(raw) if isinstance(raw, str) and len(raw) <= 128 else None
+        if identity is None:
+            self.response_model = ResponseModelEvidence(status="unrecognized")
+            return
+        name, version = identity
+        if previous is not None and previous.status == "reported":
+            if previous.modelId != name or (
+                previous.version is not None and version is not None and previous.version != version
+            ):
+                self.response_model = ResponseModelEvidence(status="conflicting")
+                return
+            version = version or previous.version
+        self.response_model = ResponseModelEvidence(status="reported", modelId=name, version=version)
 
     def report_admission(self, value: AdmissionEvidence) -> None:
         for index, previous in enumerate(self.admissions):
@@ -244,6 +312,7 @@ class CapturedModelCall:
         )
         return ModelCallEvidence(
             iteration=self.iteration, modelId=_identifier(self.model_id),
+            responseModel=self.response_model,
             api=_api(self.api),
             modelSource=self.model_source, parameterSource=self.parameter_source,
             requestOverrides=self.overrides,
@@ -343,6 +412,13 @@ class ModelCallRecorder:
         ], expected_calls=self.count)
 
 
-def begin_model_call(deployment: str, api: str) -> CapturedModelCall | None:
+def begin_model_call(
+    deployment: str, api: str, *, catalog: ModelCatalog | None = None,
+) -> CapturedModelCall | None:
     recorder = _current_recorder.get()
-    return recorder.start(deployment, api) if recorder is not None else None
+    if recorder is None:
+        return None
+    call = recorder.start(deployment, api)
+    if catalog is not None:
+        call.configure_response_models(catalog, deployment)
+    return call

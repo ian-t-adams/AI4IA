@@ -1674,6 +1674,16 @@
   color: var(--fg-muted);
 }
 
+.message-response-model {
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.response-model-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .message-body {
   min-width: 0;
   max-width: 100%;

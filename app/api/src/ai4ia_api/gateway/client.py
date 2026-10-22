@@ -1369,7 +1369,9 @@ class ModelGatewayClient:
                 stream=False,
                 correlation_id=correlation_id,
             )
-        evidence = begin_model_call(deployment, resolved_api)
+        from ..catalog import load_catalog
+
+        evidence = begin_model_call(deployment, resolved_api, catalog=load_catalog(self._catalog_path))
         if evidence is not None:
             evidence.request(req.json)
         client, owned = self._client()
@@ -1394,6 +1396,8 @@ class ModelGatewayClient:
             if not isinstance(data, dict):
                 raise ModelGatewayError(502, _REQUEST_FAILED)
             telemetry.response_metadata(data)
+            if evidence is not None:
+                evidence.response_metadata(data)
             if not tools_allowed() and contains_tool_output(data):
                 raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
             if resolved_api == "responses":
@@ -1466,7 +1470,9 @@ class ModelGatewayClient:
         try:
             resolved_api = _resolved_api(api, deployment)
             telemetry = self._model_telemetry.start(deployment, resolved_api)
-            evidence = begin_model_call(deployment, resolved_api)
+            from ..catalog import load_catalog
+
+            evidence = begin_model_call(deployment, resolved_api, catalog=load_catalog(self._catalog_path))
             if resolved_api == "responses":
                 async with aclosing(
                     self._stream_responses(
@@ -1540,7 +1546,7 @@ class ModelGatewayClient:
                             continue
                         raise ModelGatewayError(resp.status_code, detail)
                     async for line in resp.aiter_lines():
-                        chunk = parse_sse_line(line, telemetry=telemetry)
+                        chunk = parse_sse_line(line, telemetry=telemetry, evidence=evidence)
                         if chunk is not None:
                             admission.report(chunk.usage, complete=chunk.done)
                             if evidence is not None:
@@ -1604,7 +1610,7 @@ class ModelGatewayClient:
                         data_buf.append(line[len("data:") :].lstrip())
                         continue
                     if line == "" and data_buf:
-                        event = parse_anthropic_event("\n".join(data_buf), state, telemetry=telemetry)
+                        event = parse_anthropic_event("\n".join(data_buf), state, telemetry=telemetry, evidence=evidence)
                         data_buf = []
                         if event is None:
                             continue
@@ -1623,7 +1629,7 @@ class ModelGatewayClient:
                         if chunk.done:
                             return
                 if data_buf:
-                    event = parse_anthropic_event("\n".join(data_buf), state, telemetry=telemetry)
+                    event = parse_anthropic_event("\n".join(data_buf), state, telemetry=telemetry, evidence=evidence)
                     if event is not None:
                         if event.error:
                             raise ModelGatewayError(502, _STREAM_FAILED)
@@ -1689,7 +1695,7 @@ class ModelGatewayClient:
                     if line == "":
                         # Frame boundary: flush the accumulated data payload.
                         if data_buf:
-                            chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry)
+                            chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry, evidence=evidence)
                             data_buf = []
                             if chunk is not None:
                                 admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
@@ -1699,7 +1705,7 @@ class ModelGatewayClient:
                     # ``event:``/comment lines carry no payload — ignore them.
                 # Flush a trailing frame not followed by a blank line.
                 if data_buf:
-                    chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry)
+                    chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry, evidence=evidence)
                     if chunk is not None:
                         admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
                         yield chunk
@@ -1710,7 +1716,9 @@ class ModelGatewayClient:
                 await client.aclose()
 
 
-def parse_sse_line(line: str, *, telemetry: ModelSpan | None = None) -> ChatChunk | None:
+def parse_sse_line(
+    line: str, *, telemetry: ModelSpan | None = None, evidence: CapturedModelCall | None = None,
+) -> ChatChunk | None:
     """Parse one SSE line into a ChatChunk (None for blanks/comments)."""
     if not line or not line.startswith("data:"):
         return None
@@ -1725,6 +1733,8 @@ def parse_sse_line(line: str, *, telemetry: ModelSpan | None = None) -> ChatChun
         return ChatChunk(raw=payload)
     if telemetry is not None and isinstance(obj, dict):
         telemetry.response_metadata(obj)
+    if evidence is not None and isinstance(obj, dict):
+        evidence.response_metadata(obj)
     if not tools_allowed() and contains_tool_output(obj):
         raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
     delta = ""
@@ -1740,7 +1750,7 @@ def parse_sse_line(line: str, *, telemetry: ModelSpan | None = None) -> ChatChun
 
 
 def _parse_responses_event(
-    payload: str, *, telemetry: ModelSpan | None = None,
+    payload: str, *, telemetry: ModelSpan | None = None, evidence: CapturedModelCall | None = None,
 ) -> ChatChunk | None:
     """Translate one Responses SSE frame payload into a chat-shaped ChatChunk.
 
@@ -1766,6 +1776,8 @@ def _parse_responses_event(
         return None
     if telemetry is not None and isinstance(obj, dict):
         telemetry.response_metadata(obj)
+    if evidence is not None and isinstance(obj, dict):
+        evidence.response_metadata(obj)
     if not tools_allowed() and contains_tool_output(obj):
         raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
     etype = obj.get("type")

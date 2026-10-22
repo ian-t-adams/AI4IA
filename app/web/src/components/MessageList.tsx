@@ -20,6 +20,7 @@ import { SAFETY_MAX_SEVERITY_LEVEL } from "@/lib/types";
 import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
+import { finalResponseModel, responseModelLabel } from "@/lib/responseModel";
 import { MemoryProvenance } from "./MemoryProvenance";
 import { Markdown, type CitationTarget } from "@/components/Markdown";
 import { msToTimecode } from "@/lib/citations";
@@ -686,6 +687,12 @@ function Bubble({
           </span>
         )}
         {msg.agent && <span className="message-tag">@{msg.agent}</span>}
+        {!isUser && !msg.pending && msg.executionReceipt?.status === "complete" &&
+          (msg.executionReceipt.runtime.modelId || msg.executionReceipt.runtime.modelCalls?.length) ? (
+            <span className="message-response-model">
+              Answered by: {responseModelLabel(finalResponseModel(msg.executionReceipt))}
+            </span>
+          ) : null}
       </div>
       <div className="message-body">
         {isUser ? (

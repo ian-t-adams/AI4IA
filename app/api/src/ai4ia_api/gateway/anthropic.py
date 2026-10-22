@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..catalog import ModelEntry
     from ..genai_telemetry import ModelSpan
+    from ..model_evidence import CapturedModelCall
 
 
 ANTHROPIC_API = "anthropic"
@@ -403,6 +404,7 @@ def _chat_raw(delta: dict[str, Any]) -> str:
 
 def parse_anthropic_event(
     payload: str, state: AnthropicStreamState, *, telemetry: ModelSpan | None = None,
+    evidence: CapturedModelCall | None = None,
 ) -> AnthropicStreamEvent | None:
     if not payload:
         return None
@@ -414,6 +416,8 @@ def parse_anthropic_event(
         return None
     if telemetry is not None:
         telemetry.response_metadata(event)
+    if evidence is not None:
+        evidence.response_metadata(event)
 
     event_type = event.get("type")
     if event_type == "error":
