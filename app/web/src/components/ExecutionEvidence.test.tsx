@@ -60,7 +60,7 @@ it("progressively renders initial and later adapted controls and immutable price
   await userEvent.click(screen.getByText(/Execution receipt/));
   await userEvent.click(screen.getByText("Runtime"));
   expect(screen.getByText("Estimated $0.0080")).toBeVisible();
-  await userEvent.click(screen.getByText("Application-effective model parameters"));
+  await userEvent.click(screen.getByText("Model calls and parameters"));
   for (const [iteration, limit] of [[1, 16384], [2, 32768]]) {
     const summary = screen.getByText(`Model call ${iteration} · responses · recorded`);
     await userEvent.click(summary);
@@ -102,6 +102,37 @@ it("uses the same recorded controls and cost in delegated and workflow step rece
   expect(screen.getAllByText("delegation defaults (no parent overrides)")).toHaveLength(2);
 });
 
+it("distinguishes the requested router from each provider-reported response model", async () => {
+  const first = { ...call(1, 1024), modelId: "router-fixture",
+    responseModel: { status: "reported" as const, modelId: "member-large", version: "2026-09-03" } };
+  const last = { ...call(2, 1024), modelId: "router-fixture",
+    responseModel: { status: "reported" as const, modelId: "member-medium", version: "2026-09-22" } };
+  render(<ExecutionReceiptPanel receipt={receipt({
+    runtime: { modelId: "router-fixture", modelCallCount: 2, modelCalls: [first, last] },
+  })} />);
+  await userEvent.click(screen.getByText(/Execution receipt/));
+  await userEvent.click(screen.getByText("Runtime"));
+  expect(screen.getAllByText("Requested model")[0].parentElement).toHaveTextContent("router-fixture");
+  expect(screen.getAllByText("Response model")[0].parentElement).toHaveTextContent("member-medium (2026-09-22)");
+  await userEvent.click(screen.getByText("Model calls and parameters"));
+  for (const [iteration, name] of [[1, "member-large"], [2, "member-medium"]]) {
+    const summary = screen.getByText(`Model call ${iteration} · responses · recorded`);
+    await userEvent.click(summary);
+    const detail = within(summary.parentElement!);
+    expect(detail.getByText("Response model").parentElement).toHaveTextContent(String(name));
+    expect(detail.getByText("Response model").nextElementSibling).toHaveClass("response-model-detail");
+    expect(detail.getByText("Requested model").parentElement).toHaveTextContent("router-fixture");
+  }
+});
+
+it("does not substitute an earlier retained model for a capped final call", () => {
+  render(<ExecutionReceiptPanel receipt={receipt({
+    runtime: { modelId: "router-fixture", modelCallCount: 9, modelCalls: [{
+      ...call(1, 1024), responseModel: { status: "reported", modelId: "earlier-member", version: null },
+    }] },
+  })} embedded />);
+  expect(screen.getAllByText("Response model")[0].parentElement).toHaveTextContent("Not recorded");
+});
 
 it("shows live avatar evidence with its record prefix, seconds and per-second estimate", async () => {
   render(<ExecutionReceiptPanel receipt={receipt({

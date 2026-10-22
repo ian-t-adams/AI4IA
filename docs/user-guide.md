@@ -126,7 +126,17 @@ invoked tools, bounded arguments/results, approvals, usage, and safety coverage.
 Loaded skills include their source URI, version resolution, hash, and truncation.
 Long workflows also retain independently bounded step receipts.
 
-Under **Runtime**, **Application-effective model parameters** shows the controls
+Completed replies show **Answered by** beside the assistant when response-model
+evidence is available. For Model Router this distinguishes the requested router
+from the model reported in the provider response, including its version when
+reported. Open **Execution receipt > Runtime > Model calls and parameters** for
+each call: a tool-using turn can route its successive calls to different models.
+The summary uses the final call, never a preceding call retained in a capped receipt.
+Old turns show **Not recorded**; missing, unrecognized or conflicting provider
+metadata stays explicit. The app does not identify a model from its writing,
+the prompt, or token cost, and cannot recover metadata it did not record.
+
+Under **Runtime**, **Model calls and parameters** also shows the controls
 actually sent for each model call after the application adapted them for the
 chosen model. An omitted control says its provider default is unknown. Workflow
 steps and delegated agents show their own defaults rather than inheriting the
@@ -138,6 +148,7 @@ unknown; **Unknown** is not zero. These are model-token estimates, not a bill, a
 exclude tool, media, and other service charges. Changing session settings or
 updating prices does not change a saved receipt. Older receipts show parameters
 and cost as **not recorded**, rather than reconstructing them from current settings.
+Response-model metadata does not reprice the call or establish its actual billed cost.
 
 **These are not chain-of-thought.** They show what the application supplied and
 executed, not the model's private reasoning or proof of which source caused an

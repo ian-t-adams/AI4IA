@@ -108,6 +108,17 @@ class DeploymentOption(BaseModel):
         return self.residency == policy
 
 
+class RoutingModel(BaseModel):
+    format: str
+    name: str = Field(min_length=1, max_length=128)
+    version: str = Field(min_length=1, max_length=64)
+
+
+class ModelRouting(BaseModel):
+    mode: Literal["balanced", "cost", "quality"]
+    models: list[RoutingModel] = Field(min_length=1, max_length=16)
+
+
 class ModelEntry(BaseModel):
     id: str
     displayName: str
@@ -123,6 +134,7 @@ class ModelEntry(BaseModel):
     # or "bfl" (Black Forest Labs image generation).
     # The gateway routes by this flag; the field is informational to the UI.
     api: str = "chat"
+    routing: ModelRouting | None = None
     deploymentTarget: Literal["source", "external-claude"] = "source"
     samplingSupported: bool | None = None
     # External Claude profile: "disabled" is text plus the governed tool loop;
@@ -163,6 +175,7 @@ class ModelEntry(BaseModel):
         for key, default in (
             ("deploymentTarget", "source"), ("samplingSupported", None), ("anthropicThinking", None),
             ("runtimeEnabled", True), ("imageEditing", False), ("imageEditingDefault", False),
+            ("routing", None),
         ):
             if result.get(key) == default:
                 result.pop(key, None)
@@ -386,6 +399,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "runtimeEnabled": model.get("runtimeEnabled", True),
                 "format": model["format"],
                 "api": model.get("api", "chat"),
+                **({"routing": model["routing"]} if "routing" in model else {}),
                 "requiredRealtimeProtocol": model.get("requiredRealtimeProtocol"),
                 "contextWindow": model.get("contextWindow"),
                 "maxOutputTokens": model.get("maxOutputTokens"),

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import { MessageList, type DisplayMessage } from "./MessageList";
 import { fetchImageArtifact } from "@/lib/api";
-import type { ExecutionReceipt, RetrievedSource } from "@/lib/types";
+import type { ExecutionReceipt, ModelCallEvidence, RetrievedSource } from "@/lib/types";
 
 // Speech playback owns <audio> + object-URL plumbing and hits the TTS endpoint on
 // toggle. Stub the hook so we can assert the speak button wiring without audio or
@@ -1152,6 +1152,59 @@ describe("MessageList execution receipt", () => {
       />,
     );
   }
+
+  const responseCall = (
+    iteration: number, modelId: string, version: string | null,
+  ): ModelCallEvidence => ({
+    iteration, modelId: "router-fixture", scope: "application_effective",
+    providerInternals: "unknown", api: "chat", modelSource: "session",
+    parameterSource: "application_default", requestOverrides: [], coverage: "recorded",
+    httpAttempts: 1, providerCompleted: true, usageKnown: false, usageComplete: false,
+    cost: { coverage: "unknown", currency: "USD", pricingBasis: "input_output_tokens" },
+    responseModel: { status: "reported", modelId, version },
+  });
+
+  it("shows the final reported answering model beside the reply without opening the receipt", () => {
+    renderReceipt({
+      runtime: { modelId: "router-fixture", modelCallCount: 2,
+        modelCalls: [responseCall(1, "large-member", "v1"), responseCall(2, "small-member", "v2")] },
+    });
+    const label = screen.getByText("Answered by: small-member (v2)");
+    expect(label).toBeVisible();
+    expect(label.closest("details")).toBeNull();
+  });
+
+  it.each(["not_reported", "unrecognized", "conflicting"] as const)(
+    "labels %s response identity explicitly rather than choosing a router member",
+    (status) => {
+      const labels = {
+        not_reported: "Not reported by provider",
+        unrecognized: "Unrecognized response metadata",
+        conflicting: "Conflicting response metadata",
+      };
+      const call = responseCall(1, "ignored-model", "ignored-version");
+      call.responseModel = { status, modelId: null, version: null };
+      renderReceipt({ runtime: { modelId: "router-fixture", modelCallCount: 1, modelCalls: [call] } });
+      expect(screen.getByText(`Answered by: ${labels[status]}`)).toBeVisible();
+      expect(screen.queryByText(/Answered by: ignored/)).toBeNull();
+    },
+  );
+
+  it("labels historical response models as not recorded without using the requested model", () => {
+    renderReceipt();
+    expect(screen.getByText("Answered by: Not recorded")).toBeVisible();
+    expect(screen.queryByText("Answered by: gpt-4o")).toBeNull();
+  });
+
+  it("does not present a pending or failed response as an answered-by claim", () => {
+    render(<MessageList messages={[
+      msg({ id: "pending-model", role: "assistant", content: "partial", pending: true,
+        executionReceipt: receipt() }),
+      msg({ id: "failed-model", role: "assistant", content: "partial",
+        executionReceipt: receipt({ status: "error" }) }),
+    ]} />);
+    expect(screen.queryByText(/Answered by:/)).toBeNull();
+  });
 
   it.each([
     ["library_retrieval_unavailable", "Library retrieval is unavailable"],

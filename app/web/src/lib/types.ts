@@ -369,6 +369,7 @@ export interface ModelCallEvidence {
   scope: "application_effective";
   providerInternals: "unknown";
   modelId?: string | null;
+  responseModel?: ResponseModelEvidence | null;
   api: "chat" | "responses" | "anthropic" | "unknown";
   modelSource: "request" | "session" | "agent" | "workflow" | "supervisor" | "unknown";
   parameterSource: "request" | "application_default" | "workflow_default" | "delegation_default";
@@ -382,6 +383,12 @@ export interface ModelCallEvidence {
   promptTokens?: number | null;
   completionTokens?: number | null;
   cost: ModelCostEstimate;
+}
+
+export interface ResponseModelEvidence {
+  status: "reported" | "not_reported" | "unrecognized" | "conflicting";
+  modelId: string | null;
+  version: string | null;
 }
 
 export interface ReceiptUsage {

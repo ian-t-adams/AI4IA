@@ -13,6 +13,7 @@ import type {
 } from "@/lib/types";
 import { formatBytes } from "@/lib/library";
 import { formatUsd } from "@/lib/admin";
+import { finalResponseModel, responseModelLabel } from "@/lib/responseModel";
 import { ToolApprovalProvenance } from "./ToolApprovalProvenance";
 
 // One receipt payload as monospaced, pre-wrapped diagnostic text.
@@ -130,6 +131,8 @@ function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
     value == null ? missing : String(value);
   const cost = call.cost;
   const rows: [string, string][] = [
+    ["Requested model", call.modelId ?? "Not recorded"],
+    ["Response model", responseModelLabel(call.responseModel)],
     ["Model selection source", call.modelSource],
     ["Parameter source", PARAMETER_SOURCES[call.parameterSource]],
     ["Request overrides supplied", call.requestOverrides.join(", ") || "None"],
@@ -158,7 +161,7 @@ function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
         {rows.map(([label, value]) => (
           <div key={label} className="activity-row">
             <span className="activity-label">{label}</span>
-            <span className="activity-detail">{value}</span>
+            <span className={label === "Response model" ? "response-model-detail" : "activity-detail"}>{value}</span>
           </div>
         ))}
       </div>
@@ -183,7 +186,9 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
   const cost = receipt.usage?.cost;
 
   const runtimeRows: [string, string | null | undefined][] = [
-    ["Model", runtime.modelId],
+    ["Requested model", runtime.modelId],
+    ["Response model", runtime.modelId || modelCalls.length
+      ? responseModelLabel(finalResponseModel(receipt)) : null],
     ["Deployment", runtime.deployment],
     ["Region", runtime.region],
     ["SKU", runtime.sku],
@@ -310,7 +315,7 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
               .map(([label, value]) => (
                 <div key={label} className="activity-row">
                   <span className="activity-label">{label}</span>
-                  <span className="activity-detail">{value}</span>
+                  <span className={label === "Response model" ? "response-model-detail" : "activity-detail"}>{value}</span>
                 </div>
               ))}
             {cost ? (
@@ -321,12 +326,15 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
             ) : null}
             {modelCalls.length > 0 ? (
               <details>
-                <summary className="activity-label">Application-effective model parameters</summary>
+                <summary className="activity-label">Model calls and parameters</summary>
                 <div className="activity-rows">
                   <p className="safety-note">
                     Scalar controls the application sent after model-capability adaptation.
                     Provider-internal values are unknown. An omitted control does not record
                     a provider default. Request overrides may have been changed or removed.
+                    {" "}Response models are provider-reported metadata, not hidden reasoning.
+                    Each call can use a different model. Missing or conflicting reports are
+                    not inferred from the requested router, answer, or token cost.
                   </p>
                   {modelCalls.map((call) => <ModelCallPanel key={call.iteration} call={call} />)}
                 </div>

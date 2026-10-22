@@ -133,6 +133,13 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Price-document versions must survive the actual receipt identifier/redaction
    path unchanged. Keep them compact and public; never weaken credential
    redaction to preserve an overlong, token-shaped version identifier.
+   Per-call response-model identity comes only from native response metadata
+   matched to the requested deployment's catalog identity or its exact router
+   subset. Preserve missing, unrecognized, conflicting and historical states;
+   neither the route, reply text nor token price identifies a selected model.
+   Keep source routing metadata in generated/dev catalogs. Each tool-loop call
+   owns its report, the final-call summary must not select an earlier retained
+   call, and reporting never grants execution or reprices saved estimates.
 8. **Hard admission is a separate, default-off source contract.** Do not turn
    soft ledger checks into a distributed quota or bootstrap an admissible empty
    hard balance for an existing owner. Metered egress goes through the shared owner
