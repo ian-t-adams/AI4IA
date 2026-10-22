@@ -257,6 +257,8 @@ class CapturedModelCall:
         if previous is not None and previous.status in ("conflicting", "unrecognized"):
             return
         raw = response["model"]
+        if raw is None or raw == "":
+            return
         if isinstance(raw, str) and raw in self.route_aliases:
             return
         identity = self.response_models.get(raw) if isinstance(raw, str) and len(raw) <= 128 else None

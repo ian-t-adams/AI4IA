@@ -137,6 +137,37 @@ def test_native_sse_identity_handles_route_echoes_and_conflicts_without_last_chu
         )
 
 
+@pytest.mark.parametrize("placeholder", ["", None])
+@pytest.mark.parametrize("reported", [False, True])
+def test_native_empty_model_frames_do_not_poison_later_reported_identity(placeholder, reported):
+    member = MEMBERS[0]
+    identity = member["name"] + "-" + member["version"]
+
+    def respond(_body, _index, _result):
+        frames = [{"model": placeholder, "choices": []}]
+        if reported:
+            frames.append({"model": identity, "choices": [{"delta": {"content": "answer"}}]})
+        else:
+            frames.append({"choices": [{"delta": {"content": "answer"}}]})
+        frames.append({"model": placeholder, "choices": []})
+        text = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=text, headers={"content-type": "text/event-stream"})
+
+    with transport_client(respond=respond) as (client, requests):
+        sid = client.post("/api/sessions", json={"model": ROUTER["name"]}).json()["id"]
+        outcome = client.post("/api/chat", json={
+            "sessionId": sid, "content": "Hello", "stream": True,
+            "allowTools": False, "allowAutomaticMemory": False,
+        })
+        assert outcome.status_code == 200, outcome.text
+        assert len(requests) == 1
+        response_model = receipts(client, sid)[0]["runtime"]["modelCalls"][0]["responseModel"]
+        assert response_model == (
+            {"status": "reported", "modelId": member["name"], "version": member["version"]} if reported else
+            {"status": "not_reported", "modelId": None, "version": None}
+        )
+
+
 @pytest.mark.parametrize("api", ["responses", "anthropic"])
 @pytest.mark.parametrize("stream", [False, True])
 async def test_provider_native_identity_is_observed_before_adapter_metadata_is_discarded(api, stream):

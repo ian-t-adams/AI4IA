@@ -135,6 +135,8 @@ The summary uses the final call, never a preceding call retained in a capped rec
 Old turns show **Not recorded**; missing, unrecognized or conflicting provider
 metadata stays explicit. The app does not identify a model from its writing,
 the prompt, or token cost, and cannot recover metadata it did not record.
+Empty model fields on stream setup or usage frames are not identity reports;
+they do not erase a model reported elsewhere in that same call.
 
 Under **Runtime**, **Model calls and parameters** also shows the controls
 actually sent for each model call after the application adapted them for the
