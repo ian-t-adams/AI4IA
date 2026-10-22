@@ -24,6 +24,7 @@ import type {
   AgentSummary,
   AttachmentCapabilities,
   ChatParams,
+  ChatRequestRestrictions,
   ConversationDraftDefaults,
   DeletionStatus,
   DocumentSummary,
@@ -358,6 +359,7 @@ export function ChatApp() {
     id: number;
     text: string;
   } | null>(null);
+  const [textOnly, setTextOnly] = useState(false);
   // Each request gets a new id, so the composer applies it exactly once.
   const startImagePrompt = useCallback(() => {
     setComposerPrefill((current) => ({ id: (current?.id ?? 0) + 1, text: "/generate_image " }));
@@ -385,7 +387,7 @@ export function ChatApp() {
   // on the stream and never persisted, so a reload deliberately drops it and
   // the user is asked again rather than silently holding a live capability.
   const [toolApprovals, setToolApprovals] = useState<
-    PendingToolApprovalPrompt[]
+    (PendingToolApprovalPrompt & { restrictions: ChatRequestRestrictions })[]
   >([]);
   const [error, setError] = useState<string | null>(null);
   // Server-authoritative image-editing availability (flags, store and a
@@ -905,6 +907,7 @@ export function ChatApp() {
       setDocuments([]);
       setLibraryDocs([]);
       setToolApprovals([]);
+      setTextOnly(false);
       const mySessionListGeneration = ++sessionListGenerationRef.current;
       try {
         const [msgs, all, docs] = await Promise.all([
@@ -1017,6 +1020,7 @@ export function ChatApp() {
     setDocuments([]);
     setLibraryDocs([]);
     setToolApprovals([]);
+    setTextOnly(false);
     setSessionLoading(false);
     setSelectedModel(pickDefaultModel(models));
     setSystemPrompt("");
@@ -2343,6 +2347,7 @@ export function ChatApp() {
     streamingSessionIdRef.current = null;
     setStreaming(false);
     setSessionLoading(false);
+    setTextOnly(false);
     clearReconciliationTimers();
     abandonPendingSessionCreation();
     if (voiceActiveRef.current) voiceStopRef.current();
@@ -2697,12 +2702,19 @@ export function ChatApp() {
   }, [libraryEnabled, libraryDocs]);
 
   const send = useCallback(
-    async (content: string, approvals?: ToolApprovalDecision[]) => {
+    async (
+      content: string,
+      restrictions: ChatRequestRestrictions = {},
+      approvals?: ToolApprovalDecision[],
+    ) => {
       if (streamingRef.current) return;
       if (!selectedModel) {
         setError("Select a model first.");
         return;
       }
+      // Snapshot before session creation or any stream work. Approval retries
+      // carry this turn's denials, not the next draft's checkbox state.
+      const requestRestrictions = { ...restrictions };
       setError(null);
       if (approvals?.length) {
         const redeemed = new Set(approvals.map((approval) => approval.requestId));
@@ -2715,6 +2727,7 @@ export function ChatApp() {
         // A fresh, unrelated user turn supersedes every old prompt; absence of a
         // grant is the explicit denial path.
         setToolApprovals([]);
+        setTextOnly(false);
       }
       // Claim the in-flight slot synchronously so a rapid second submit can't
       // create a duplicate session or start an overlapping stream.
@@ -3010,7 +3023,7 @@ export function ChatApp() {
       };
 
       abortRef.current = api.streamChat(
-        { sessionId, content, model: selectedModel, params, approvals },
+        { sessionId, content, model: selectedModel, params, approvals, ...requestRestrictions },
         {
           onMetadata: (value) => {
             metadata = value;
@@ -3035,7 +3048,12 @@ export function ChatApp() {
             if (ownsTurn()) setLiveSteps(bufferedSteps);
           },
           onApprovals: (prompts) => {
-            if (ownsTurn()) setToolApprovals(prompts);
+            if (ownsTurn()) {
+              setToolApprovals(prompts.map((prompt) => ({
+                ...prompt,
+                restrictions: requestRestrictions,
+              })));
+            }
           },
           onDone: () =>
             void finalize("complete", {
@@ -3544,8 +3562,14 @@ export function ChatApp() {
               prompts={toolApprovals}
               busy={streaming}
               onApprove={(prompt) => {
+                const pending = toolApprovals.find((item) => item.id === prompt.id);
+                if (!pending) {
+                  setError("This tool approval is no longer available. Send a new message.");
+                  return;
+                }
                 void send(
                   `Approved: run ${prompt.label} with exactly the arguments I was shown.`,
+                  pending.restrictions,
                   [{ requestId: prompt.id, grant: prompt.grant }],
                 );
               }}
@@ -3570,6 +3594,8 @@ export function ChatApp() {
                 (upload) => upload.sessionId === activeId,
               )}
               onSend={send}
+              textOnly={textOnly}
+              onTextOnlyChange={setTextOnly}
               onStop={stop}
               onUpload={uploadDocument}
               onRetryUpload={retryUpload}

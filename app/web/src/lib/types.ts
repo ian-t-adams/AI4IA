@@ -780,6 +780,12 @@ export interface ChatParams {
   reasoning_effort?: string;
 }
 
+// Request-only denials, never grants or saved conversation preferences.
+export interface ChatRequestRestrictions {
+  readonly allowTools?: false;
+  readonly allowAutomaticMemory?: false;
+}
+
 export interface ToolCatalogItem {
   name: string;
   label: string;
