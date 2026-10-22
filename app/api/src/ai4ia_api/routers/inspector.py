@@ -11,7 +11,7 @@ from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
 from ..agents.consent import ConsentStatus, ToolConsentSummary
 from ..agents.consent_service import inspect_session_consent, tool_auto_approve_available
-from ..conversations.policy import resolve_conversation_policy
+from ..conversations.policy import default_conversation_tools, resolve_conversation_policy
 from ..library.access import get_accessible_document, list_accessible_documents
 from ..library.repository import DocumentNotFoundError
 from ..sessions.models import ImageGenerationPreferences
@@ -164,6 +164,7 @@ async def get_inspector(
         request.app.state, user_id=user.internal_user_id,
         session_id=session_id, email=user.email,
     )
+    default_tools = default_conversation_tools(request.app.state)
     return InspectorSnapshot(
         toolAutoApproveAvailable=tool_auto_approve_available(request.app.state),
         toolConsent=consent.consent,
@@ -199,10 +200,13 @@ async def get_inspector(
             description=policy.agent.description if policy.agent else None,
         ),
         tools=InspectorTools(
-            inherited=list(policy.inherited_tools),
+            inherited=list(dict.fromkeys((*policy.inherited_tools, *default_tools))),
             added=list(policy.added_tools),
             removed=list(policy.removed_tools),
-            effective=list(policy.effective_tools),
+            effective=list(dict.fromkeys((
+                *policy.effective_tools,
+                *(name for name in default_tools if name not in policy.removed_tools),
+            ))),
             voiceEffective=list(policy.voice_tools),
         ),
         imagePreferences=session.imagePreferences,

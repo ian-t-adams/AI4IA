@@ -47,6 +47,7 @@ from ..sessions.deletion_models import (
 )
 from ..sessions.deletion_service import ConversationDeletionService
 from ..publishing.refs import AssetVersionRef
+from ..conversations.policy import default_conversation_tools
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,7 @@ async def _conversation_addable_tools(request: Request, user_id: str) -> set[str
     an empty set, logged) so a store/discovery blip can only narrow what a
     user may add, never widen it; the caller surfaces a 422 on rejection."""
     allowed = set(request.app.state.agent_service.attachable_tools)
+    allowed.update(default_conversation_tools(request.app.state))
     service = getattr(request.app.state, "mcp_service", None)
     if service is not None:
         try:

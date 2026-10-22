@@ -3,9 +3,10 @@
 import { useId } from "react";
 import type { Session, ToolConsentStatus, ToolConsentSummary } from "@/lib/types";
 import { useSessionToolConsentMutation, useToolConsentActive } from "./useSessionToolConsent";
+import { HelpTooltip } from "./HelpTooltip";
 
 export const TOOL_CONSENT_WARNING =
-  "Hostile retrieved content can influence later tool calls. Auto-approval skips individual approval prompts, not authorization, destination, or budget checks. Activity, traces, and execution receipts are still recorded.";
+  "Runs enabled tools without asking for confirmation each time. Only enable this for tools and sources you trust. Permissions, destination checks, usage limits, and activity records still apply.";
 
 const STATUS_TEXT: Record<ToolConsentStatus | "checking", string> = {
   active: "Auto-approval on for this session",
@@ -62,6 +63,11 @@ export function SessionToolConsentControls({
   const state = effectiveStatus(consent, available, active, status, unexpired);
   const enabled = Boolean(sessionId && state === "active");
   const mayGrant = available === true && state !== "checking" && state !== "unavailable" && state !== "disabled";
+  if (!sessionId) {
+    return <p className="inspector-note">
+      Choose tools below. Auto-approval is optional and can be enabled after the conversation starts.
+    </p>;
+  }
   if (sessionId && available !== true && !consent && !pending && !error) {
     return <div>
       <p className="inspector-note">{available === false
@@ -77,16 +83,17 @@ export function SessionToolConsentControls({
           type="checkbox"
           checked={enabled}
           disabled={pending || (!enabled && (!sessionId || !canEnable || !mayGrant))}
-          aria-describedby={`${id}-warning ${id}-scope`}
+          aria-describedby={`${id}-scope`}
           onChange={(event) => void onChange(event.target.checked)}
         />
         <label htmlFor={id}>Auto-approve enabled tools for this session</label>
+        <HelpTooltip label="About tool auto-approval" size="sm">
+          {TOOL_CONSENT_WARNING}
+        </HelpTooltip>
       </div>
-      <p id={`${id}-warning`} className="tool-consent-warning">{TOOL_CONSENT_WARNING}</p>
       <p id={`${id}-scope`} className="inspector-note">
-        {sessionId
-          ? "Only this session's current tool contracts are covered, for at most 8 hours. New or changed tools need renewed consent. Workflow runs require their own opt-in. Revoke at any time, including while a response is generating."
-          : "Start the conversation first, then explicitly enable auto-approval here. Typing or changing defaults does not create a session or grant consent."}
+        Applies to the current tools for up to 8 hours. Tool changes need renewed consent;
+        workflow runs have separate approval. Revoke at any time.
       </p>
       {sessionId ? <p role="status" className="tool-consent-state">
         {enabled ? "Auto-approval is enabled for this session."

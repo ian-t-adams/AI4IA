@@ -22,15 +22,14 @@ function grant(overrides: Partial<ToolConsentSummary> = {}): ToolConsentSummary 
 }
 
 describe("explicit session tool consent", () => {
-  it("keeps the draft option unchecked and explains that a session must be started first", () => {
+  it("keeps new-chat tool selection separate from optional session auto-approval", () => {
     const change = vi.fn();
     render(<SessionToolConsentControls sessionId={null} consent={null} available={null}
       canEnable={false} pending={false} error={null} onChange={change} />);
-    const checkbox = screen.getByRole("checkbox", { name: "Auto-approve enabled tools for this session" });
-    expect(checkbox).not.toBeChecked();
-    expect(checkbox).toBeDisabled();
-    expect(screen.getByText(/Start the conversation first/)).toBeVisible();
-    expect(screen.getByText(/Hostile retrieved content/)).toBeVisible();
+    expect(screen.queryByRole("checkbox", { name: "Auto-approve enabled tools for this session" })).toBeNull();
+    expect(screen.getByText(/Choose tools below/)).toBeVisible();
+    expect(screen.getByText(/Auto-approval is optional/)).toBeVisible();
+    expect(screen.queryByText(/Hostile retrieved content/)).toBeNull();
     expect(change).not.toHaveBeenCalled();
   });
 
@@ -45,6 +44,16 @@ describe("explicit session tool consent", () => {
     expect(screen.getByRole("checkbox")).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Revoke session auto-approval" }));
     expect(change).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps the auto-approval tradeoff available as help instead of a warning wall", async () => {
+    render(<SessionToolConsentControls sessionId="s1" consent={null} available={true} status="off"
+      canEnable={true} pending={false} error={null} onChange={vi.fn()} />);
+    expect(screen.queryByText(/Runs enabled tools without asking/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Help: About tool auto-approval" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Only enable this for tools and sources you trust.");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Permissions, destination checks, usage limits");
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
   });
 
   it("expires a visible consent without a new message or reload, and preserves the exact tool count", async () => {

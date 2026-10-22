@@ -92,6 +92,7 @@ class SharedCapabilities:
 def build_shared_capabilities(
     *,
     attached_tool_names: Collection[str],
+    excluded_web_tools: Collection[str] = (),
     user_id: str,
     nonce: str,
     session_id: str | None = None,
@@ -147,8 +148,15 @@ def build_shared_capabilities(
                 w_tools, w_handlers = web_search.build_capability(
                     user_id=user_id, session_id=session_id, nonce=nonce
                 )
-                tools.extend(w_tools)
-                handlers.update(w_handlers)
+                selected = [
+                    tool for tool in w_tools
+                    if tool["function"]["name"] not in excluded_web_tools
+                ]
+                tools.extend(selected)
+                handlers.update({
+                    tool["function"]["name"]: w_handlers[tool["function"]["name"]]
+                    for tool in selected
+                })
             except Exception:  # noqa: BLE001 - a capability must never break a turn
                 logger.warning("web search capability build failed", exc_info=True)
                 unavailable["web_search"] = "web search is unavailable"
@@ -206,6 +214,7 @@ def capability_builder_for_state(
     session_id: str | None = None,
     email: str | None = None,
     allowed_document_ids: set[str] | None = None,
+    excluded_web_tools: Collection[str] = (),
     nonce: str | None = None,
 ) -> CapabilityBuilder:
     """Adapt the app state into a per-step :data:`CapabilityBuilder`.
@@ -230,6 +239,7 @@ def capability_builder_for_state(
     ) -> tuple[list[dict[str, Any]], dict[str, Handler]]:
         built = build_shared_capabilities(
             attached_tool_names=tool_names,
+            excluded_web_tools=excluded_web_tools,
             user_id=user_id,
             nonce=marker,
             session_id=session_id,

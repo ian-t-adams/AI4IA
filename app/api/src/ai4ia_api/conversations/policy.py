@@ -6,10 +6,18 @@ from dataclasses import dataclass
 from ..agents.agent_catalog import AgentSpec
 from ..images.availability import image_editing_available_for_state
 from ..sessions.models import Session
-from ..policy.context import current_binding
+from ..policy.context import current_binding, tool_allowed
 from ..policy.models import PolicyDecision, PolicyError
 from ..publishing.models import PublicationError, PublicationExecutionMode
 from ..videos.availability import video_generation_available_for_state
+from ..websearch.contracts import WEBIQ_TOOL_NAMES
+
+
+def default_conversation_tools(state) -> tuple[str, ...]:
+    """Tools already offered to ordinary chats by configured server services."""
+    if getattr(state, "web_search", None) is None:
+        return ()
+    return tuple(name for name in sorted(WEBIQ_TOOL_NAMES) if tool_allowed(name))
 
 
 @dataclass(frozen=True)
@@ -35,7 +43,7 @@ async def resolve_conversation_policy(
     """Compose durable session settings with an optional one-turn agent override.
 
     The server resolves every name against the caller's composed catalog and only
-    admits conversation additions from AgentService's explicit attachable allowlist.
+    admits conversation additions from the caller's server-approved tool surface.
     Execution-time ToolRegistry/MCP authorization still runs independently.
     """
     selected = (explicit_agent or session.agentName or "").strip()
@@ -100,7 +108,10 @@ async def resolve_conversation_policy(
         instruction_source=source,
         inherited_tools=inherited,
         added_tools=added,
-        removed_tools=tuple(name for name in session.toolOverrides.removed if name in inherited),
+        removed_tools=tuple(
+            name for name in session.toolOverrides.removed
+            if name in inherited or name in WEBIQ_TOOL_NAMES
+        ),
         effective_tools=effective,
         voice_tools=voice_tools,
     )

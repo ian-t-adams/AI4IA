@@ -232,6 +232,7 @@ async def _chat_schemas(
         allowed_document_ids=(
             set(session.libraryDocumentIds) if session.libraryDocumentIds is not None else None
         ),
+        excluded_web_tools=session.toolOverrides.removed,
         nonce="consent",
     )(tool_names)
     compute = getattr(state, "document_compute", None)
