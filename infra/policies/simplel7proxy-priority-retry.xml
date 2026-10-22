@@ -1074,6 +1074,12 @@ REFACTOR:
 				<!-- If we got a 200, skip the retry and return the response -->
 				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Response != null &amp;&amp; context.Response.StatusCode == 200)">
 					<choose>
+						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase))">
+							<!-- A successful Messages response is accepted work, including
+							     EOF/HTTP2 framing with neither length nor transfer headers. -->
+							<set-variable name="RetryRemaining" value="@(false)" />
+							<set-variable name="Return429" value="@(false)" />
+						</when>
 						<when condition="@(context.Response.Headers.ContainsKey(&quot;Transfer-Encoding&quot;) &amp;&amp; context.Response.Headers[&quot;Transfer-Encoding&quot;].Contains(&quot;chunked&quot;))">
 							<!-- For streaming responses, success is indicated by 200 status -->
 							<set-variable name="RetryRemaining" value="@(false)" />
@@ -1240,9 +1246,13 @@ REFACTOR:
 		     Only request parsing when the body really is text (chat completions are
 		     application/json, streaming chat is text/event-stream); otherwise leave
 		     the header off so the proxy falls back to its byte-clean pass-through
-		     processor, and strip any value a backend may have echoed. -->
+		     processor, and strip any value a backend may have echoed. Encoded text
+		     is opaque bytes too: the API, not the proxy's UTF-8 line reader,
+		     decodes it and accounts for native usage. -->
 		<choose>
 			<when condition="@{
+				string encoding = context.Response.Headers.GetValueOrDefault(&quot;Content-Encoding&quot;, &quot;&quot;);
+				if (!string.IsNullOrWhiteSpace(encoding)) { return false; }
 				string ct = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;) ?? &quot;&quot;;
 				ct = ct.TrimStart().ToLowerInvariant();
 				return ct.StartsWith(&quot;application/json&quot;) || ct.StartsWith(&quot;text/&quot;);

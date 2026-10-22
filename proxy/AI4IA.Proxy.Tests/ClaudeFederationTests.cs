@@ -1,6 +1,10 @@
+using System.IO.Compression;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json.Linq;
+using SimpleL7Proxy.StreamProcessor;
 
 namespace AI4IA.Proxy.Tests;
 
@@ -93,6 +97,72 @@ public sealed class ClaudeFederationTests
             Assert.AreEqual(0, policy.Identities.Count);
             Assert.AreEqual(0, policy.Exchanges.Count);
         }
+    }
+
+    [DataTestMethod]
+    [DataRow("application/json", false, false)]
+    [DataRow("application/json", true, false)]
+    [DataRow("text/event-stream", false, false)]
+    [DataRow("text/event-stream", true, false)]
+    [DataRow("application/json", false, true)]
+    [DataRow("application/json", true, true)]
+    [DataRow("text/event-stream", false, true)]
+    [DataRow("text/event-stream", true, true)]
+    public async Task NativeResponsesKeepTheirCodingAndDoNotReplayAcceptedWork(
+        string mediaType, bool compressed, bool eofDelimited)
+    {
+        const string json = """{"id":"msg_fixture","type":"message","role":"assistant","content":[{"type":"text","text":"visible"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}""";
+        const string events = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fixture\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"
+            + "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"visible\"}}\n\n"
+            + "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        byte[] native = Encoding.UTF8.GetBytes(mediaType == "application/json" ? json : events);
+        byte[] wire = native;
+        if (compressed)
+        {
+            using var buffer = new MemoryStream();
+            using (var gzip = new GZipStream(buffer, CompressionLevel.SmallestSize, leaveOpen: true))
+                await gzip.WriteAsync(native);
+            wire = buffer.ToArray();
+        }
+        var headers = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Content-Type"] = [mediaType],
+        };
+        if (compressed) headers["Content-Encoding"] = ["gzip"];
+        await using var provider = new WireServer(_ => Task.FromResult(new WireReply(
+            200, Headers: headers, Chunked: !eofDelimited, RawBody: wire, EofDelimited: eofDelimited)));
+        var policy = Policy(provider, gateway: true);
+        await policy.Run();
+        Assert.AreEqual(200, policy.Context.Response.StatusCode);
+        using var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(policy.Context.Response.Body.Bytes),
+        };
+        if (policy.Context.Response.Headers.TryGetValue("TOKENPROCESSOR", out var requested))
+            response.Headers.TryAddWithoutValidation("TOKENPROCESSOR", requested);
+        var factory = new StreamProcessorFactory(NullLogger<StreamProcessorFactory>.Instance);
+        string selected = StreamProcessorFactory.DetermineStreamProcessor(response, mediaType);
+        var processor = factory.GetStreamProcessor(selected, out _);
+        using var output = new MemoryStream();
+        await processor.CopyToAsync(response.Content, output, debug: false);
+        if (compressed)
+        {
+            CollectionAssert.AreEqual(wire, output.ToArray(), "Encoded bodies must not enter a UTF-8 line processor.");
+            CollectionAssert.AreEqual(new[] { "gzip" }, policy.Context.Response.Headers["Content-Encoding"]);
+            Assert.AreEqual(StreamProcessorFactory.DEFAULT_PROCESSOR, selected);
+            output.Position = 0;
+            using var decoder = new GZipStream(output, CompressionMode.Decompress);
+            using var decoded = new MemoryStream();
+            await decoder.CopyToAsync(decoded);
+            CollectionAssert.AreEqual(native, decoded.ToArray());
+        }
+        else
+        {
+            Assert.AreEqual("MultiLineAllUsage", selected, "Unencoded text keeps its existing usage/flush processor.");
+            string actual = Encoding.UTF8.GetString(output.ToArray()).Replace("\r\n", "\n").TrimEnd('\n');
+            Assert.AreEqual(Encoding.UTF8.GetString(native).TrimEnd('\n'), actual);
+        }
+        Assert.AreEqual(1, provider.Requests.Count, "Successful Messages must not replay because length/framing headers are absent.");
     }
 
     [DataTestMethod]
