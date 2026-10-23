@@ -216,8 +216,8 @@ describe("owner-resumed conversation deletion", () => {
       render(<ConversationDeletionNotice phase="incomplete" status={status} problem={problem} {...handlers} />);
       expect(screen.getByRole("status")).toHaveTextContent("Removed from chats. Cleanup needs attention.");
       expect(screen.getByText(problem)).toBeVisible();
-      expect(screen.getAllByRole("button")).toHaveLength(label === "Finish cleanup" ? 3 : 2);
-      if (label === "Finish cleanup") expect(screen.getByRole("button", { name: "View deletion status" })).not.toBeVisible();
+      expect(screen.getAllByRole("button", { hidden: true })).toHaveLength(label === "Finish cleanup" ? 3 : 2);
+      if (label === "Finish cleanup") expect(screen.getByRole("button", { name: "View deletion status", hidden: true })).not.toBeVisible();
       await user.click(screen.getByRole("button", { name: label }));
       expect(label === "Finish cleanup" ? handlers.onFinish : handlers.onOpen).toHaveBeenCalledTimes(1);
       expect(label === "Finish cleanup" ? handlers.onOpen : handlers.onFinish).not.toHaveBeenCalled();
