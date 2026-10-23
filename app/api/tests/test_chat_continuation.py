@@ -572,6 +572,8 @@ async def test_stale_work_cannot_recreate_a_cancelled_or_deleted_pending_call(co
 def test_private_execution_arguments_preserve_benign_ids_but_not_explicit_authentication():
     arguments = {"query": "public hash " + "a" * 64, "document_id": "b" * 32}
     assert exact_chat_arguments(json.dumps(arguments)) == arguments
+    for query in ("Explain Bearer authentication and token counts.", "Bearer authentication"):
+        assert exact_chat_arguments(json.dumps({"query": query})) == {"query": query}
     for value in (
         {"authorization": "Bearer synthetic"}, {"api_key": "synthetic"},
         {"url": "https://example.com/blob?sig=synthetic"},

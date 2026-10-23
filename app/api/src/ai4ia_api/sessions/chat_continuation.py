@@ -115,7 +115,8 @@ _AUTH_KEYS = frozenset({
     "ocp-apim-subscription-key", "subscription-key", "s7p-key",
 })
 _AUTH_TEXT = re.compile(
-    r"(?i)(?:\bBearer\s+\S+|https?://[^/\s@]+@|[?&](?:sig|signature|access_token|client_secret)=\S+)"
+    r"(?i)(?:^\s*Bearer\s+\S{16,}\s*$|\bAuthorization\s*:\s*(?:Bearer|Basic)\s+\S+"
+    r"|https?://[^/\s@]+@|[?&](?:sig|signature|access_token|client_secret)=\S+)"
 )
 
 
