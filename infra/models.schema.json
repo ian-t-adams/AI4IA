@@ -38,6 +38,12 @@
         "required": ["name", "format", "category", "deployments"],
         "properties": {
           "name": { "type": "string" },
+          "deploymentNameBase": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "not": { "pattern": "microsoft" },
+            "description": "Azure resource-name token for Decision deployments only. Keeps the canonical provider name/model identity unchanged; Microsoft in the provider name is reserved in deployment resource names."
+          },
           "displayName": { "type": "string" },
           "format": { "type": "string" },
           "category": { "type": "string" },
@@ -207,6 +213,21 @@
           }
         },
         "allOf": [
+          {
+            "if": { "properties": { "category": { "const": "decision" } }, "required": ["category"] },
+            "then": { "required": ["deploymentNameBase"] }
+          },
+          {
+            "if": { "required": ["deploymentNameBase"] },
+            "then": {
+              "required": ["api"],
+              "properties": {
+                "category": { "const": "decision" },
+                "api": { "const": "decision" },
+                "format": { "const": "Microsoft" }
+              }
+            }
+          },
           {
             "if": { "required": ["defaultReasoningEffort"] },
             "then": {

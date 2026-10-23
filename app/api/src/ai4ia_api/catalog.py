@@ -6,6 +6,7 @@ Precedence: explicit path (settings/env) -> packaged ``data/model_catalog.json``
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -413,6 +414,16 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
     token = naming["subscriptionToken"]
     models = []
     for model in raw["catalog"]:
+        name_base = model.get("deploymentNameBase", model["name"])
+        if "deploymentNameBase" in model or model.get("category") == "decision":
+            if (
+                "deploymentNameBase" not in model or model.get("category") != "decision"
+                or model.get("api") != "decision" or model.get("format") != "Microsoft"
+                or not isinstance(name_base, str)
+                or re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name_base) is None
+                or "microsoft" in name_base
+            ):
+                raise ValueError("deploymentNameBase requires an Azure-safe, lowercase Decision resource token.")
         options = []
         for dep in model["deployments"]:
             region = dep["region"]
@@ -422,7 +433,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                     "region": region,
                     "dataZone": regions.get(region, {}).get("dataZone"),
                     "sku": sku,
-                    "deploymentName": f"{model['name']}-{token}-{region}-{sku_short[sku]}",
+                    "deploymentName": f"{name_base}-{token}-{region}-{sku_short[sku]}",
                     "modelVersion": dep.get("version"),
                 }
             )

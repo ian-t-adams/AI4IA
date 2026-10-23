@@ -100,6 +100,35 @@ class ProviderStateLookupTests(unittest.TestCase):
 
 
 class CatalogRequirementTests(unittest.TestCase):
+    def test_decision_name_alias_is_shared_by_preflight_capacity_and_gateway(self) -> None:
+        from scripts._model_naming import deployment_name
+
+        source = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+        generator = load_script("decision_model_catalog_generator", ROOT / "scripts" / "gen-model-catalog.py")
+        gateway = load_script("decision_gateway_generator", ROOT / "scripts" / "gen-gateway-policy.py")
+        model = next(row for row in source["catalog"] if row["name"] == "Microsoft-Decision-1")
+        desired = next(row for row in AVAILABILITY.catalog_requirements(source)["eastus2"] if row["name"] == model["name"])
+        runtime = next(row for row in generator.build_catalog(source)["models"] if row["id"] == model["name"])
+        name = "decision-1-slurmfactory-eastus2-dz"
+        self.assertEqual(desired["deploymentName"], name)
+        self.assertEqual(deployment_name(source, model["name"], model["deployments"][0]), name)
+        self.assertEqual(runtime["options"][0]["deploymentName"], name)
+        parsed = AVAILABILITY.capacity_evidence.load_catalog(ROOT / "infra" / "models.json")
+        observed = next(row for row in parsed.deployments if row.model.name == model["name"])
+        self.assertEqual(observed.name, name)
+        self.assertEqual(observed.model.name, "Microsoft-Decision-1")
+        self.assertEqual((desired["name"], desired["format"], desired["version"], desired["capacity"]),
+                         ("Microsoft-Decision-1", "Microsoft", "1", 5))
+        blocks, _ = gateway.render_catalog(source)
+        matching = [block for block in blocks if f'new JProperty("{name}", ' in block]
+        self.assertEqual(len(matching), 1)
+        self.assertIn('new JProperty("path", "providers/microsoft/v1")', matching[0])
+        self.assertIn(f'new JProperty("deployment", "{name}")', matching[0])
+        del model["deploymentNameBase"]
+        for produce in (AVAILABILITY.catalog_requirements, generator.build_catalog, gateway.render_catalog):
+            with self.assertRaisesRegex(ValueError, "deploymentNameBase"):
+                produce(source)
+
     CATALOG = {
         "naming": {
             "subscriptionToken": "slurmfactory",

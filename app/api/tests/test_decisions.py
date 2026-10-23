@@ -16,6 +16,7 @@ from ai4ia_api.usage.models import cost_bearing_attempt
 from tests.conftest import FakeUsage, make_settings
 
 MODEL = "Microsoft-Decision-1"
+DEPLOYMENT = "decision-1-slurmfactory-eastus2-dz"
 HEADERS = {"X-Dev-User": "decision-fixture"}
 BODY = {
     "model": MODEL, "input": '{"message":"The demo button looks wrong.","repeat":true}', "inputFormat": "json",
@@ -85,11 +86,11 @@ def test_native_round_trip_and_unknown_cost(rig):
     assert len(native.calls) == 1
     sent = native.calls[0]
     assert sent.url.host == "gateway.test"
-    assert sent.url.path == f"/deployments/{MODEL}-slurmfactory-eastus2-dz/systemone"
+    assert sent.url.path == f"/deployments/{DEPLOYMENT}/systemone"
     assert not sent.url.query
     wire = json.loads(sent.content)
     assert wire == {
-        "model": f"{MODEL}-slurmfactory-eastus2-dz",
+        "model": DEPLOYMENT,
         "state": json.loads(BODY["input"]),
         "questions": {q["name"]: {k: v for k, v in q.items() if k != "name"} for q in BODY["questions"]},
     }
@@ -222,7 +223,7 @@ async def test_decision_is_never_dispatched_as_a_chat_protocol(api):
         gateway = ModelGatewayClient(make_settings(), http)
         with pytest.raises(ValueError, match="cannot serve chat"):
             await gateway.complete(
-                deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+                deployment=DEPLOYMENT,
                 messages=[{"role": "user", "content": "synthetic"}], api=api,
             )
     assert not native.calls
@@ -272,7 +273,7 @@ async def test_cancellation_closes_native_transport_without_replay():
     async with httpx.AsyncClient(transport=httpx.MockTransport(send)) as http:
         gateway = ModelGatewayClient(settings, http)
         task = asyncio.create_task(gateway.decide(
-            deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+            deployment=DEPLOYMENT,
             request=DecisionRequest.model_validate(BODY), execution=DecisionExecution(),
         ))
         await asyncio.wait_for(started.wait(), 2)
@@ -321,7 +322,7 @@ async def test_native_three_type_response_over_real_loopback_http(framing):
         gateway = ModelGatewayClient(make_settings(model_gateway_url=f"http://127.0.0.1:{port}"))
         execution = DecisionExecution()
         call = gateway.decide(
-            deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+            deployment=DEPLOYMENT,
             request=DecisionRequest.model_validate(BODY), execution=execution,
         )
         if framing in {"truncated", "oversize"}:
@@ -370,14 +371,14 @@ async def test_hard_admission_refuses_unknown_bounds_with_allowed_control(limits
         await h.limits(**limits)
         with admission_scope(h.controller, "alice"), pytest.raises(QuotaError):
             await gateway.decide(
-                deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+                deployment=DEPLOYMENT,
                 request=DecisionRequest.model_validate(BODY), execution=DecisionExecution(),
             )
         assert not native.calls
         await h.limits()
         with admission_scope(h.controller, "alice"):
             await gateway.decide(
-                deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+                deployment=DEPLOYMENT,
                 request=DecisionRequest.model_validate(BODY), execution=DecisionExecution(),
             )
         assert len(native.calls) == 1
@@ -399,7 +400,7 @@ async def test_group_model_policy_is_rechecked_and_does_not_grant_chat():
                 policy.settings.group_policy_json = json.dumps(config)
                 bind_authenticated(policy, user())
                 operation = gateway.decide(
-                    deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+                    deployment=DEPLOYMENT,
                     request=DecisionRequest.model_validate(BODY), execution=DecisionExecution(),
                 )
                 if allowed:
@@ -412,7 +413,7 @@ async def test_group_model_policy_is_rechecked_and_does_not_grant_chat():
             assert len(native.calls) == 1
             with pytest.raises(ValueError, match="unsupported model API"):
                 await gateway.complete(
-                    deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+                    deployment=DEPLOYMENT,
                     messages=[{"role": "user", "content": "synthetic"}], api="decision",
                 )
             assert len(native.calls) == 1

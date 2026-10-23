@@ -15,6 +15,7 @@ from xml.parsers import expat
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser
 from _model_targets import image_editing, model_target, runtime_enabled
+from _model_naming import deployment_base
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_PATH = ROOT / "infra" / "models.json"
@@ -239,6 +240,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
 
     for model in models["catalog"]:
         target = model_target(model)
+        name_base = deployment_base(model)
         deployments = model["deployments"]
         category = model["category"]
         if category not in ROUTABLE_CATEGORIES:
@@ -291,7 +293,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 "sku": deployment["sku"],
                 "dataZone": regions[deployment["region"]]["dataZone"],
                 "name": deployment_name(
-                    model=model["name"],
+                    model=name_base,
                     subscription_token=subscription_token,
                     region=deployment["region"],
                     sku=deployment["sku"],

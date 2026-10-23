@@ -135,6 +135,27 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         )
         self.assertIn("not(equals(lambdaVariables('model').format, 'Anthropic'))", self.template["variables"]["deployableCatalog"])
 
+    def test_decision_alias_changes_resource_token_not_provider_model(self) -> None:
+        inputs = next(row["input"] for row in self.template["variables"]["copy"]
+                      if row["name"] == "modelDeploymentsByRegion")
+        self.assertIn("__bicep.deploymentNameBase(lambdaVariables('m'))", inputs)
+        functions = next(row["members"] for row in self.template["functions"] if row["namespace"] == "__bicep")
+        self.assertEqual(
+            functions["deploymentNameBase"]["output"]["value"],
+            "[coalesce(tryGet(parameters('model'), 'deploymentNameBase'), parameters('model').name)]",
+        )
+        self.assertIn("'modelName', lambdaVariables('m').name", inputs)
+        module = self.template["resources"]["modelDeployments"]["properties"]["template"]
+        row = next(r for r in module["resources"] if r["type"] == "Microsoft.CognitiveServices/accounts/deployments")
+        self.assertIn(".deploymentName", row["name"])
+        self.assertIn("'name', parameters('deployments')[copyIndex()].modelName", row["properties"])
+        source = json.loads(MODELS.read_text(encoding="utf-8"))
+        decision = next(row for row in source["catalog"] if row["name"] == "Microsoft-Decision-1")
+        self.assertEqual(decision["deploymentNameBase"], "decision-1")
+        self.assertEqual(decision["deployments"], [
+            {"region": "eastus2", "sku": "DataZoneStandard", "capacity": 5, "version": "1"},
+        ])
+
     def test_router_subset_reaches_deployment_properties_not_only_catalog_labels(self) -> None:
         inputs = next(row["input"] for row in self.template["variables"]["copy"]
                       if row["name"] == "modelDeploymentsByRegion")

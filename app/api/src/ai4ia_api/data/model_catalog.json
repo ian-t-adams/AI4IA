@@ -2126,7 +2126,7 @@
           "dataZone": "US",
           "sku": "DataZoneStandard",
           "modelVersion": "1",
-          "deploymentName": "Microsoft-Decision-1-slurmfactory-eastus2-dz"
+          "deploymentName": "decision-1-slurmfactory-eastus2-dz"
         }
       ]
     }
