@@ -676,7 +676,13 @@ do not sum mirrored regions or increase quota to hide a refusal.
 
 The [Azure capability reference](https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-by-azure)
 records 1M input context and 384K output. The app uses Chat Completions
-`max_tokens`, a 16,384-token application default and text input. Sampling and
+`max_tokens`, a 2,048-token application default and text input. The deployed
+10-unit allocation was read back on October 23 with limits of 10 requests and
+10,000 tokens per 60 seconds. The smaller default leaves room for short prompts;
+it is not a guarantee against throttling under concurrency or long input.
+Both omitted limits and the browser's existing 1,024-token starter sentinel use
+this catalog default; explicit non-sentinel limits retain the existing ceiling
+clamp. The 384K model ceiling and allocation stay unchanged. Sampling and
 effort controls are not advertised: the bounded initial profile uses the native
 reasoning default without assuming that the provider's newer public API effort
 aliases apply to this Azure version. Although the provider supports tools,

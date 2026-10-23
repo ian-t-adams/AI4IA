@@ -107,6 +107,17 @@ describe("ParamControls", () => {
     expect(screen.getByRole("tooltip")).not.toHaveTextContent(/expands to the model.s full ceiling/);
   });
 
+  it("keeps the starter sentinel while describing the small server default and preserves explicit edits", async () => {
+    const { onChange } = setup({}, { ...MODEL, maxOutputTokens: 384000, defaultMaxOutputTokens: 2048 });
+    const input = screen.getByRole("spinbutton");
+    expect(input).toHaveValue(1024);
+    expect(onChange).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Help: Max tokens" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/application default of 2,048/);
+    fireEvent.change(input, { target: { value: "1500" } });
+    expect(onChange).toHaveBeenLastCalledWith({ max_tokens: 1500 });
+  });
+
   it("offers no reasoning-effort control for a model that does not accept one", () => {
     setup({}, MODEL);
     expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
