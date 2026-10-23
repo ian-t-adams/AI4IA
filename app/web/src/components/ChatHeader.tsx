@@ -94,6 +94,7 @@ export function ChatHeader({
         aria-live="polite"
         aria-atomic="true"
         data-busy={streaming ? "true" : "false"}
+        data-tools-off={toolsOff ? "true" : "false"}
       >
         {toolsOff ? "Chat tools off" : ""}{toolsOff && streaming ? " · " : ""}{streaming ? "Generating…" : ""}
       </div>

@@ -2001,6 +2001,22 @@
   opacity: 1;
 }
 
+.inspector-body label.conversation-tools-toggle {
+  flex-direction: row;
+  align-items: center;
+  min-height: 44px;
+  gap: var(--space-2);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.conversation-tools-toggle input {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -2324,7 +2340,7 @@
     max-width: 34%;
   }
 
-  .chat-activity[data-busy="false"] {
+  .chat-activity[data-busy="false"][data-tools-off="false"] {
     display: none;
   }
 

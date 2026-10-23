@@ -949,7 +949,7 @@ export function ConversationInspector({
                   </select>
                 </label>
                 {agentDescription ? <p className="inspector-note">{agentDescription}</p> : null}
-                <label className="inspector-actions">
+                <label className="conversation-tools-toggle">
                   <input
                     type="checkbox"
                     role="switch"
