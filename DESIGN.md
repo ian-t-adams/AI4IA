@@ -163,6 +163,8 @@ an empty-state message is never shown while a request is still pending.
 - Maintain semantic landmarks, skip navigation, live regions, IME-safe input, and
   screen-reader labels.
 - Drawers trap focus while open and restore it on close.
+- Deferred modal focus is a fallback: preserve a descendant's deliberate focus,
+  cancel pending autofocus on close, and return focus to the opener.
 - Menus and tooltips must not be clipped by scroll containers.
 - Verify keyboard-only operation, 200% zoom, reduced motion, and no horizontal
   page overflow at supported breakpoints.
