@@ -242,7 +242,11 @@ GlobalStandard 80 and DataZoneStandard 80, and Opus 5.5 version 2 at
 GlobalStandard 40 and DataZoneStandard 40 under the adaptive text-only profile
 (see the [platform evaluation](../foundry-platform-evaluation.md#claude-opus-55)).
 That account was provisioned on 2026-09-25 through `infra/claude-target.bicep`,
-and the catalog lists exactly its five deployments. Opus 5
+and those original five catalog deployments are unchanged. The October 23
+addition adopts four existing successful version-2 targets: Sonnet 5.5
+GlobalStandard 80/DataZoneStandard 80 and Haiku 5.5
+GlobalStandard 80/DataZoneStandard 27. These are nine reviewed targets, not an
+assertion that the upstream account contains no other deployments. Opus 5
 has no GlobalStandard row because a separately owned deployment in the same
 subscription holds that entire quota counter. These are raw model-specific
 standard-capacity units, not fixed PTUs, TPM conversions, a dollar reservation
@@ -480,27 +484,26 @@ upstream gateway. Disable and read back the old route before switching
 authentication mode or upstream host. Rotation of a dedicated key does not
 require deleting models, accounts, the Desktop key or user data.
 
-This mode exposes the app's existing reviewed profiles: Opus 5, Sonnet 5, and
-adaptive text-only Opus 5.5. It does not automatically advertise every deployment
-on the upstream account. Additional Haiku/Sonnet/fast rows need their own
-catalog/profile/pricing adoption. In particular, Haiku 4.5 has a different effort
-contract and Haiku 5.5 has context-tiered pricing; copying another Claude row
-would not establish a working integration.
+This mode exposes only the app's reviewed profiles: Opus 5, Sonnet 5, Haiku 5.5,
+and adaptive text-only Opus 5.5/Sonnet 5.5. It does not automatically advertise
+every deployment on the upstream account. The October 23 Sonnet/Haiku 5.5
+adoption reuses the existing gateway and its credentials; it does not allocate
+target models or authorize a new federation or access grant.
 
 ### Supported application profile and pricing evidence
 
-All three models have documented 1M context and 128K synchronous output. This
+All five models have documented 1M context and 128K synchronous output. This
 application supports exactly two explicit profiles, both with text input and
 native `output_config.effort` low/medium/high:
 
-- **Thinking-disabled text/tools** (Opus 5, Sonnet 5): `thinking` is sent
+- **Thinking-disabled text/tools** (Opus 5, Sonnet 5, Haiku 5.5): `thinking` is sent
   disabled and the governed function-tool loop is available. An omitted effort
-  sends `high`.
-- **Adaptive text-only** (Opus 5.5): `thinking` is omitted, which the provider
+  sends `high` for the original profiles and `medium` for Haiku 5.5.
+- **Adaptive text-only** (Opus 5.5, Sonnet 5.5): `thinking` is omitted, which the provider
   treats as adaptive, and the catalog sets `toolCalling: false`.
   - Before dispatch the adapter refuses any tools, any `tool_choice` other than
     absent, `auto` or `none`, and tool calls or results in history.
-  - An omitted effort sends `medium`, Opus 5.5's documented default.
+  - An omitted effort sends `medium` for Opus 5.5 and `high` for Sonnet 5.5.
   - Thinking and redacted-thinking blocks are dropped on both transports and
     never reach SSE events, history, receipts or logs.
 
@@ -552,10 +555,18 @@ USD/MTok directional rates:
 | Opus 5 | **5 / 25** | **5.5 / 27.5** |
 | Sonnet 5 | **2 / 10** | **2.2 / 11** |
 | Opus 5.5 | **4 / 20** | **4.4 / 22** |
+| Sonnet 5.5 | **2 / 10** | **2.2 / 11** |
+| Haiku 5.5, prompt up to 100,000 tokens | **0.10 / 0.50** | **0.11 / 0.55** |
+| Haiku 5.5, prompt above 100,000 tokens | **0.50 / 2.50** | **0.55 / 2.75** |
 
 Exact catalog deployment/SKU, not region alone, selects the rate. Cache reads use
-the documented 0.1x input rate, except Opus 5.5 at 0.05x (0.20, or 0.22 for US
-DataZoneStandard). Cache writes without evidenced duration remain cost-unknown.
+the documented 0.1x input rate, except Opus 5.5 and Sonnet 5.5 at 0.05x
+(Sonnet 5.5: 0.10, or 0.11 for US DataZoneStandard). Haiku's threshold includes
+uncached, cache-read and cache-write input tokens. The selected tier applies to
+the whole call's input and output, not only the tokens above the threshold.
+Both tiers are frozen before dispatch; context-free scalar lookups and
+aggregated calls without individual tier evidence remain unknown. Cache writes
+without evidenced duration remain cost-unknown.
 Adaptive thinking tokens bill as output tokens and arrive in `output_tokens`.
 The adapter does not request caching. Missing deployment, usage or a lost cache
 breakdown is unknown, never free. Cache breakdown is in-process only; no Cosmos
@@ -580,6 +591,70 @@ Official evidence checked **2026-09-20** (Opus 5.5 and pricing rechecked
 ARM target observations, not public lifecycle prose, remain authoritative for
 provisioning admission. Offline .NET expression controls are not an Azure policy
 compiler, live authorization proof or private-network test.
+
+### October 23 selected direct options and release gate
+
+Source adoption is not deployed availability. The new Claude targets were read
+as `Succeeded` at **2026-10-23 20:51 UTC**; no target allocation changes are
+proposed. The exact [Sonnet 5.5 contract](https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5)
+rejects `thinking: disabled` and forced tool choice. Even `between_tools` requires
+replaying signed thinking blocks. AI4IA therefore uses its existing adaptive
+**text-only** profile, not a copied Sonnet 5 tool profile.
+[Haiku 5.5](https://platform.claude.com/docs/en/models/haiku-5-5/whats-new-haiku-5-5)
+explicitly supports disabled thinking through `high` effort; its supported
+text/tool profile does not enable adaptive continuation. Catalog-owned
+`defaultReasoningEffort` preserves the two new native defaults without changing
+the original Claude profiles.
+
+**DeepSeek V4 Flash** adds exactly one source deployment, version `2026-04-23`,
+East US 2 GlobalStandard, portable capacity **10 raw units**. The exact
+subscription offering at 20:51 UTC was GenerallyAvailable, with inference
+retirement `2028-02-20T00:00:00Z`. Its Global counter was **0/250 Count**,
+labelled Requests Per Minute; the offering reports 1 and 1,000 per 60 seconds.
+The exact model/version/SKU capacity read at **21:07 UTC** also reported 250
+available in East US 2; this is an observation, not reserved capacity.
+The SKU default of 5,000 is not adopted. Minimum, step and allowed-values
+metadata were absent, so ten is a conservative proposal within observed quota,
+not proven ARM acceptance or an SLA. Recheck the normal preflight on release;
+do not sum mirrored regions or increase quota to hide a refusal.
+
+The [Azure capability reference](https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure#deepseek-models-sold-by-azure)
+records 1M input context and 384K output. The app uses Chat Completions
+`max_tokens`, a 16,384-token application default and text input. Sampling and
+effort controls are not advertised: the bounded initial profile uses the native
+reasoning default without assuming that the provider's newer public API effort
+aliases apply to this Azure version. Although the provider supports tools,
+[reasoning-mode tool continuation](https://api-docs.deepseek.com/guides/thinking_mode)
+requires complete `reasoning_content` replay. AI4IA does not retain that text,
+so this profile is **text-only**, with tools and tool history refused before
+dispatch. Native reasoning text is removed from both JSON and raw SSE deltas;
+visible answers, reported model identity and numerical usage remain intact.
+Azure's model card recommends production safety evaluation for this model;
+the existing Content Safety path is unchanged.
+
+The East US 2 Global Standard retail rates are **0.19 input / 0.51 output /
+0.028 cache-read USD per million tokens**, from the exact `1K` meters multiplied
+by 1,000, observed October 23. Missing native cache evidence stays cost-unknown,
+not an assumption that all input is uncached. No Data Zone or other-region price
+is inferred. The fixed Astra/Sol/Luna router and every existing model,
+allocation and retirement-sensitive row remain unchanged.
+
+Release stays serialized after the preceding releases and requires the owner's
+explicit merge/deploy and paid-acceptance clearance. Proposed acceptance, only
+after that clearance: fresh catalog/route and exact deployment readback, then
+at most **eight app requests / ten logical model calls**, with at most **2,048 output
+tokens per call** and short synthetic inputs. Cover JSON and SSE for all three
+options, plus one Haiku calculator loop on each transport. Tools and automatic
+memory stay off except that exact local calculator; no external tools, long
+100K-token paid pricing probe, retry loop, or unrelated canary sweep. Offline
+fixtures cover Haiku's boundary/cache/US Data Zone cases. Confirm visible text,
+native usage/model reports, effective settings, no private reasoning and
+correct known/unknown cost evidence. Delete only the newly created test
+conversations through their owner API and verify cleanup; never enroll existing
+records, change retirements or clean up shared resources.
+Existing transport retries are distinct from logical calls; this envelope is
+not an invoice cap or proof of one physical attempt. Stop on a failed
+acceptance case rather than adding a retry/probe loop.
 
 ## Enablement notes
 

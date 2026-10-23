@@ -25,6 +25,13 @@ class PriceRate:
 
 
 @dataclass(frozen=True)
+class ContextPriceRate:
+    above_input_tokens: int
+    short: PriceRate
+    long: PriceRate
+
+
+@dataclass(frozen=True)
 class CostEstimate:
     """A price-backed estimate only when the supplied usage can be priced."""
 
@@ -53,13 +60,13 @@ class OperationCostEstimate:
 class PricingBook:
     def __init__(
         self,
-        rates: dict[str, PriceRate],
+        rates: dict[str, PriceRate | ContextPriceRate],
         *,
         currency: str,
         version: str | None,
         image_rates: dict[str, dict[str, Any]] | None = None,
         document_rates: dict[str, dict[str, Any]] | None = None,
-        scoped_rates: dict[str, dict[str, PriceRate]] | None = None,
+        scoped_rates: dict[str, dict[str, PriceRate | ContextPriceRate]] | None = None,
         avatar_rates: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._rates = rates
@@ -78,16 +85,29 @@ class PricingBook:
     def version(self) -> str | None:
         return self._version
 
-    def rate(self, model_id: str, *, deployment: str | None = None) -> PriceRate | None:
+    def _schedule(
+        self, model_id: str, deployment: str | None,
+    ) -> PriceRate | ContextPriceRate | None:
         if model_id in self._scoped_rates:
             return self._scoped_rates[model_id].get(deployment or "")
         return self._rates.get(model_id)
+
+    def rate(
+        self, model_id: str, *, deployment: str | None = None,
+        prompt_tokens: int | None = None,
+    ) -> PriceRate | None:
+        schedule = self._schedule(model_id, deployment)
+        if isinstance(schedule, ContextPriceRate):
+            if type(prompt_tokens) is not int or prompt_tokens < 0:
+                return None
+            return schedule.long if prompt_tokens > schedule.above_input_tokens else schedule.short
+        return schedule
 
     def snapshot_token_prices(
         self, model_id: str | None, *, deployment: str | None = None,
     ) -> PricingBook:
         """Freeze one call's token rates/version without a second cost calculator."""
-        rate = self.rate(model_id, deployment=deployment) if model_id is not None else None
+        rate = self._schedule(model_id, deployment) if model_id is not None else None
         return PricingBook(
             {model_id: rate} if model_id is not None and rate is not None else {},
             currency=self._currency, version=self._version,
@@ -101,7 +121,7 @@ class PricingBook:
         This does not establish a provider-attempt or billing bound. Admission
         must prove those separately; the shipping gateway cannot do so yet.
         """
-        rate = self.rate(model_id)
+        rate = self.rate(model_id, prompt_tokens=prompt_tokens)
         micro = None
         if rate is not None and self.currency == "USD" and self.version:
             micro = conservative_token_cost(
@@ -120,8 +140,14 @@ class PricingBook:
         deployment: str | None = None, cache_read_tokens: int | None = None,
         cache_write_tokens: int | None = None,
         total_tokens: int | None = None, totals_mismatch: bool = False,
+        calls: int = 1,
     ) -> CostEstimate:
-        rate = self.rate(model_id, deployment=deployment)
+        # A summed prompt cannot identify each call's tier. Per-call receipts
+        # retain exact prices; an aggregate without that evidence stays unknown.
+        rate = self.rate(
+            model_id, deployment=deployment,
+            prompt_tokens=prompt_tokens if calls == 1 else None,
+        )
         totals_mismatch = totals_mismatch or (
             total_tokens is not None and prompt_tokens is not None and completion_tokens is not None
             and total_tokens != prompt_tokens + completion_tokens
@@ -310,7 +336,7 @@ def _parse(
 ) -> PricingBook:
     currency = raw.get("currency", "USD")
     version = raw.get("version")
-    rates: dict[str, PriceRate] = {}
+    rates: dict[str, PriceRate | ContextPriceRate] = {}
     for model_id, entry in (raw.get("models") or {}).items():
         if not isinstance(entry, dict):
             continue
@@ -322,7 +348,7 @@ def _parse(
             input_per_1m=float(in_rate or 0.0),
             output_per_1m=float(out_rate or 0.0),
         )
-    scoped_rates: dict[str, dict[str, PriceRate]] = {}
+    scoped_rates: dict[str, dict[str, PriceRate | ContextPriceRate]] = {}
     for model_id, sku_rates in (raw.get("tokenRatesBySku") or {}).items():
         # A scoped row stays scoped even with no resolvable deployment, so its
         # deployment-free lookup is unknown rather than a base-table price.
@@ -330,10 +356,17 @@ def _parse(
         for sku, deployment in sku_deployments(model_id):
             entry = sku_rates.get(sku)
             if isinstance(entry, dict):
-                scoped_rates[model_id][deployment] = PriceRate(
-                    float(entry["inputPer1M"]), float(entry["outputPer1M"]),
-                    float(entry["cacheReadPer1M"]),
-                )
+                rate = _token_rate(entry)
+                long = entry.get("longContext")
+                if long is not None:
+                    threshold = long["aboveInputTokens"]
+                    if type(threshold) is not int or threshold <= 0:
+                        raise ValueError("longContext requires a positive integer input threshold")
+                    scoped_rates[model_id][deployment] = ContextPriceRate(
+                        threshold, rate, _token_rate(long),
+                    )
+                else:
+                    scoped_rates[model_id][deployment] = rate
     return PricingBook(
         rates,
         currency=currency,
@@ -343,6 +376,13 @@ def _parse(
         scoped_rates=scoped_rates,
         avatar_rates=_operation_rates(raw.get("avatarModels")),
     )
+
+
+def _token_rate(entry: dict[str, Any]) -> PriceRate:
+    values = [float(entry[key]) for key in ("inputPer1M", "outputPer1M", "cacheReadPer1M")]
+    if any(not _decimal(value).is_finite() or value < 0 for value in values):
+        raise ValueError("token rates must be finite and nonnegative")
+    return PriceRate(*values)
 
 
 def _operation_rates(raw: Any) -> dict[str, dict[str, Any]]:

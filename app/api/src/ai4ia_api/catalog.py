@@ -142,6 +142,7 @@ class ModelEntry(BaseModel):
     # External Claude profile: "disabled" is text plus the governed tool loop;
     # "adaptive" is text-only because signed thinking blocks are not replayed.
     anthropicThinking: Literal["disabled", "adaptive"] | None = None
+    defaultReasoningEffort: Literal["low", "medium", "high"] | None = None
     requiredRealtimeProtocol: Literal["ga"] | None = None
     # Per-model context window (total prompt+completion tokens the deployment
     # accepts) and the maximum tokens it will emit in one completion. Both are
@@ -183,6 +184,7 @@ class ModelEntry(BaseModel):
             ("routing", None),
             ("samplingRequiresNoReasoning", False), ("maxTokensParameter", None),
             ("defaultMaxOutputTokens", None),
+            ("defaultReasoningEffort", None),
         ):
             if result.get(key) == default:
                 result.pop(key, None)
@@ -191,6 +193,11 @@ class ModelEntry(BaseModel):
     @model_validator(mode="after")
     def external_profile(self) -> ModelEntry:
         self.require_external_profile()
+        if self.defaultReasoningEffort is not None and (
+            self.deploymentTarget != "external-claude"
+            or self.defaultReasoningEffort not in self.reasoningEffortOptions
+        ):
+            raise ValueError("defaultReasoningEffort requires an offered external Claude effort.")
         if self.samplingRequiresNoReasoning and (
             self.api != "responses" or self.samplingSupported is not True
             or "none" not in self.reasoningEffortOptions
@@ -432,6 +439,7 @@ def _transform_infra_models(raw: dict[str, Any]) -> dict[str, Any]:
                 "maxTokensParameter": model.get("maxTokensParameter"),
                 "defaultMaxOutputTokens": model.get("defaultMaxOutputTokens"),
                 "anthropicThinking": model.get("anthropicThinking"),
+                "defaultReasoningEffort": model.get("defaultReasoningEffort"),
                 "toolCalling": model.get("toolCalling"),
                 "inputModalities": model.get("inputModalities", ["text"]),
                 "imageEditing": model.get("imageEditing", False),

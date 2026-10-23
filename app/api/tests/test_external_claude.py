@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from pathlib import Path
 
@@ -148,7 +149,7 @@ async def test_gateway_gate_precedes_network_and_enabled_control_uses_proxy():
                             messages=[{"role": "user", "content": "synthetic"}], api="chat",
                         )
                     assert not requests
-    assert len(requests) == 2
+    assert len(requests) == len(disabled_entries()) == 3
     assert all(request.url.host == "proxy.test" for request in requests)
     assert all(json.loads(request.content)["thinking"] == {"type": "disabled"} for request in requests)
 
@@ -221,10 +222,10 @@ def test_startup_and_public_catalog_do_not_accept_claude_flag_alone():
             assert response.status_code == 200
             offered = [m for m in response.json()["models"] if m["api"] == "anthropic"]
             disabled = [m for m in offered if m["anthropicThinking"] == "disabled"]
-            assert len(disabled) == (2 if enabled else 0)
+            assert len(disabled) == (3 if enabled else 0)
             assert all(m["reasoningEffortOptions"] == ["low", "medium", "high"] for m in offered)
             assert {m["id"]: (m["anthropicThinking"], m["supportsTools"]) for m in offered if m not in disabled} == (
-                {"claude-opus-5-5": ("adaptive", False)} if enabled else {}
+                {"claude-opus-5-5": ("adaptive", False), "claude-sonnet-5-5": ("adaptive", False)} if enabled else {}
             )
             assert all(m["supportsTools"] is True for m in disabled)
 
@@ -239,7 +240,8 @@ def test_upstream_gateway_mode_still_uses_the_existing_app_catalog_and_proxy():
         with TestClient(create_app(settings)) as client:
             advertised = client.get("/api/models").json()["models"]
             assert {row["id"] for row in advertised if row["api"] == "anthropic"} == (
-                {"claude-opus-5", "claude-sonnet-5", "claude-opus-5-5"} if enabled else set()
+                {"claude-opus-5", "claude-sonnet-5", "claude-opus-5-5",
+                 "claude-sonnet-5-5", "claude-haiku-5-5"} if enabled else set()
             )
             assert not hasattr(settings, "claude_gateway_api_key")
             assert settings.model_gateway_url == make_settings().model_gateway_url
@@ -256,6 +258,10 @@ def test_exact_sku_rates_include_cached_read_and_output_without_region_guessing(
         # Opus 5.5 cache hits are 0.05x input, not the 0.1x of its siblings.
         ("claude-opus-5-5", "GlobalStandard"): (4.0, 20.0, 0.2),
         ("claude-opus-5-5", "DataZoneStandard"): (4.4, 22.0, 0.22),
+        ("claude-sonnet-5-5", "GlobalStandard"): (2.0, 10.0, 0.1),
+        ("claude-sonnet-5-5", "DataZoneStandard"): (2.2, 11.0, 0.11),
+        ("claude-haiku-5-5", "GlobalStandard"): (0.1, 0.5, 0.01),
+        ("claude-haiku-5-5", "DataZoneStandard"): (0.11, 0.55, 0.011),
     }
     for model in entries():
         for option in model.options:
@@ -268,7 +274,7 @@ def test_exact_sku_rates_include_cached_read_and_output_without_region_guessing(
             assert price.micro_usd == round((100 - read) * expected[0] + 10 * expected[1] + read * expected[2])
             frozen = book.snapshot_token_prices(model.id, deployment=option.deploymentName)
             bound = frozen.estimate_token_bound(model.id, prompt_tokens=100, completion_tokens=10)
-            assert bound.micro_usd == round(100 * expected[0] + 10 * expected[1])
+            assert bound.micro_usd == math.ceil(100 * expected[0] + 10 * expected[1])
             assert bound.micro_usd >= price.micro_usd
             assert not book.estimate(
                 model.id, deployment="unknown-eastus2-deployment", prompt_tokens=100, completion_tokens=10,
@@ -360,15 +366,15 @@ def test_adaptive_profile_omits_thinking_and_records_effective_effort(effort):
                 deployment=option.deploymentName, messages=_USER, params=params,
             ).json
             assert "thinking" not in body
-            # Omitted effort sends Opus 5.5's documented default, never the disabled profile's high.
-            assert body["output_config"] == {"effort": effort or "medium"}
+            effective = effort or {"claude-opus-5-5": "medium", "claude-sonnet-5-5": "high"}[model.id]
+            assert body["output_config"] == {"effort": effective}
             assert not {"temperature", "top_p", "tools", "tool_choice", "cache_control"} & body.keys()
             recorder = ModelCallRecorder(model_id=model.id, deployment=option.deploymentName, pricing=load_pricing())
             call = recorder.start(option.deploymentName, "anthropic")
             call.request(body)
             call.report_usage(anthropic_usage_to_chat({"input_tokens": 10, "output_tokens": 4}), completed=True)
             snapshot = call.snapshot()
-            assert snapshot.parameters.reasoningEffort == (effort or "medium")
+            assert snapshot.parameters.reasoningEffort == effective
             assert snapshot.cost.coverage == "known"
             assert not supported_attempt_payload("chat", body)
     # Control: identical inputs on the thinking-disabled rows still disable thinking.
@@ -377,10 +383,13 @@ def test_adaptive_profile_omits_thinking_and_records_effective_effort(effort):
             deployment=model.options[0].deploymentName, messages=_USER, params=params,
         ).json
         assert body["thinking"] == {"type": "disabled"}
-        assert body["output_config"] == {"effort": effort or "high"}
+        assert body["output_config"] == {"effort": effort or (
+            "medium" if model.id == "claude-haiku-5-5" else "high"
+        )}
 
 
-async def test_adaptive_profile_refuses_every_tool_surface_before_dispatch():
+@pytest.mark.parametrize("model_id", ["claude-opus-5-5", "claude-sonnet-5-5"])
+async def test_adaptive_profile_refuses_every_tool_surface_before_dispatch(model_id):
     requests: list[dict] = []
 
     def handler(request):
@@ -403,7 +412,7 @@ async def test_adaptive_profile_refuses_every_tool_surface_before_dispatch():
         gateway = ModelGatewayClient(make_settings(
             claude_enabled=True, claude_external_enabled=True, model_gateway_url="https://proxy.test/openai",
         ), http_client=http)
-        [adaptive] = adaptive_entries()
+        adaptive = next(model for model in adaptive_entries() if model.id == model_id)
         deployment = adaptive.options[0].deploymentName
         for params, messages in _TOOL_SURFACES:
             with pytest.raises(ValueError, match="adaptive text-only"):
@@ -461,7 +470,7 @@ def test_adaptive_rows_cannot_move_default_off_or_ordinary_model_digests(tmp_pat
     raw = json.loads((Path(__file__).parents[1] / "src" / "ai4ia_api" / "data" / "model_catalog.json").read_text())
     without = deepcopy(raw)
     without["models"] = [m for m in raw["models"] if m.get("anthropicThinking") != "adaptive"]
-    assert len(without["models"]) == len(raw["models"]) - 1
+    assert len(without["models"]) == len(raw["models"]) - 2
     paths = {}
     for name, document in (("with", raw), ("without", without)):
         paths[name] = tmp_path / f"{name}.json"
