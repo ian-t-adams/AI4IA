@@ -27,6 +27,7 @@ export const inputStyle: React.CSSProperties = {
 };
 
 export const primaryBtn: React.CSSProperties = {
+  minHeight: 44,
   padding: "9px 16px",
   borderRadius: 8,
   border: "none",
@@ -37,6 +38,7 @@ export const primaryBtn: React.CSSProperties = {
 };
 
 export const secondaryBtn: React.CSSProperties = {
+  minHeight: 44,
   padding: "9px 16px",
   borderRadius: 8,
   border: "1px solid var(--border)",

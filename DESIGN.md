@@ -80,6 +80,14 @@ depend on color alone.
   the stage the whole canvas.
 - The inspector has one navigation level and progressive disclosure; do not put
   cards inside cards.
+- Inspector fields shrink to the available width without shrinking checkbox
+  glyphs or separating them from their labels. Voice settings use full-width
+  fields; primary interruption stays visible and managed processing details
+  expand on demand without changing preferences.
+- Studio navigation uses one wrapping-label track per available tab, stacked
+  when enlarged text cannot fit. On mobile, the page scrolls the editor instead
+  of nesting a short scrolling form. Builder names and library filenames wrap
+  in full; row actions retain 44px targets.
 - On narrow screens, the conversation sidebar and inspector become labelled
   drawers with focus management, Escape close, and focus return.
 - At 200% text and short mobile heights, the sidebar keeps its header fixed and

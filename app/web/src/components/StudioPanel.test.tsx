@@ -60,10 +60,8 @@ describe("StudioPanel", () => {
     expect(screen.getByText("Workflow builder content")).toBeInTheDocument();
   });
 
-  it("keeps navigation and content reachable at 390px and 200% zoom", () => {
-    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
-    document.documentElement.style.setProperty("--font-scale", "2");
-    render(<StudioPanel {...baseProps} />);
+  it.each([true, false])("uses one shrinkable track per offered tab (custom tools: %s)", (customToolsEnabled) => {
+    render(<StudioPanel {...baseProps} customToolsEnabled={customToolsEnabled} />);
 
     expect(screen.getByTestId("studio-surface")).toHaveStyle({
       maxWidth: "100%",
@@ -71,9 +69,9 @@ describe("StudioPanel", () => {
       overflow: "hidden",
     });
     expect(screen.getByRole("tablist", { name: "Studio sections" })).toHaveStyle({
-      overflowX: "auto",
-      minWidth: "0",
+      gridTemplateColumns: `repeat(var(--studio-tab-columns, ${customToolsEnabled ? 3 : 2}), minmax(0, 1fr))`,
     });
+    expect(screen.getByRole("tablist")).toHaveClass("studio-tabs");
     for (const tab of screen.getAllByRole("tab")) {
       expect(tab).toHaveStyle({ minHeight: "44px" });
     }
@@ -81,6 +79,6 @@ describe("StudioPanel", () => {
       minWidth: "44px",
       minHeight: "44px",
     });
-    expect(screen.getByRole("tabpanel")).toHaveStyle({ overflow: "auto" });
+    expect(screen.getByRole("tabpanel")).toHaveClass("studio-tabpanel");
   });
 });

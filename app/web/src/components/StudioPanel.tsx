@@ -69,9 +69,8 @@ export function StudioPanel({
         color: "var(--fg)",
         width: page ? "100%" : "min(880px, 100%)",
         maxWidth: "100%",
-        height: page ? "min(760px, calc(100dvh - 180px))" : "min(680px, 100%)",
-        minHeight: page ? 480 : undefined,
-        maxHeight: "100%",
+        height: page ? undefined : "min(680px, 100%)",
+        maxHeight: page ? undefined : "100%",
         minWidth: 0,
         borderRadius: "var(--radius)",
         border: "1px solid var(--border)",
@@ -79,7 +78,7 @@ export function StudioPanel({
         display: "flex",
         flexDirection: "column",
         gap: 16,
-        overflow: "hidden",
+        overflow: page ? undefined : "hidden",
         ...(page ? { background: "var(--bg-elevated)" } : {}),
       }}
     >
@@ -96,14 +95,10 @@ export function StudioPanel({
         <div
           role="tablist"
           aria-label="Studio sections"
+          className="studio-tabs"
           style={{
-            display: "flex",
-            gap: 8,
+            gridTemplateColumns: `repeat(var(--studio-tab-columns, ${tabs.length}), minmax(0, 1fr))`,
             flex: "1 1 auto",
-            minWidth: 0,
-            maxWidth: "100%",
-            overflowX: "auto",
-            paddingBottom: 2,
           }}
         >
           {tabs.map((id) => (
@@ -119,8 +114,7 @@ export function StudioPanel({
               onKeyDown={onTabKeyDown}
               style={{
                 minHeight: 44,
-                flex: "0 0 auto",
-                padding: "8px 16px",
+                padding: "8px",
                 borderRadius: 8,
                 border: "1px solid var(--border)",
                 background: tab === id ? "var(--accent)" : "var(--bg)",
@@ -156,6 +150,7 @@ export function StudioPanel({
 
       <div
         id="studio-tabpanel"
+        className="studio-tabpanel"
         role="tabpanel"
         aria-labelledby={`studio-tab-${tab}`}
         tabIndex={0}
@@ -164,7 +159,6 @@ export function StudioPanel({
           minWidth: 0,
           minHeight: 0,
           display: "flex",
-          overflow: "auto",
         }}
       >
         {tab === "agents" ? (

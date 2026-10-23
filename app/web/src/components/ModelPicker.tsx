@@ -138,7 +138,7 @@ export function ModelPicker({
         value={value ?? ""}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        style={{ padding: "8px 10px", minWidth: 220 }}
+        style={{ padding: "8px 10px", minWidth: 0, width: "100%" }}
         // Pin the accessible name to "Model" explicitly: the category note
         // below renders inside this same wrapping <label>, and without this
         // the select's name-from-content would absorb that note's text too.

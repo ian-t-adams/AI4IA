@@ -328,6 +328,14 @@ button:disabled {
 .inspector-header > div {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.inspector-header,
+.inspector-nav,
+.inspector-save-state {
+  flex-shrink: 0;
 }
 
 .inspector-header span {
@@ -378,8 +386,12 @@ button:disabled {
 }
 
 .inspector-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding: 16px;
+  overflow-wrap: anywhere;
 }
 
 .inspector-body section {
@@ -400,7 +412,13 @@ button:disabled {
 .inspector-body textarea,
 .inspector-body input[type="number"] {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 9px;
+}
+
+.inspector-body label.param-value-label {
+  display: block;
 }
 
 .inspector-section-title {
@@ -482,6 +500,7 @@ button:disabled {
 
 .inspector-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -524,9 +543,120 @@ button:disabled {
 }
 
 .voice-settings-panel {
+  min-width: 0;
+}
+
+.voice-settings-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.voice-audio-settings {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+
+.voice-audio-settings > .voice-settings-fields {
+  margin-top: var(--space-3);
+}
+
+.voice-settings-panel label.voice-setting-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  min-height: 44px;
+  gap: var(--space-2);
+  padding: 10px 0;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.voice-setting-toggle input {
+  flex: 0 0 auto;
+  margin: 0.3em 0 0;
+}
+
+.voice-setting-toggle span {
+  min-width: 0;
+}
+
+.voice-processing-note {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.voice-processing-note summary {
+  min-height: 44px;
+  padding: 10px 0;
+  cursor: pointer;
+}
+
+.voice-processing-note p {
+  margin: var(--space-2) 0 0;
+}
+
+.studio-tabs {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.studio-surface {
+  container-type: inline-size;
+}
+
+.studio-tabpanel {
+  overflow: auto;
+}
+
+@container (max-width: 16em) {
+  .studio-tabs {
+    --studio-tab-columns: 1;
+  }
+}
+
+.studio-tabs button {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.library-document-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elevated);
+  background: var(--bg);
+}
+
+.library-document-info {
+  flex: 1 1 18rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.library-document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.library-document-actions > span {
+  margin-right: var(--space-2);
+}
+
+.library-document-actions button {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .inspector-list,
