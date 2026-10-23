@@ -16,7 +16,6 @@ import {
 import type {
   AgentSummary,
   AttachmentCapabilities,
-  ChatRequestRestrictions,
   DocumentSummary,
 } from "@/lib/types";
 import {
@@ -26,7 +25,6 @@ import {
   type LibraryDocument,
 } from "@/lib/library";
 import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
-import { HelpTooltip } from "./HelpTooltip";
 import { Icon } from "./Icon";
 
 export interface UploadItem {
@@ -81,8 +79,6 @@ export function Composer({
   onDismissUpload,
   onRetryCapabilities,
   onSend,
-  textOnly = false,
-  onTextOnlyChange,
   onStop,
   onUpload,
   onRemoveDocument,
@@ -99,9 +95,7 @@ export function Composer({
   documents: DocumentSummary[];
   libraryDocuments?: LibraryDocument[];
   uploading: boolean;
-  onSend: (text: string, restrictions?: ChatRequestRestrictions) => void;
-  textOnly?: boolean;
-  onTextOnlyChange?: (selected: boolean) => void;
+  onSend: (text: string) => void;
   onStop: () => void;
   capabilities: AttachmentCapabilities | null;
   capabilitiesError?: string | null;
@@ -385,14 +379,9 @@ export function Composer({
     if (live && liveTarget) {
       // Keep the draft when the session can't take it (it just ended).
       if (!live.onSend(trimmed)) return;
-      onTextOnlyChange?.(false);
     } else {
       if (disabled) return;
-      if (textOnly) {
-        onSend(trimmed, { allowTools: false, allowAutomaticMemory: false });
-      } else {
-        onSend(trimmed);
-      }
+      onSend(trimmed);
     }
     setText("");
     setCaret(0);
@@ -773,30 +762,6 @@ export function Composer({
             onSelect={(e) => syncCaret(e.currentTarget)}
             onKeyDown={onKeyDown}
           />
-          {!liveTarget && onTextOnlyChange ? (
-            <div className="composer-turn-option">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={textOnly}
-                  onChange={(event) => onTextOnlyChange(event.target.checked)}
-                  aria-describedby="composer-text-only-note"
-                />
-                Text only
-              </label>
-              <HelpTooltip label="Text only" size="sm">
-                Off by default. Disables tools and automatic memory for this
-                text-chat message only, then resets. Existing history,
-                instructions and selected documents stay in the conversation.
-                Commands and agents that require tools are refused, not changed
-                into plain chat. This does not force a particular model or
-                change saved tool permissions or memory settings.
-              </HelpTooltip>
-              <span id="composer-text-only-note" className="composer-turn-note">
-                {streaming ? "Next message" : "This message"}: no tools or automatic memory
-              </span>
-            </div>
-          ) : null}
           <div className="composer-toolbar">
             <input
               ref={fileInputRef}

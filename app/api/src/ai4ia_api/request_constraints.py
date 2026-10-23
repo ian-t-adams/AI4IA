@@ -21,6 +21,7 @@ class RequestConstraints:
     tools: bool = True
     automatic_memory: bool = True
     fresh_session: bool = False
+    tool_checks: tuple[Callable[[], Awaitable[bool]], ...] = ()
 
 
 _current: ContextVar[RequestConstraints] = ContextVar(
@@ -46,6 +47,24 @@ def tools_allowed() -> bool:
     return _current.get().tools
 
 
+async def tools_still_allowed() -> bool:
+    """Re-read conversation denials at dispatch, without granting any authority."""
+    if not tools_allowed():
+        return False
+    for check in _current.get().tool_checks:
+        if not await check():
+            return False
+    return True
+
+
+def conversation_tools_check(repo: SessionRepository, session: Session) -> Callable[[], Awaitable[bool]]:
+    async def check() -> bool:
+        current = await repo.get_session(session.userId, session.id)
+        return current.toolsEnabled and current.toolsRevision == session.toolsRevision
+
+    return check
+
+
 def automatic_memory_allowed() -> bool:
     return _current.get().automatic_memory
 
@@ -57,12 +76,14 @@ def fresh_session_required() -> bool:
 @contextmanager
 def constrain_request(
     *, tools: bool, automatic_memory: bool, require_fresh_session: bool = False,
+    tool_check: Callable[[], Awaitable[bool]] | None = None,
 ) -> Iterator[None]:
     parent = _current.get()
     token = _current.set(RequestConstraints(
         tools=parent.tools and tools,
         automatic_memory=parent.automatic_memory and automatic_memory,
         fresh_session=parent.fresh_session or require_fresh_session,
+        tool_checks=parent.tool_checks + ((tool_check,) if tool_check is not None else ()),
     ))
     slot = _fresh_dispatch.set(_fresh_dispatch.get() if parent.fresh_session else None)
     try:

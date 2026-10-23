@@ -17,6 +17,7 @@ export function ChatHeader({
   modelLabel,
   onOpenModel,
   streaming,
+  toolsOff = false,
   onOpenSidebar,
   sidebarButtonRef,
   inspectorOpen,
@@ -32,6 +33,7 @@ export function ChatHeader({
   modelLabel: string | null;
   onOpenModel: () => void;
   streaming: boolean;
+  toolsOff?: boolean;
   /** Present on phones, where the navigation sidebar is a drawer. */
   onOpenSidebar?: () => void;
   sidebarButtonRef?: RefObject<HTMLElement | null>;
@@ -93,7 +95,7 @@ export function ChatHeader({
         aria-atomic="true"
         data-busy={streaming ? "true" : "false"}
       >
-        {streaming ? "Generating…" : ""}
+        {toolsOff ? "Chat tools off" : ""}{toolsOff && streaming ? " · " : ""}{streaming ? "Generating…" : ""}
       </div>
       {!inspectorOpen ? (
         <button

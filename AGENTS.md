@@ -116,6 +116,13 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    `ChatRequest.allowTools=false` and `allowAutomaticMemory=false` are
    request-only denials, not grants or durable preference edits. Keep their
    nested-AND context alive through SSE, tool dispatch and automatic memory IO.
+   The owner-scoped session `toolsEnabled` Boolean defaults true for legacy rows
+   and intersects that request scope for HTTP/SSE chat only. Off retains selections
+   and does not edit memory preferences, consent or Voice Live configuration.
+   Re-read the session switch and server-owned `toolsRevision` before dispatch.
+   Every explicit switch update rotates that revision atomically with the value;
+   retain it in durable serialization and continuation bindings so off/on cannot
+   resurrect a held operation. Default legacy bindings remain compatible.
    The optional `requireFreshSession` path consumes an API-hidden v1 session
    claim with the existing owner/ETag CAS before constructing its empty-context
    prompt. Preserve `freshTurnClaimed` in durable serialization and every

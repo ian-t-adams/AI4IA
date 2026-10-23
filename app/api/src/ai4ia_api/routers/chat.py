@@ -29,7 +29,7 @@ from ..auth.dependencies import get_current_user
 from ..catalog import ModelCatalog, ModelEntry
 from ..config import Settings
 from ..chat_timing import ChatTiming, bind_chat_timing
-from ..request_constraints import arm_fresh_dispatch, constrain_request, tools_allowed
+from ..request_constraints import arm_fresh_dispatch, constrain_request, conversation_tools_check, tools_allowed
 from ..citations import RetrievedSource, attest_message
 from ..conversations.policy import resolve_conversation_policy
 from ..gateway.client import TOOL_CALLING_APIS, ModelGatewayClient, ModelGatewayError
@@ -246,9 +246,13 @@ class ChatContinuationRequest(BaseModel):
 
 
 def _chat_session_binding(value: Session) -> str:
-    return contract_hash(value.model_dump(mode="json", exclude={
-        "title", "createdAt", "updatedAt", "freshTurnClaimed",
-    }))
+    body = value.model_dump(mode="json", exclude={
+        "title", "createdAt", "updatedAt", "freshTurnClaimed", "toolsEnabled",
+    })
+    # Preserve bindings created before the additive conversation switch.
+    if not value.toolsEnabled or value.toolsRevision is not None:
+        body.update(toolsEnabled=value.toolsEnabled, toolsRevision=value.toolsRevision)
+    return contract_hash(body)
 
 
 async def _chat_agent_binding(request: Request, user_id: str, name: str) -> str:
@@ -296,7 +300,12 @@ async def _continuation_constraints(
     stored = ChatRequest.model_validate(state.payload.request)
     if stored.sessionId != body.sessionId:
         raise HTTPException(409, "The saved call does not match this conversation.")
-    with constrain_request(tools=stored.allowTools, automatic_memory=stored.allowAutomaticMemory):
+    session = await repo.get_session(user.internal_user_id, body.sessionId)
+    with constrain_request(
+        tools=stored.allowTools and session.toolsEnabled,
+        automatic_memory=stored.allowAutomaticMemory,
+        tool_check=conversation_tools_check(repo, session),
+    ):
         yield
 
 
@@ -361,11 +370,17 @@ async def continue_chat(
         raise
 
 
-async def _request_constraints(body: ChatRequest) -> AsyncIterator[None]:
+async def _request_constraints(
+    body: ChatRequest, request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AsyncIterator[None]:
     # Request-scoped yield dependencies remain active until SSE has finished.
+    repo: SessionRepository = request.app.state.session_repo
+    session = await repo.get_session(user.internal_user_id, body.sessionId)
     with constrain_request(
-        tools=body.allowTools, automatic_memory=body.allowAutomaticMemory,
+        tools=body.allowTools and session.toolsEnabled, automatic_memory=body.allowAutomaticMemory,
         require_fresh_session=body.requireFreshSession,
+        tool_check=conversation_tools_check(repo, session),
     ):
         yield
 
@@ -1159,13 +1174,15 @@ async def chat(
         session,
         explicit_agent=parsed.agent,
     )
-    if not tools_allowed() and (
-        policy.effective_tools or (policy.agent is not None and policy.agent.links)
+    if not tools_allowed() and policy.agent is not None and (
+        policy.agent.tools or policy.agent.links
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="The selected source requires tools and cannot run tool-free.",
         )
+    if not tools_allowed():
+        policy = replace(policy, effective_tools=())
     if tool_agent is None and policy.agent is not None:
         agent = policy.agent.model_copy(update={"tools": list(policy.effective_tools)})
     elif tool_agent is None and policy.effective_tools:

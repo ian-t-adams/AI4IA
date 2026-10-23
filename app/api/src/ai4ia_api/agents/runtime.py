@@ -52,7 +52,7 @@ import json
 import logging
 import secrets
 import time
-from ..request_constraints import tools_allowed
+from ..request_constraints import tools_allowed, tools_still_allowed
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -980,6 +980,11 @@ async def run_agent_turn(
         )
 
     async def before_tool(name: str, parsed: dict[str, Any]) -> None:
+        if not await tools_still_allowed():
+            raise AgentRunFailed(
+                cause=ToolExecutionError("Conversation tools changed or are off. Send a fresh request."),
+                partial=current_partial_result(include_current_attempt=False),
+            )
         if checkpoint is not None:
             try:
                 await checkpoint.before_tool(

@@ -123,6 +123,15 @@ function model(overrides: Partial<ModelEntry> = {}): ModelEntry {
   };
 }
 
+function selectableTool(name: string, overrides: Partial<ToolCatalogItem> = {}): ToolCatalogItem {
+  return {
+    name, label: name, description: "Synthetic tool", source: "built-in",
+    risk: "safe", requiresApproval: false, scopes: [], available: true,
+    selectable: true, ownership: "application", typed: true, voice: false,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   mocks.getMemoryPreference.mockResolvedValue({ automaticMemoryEnabled: true, etag: '"pref-0"' });
   mocks.updateMemoryPreference.mockImplementation(async (automaticMemoryEnabled: boolean) => ({
@@ -184,6 +193,102 @@ afterEach(() => {
 });
 
 describe("ConversationInspector", () => {
+  it("keeps checked selections paused behind a keyboard-accessible master without touching memory or consent", async () => {
+    const user = userEvent.setup();
+    let enabled = true;
+    mocks.getInspector.mockImplementation(async () => ({
+      ...snapshot("s1"),
+      tools: {
+        enabled, inherited: [], added: ["calculator"], removed: ["unavailable"],
+        overrides: { added: ["calculator"], removed: ["unavailable"] },
+        selected: ["calculator"], effective: enabled ? ["calculator"] : [], voiceEffective: [],
+      },
+    }));
+    mocks.updateSession.mockImplementation(async (_id: string, value: { toolsEnabled: boolean }) => {
+      enabled = value.toolsEnabled;
+      return { ...makeChatSession("s1"), toolsEnabled: enabled };
+    });
+    mockToolCatalog([selectableTool("calculator")]);
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+    const master = await screen.findByRole("switch", { name: "Conversation tools" });
+    await waitFor(() => expect(master).toBeEnabled());
+    master.focus();
+    await user.keyboard(" ");
+    await waitFor(() => expect(master).toBeEnabled());
+    expect(master).not.toBeChecked();
+    const selection = screen.getByRole("checkbox", { name: "calculator" });
+    expect(selection).toBeChecked();
+    expect(selection).toBeDisabled();
+    expect(selection).toHaveAccessibleDescription(/paused/);
+    expect(screen.getByRole("button", { name: "Select all" })).toBeDisabled();
+    expect(mocks.updateSession).toHaveBeenLastCalledWith("s1", { toolsEnabled: false });
+    await user.click(master);
+    await waitFor(() => expect(selection).toBeEnabled());
+    expect(selection).toBeChecked();
+    expect(mocks.updateMemoryPreference).not.toHaveBeenCalled();
+    expect(mocks.setSessionToolConsent).not.toHaveBeenCalled();
+  });
+
+  it("bulk edits only eligible search results, retaining hidden, denied and published selections", async () => {
+    const user = userEvent.setup();
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: [
+        selectableTool("choose-inherited"), selectableTool("choose-added"),
+        selectableTool("choose-denied", { available: false, selectable: false }),
+        selectableTool("choose-readonly", { selectable: false }),
+        selectableTool("choose-published"), selectableTool("hidden"),
+      ],
+      inheritedTools: ["choose-inherited", "choose-published"],
+      readOnlyTools: ["choose-published"], requiresTools: true,
+    });
+    const draft = { agentName: null, toolOverrides: { added: ["hidden"], removed: ["choose-inherited", "choose-denied"] }, libraryDocumentIds: [] };
+    const onDraftDefaultsChange = vi.fn();
+    const rendered = render(<ConversationInspector {...props(null)} draftDefaults={draft} onDraftDefaultsChange={onDraftDefaultsChange} />);
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+    await user.type(screen.getByRole("searchbox", { name: "Search tools" }), "choose");
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(onDraftDefaultsChange).toHaveBeenLastCalledWith({
+      ...draft, toolOverrides: { added: ["hidden", "choose-added"], removed: ["choose-denied"] },
+    });
+    const selected = onDraftDefaultsChange.mock.calls[0][0] as ConversationDraftDefaults;
+    rendered.rerender(<ConversationInspector {...props(null)} draftDefaults={selected} onDraftDefaultsChange={onDraftDefaultsChange} />);
+    await user.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(onDraftDefaultsChange).toHaveBeenLastCalledWith({
+      ...draft, toolOverrides: { added: ["hidden"], removed: ["choose-denied", "choose-inherited"] },
+    });
+    expect(screen.getByRole("checkbox", { name: "choose-published" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "choose-published" })).toBeDisabled();
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+    expect(mocks.setSessionToolConsent).not.toHaveBeenCalled();
+  });
+
+  it("refuses an oversized bulk change rather than silently selecting a subset", async () => {
+    const user = userEvent.setup();
+    mockToolCatalog(Array.from({ length: 9 }, (_, index) => selectableTool(`fixture${index}`)));
+    const input = props(null);
+    render(<ConversationInspector {...input} />);
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("8 added and 16 removed");
+    expect(input.onDraftDefaultsChange).not.toHaveBeenCalled();
+    await user.type(screen.getByRole("searchbox", { name: "Search tools" }), "fixture0");
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(input.onDraftDefaultsChange).toHaveBeenCalledWith(expect.objectContaining({
+      toolOverrides: { added: ["fixture0"], removed: [] },
+    }));
+  });
+
+  it("explains a required-source conflict and locks mutations while a chat is active", async () => {
+    const value = snapshot("s1");
+    value.tools.enabled = false;
+    value.tools.requiresTools = true;
+    mocks.getInspector.mockResolvedValue(value);
+    render(<ConversationInspector {...props()} chatBusy />);
+    await userEvent.click(screen.getByRole("button", { name: "Agent & tools" }));
+    expect(await screen.findByText(/This agent requires tools/)).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Conversation tools" })).toBeDisabled();
+  });
   it("opens and focuses a recorded memory through the owner-scoped list", async () => {
     mocks.getMemoryPreference.mockResolvedValue({ automaticMemoryEnabled: false, etag: '"pref-1"' });
     mocks.listMemories.mockResolvedValue({
@@ -348,7 +453,7 @@ describe("ConversationInspector", () => {
     expect(browse).toBeChecked();
     expect(search).toBeEnabled();
     expect(browse).toBeEnabled();
-    expect(screen.getByText(/No saved agent is required/)).toBeVisible();
+    expect(screen.getByText(/included by default when tools are on/)).toBeVisible();
     expect(screen.queryByText(/only a pre-built agent can grant/)).toBeNull();
     expect(screen.queryByText(/Hostile retrieved content/)).toBeNull();
     await user.click(browse);

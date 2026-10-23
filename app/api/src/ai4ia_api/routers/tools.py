@@ -55,6 +55,8 @@ class ToolCatalogItem(BaseModel):
 class ToolCatalogResponse(BaseModel):
     tools: list[ToolCatalogItem]
     inheritedTools: list[str] = []
+    readOnlyTools: list[str] = []
+    requiresTools: bool = False
     toolAutoApproveAvailable: bool = False
 
 
@@ -258,6 +260,7 @@ async def list_tools(
                 )
             )
     inherited_tools: tuple[str, ...] = default_tools
+    selected_agent = None
     if session_id:
         session = await request.app.state.session_repo.get_session(
             user.internal_user_id, session_id
@@ -265,6 +268,7 @@ async def list_tools(
         policy = await resolve_conversation_policy(
             request.app.state, user.internal_user_id, session
         )
+        selected_agent = policy.agent
         inherited_tools = tuple(dict.fromkeys((*policy.inherited_tools, *default_tools)))
         known = {item.name for item in items}
         for name in sorted(set(policy.effective_tools) - known):
@@ -290,6 +294,7 @@ async def list_tools(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="The selected agent is unavailable.",
             )
+        selected_agent = agent
         inherited_tools = tuple(dict.fromkeys((*agent.tools, *default_tools)))
         known = {item.name for item in items}
         for name in sorted(set(inherited_tools) - known):
@@ -314,5 +319,9 @@ async def list_tools(
     return ToolCatalogResponse(
         tools=sorted(items, key=lambda item: (item.source, item.label)),
         inheritedTools=list(inherited_tools),
+        # Reviewed published selections are edited at their source, not by bulk
+        # conversation overrides. Execution still checks the reviewed subset.
+        readOnlyTools=selected_agent.tools if selected_agent and selected_agent.sourceVersion else [],
+        requiresTools=bool(selected_agent and (selected_agent.tools or selected_agent.links)),
         toolAutoApproveAvailable=tool_auto_approve_available(request.app.state),
     )

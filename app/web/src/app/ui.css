@@ -2001,28 +2001,6 @@
   opacity: 1;
 }
 
-.composer-turn-option {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-  padding: 0 var(--space-4) var(--space-1);
-  font-size: var(--text-xs);
-}
-
-.composer-turn-option label {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: 32px;
-  font-size: var(--text-sm);
-  cursor: pointer;
-}
-
-.composer-turn-note {
-  color: var(--fg-muted);
-}
-
 .composer-toolbar {
   display: flex;
   align-items: center;

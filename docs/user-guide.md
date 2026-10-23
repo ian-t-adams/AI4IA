@@ -36,23 +36,35 @@ Give the assistant a goal, constraints, and an expected output. Use attachments
 for one-off material and the library for sources you expect to reuse.
 Check citations against the original source before relying on an answer.
 
-Choose **Text only** in the composer to disable tools and automatic memory
-for **this message only**. It is off by default and resets after sending or
-choosing **New chat** or another conversation. A retry through an approval
-prompt keeps the original turn's restrictions, not your next draft's choice.
-While a reply is streaming, the checkbox applies to the next message.
+In **Setup > Agent & tools**, switch **Tools off** to pause every tool in this
+conversation's text chat, including automatically offered tools. Your individual
+selections stay checked but paused; switching on restores them subject to current
+availability and policy, not new permissions or approvals. The setting survives
+sending, switching conversations, and reload. A new chat defaults to tools on;
+changing its draft applies when the conversation is created.
 
-This does not clear history, instructions, selected documents, attachments, or
-saved memory, and it does not change saved tool permissions, consent, or memory
-preferences. Commands and selected agents or published sources that require
-tools are refused rather than silently changed into plain chat. The control is
-for text chat, not live voice; while connected, select **Send to: Text chat**
-to use it.
+**Select all** and **Clear all** change selectable tools in the current search.
+Unavailable, policy-denied and read-only published selections are excluded. The
+existing limits of 8 additions and 16 removals still apply; narrow the search if
+needed. Clearing the list is not a substitute for **Tools off**: other tools can
+be offered automatically.
+
+**Context > Memory > Automatic memory** is independent and saved across your
+conversations and workflows. Tools off does not stop automatic recall or saving;
+disable automatic memory there when you want neither. Neither switch clears
+history, instructions, selected documents, attachments, saved memories or receipts.
+Agents and published sources requiring tools cannot run tool-free; choose the
+generic assistant instead. These conversation controls do not change Voice Live's
+tool configuration; while connected, **Send to: Text chat** uses them.
+
+Turning tools off invalidates a waiting tool call, even if you turn them on again.
+Send a fresh request rather than retrying that approval. Valid approval continuations
+still resume the original exact call, never a new model-authored attempt.
 
 For a tool-free routing demonstration, start a **new generic chat** with no
 selected agent, added documents, custom instructions, or earlier messages, then
-select **Text only** before each question. Balanced routing still chooses the
-model: this option does not force Astra or guarantee a difficulty-to-model
+switch **Tools off** and independently turn automatic memory off. Balanced routing
+still chooses the model: neither setting forces Astra or guarantees a difficulty-to-model
 mapping. Use the reply's recorded model evidence to see which model answered.
 
 Model controls reflect the server's catalog. Context size, output limits,

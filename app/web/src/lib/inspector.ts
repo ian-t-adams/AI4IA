@@ -89,6 +89,10 @@ export interface InspectorSnapshot {
     description: string | null;
   };
   tools: {
+    enabled?: boolean;
+    requiresTools?: boolean;
+    overrides?: { added: string[]; removed: string[] };
+    selected?: string[];
     inherited: string[];
     added: string[];
     removed: string[];

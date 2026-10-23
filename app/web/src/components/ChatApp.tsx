@@ -350,16 +350,24 @@ export function ChatApp() {
     max_tokens: 1024,
   });
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [draftDefaults, setDraftDefaults] = useState<ConversationDraftDefaults>({
-    agentName: null,
-    toolOverrides: { added: [], removed: [] },
-    libraryDocumentIds: [],
-  });
+  const emptyDraftDefaults = useMemo<ConversationDraftDefaults>(() => ({
+    agentName: null, toolOverrides: { added: [], removed: [] }, libraryDocumentIds: [],
+  }), []);
+  const [draftState, setDraftState] = useState({ owner, defaults: emptyDraftDefaults });
+  const draftDefaults = draftState.owner === owner ? draftState.defaults : emptyDraftDefaults;
+  const setDraftDefaults = useCallback((defaults: ConversationDraftDefaults) => {
+    setDraftState({ owner, defaults });
+  }, [owner]);
   const [composerPrefill, setComposerPrefill] = useState<{
     id: number;
     text: string;
   } | null>(null);
-  const [textOnly, setTextOnly] = useState(false);
+  const [settingsPending, setSettingsPending] = useState(false);
+  const settingsPendingRef = useRef(false);
+  const onSettingsPendingChange = useCallback((pending: boolean) => {
+    settingsPendingRef.current = pending;
+    setSettingsPending(pending);
+  }, []);
   // Each request gets a new id, so the composer applies it exactly once.
   const startImagePrompt = useCallback(() => {
     setComposerPrefill((current) => ({ id: (current?.id ?? 0) + 1, text: "/generate_image " }));
@@ -927,7 +935,6 @@ export function ChatApp() {
       approvalGenerationRef.current += 1;
       setApprovalBusy(false);
       setContinuingMessageId(null);
-      setTextOnly(false);
       const mySessionListGeneration = ++sessionListGenerationRef.current;
       try {
         const [msgs, all, docs] = await Promise.all([
@@ -1043,7 +1050,6 @@ export function ChatApp() {
     approvalGenerationRef.current += 1;
     setApprovalBusy(false);
     setContinuingMessageId(null);
-    setTextOnly(false);
     setSessionLoading(false);
     setSelectedModel(pickDefaultModel(models));
     setSystemPrompt("");
@@ -1056,7 +1062,7 @@ export function ChatApp() {
     setStreamMaterialized(false);
     setStreamingStartedAt(null);
     setError(null);
-  }, [clearReconciliationTimers, models]);
+  }, [clearReconciliationTimers, models, setDraftDefaults]);
 
   const newChat = useCallback(() => {
     if (streamingRef.current) return;
@@ -1375,6 +1381,7 @@ export function ChatApp() {
         systemPrompt: systemPrompt || null,
         agentName: draftDefaults.agentName,
         toolOverrides: draftDefaults.toolOverrides,
+        toolsEnabled: draftDefaults.toolsEnabled,
         libraryDocumentIds: draftDefaults.libraryDocumentIds,
       })}`,
     [selectedModel, systemPrompt, draftDefaults],
@@ -1529,6 +1536,7 @@ export function ChatApp() {
               systemPrompt: systemPrompt || null,
               agentName: draftDefaults.agentName,
               toolOverrides: draftDefaults.toolOverrides,
+              toolsEnabled: draftDefaults.toolsEnabled,
               libraryDocumentIds: draftDefaults.libraryDocumentIds,
             },
             controller.signal,
@@ -2370,7 +2378,6 @@ export function ChatApp() {
     streamingSessionIdRef.current = null;
     setStreaming(false);
     setSessionLoading(false);
-    setTextOnly(false);
     clearReconciliationTimers();
     abandonPendingSessionCreation();
     if (voiceActiveRef.current) voiceStopRef.current();
@@ -2731,7 +2738,7 @@ export function ChatApp() {
       approvals?: ToolApprovalDecision[],
       continuation?: PendingToolApprovalPrompt,
     ) => {
-      if (streamingRef.current) return;
+      if (streamingRef.current || settingsPendingRef.current) return;
       if (!selectedModel) {
         setError("Select a model first.");
         return;
@@ -2755,7 +2762,6 @@ export function ChatApp() {
         // A fresh, unrelated user turn supersedes every old prompt; absence of a
         // grant is the explicit denial path.
         setToolApprovals([]);
-        setTextOnly(false);
       }
       // Claim the in-flight slot synchronously so a rapid second submit can't
       // create a duplicate session or start an overlapping stream.
@@ -3469,6 +3475,7 @@ export function ChatApp() {
             modelLabel={modelLabel}
             onOpenModel={openModelSettings}
             streaming={streaming}
+            toolsOff={(activeId ? sessions.find((session) => session.id === activeId)?.toolsEnabled : draftDefaults.toolsEnabled) === false}
             onOpenSidebar={phone ? openSidebarDrawer : undefined}
             sidebarButtonRef={sidebarReturnFocusRef}
             inspectorOpen={inspectorShown}
@@ -3666,7 +3673,7 @@ export function ChatApp() {
               }}
             />
             <Composer
-              disabled={streaming || sessionLoading || !selectedModel}
+              disabled={streaming || settingsPending || sessionLoading || !selectedModel}
               streaming={streaming}
               agents={agents}
               documents={documents}
@@ -3678,8 +3685,6 @@ export function ChatApp() {
                 (upload) => upload.sessionId === activeId,
               )}
               onSend={send}
-              textOnly={textOnly}
-              onTextOnlyChange={setTextOnly}
               onStop={stop}
               onUpload={uploadDocument}
               onRetryUpload={retryUpload}
@@ -3790,7 +3795,7 @@ export function ChatApp() {
       >
         {view === "chat" ? (
           <ConversationInspector
-            key={activeId ?? "new-conversation"}
+            key={JSON.stringify([owner.key, activeId])}
             sessionId={activeId}
             sessionToolConsent={activeToolConsent}
             consentVerification={currentConsentView}
@@ -3814,6 +3819,8 @@ export function ChatApp() {
             }}
             draftDefaults={draftDefaults}
             onDraftDefaultsChange={setDraftDefaults}
+            onSettingsPendingChange={onSettingsPendingChange}
+            chatBusy={streaming || uploading}
             onSessionUpdated={(updated) => {
               if (updated.id !== sessionIdRef.current) return;
               invalidateConsentVerification();

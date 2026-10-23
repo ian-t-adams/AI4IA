@@ -14,7 +14,7 @@ from ..agents.consent_service import inspect_session_consent, tool_auto_approve_
 from ..conversations.policy import default_conversation_tools, resolve_conversation_policy
 from ..library.access import get_accessible_document, list_accessible_documents
 from ..library.repository import DocumentNotFoundError
-from ..sessions.models import ImageGenerationPreferences
+from ..sessions.models import ImageGenerationPreferences, ToolOverrides
 from ..usage.models import SessionUsageSummary, UsageSummary
 from .documents import DocumentSummary
 from .library import UserDocumentSummary
@@ -60,6 +60,10 @@ class InspectorAgent(BaseModel):
 
 
 class InspectorTools(BaseModel):
+    enabled: bool = True
+    requiresTools: bool = False
+    overrides: ToolOverrides = Field(default_factory=ToolOverrides)
+    selected: list[str] = Field(default_factory=list)
     inherited: list[str] = Field(default_factory=list)
     added: list[str] = Field(default_factory=list)
     removed: list[str] = Field(default_factory=list)
@@ -165,6 +169,10 @@ async def get_inspector(
         session_id=session_id, email=user.email,
     )
     default_tools = default_conversation_tools(request.app.state)
+    selected_tools = list(dict.fromkeys((
+        *policy.effective_tools,
+        *(name for name in default_tools if name not in policy.removed_tools),
+    )))
     return InspectorSnapshot(
         toolAutoApproveAvailable=tool_auto_approve_available(request.app.state),
         toolConsent=consent.consent,
@@ -200,13 +208,14 @@ async def get_inspector(
             description=policy.agent.description if policy.agent else None,
         ),
         tools=InspectorTools(
+            enabled=session.toolsEnabled,
+            requiresTools=bool(policy.agent and (policy.agent.tools or policy.agent.links)),
+            overrides=session.toolOverrides,
+            selected=selected_tools,
             inherited=list(dict.fromkeys((*policy.inherited_tools, *default_tools))),
             added=list(policy.added_tools),
             removed=list(policy.removed_tools),
-            effective=list(dict.fromkeys((
-                *policy.effective_tools,
-                *(name for name in default_tools if name not in policy.removed_tools),
-            ))),
+            effective=selected_tools if session.toolsEnabled else [],
             voiceEffective=list(policy.voice_tools),
         ),
         imagePreferences=session.imagePreferences,
