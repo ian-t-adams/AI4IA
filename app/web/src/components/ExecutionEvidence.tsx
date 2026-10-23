@@ -178,6 +178,35 @@ function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
           </div>
         ))}
       </div>
+      {call.nativeUsage ? (
+        <details>
+          <summary className="activity-label">Native usage fields</summary>
+          <div className="activity-rows">
+            <p className="safety-note">
+              {call.nativeUsage.api === "chat" ? "Chat Completions" : "Responses"} usage as reported by the
+              provider. Only allowlisted numeric fields are retained; missing fields are not zero.
+              Categories may overlap. These fields do not reconcile cost or establish Azure billed charges.
+            </p>
+            {Object.entries(call.nativeUsage.values).map(([field, value]) => (
+              <div key={field} className="activity-row receipt-row">
+                <span className="activity-label">{field}</span>
+                <span className="activity-detail">{value}</span>
+              </div>
+            ))}
+            {call.nativeUsage.invalidFields.map((field) => (
+              <div key={field} className="activity-row receipt-row">
+                <span className="activity-label">{field}</span>
+                <span className="activity-detail">Invalid value (not retained)</span>
+              </div>
+            ))}
+            {call.nativeUsage.status === "unreported" ? (
+              <p className="safety-note">No allowlisted numeric fields reported.</p>
+            ) : call.nativeUsage.status === "invalid" && !call.nativeUsage.invalidFields.length ? (
+              <p className="safety-note">Invalid native usage object (not retained).</p>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
     </details>
   );
 }
