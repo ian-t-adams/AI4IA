@@ -4,11 +4,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..model_evidence import MAX_RECORDED_MODEL_CALLS, ModelCallEvidence, ModelCallRecorder
 from ..safety import MessageSafety
 from ..usage.models import TokenUsage
+from ..receipts import ExecutionReceipt
 from .approvals import ApprovalDraft
 from .tools import ToolSpec
 
@@ -16,7 +17,7 @@ TURN_BUDGET_KEYS = frozenset({"document", "recall", "mcp", "web_calls", "web_cha
 
 
 class CheckpointResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
     content: str
     toolCalls: list[dict[str, Any]]
     outputItems: list[dict[str, Any]]
@@ -25,17 +26,27 @@ class CheckpointResponse(BaseModel):
     tail: bool = False
 
 
+class CheckpointDelegation(BaseModel):
+    agent: str
+    usage: TokenUsage
+    receipt: ExecutionReceipt
+    meteredSeparately: bool
+    parentOperationId: str | None = Field(default=None, max_length=30)
+    activitySteps: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
+
+
 class TurnCheckpoint(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
     version: Literal[1] = 1
+    mode: Literal["workflow", "interactive"] = "workflow"
     phase: Literal["ready", "model", "response", "tools", "finished"]
     conversation: list[dict[str, Any]]
     toolSchema: list[dict[str, Any]]
     offeredTools: list[dict[str, Any]]
     contracts: dict[str, str]
     steps: list[dict[str, Any]]
-    iterations: int = Field(ge=0, le=3)
-    completedModelCalls: int = Field(ge=0, le=3)
+    iterations: int = Field(ge=0, le=5)
+    completedModelCalls: int = Field(ge=0, le=5)
     toolCallsUsed: int = Field(ge=0, le=16)
     nextToolIndex: int = Field(ge=0, le=8)
     currentToolCounted: bool
@@ -46,13 +57,24 @@ class TurnCheckpoint(BaseModel):
     deniedOnce: list[str]
     usage: TokenUsage
     effectivePrompt: list[dict[str, Any]]
-    modelRequests: list[list[dict[str, Any]]] = Field(max_length=3)
+    modelRequests: list[list[dict[str, Any]]] = Field(max_length=5)
     modelEvidence: list[ModelCallEvidence] = Field(max_length=MAX_RECORDED_MODEL_CALLS)
     modelEvidenceCount: int = Field(ge=0)
     safety: MessageSafety | None
     droppedContextMessages: int = Field(ge=0)
-    completedText: list[str] = Field(max_length=3)
+    completedText: list[str] = Field(max_length=5)
     capabilityBudgets: dict[str, int]
+    activityScope: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+    delegations: list[CheckpointDelegation] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def preserve_workflow_bounds(self) -> TurnCheckpoint:
+        if self.mode == "workflow" and (
+            self.iterations > 3 or self.completedModelCalls > 3
+            or len(self.modelRequests) > 3 or len(self.completedText) > 3
+        ):
+            raise ValueError("Workflow checkpoints retain their three-call bound.")
+        return self
 
     @field_validator("capabilityBudgets", mode="before")
     @classmethod
@@ -66,7 +88,7 @@ class TurnCheckpoint(BaseModel):
 
     @classmethod
     def from_persisted(cls, raw: Any) -> TurnCheckpoint:
-        if not isinstance(raw, Mapping) or not set(cls.model_fields).issubset(raw):
+        if not isinstance(raw, Mapping) or not (set(cls.model_fields) - {"mode", "activityScope", "delegations"}).issubset(raw):
             raise ValueError("Incomplete persisted agent checkpoint.")
         return cls.model_validate(raw)
 

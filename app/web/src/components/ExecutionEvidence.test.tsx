@@ -5,10 +5,53 @@ import { afterEach, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExecutionReceipt, ModelCallEvidence, ReceiptCostSummary } from "@/lib/types";
-import { ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
+import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
 import tokenUsageAccounting from "../../test-fixtures/token_usage_accounting.json";
 
 afterEach(cleanup);
+
+it.each([
+  ["cancelled", "Turn cancelled"], ["expired", "Approval expired"], ["unknown", "Outcome unknown"],
+  ["running", "Completion not confirmed"], ["dispatched", "Completion not confirmed"],
+])("shows current %s status without rewriting a historical waiting event", (status, label) => {
+  const steps = [{ kind: "tool_waiting" as const, tool: "send", label: "Waiting for approval", operationId: "one" }];
+  render(<ActivityPanel steps={steps} live={false} continuationStatus={status} />);
+  expect(screen.getByText(label)).toBeInTheDocument();
+  expect(screen.queryByText("Waiting for approval")).toBeNull();
+  expect(steps[0].kind).toBe("tool_waiting");
+});
+
+it("never labels a saved waiting call as invoked", () => {
+  render(<ExecutionReceiptPanel receipt={receipt({
+    toolsOfferedCount: 1, toolsOffered: [{ name: "synthetic_tool", parametersSha256: "" }],
+    toolCallCount: 1, toolCalls: [{ tool: "synthetic_tool", outcome: "waiting" }],
+    partial: true,
+  })} />);
+  expect(screen.getByText(/1 recorded call/)).toBeInTheDocument();
+  expect(screen.queryByText("synthetic_tool · invoked")).toBeNull();
+  expect(screen.getAllByText("synthetic_tool · waiting for approval")).toHaveLength(2);
+});
+
+it("updates one activity row per operation without merging repeated tools or older unlinked events", () => {
+  const { container, rerender } = render(<ActivityPanel live steps={[
+    { kind: "tool_start", tool: "calculator", label: "Calculating", operationId: "first" },
+  ]} />);
+  expect(container.querySelectorAll(".activity-row")).toHaveLength(1);
+  rerender(<ActivityPanel live={false} steps={[
+    { kind: "tool_start", tool: "calculator", label: "Calculating", operationId: "first" },
+    { kind: "tool_result", tool: "calculator", label: "Calculated", operationId: "first" },
+    { kind: "tool_start", tool: "calculator", label: "Calculating", operationId: "second" },
+    { kind: "tool_error", tool: "calculator", label: "Calculation failed", operationId: "second" },
+    { kind: "tool_start", tool: "calculator", label: "Old start" },
+    { kind: "tool_result", tool: "calculator", label: "Old result" },
+  ]} />);
+  expect(container.querySelectorAll(".activity-row")).toHaveLength(4);
+  expect(screen.queryByText("Calculating")).toBeNull();
+  expect(screen.getByText("Calculated")).toBeInTheDocument();
+  expect(screen.getByText("Calculation failed")).toBeInTheDocument();
+  expect(screen.getByText("Old start")).toBeInTheDocument();
+  expect(screen.getByText("Old result")).toBeInTheDocument();
+});
 
 it("keeps long post-call values readable instead of clipping them to a fixed character count", () => {
   const css = readFileSync(resolve("src", "app", "globals.css"), "utf8");

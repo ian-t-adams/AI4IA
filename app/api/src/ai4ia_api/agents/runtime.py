@@ -50,6 +50,7 @@ import asyncio
 import copy
 import json
 import logging
+import secrets
 import time
 from ..request_constraints import tools_allowed
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -83,7 +84,7 @@ from .approvals import (
 from .consent import ApprovalSource, ConsentDecision, ConsentRejected, tool_contract_hash
 from .streaming import stream_iteration
 from .synthetic_governance import synthetic_spec
-from .tool_exec import ToolContext, ToolExecutor, ToolValidationError
+from .tool_exec import ToolContext, ToolExecutionError, ToolExecutor, ToolValidationError
 from .turn_checkpoint import (
     TURN_BUDGET_KEYS, CheckpointRecorder, CheckpointResponse, TurnCheckpoint, TurnCheckpointController,
 )
@@ -129,6 +130,7 @@ class AgentStep:
     approval: ApprovalSource | None = None
     consent_id: str | None = None
     call_id: str | None = None
+    operation_id: str | None = None
 
 
 @dataclass
@@ -142,6 +144,7 @@ class DelegatedRunTrace:
     steps: list[AgentStep] = field(default_factory=list)
     iterations: int = 0
     usage: TokenUsage = field(default_factory=TokenUsage.empty)
+    segment_usage: TokenUsage = field(default_factory=TokenUsage.empty)
     safety: MessageSafety | None = None
     status: str = "complete"
     partial: bool = False
@@ -149,6 +152,7 @@ class DelegatedRunTrace:
     model_evidence: ModelCallRecorder | None = None
     receipt: ExecutionReceipt | None = None
     metered_separately: bool = False
+    parent_operation_id: str | None = None
 
 
 @dataclass
@@ -160,6 +164,7 @@ class AgentRunResult:
     # Token usage summed across every model call in the turn. ``usage.complete``
     # is False if any call did not report usage, so cost is never overstated.
     usage: TokenUsage = field(default_factory=TokenUsage.empty)
+    segment_usage: TokenUsage = field(default_factory=TokenUsage.empty)
     # Everything handed to ``on_delta`` this turn, concatenated in order — empty
     # unless the caller asked for token streaming. It is deliberately NOT the
     # same as ``text``: ``text`` is the FINAL iteration's answer, while this also
@@ -230,6 +235,12 @@ class AgentRunPaused(RuntimeError):
         super().__init__("agent execution awaits exact-call approval")
         self.partial = partial
         self.state = state
+
+
+class DelegatedAgentRunPaused(AgentRunPaused):
+    def __init__(self, paused: AgentRunPaused, trace: DelegatedRunTrace) -> None:
+        super().__init__(paused.partial, paused.state)
+        self.trace = trace
 
 
 class DelegatedAgentRunFailed(AgentRunFailed):
@@ -318,6 +329,7 @@ async def run_agent_turn(
     retain_failed_request: bool = False,
     model_evidence: ModelCallRecorder | None = None,
     checkpoint: TurnCheckpointController | None = None,
+    interactive_checkpoint: bool = False,
 ) -> AgentRunResult:
     """Run a single agent turn with tool calling and return the final answer.
 
@@ -346,9 +358,13 @@ async def run_agent_turn(
     evidence = model_evidence if model_evidence is not None else ModelCallRecorder()
     restored = checkpoint.restored if checkpoint is not None else None
     if checkpoint is not None:
-        if on_delta is not None or max_iters > 2:
+        expected_mode = "interactive" if interactive_checkpoint else "workflow"
+        if restored is not None and restored.mode != expected_mode:
+            raise ValueError("The checkpoint does not match this execution mode.")
+        if not interactive_checkpoint and (on_delta is not None or max_iters > 2):
             raise ValueError("Durable checkpoints require a bounded non-streaming workflow turn.")
-        evidence = CheckpointRecorder(evidence, restored)
+        if restored is not None:
+            evidence = CheckpointRecorder(evidence, restored)
         if ctx.turn_budgets is None:
             raise ValueError("Durable execution requires a persistent capability budget carrier.")
         if restored is None:
@@ -492,8 +508,11 @@ async def run_agent_turn(
     current_approval: ApprovalSource | None = None
     current_consent_id: str | None = None
     current_call_id: str | None = None
+    activity_scope = (restored.activityScope if restored is not None else None) or secrets.token_hex(8)
+    current_operation_id: str | None = None
     iterations = 0
     usage_agg = TokenUsage.empty()
+    segment_usage_agg = TokenUsage.empty()
     pending_response: CheckpointResponse | None = None
     next_tool_index = 0
     current_tool_counted = False
@@ -524,6 +543,14 @@ async def run_agent_turn(
         safety_agg = restored.safety.model_copy(deep=True) if restored.safety else None
         dropped_context_messages = restored.droppedContextMessages
         completed_text_parts = list(restored.completedText)
+        delegated_runs = [
+            DelegatedRunTrace(
+                agent=item.agent, usage=item.usage, receipt=item.receipt,
+                metered_separately=item.meteredSeparately,
+                parent_operation_id=item.parentOperationId,
+                steps=[AgentStep(**step) for step in item.activitySteps],
+            ) for item in restored.delegations
+        ]
         if ctx.turn_budgets is not None:
             ctx.turn_budgets.update(restored.capabilityBudgets)
         current_user_index = next(
@@ -532,8 +559,12 @@ async def run_agent_turn(
         )
 
     def snapshot(phase: str) -> TurnCheckpoint:
+        from .receipt import delegation_receipts
+
+        receipts = delegation_receipts(delegated_runs)
         return TurnCheckpoint.model_validate({
-            "version": 1, "phase": phase, "conversation": copy.deepcopy(convo),
+            "version": 1, "mode": "interactive" if interactive_checkpoint else "workflow",
+            "phase": phase, "conversation": copy.deepcopy(convo),
             "toolSchema": copy.deepcopy(schema), "offeredTools": copy.deepcopy(offered_tools),
             "contracts": dict(contracts), "steps": [asdict(step) for step in steps],
             "iterations": iterations, "completedModelCalls": completed_model_calls,
@@ -551,6 +582,16 @@ async def run_agent_turn(
             "droppedContextMessages": dropped_context_messages,
             "completedText": list(completed_text_parts),
             "capabilityBudgets": dict(ctx.turn_budgets or {}),
+            "activityScope": activity_scope,
+            "delegations": [{
+                "agent": trace.agent, "usage": trace.usage.model_dump(mode="json"),
+                "receipt": receipt.model_dump(mode="json"), "meteredSeparately": trace.metered_separately,
+                "parentOperationId": trace.parent_operation_id,
+                "activitySteps": [{
+                    "kind": step.kind, "tool": step.tool, "detail": step.detail,
+                    "operation_id": step.operation_id,
+                } for step in trace.steps if step.kind != "final"],
+            } for trace, receipt in zip(delegated_runs, receipts, strict=True)],
         })
 
     def current_registry_contract(name: str) -> str | None:
@@ -600,6 +641,10 @@ async def run_agent_turn(
                 if include_current_attempt
                 else usage_agg
             ),
+            segment_usage=(
+                segment_usage_agg.add(TokenUsage.parse(current_stream_usage))
+                if include_current_attempt else segment_usage_agg
+            ),
             streamed_text="".join(streamed_parts),
             offered_tools=offered_tools,
             dropped_context_messages=dropped_context_messages,
@@ -627,6 +672,7 @@ async def run_agent_turn(
         """
         nonlocal completed_model_calls, current_stream_usage, current_user_index
         nonlocal usage_agg, convo, dropped_context_messages, effective_prompt
+        nonlocal segment_usage_agg
         nonlocal model_requests
         nonlocal safety_agg
         current_stream_usage = None
@@ -704,7 +750,10 @@ async def run_agent_turn(
                     for signal in tagged.signals:
                         signal.modelCall = completed_model_calls
                     safety_agg = merge_safety(safety_agg, tagged)
-                usage_agg = usage_agg.add(TokenUsage.parse(iteration.usage))
+                observed_usage = TokenUsage.parse(iteration.usage)
+                usage_agg = usage_agg.add(observed_usage)
+                segment_usage_agg = segment_usage_agg.add(observed_usage)
+                completed_text_parts.append(iteration.content)
                 return (
                     iteration.content,
                     iteration.tool_calls,
@@ -727,7 +776,9 @@ async def run_agent_turn(
                 for signal in parsed_safety.signals:
                     signal.modelCall = completed_model_calls
                 safety_agg = merge_safety(safety_agg, parsed_safety)
-            usage_agg = usage_agg.add(TokenUsage.parse(result.get("usage")))
+            observed_usage = TokenUsage.parse(result.get("usage"))
+            usage_agg = usage_agg.add(observed_usage)
+            segment_usage_agg = segment_usage_agg.add(observed_usage)
             message = (result.get("choices") or [{}])[0].get("message") or {}
             content = message.get("content") or ""
             completed_text_parts.append(content)
@@ -777,6 +828,7 @@ async def run_agent_turn(
             steps=steps,
             iterations=iterations,
             usage=usage_agg,
+            segment_usage=segment_usage_agg,
             streamed_text="".join(streamed_parts),
             offered_tools=offered_tools,
             dropped_context_messages=dropped_context_messages,
@@ -798,6 +850,10 @@ async def run_agent_turn(
         best-effort so a UI/stream error can never break the turn.
         """
         nonlocal next_tool_index, current_tool_counted
+        if step.kind.startswith("tool_") or step.kind == "delegate":
+            step.operation_id = current_operation_id
+            if step.call_id is None:
+                step.call_id = current_call_id
         if persist and step.kind in {"tool_result", "delegate", "tool_denied", "tool_error"}:
             if step.arguments is None:
                 step.arguments = redact_obj(call_arguments)
@@ -876,6 +932,11 @@ async def run_agent_turn(
         if ctx.approval_sink is not None:
             ctx.approval_sink.request(draft)
         if checkpoint is not None:
+            if interactive_checkpoint:
+                await record(AgentStep(
+                    kind="tool_waiting", tool=safe_name, arguments=redact_obj(parsed),
+                    detail="approval_required",
+                ))
             paused = snapshot("tools")
             try:
                 await checkpoint.hold(
@@ -919,18 +980,21 @@ async def run_agent_turn(
         )
 
     async def before_tool(name: str, parsed: dict[str, Any]) -> None:
-        if checkpoint is None:
-            return
-        try:
-            await checkpoint.before_tool(
-                snapshot("tools"), tool=name, arguments=parsed, contract=contracts[name],
-            )
-        except asyncio.CancelledError as exc:
-            raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
-        except Exception as exc:
-            raise AgentRunFailed(
-                cause=exc, partial=current_partial_result(include_current_attempt=False),
-            ) from exc
+        if checkpoint is not None:
+            try:
+                await checkpoint.before_tool(
+                    snapshot("tools"), tool=name, arguments=parsed, contract=contracts[name],
+                )
+            except asyncio.CancelledError as exc:
+                raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
+            except Exception as exc:
+                raise AgentRunFailed(
+                    cause=exc, partial=current_partial_result(include_current_attempt=False),
+                ) from exc
+        await record(AgentStep(
+            kind="tool_start", tool=name if is_safe_tool_name(name) else "unknown_tool",
+            arguments=redact_obj(parsed),
+        ), persist=False)
 
     async def model_completed() -> None:
         if checkpoint is None:
@@ -1002,6 +1066,7 @@ async def run_agent_turn(
             if current_tool_index < next_tool_index:
                 continue
             call_id = call.get("id")
+            current_operation_id = f"{activity_scope}:{iterations}:{current_tool_index}"
             current_call_id = call_id
             current_approval = None
             current_consent_id = None
@@ -1039,7 +1104,7 @@ async def run_agent_turn(
                 continue
 
             try:
-                if checkpoint is not None:
+                if checkpoint is not None and not interactive_checkpoint:
                     from ..workflows.automation_common import AutomationError, exact_arguments
 
                     try:
@@ -1064,13 +1129,6 @@ async def run_agent_turn(
                 await record(AgentStep(kind="tool_error", tool=safe_name, detail="invalid_arguments"))
                 continue
             call_arguments = parsed
-
-            # Emit a pre-execution marker so the UI can show "running X" live. It
-            # is NOT persisted (only the finalized result/denied/error step is).
-            await record(
-                AgentStep(kind="tool_start", tool=safe_name, arguments=redact_obj(parsed)),
-                persist=False,
-            )
 
             # --- Per-invocation approval (agents/approvals.py) ---------------
             # Deliberately layered ON TOP of registry authorization rather than
@@ -1231,8 +1289,14 @@ async def run_agent_turn(
                     ):
                         force_final = True
                     continue
+                except DelegatedAgentRunPaused as exc:
+                    exc.trace.parent_operation_id = current_operation_id
+                    partial = current_partial_result(include_current_attempt=False)
+                    partial.delegations.append(exc.trace)
+                    raise AgentRunPaused(partial, snapshot("tools")) from exc
                 except asyncio.CancelledError as exc:
                     if isinstance(exc, DelegatedAgentRunCancelled):
+                        exc.trace.parent_operation_id = current_operation_id
                         delegated_runs.append(exc.trace)
                         if not exc.trace.metered_separately:
                             usage_agg = usage_agg.add(exc.partial.usage)
@@ -1244,6 +1308,7 @@ async def run_agent_turn(
                     ) from exc
                 except AgentRunFailed as exc:
                     if isinstance(exc, DelegatedAgentRunFailed):
+                        exc.trace.parent_operation_id = current_operation_id
                         delegated_runs.append(exc.trace)
                         if exc.trace.safety is not None:
                             nested_safety = exc.trace.safety.model_copy(deep=True)
@@ -1271,6 +1336,7 @@ async def run_agent_turn(
                         steps=list(steps),
                         iterations=iterations,
                         usage=usage_agg.add(exc.partial.usage),
+                        segment_usage=segment_usage_agg,
                         streamed_text="".join(streamed_parts),
                         offered_tools=offered_tools,
                         dropped_context_messages=dropped_context_messages,
@@ -1299,6 +1365,7 @@ async def run_agent_turn(
                     logger.warning("agent delegate error: tool=%s", safe_name)
                     continue
                 if isinstance(raw_result, DelegatedToolResult):
+                    raw_result.trace.parent_operation_id = current_operation_id
                     delegated_runs.append(raw_result.trace)
                     if raw_result.trace.safety is not None:
                         nested_safety = raw_result.trace.safety.model_copy(deep=True)
@@ -1452,7 +1519,11 @@ async def run_agent_turn(
                         kind="tool_error",
                         tool=safe_name,
                         arguments=redact_obj(parsed),
-                        detail="execution_error",
+                        detail=(
+                            "outcome_unknown" if interactive_checkpoint
+                            and (not isinstance(exc, ToolExecutionError) or exc.outcome_unknown)
+                            else "execution_error"
+                        ),
                     )
                 )
                 logger.warning("agent tool error: tool=%s", safe_name)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PendingToolApprovalPrompt } from "../lib/types";
 import { Pill } from "./Pill";
 
@@ -23,10 +23,8 @@ import { Pill } from "./Pill";
  *   alias the model sees.
  *
  * The card is presentation only. Approving posts an opaque `{requestId, grant}`
- * pair; the server re-derives what that authorizes from its own record, so a
- * tampered card cannot approve a different call. Denying sends nothing at all —
- * absence of a grant *is* the denial, which is why there is no "deny" endpoint
- * to fail and no state to get stuck in.
+ * pair; the server re-derives what that authorizes from its private checkpoint.
+ * Denial cancels the held operation without executing it.
  */
 export function ToolApprovalPanel({
   prompts,
@@ -43,16 +41,21 @@ export function ToolApprovalPanel({
   return (
     <section
       aria-label="Tool approvals"
+      aria-busy={busy}
+      tabIndex={0}
       style={{
         display: "flex",
         flexDirection: "column",
         gap: 8,
         margin: "0 0 8px",
+        maxHeight: "50dvh",
+        overflowY: "auto",
+        flexShrink: 0,
       }}
     >
       {prompts.map((prompt) => (
         <ToolApprovalCard
-          key={`${prompt.id}:${prompt.expiresAt}`}
+          key={`${prompt.id}:${Date.parse(prompt.expiresAt)}`}
           prompt={prompt}
           onApprove={onApprove}
           onDeny={onDeny}
@@ -79,6 +82,10 @@ function ToolApprovalCard({
   const elided = new Set(prompt.argumentsElided ?? []);
   const omitted = prompt.argumentsOmitted ?? 0;
   const expiresAt = Date.parse(prompt.expiresAt);
+  const continuable = Boolean(prompt.messageId && prompt.operationId);
+  const action = prompt.grant ? "Approve and continue" : "Review pending call";
+  const approveRef = useRef<HTMLButtonElement>(null);
+  const restoreReviewFocus = useRef(false);
   const [expired, setExpired] = useState(
     () => !Number.isFinite(expiresAt) || expiresAt <= Date.now(),
   );
@@ -101,6 +108,13 @@ function ToolApprovalCard({
     schedule();
     return () => window.clearTimeout(timer);
   }, [expired, expiresAt]);
+  useEffect(() => {
+    if (busy || !restoreReviewFocus.current) return;
+    restoreReviewFocus.current = false;
+    if (!expired && (document.activeElement === document.body || document.activeElement === approveRef.current)) {
+      approveRef.current?.focus();
+    }
+  }, [busy, expired, prompt.grant]);
   return (
     <div
       role="group"
@@ -142,16 +156,15 @@ function ToolApprovalCard({
       </div>
 
       <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
-        This request was not run. Content in this conversation — including
-        uploaded documents, saved memories and tool results — can influence what
-        a tool is asked to send, so outbound calls need your approval for these
-        exact values. Approval starts a retry turn; the model must re-issue this
-        exact call before anything runs.
+        This call has not run. Documents, memories and tool results can influence
+        its arguments, so review the destination and values before approving. {continuable
+          ? "Approval continues this saved call in the same turn; the model does not recreate it."
+          : "This older request cannot be continued exactly. Send a fresh request to use this tool."}
       </p>
 
       {expired ? (
         <p role="alert" style={{ margin: 0, fontSize: "0.82em", color: "var(--danger)" }}>
-          This approval has expired. Deny it and ask again to generate a fresh request.
+          This approval has expired. Send a fresh request to use this tool.
         </p>
       ) : null}
 
@@ -168,7 +181,7 @@ function ToolApprovalCard({
         >
           {preview.map(([key, value]) => (
             <div key={key} style={{ display: "contents" }}>
-              <dt style={{ color: "var(--fg-muted)", whiteSpace: "nowrap" }}>
+              <dt style={{ color: "var(--fg-muted)", overflowWrap: "anywhere", minWidth: 0 }}>
                 {key}
               </dt>
               <dd
@@ -221,18 +234,20 @@ function ToolApprovalCard({
         </p>
       ) : null}
 
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button
           type="button"
-          disabled={busy || expired}
+          ref={approveRef}
+          disabled={busy || expired || !continuable}
           onClick={() => {
             if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
               setExpired(true);
               return;
             }
+            if (!prompt.grant) restoreReviewFocus.current = document.activeElement === approveRef.current;
             onApprove(prompt);
           }}
-          aria-label={`Approve and retry ${prompt.label}`}
+          aria-label={`${action} ${prompt.label}`}
           style={{
             // --accent-fg is derived per accent by ThemeProvider, so it stays
             // readable on a user-chosen accent. Never hardcode a foreground
@@ -244,7 +259,7 @@ function ToolApprovalCard({
             padding: "6px 12px",
           }}
         >
-          Approve and retry
+          {action}
         </button>
         <button
           type="button"

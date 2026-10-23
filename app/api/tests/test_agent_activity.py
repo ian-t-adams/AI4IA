@@ -3,6 +3,18 @@ from __future__ import annotations
 
 from ai4ia_api.agents.activity import persisted_trace, serialize_step
 from ai4ia_api.agents.runtime import AgentStep
+from ai4ia_api.agents.receipt import receipt_tool_calls
+
+
+def test_operation_linkage_is_shared_bounded_and_unknown_for_older_steps():
+    operation = "0123456789abcdef:1:0"
+    step = AgentStep(kind="tool_result", tool="calculator", operation_id=operation)
+    assert serialize_step(step).operationId == operation
+    assert receipt_tool_calls([step])[0].operationId == operation
+    for value in (None, "credential=value", "a" * 32, "0123456789abcdef:1:0\n"):
+        step.operation_id = value
+        assert serialize_step(step).operationId is None
+        assert receipt_tool_calls([step])[0].operationId is None
 
 
 def test_tool_start_never_leaks_argument_content():

@@ -194,7 +194,9 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
     : notes.includes("library_retrieval_partial")
       ? "Library retrieval is partial for this turn: some accessible documents could not be searched. This is not evidence of no matching content in those documents."
       : null;
-  const invoked = new Set(calls.map((call) => call.tool));
+  const invoked = new Set(calls.filter((call) => call.outcome === "result" || call.outcome === "delegate").map((call) => call.tool));
+  const waiting = new Set(calls.filter((call) => call.outcome === "waiting").map((call) => call.tool));
+  const recorded = new Set(calls.map((call) => call.tool));
   const modelCalls = runtime.modelCalls ?? [];
   const cost = receipt.usage?.cost;
 
@@ -288,12 +290,12 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
           receipt.promptMessageCount === 1 ? "" : "s"
         }, ${receipt.toolsOfferedCount} tool${receipt.toolsOfferedCount === 1 ? "" : "s"} offered, ${
           receipt.toolCallCount
-        } invoked`}
+        } recorded call${receipt.toolCallCount === 1 ? "" : "s"}`}
         {receipt.partial ? " · partial" : ""}
       </>}>
       <div className="activity-rows">
         <p className="safety-note">
-          Exactly what this turn sent, was offered, and ran. Secrets are removed
+          What this turn supplied, offered, requested and completed. Secrets are removed
           and large payloads are shortened by the server before they are stored;
           anything shortened says so and keeps its original size and digest.
           This does not show model-internal reasoning — the platform does not
@@ -522,9 +524,9 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
           </summary>
           <div className="activity-rows">
             <p className="safety-note">
-              Every tool this turn advertised to the model. Offered is not
-              invoked: a tool listed here that never appears below is one the
-              model could have used and did not.
+              Every tool this turn advertised to the model. The calls below
+              record requests and their outcomes; a waiting or blocked request
+              is not an executed call.
             </p>
             {offered.some((offer) => offer.description && offer.descriptionTruncated == null) ? (
               <p className="safety-note">
@@ -541,7 +543,7 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
                 <div key={`${offer.name}-${index}`} className="activity-entry">
                   {/* One text node, so the whole label reads as written. */}
                   <span className="activity-label">
-                    {`${offer.name} · ${invoked.has(offer.name) ? "invoked" : receipt.toolCallCount > calls.length ? "not shown among retained calls" : "not invoked"}`}
+                    {`${offer.name} · ${invoked.has(offer.name) ? "invoked" : waiting.has(offer.name) ? "waiting for approval" : recorded.has(offer.name) ? "attempt recorded" : receipt.toolCallCount > calls.length ? "not shown among retained calls" : "not invoked"}`}
                   </span>
                   {offer.description ? (
                     <span className="activity-detail">{offer.description}</span>
@@ -583,13 +585,13 @@ export function ExecutionReceiptPanel({ receipt, embedded = false }: { receipt: 
                 <div key={i}>
                   <div className="activity-row">
                     <span className="activity-label">
-                      {`${call.tool} · ${call.outcome}`}
+                      {`${call.tool} · ${call.outcome === "waiting" ? "waiting for approval" : call.outcome}`}
                     </span>
                     {call.detail ? (
                       <span className="activity-detail">{call.detail}</span>
                     ) : null}
                   </div>
-                  <ToolApprovalProvenance approval={call.approval} consentId={call.consentId} />
+                  {call.outcome !== "waiting" && <ToolApprovalProvenance approval={call.approval} consentId={call.consentId} />}
                   {call.arguments ? (
                     <PayloadView payload={call.arguments} label="arguments" />
                   ) : null}
@@ -645,22 +647,43 @@ function stepGlyph(kind: string): string {
 // Renders the agent's activity: a live, animated view while the turn runs (the
 // current tool spins, finished ones tick off), and a collapsed "Activity" trace
 // once complete. Replaces the bare blinking cursor for tool-using turns.
-export function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: boolean }) {
+export function ActivityPanel({ steps, live, continuationStatus }: {
+  steps: ActivityStep[]; live: boolean; continuationStatus?: string | null;
+}) {
+  const activity: ActivityStep[] = [];
+  const positions = new Map<string, number>();
+  for (const step of steps) {
+    const id = step.operationId;
+    const position = id ? positions.get(id) : undefined;
+    if (position === undefined) {
+      if (id) positions.set(id, activity.length);
+      activity.push(step);
+    } else {
+      activity[position] = step;
+    }
+  }
   const lastRunning =
-    live && steps.length > 0 && steps[steps.length - 1].kind === "tool_start";
-  const rows = steps.map((s, i) => {
-    const running = live && i === steps.length - 1 && s.kind === "tool_start";
+    live && activity.some((step) => step.kind === "tool_start");
+  const rows = activity.map((s, i) => {
+    const running = live && s.kind === "tool_start";
+    const stopped = s.kind === "tool_waiting" && (
+      continuationStatus === "cancelled" ? "Turn cancelled"
+        : continuationStatus === "expired" ? "Approval expired"
+          : continuationStatus === "unknown" ? "Outcome unknown"
+            : !live && (continuationStatus === "running" || continuationStatus === "dispatched")
+              ? "Completion not confirmed" : null
+    );
     return (
-      <div key={i} className={`activity-row${running ? " running" : ""}`}>
+      <div key={s.operationId ?? `historical-${i}`} className={`activity-row${running ? " running" : ""}`}>
         {running ? (
           <span className="activity-spinner" aria-hidden="true" />
         ) : (
           <span className="activity-glyph" aria-hidden="true">
-            {stepGlyph(s.kind)}
+            {stepGlyph(stopped ? continuationStatus === "unknown" ? "tool_error" : "tool_denied" : s.kind)}
           </span>
         )}
-        <span className="activity-label">{s.label}</span>
-        {s.detail && <span className="activity-detail">{s.detail}</span>}
+        <span className="activity-label">{stopped || s.label}</span>
+        {s.detail && s.kind !== "tool_waiting" && <span className="activity-detail">{s.detail}</span>}
       </div>
     );
   });
@@ -685,7 +708,7 @@ export function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: bo
   return (
     <details className="activity activity-trace">
       <summary>
-        Activity · {steps.length} step{steps.length === 1 ? "" : "s"}
+        Activity · {activity.length} step{activity.length === 1 ? "" : "s"}
       </summary>
       <div className="activity-rows">{rows}</div>
     </details>

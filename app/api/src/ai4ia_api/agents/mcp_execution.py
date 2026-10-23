@@ -79,7 +79,7 @@ from .tool_exec import (
     ToolExecutor,
     build_tools,
 )
-from .tools import ToolRegistry
+from .tools import ToolRegistry, redact_known_secret
 from ..policy.context import canonical_tool_name, require_policy
 from ..policy.models import PolicyError, PolicyRequest
 
@@ -227,6 +227,7 @@ def _make_handler(
             raise ToolExecutionError("MCP tool-call budget exhausted for this turn.")
 
         timer = obs.Timer()
+        dispatched = False
         try:
             # DNS-rebinding defense: re-validate the server host at call time with
             # the same resolver discovery used. A host that resolved public at
@@ -251,6 +252,7 @@ def _make_handler(
                 "tool.invoke", tool_name=canonical_tool_name(alias, ctx.tool_aliases),
                 tool_contract_digest=implemented_contract,
             ))
+            dispatched = True
             result = await connector.call_tool(
                 endpoint=endpoint,
                 auth=auth,
@@ -292,7 +294,7 @@ def _make_handler(
                 latency_ms=timer.ms,
                 detail=category,
             )
-            raise ToolExecutionError("MCP tool execution failed.") from exc
+            raise ToolExecutionError("MCP tool execution failed.", outcome_unknown=dispatched) from exc
 
         # Reachable: the server connected and responded. ``isError`` is a tool-level
         # result (e.g. bad arguments), NOT a connectivity failure, so it does NOT
@@ -306,7 +308,7 @@ def _make_handler(
             outcome=obs.OUTCOME_TOOL_ERROR if result.is_error else obs.OUTCOME_OK,
             latency_ms=timer.ms,
         )
-        return {"content": result.content, "isError": result.is_error}
+        return {"content": redact_known_secret(result.content, secret), "isError": result.is_error}
 
     return handler
 

@@ -174,10 +174,18 @@ conditional (ETag) write, so two concurrent requests presenting the same grant
 cannot both redeem it; and the redeemed authorization is spent the moment it
 dispatches one call, so one approval cannot cover a model that emits the same
 call repeatedly in a single turn. The one-time grant is delivered once on the
-chat SSE stream and is never persisted, so a browser reload intentionally loses
-it and the user is asked again rather than silently holding a live capability.
-Denying is the absence of a grant: there is no deny endpoint to fail and no state
-to unstick.
+chat SSE stream and is never persisted. After reload, explicit **Review pending
+call** rotates the challenge for the same saved operation without extending its
+deadline. **Approve and continue** resumes the server-owned invocation, not a
+model-generated retry turn. **Deny** records cancellation and clears its
+executable payload. Existing pre-checkpoint approvals return an explicit
+re-request response before any grant is consumed or model is called.
+
+Interactive continuation is independent of the workflow/scheduling flags and
+does not enroll legacy conversations into deletion v1. Private execution state,
+its size limits and its lazy retention/cleanup boundary are described in
+[the architecture](../architecture.md#per-invocation-tool-approval). Approval
+expiry is not a promise of immediate physical payload erasure.
 
 The approval card never silently shortens itself: per-value length shrinks before
 any key is dropped, masked values are labelled as hidden-but-sent rather than

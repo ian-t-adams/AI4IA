@@ -15,6 +15,7 @@ from ai4ia_api.library.blob_store import AzureBlobStore, InMemoryBlobStore
 from ai4ia_api.main import create_app
 from ai4ia_api.sessions.deletion_service import ConversationDeletionService
 from ai4ia_api.sessions.deletion_models import FENCE_ID
+from ai4ia_api.sessions.chat_continuation import CHAT_HEAD_ID
 from ai4ia_api.sessions.cosmos_repo import CosmosSessionRepository
 from ai4ia_api.sessions.models import Session
 from tests.conftest import make_settings
@@ -238,7 +239,8 @@ def test_owner_api_cleanup_refuses_wrong_generation_before_child_removal(surface
             {"role": "assistant", "text": "synthetic response"},
         ]}).status_code == 201
         children = {key for key in state.messages.items if key != (sid, FENCE_ID)}
-        assert len(children) == 2
+        assert (sid, CHAT_HEAD_ID) in children
+        assert len(children - {(sid, CHAT_HEAD_ID)}) == 2
         assert client.delete(f"/api/sessions/{sid}").status_code == 202
         if wrong_generation:
             container = getattr(state, surface)

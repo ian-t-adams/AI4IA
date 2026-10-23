@@ -118,6 +118,29 @@ async def test_restarting_without_a_fresh_exact_grant_remains_paused():
     assert sent == []
 
 
+async def test_interactive_bounds_do_not_widen_workflow_checkpoint_admission():
+    registry, executor, _, batch, _ = setup_calls()
+    controller = StoredController()
+    with pytest.raises(AgentRunPaused):
+        await run_agent_turn(
+            deployment="m", messages=_messages(), tool_names=["calculator", "send"],
+            registry=registry, executor=executor, max_iters=2, ctx=ToolContext(turn_budgets={}),
+            gateway=ScriptedGateway([batch]), checkpoint=controller,
+        )
+    raw = json.loads(controller.serialized)
+    raw["iterations"] = 4
+    with pytest.raises(ValueError, match="three-call bound"):
+        TurnCheckpoint.from_persisted(raw)
+    raw["mode"] = "interactive"
+    assert TurnCheckpoint.from_persisted(raw).iterations == 4
+    with pytest.raises(ValueError, match="execution mode"):
+        await run_agent_turn(
+            deployment="m", messages=_messages(), tool_names=["calculator", "send"],
+            registry=registry, executor=executor, max_iters=2, ctx=ToolContext(turn_budgets={}),
+            gateway=ScriptedGateway([]), checkpoint=StoredController(json.dumps(raw)),
+        )
+
+
 async def test_ambiguous_model_checkpoint_is_never_dispatched_again():
     registry, executor, _, batch, _ = setup_calls()
     state = StoredController()

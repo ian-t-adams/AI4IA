@@ -201,6 +201,32 @@ def test_actual_approval_bypass_is_detected(dataset):
     assert next(check for check in seeded.checks if check.id == "approval").status == "failed"
 
 
+@pytest.mark.parametrize("fault", ["extra_model", "extra_message", "lost_linkage", "replayed_effect"])
+def test_same_call_approval_oracle_rejects_regressions(dataset, fault):
+    case = case_named(dataset, "approval-exact-replay")
+    control = execute_case(dataset, case)
+    assert control.status == "passed"
+    assert control.measurements.model_calls == 1
+    assert control.measurements.prompt_tokens == 10
+    assert control.measurements.completion_tokens == 5
+
+    def corrupted_evidence(data, item, observed):
+        if fault == "extra_model":
+            observed.approval_model_calls[-1] += 1
+        elif fault == "extra_message":
+            observed.approval_message_counts[-1] += 1
+        elif fault == "lost_linkage":
+            observed.approval_snapshots[-1]["id"] = "a-different-assistant"
+        else:
+            observed.dispatch_counts[-1] += 1
+        return score_case(data, item, observed)
+
+    with patch("scripts.evaluations.offline.score_case", side_effect=corrupted_evidence):
+        seeded = execute_case(dataset, case)
+    assert seeded.status == "failed"
+    assert next(check for check in seeded.checks if check.id == "approval").status == "failed"
+
+
 @pytest.mark.parametrize("missing", ["usage", "pricing"])
 def test_missing_usage_or_pricing_is_unknown_not_zero(dataset, missing):
     case = case_named(dataset, "chat-json")

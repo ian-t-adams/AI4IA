@@ -483,6 +483,13 @@ def _hold(c: TestClient, session_id: str, **kwargs) -> dict:
     return prompts[0]
 
 
+def _continue(c: TestClient, session_id: str, prompt: dict, *, headers=None, **changes):
+    return c.post("/api/chat/continue", json={
+        "sessionId": session_id, "messageId": prompt["messageId"],
+        "requestId": prompt["id"], "grant": prompt["grant"], "action": "approve", **changes,
+    }, headers=headers)
+
+
 def _poison(c: TestClient, session_id: str) -> str:
     """Upload a session document carrying an exfiltration instruction."""
     poisoned = (
@@ -591,8 +598,9 @@ def test_approval_replayed_against_different_arguments_fails_closed():
             session_id,
             approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 409, response.text
         assert connector.tool_calls == []
+        assert c.app.state.gateway.calls == 0
     finally:
         c.__exit__(None, None, None)
 
@@ -608,12 +616,8 @@ def test_approval_replayed_in_a_different_session_fails_closed():
         other = c.post("/api/sessions", json={"title": "Other", "model": "gpt-5.2"})
         assert other.status_code == 201
         c.app.state.gateway = _InjectedModelGateway()
-        response = _turn(
-            c,
-            other.json()["id"],
-            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
-        )
-        assert response.status_code == 200, response.text
+        response = _continue(c, other.json()["id"], prompt)
+        assert response.status_code == 409, response.text
         assert connector.tool_calls == []
     finally:
         c.__exit__(None, None, None)
@@ -630,13 +634,8 @@ def test_approval_replayed_by_a_different_user_fails_closed():
         attacker = {"X-Dev-User": "mallory"}
         attacker_session = _bootstrap(c, headers=attacker)
         c.app.state.gateway = _InjectedModelGateway()
-        response = _turn(
-            c,
-            attacker_session,
-            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
-            headers=attacker,
-        )
-        assert response.status_code == 200, response.text
+        response = _continue(c, attacker_session, prompt, headers=attacker)
+        assert response.status_code == 409, response.text
         assert connector.tool_calls == []
 
         # And the victim's record is untouched: still redeemable by its owner.
@@ -662,12 +661,8 @@ def test_expired_approval_fails_closed():
                 record.expiresAt = datetime.now(timezone.utc) - timedelta(seconds=1)
 
         c.app.state.gateway = _InjectedModelGateway()
-        response = _turn(
-            c,
-            session_id,
-            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
-        )
-        assert response.status_code == 200, response.text
+        response = _continue(c, session_id, prompt)
+        assert response.status_code == 409, response.text
         assert connector.tool_calls == []
     finally:
         c.__exit__(None, None, None)
@@ -687,21 +682,17 @@ def test_one_approval_authorizes_exactly_one_execution():
     c = _client(connector)
     try:
         session_id = _bootstrap(c)
-        c.app.state.gateway = _InjectedModelGateway()
+        c.app.state.gateway = _InjectedModelGateway(repeat=5)
         prompt = _hold(c, session_id)
 
-        # Same approved call, emitted five times in one assistant message.
-        c.app.state.gateway = _InjectedModelGateway(repeat=5)
-        response = _turn(
-            c,
-            session_id,
-            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
-        )
+        # Resume the first of five identical calls from the original response.
+        response = _continue(c, session_id, prompt)
         assert response.status_code == 200, response.text
         assert len(connector.tool_calls) == 1
         # The repeats were held, not silently dropped, so the user is asked
         # again rather than the model quietly retrying behind their back.
-        assert response.json()["approvals"]
+        assert '"approvals"' in response.text
+        assert c.app.state.gateway.calls == 1
     finally:
         c.__exit__(None, None, None)
 
@@ -713,16 +704,12 @@ def test_approval_is_single_use():
         session_id = _bootstrap(c)
         c.app.state.gateway = _InjectedModelGateway()
         prompt = _hold(c, session_id)
-        redeem = [{"requestId": prompt["id"], "grant": prompt["grant"]}]
-
-        c.app.state.gateway = _InjectedModelGateway()
-        first = _turn(c, session_id, approvals=redeem)
+        first = _continue(c, session_id, prompt)
         assert first.status_code == 200, first.text
         assert len(connector.tool_calls) == 1
 
-        c.app.state.gateway = _InjectedModelGateway()
-        second = _turn(c, session_id, approvals=redeem)
-        assert second.status_code == 200, second.text
+        second = _continue(c, session_id, prompt)
+        assert second.status_code == 409, second.text
         # Still one: the grant was burned by the first redemption.
         assert len(connector.tool_calls) == 1
     finally:
@@ -744,8 +731,8 @@ def test_forged_and_guessed_approvals_fail_closed():
             [{"requestId": prompt["id"], "grant": grant_hash(prompt["grant"])}],
         ):
             c.app.state.gateway = _InjectedModelGateway()
-            response = _turn(c, session_id, approvals=approvals)
-            assert response.status_code == 200, response.text
+            response = _continue(c, session_id, prompt, **approvals[0])
+            assert response.status_code == 409, response.text
             assert connector.tool_calls == []
     finally:
         c.__exit__(None, None, None)
@@ -872,14 +859,14 @@ def test_the_approval_prompt_still_rides_out_after_the_terminal_write(monkeypatc
         monkeypatch.setattr(chat_router, "StreamingResponse", _Tracked)
         session_id = _bootstrap(c)
         repo = c.app.state.session_repo
-        original_upsert = repo.upsert_message
+        original_upsert = repo.save_chat_assistant
 
-        async def tracked_upsert(user_id, message):
-            result = await original_upsert(user_id, message)
+        async def tracked_upsert(user_id, message, **kwargs):
+            result = await original_upsert(user_id, message, **kwargs)
             order.append(f"upsert:{message.status.value}")
             return result
 
-        monkeypatch.setattr(repo, "upsert_message", tracked_upsert)
+        monkeypatch.setattr(repo, "save_chat_assistant", tracked_upsert)
         c.app.state.gateway = _InjectedModelGateway()
         response = c.post(
             "/api/chat",
@@ -924,14 +911,10 @@ def test_consumption_failure_denies_rather_than_degrades():
         async def failing_consume(*_args, **_kwargs):
             raise RuntimeError("store unavailable")
 
-        repo.consume_tool_approval = failing_consume  # type: ignore[method-assign]
+        repo.save_chat_assistant = failing_consume  # type: ignore[method-assign]
         c.app.state.gateway = _InjectedModelGateway()
-        response = _turn(
-            c,
-            session_id,
-            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
-        )
-        assert response.status_code == 200, response.text
+        with pytest.raises(RuntimeError, match="store unavailable"):
+            _continue(c, session_id, prompt)
         assert connector.tool_calls == []
     finally:
         c.__exit__(None, None, None)
@@ -956,14 +939,10 @@ def test_lost_burn_race_denies():
         async def lost_race(*_args, **_kwargs):
             return False
 
-        repo.consume_tool_approval = lost_race  # type: ignore[method-assign]
+        repo.save_chat_assistant = lost_race  # type: ignore[method-assign]
         c.app.state.gateway = _InjectedModelGateway()
-        response = _turn(
-            c,
-            session_id,
-            approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}],
-        )
-        assert response.status_code == 200, response.text
+        response = _continue(c, session_id, prompt)
+        assert response.status_code == 409, response.text
         assert connector.tool_calls == []
     finally:
         c.__exit__(None, None, None)

@@ -35,11 +35,14 @@ from .deletion_models import (
 from .models import (
     Document,
     Message,
+    MessageRole,
+    MessageStatus,
     Session,
     normalize_session_patch_changes,
     normalize_session_title,
 )
 from .repository import SessionConflictError, SessionNotFoundError
+from .chat_continuation import validate_chat_transition
 
 
 class InMemorySessionRepository:
@@ -57,6 +60,7 @@ class InMemorySessionRepository:
         self._deletions: dict[tuple[str, str], tuple[DeletionRecord, int]] = {}
         self._uploads: dict[str, UploadIntent] = {}
         self._workflow_checkpoints: dict[tuple[str, str], WorkflowCheckpoint] = {}
+        self._chat_heads: dict[str, tuple[str, str | None]] = {}
 
     async def check_ready(self) -> None:
         return None
@@ -236,11 +240,73 @@ class InMemorySessionRepository:
             self._documents.pop(session_id, None)
 
     async def add_message(self, user_id: str, message: Message) -> Message:
+        if message.id.startswith("__ai4ia_"):
+            raise DeletionIntegrityError("Reserved chat control identity")
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)
             message.userId = user_id
+            if message.role is MessageRole.user:
+                self._invalidate_chat_turn(message.sessionId)
+                self._chat_heads[message.sessionId] = (message.id, None)
             self._messages.setdefault(message.sessionId, []).append(message)
             return message
+
+    def _invalidate_chat_turn(self, session_id: str) -> None:
+        head = self._chat_heads.pop(session_id, None)
+        if head is None:
+            return
+        for message in self._messages.get(session_id, []):
+            state = message.chatContinuation
+            if message.id != head[1] or state is None or state.payload is None:
+                continue
+            status = "unknown" if state.status == "dispatched" else "cancelled"
+            message.chatContinuation = state.cleared(status, "conversation_changed")
+            message.continuationStatus = status
+            message.status = MessageStatus.cancelled
+            for approval in message.pendingApprovals or []:
+                approval.consumed = True
+
+    async def invalidate_chat_turn(self, user_id: str, session_id: str) -> None:
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            self._invalidate_chat_turn(session_id)
+
+    async def read_chat_assistant(
+        self, user_id: str, session_id: str, message_id: str,
+    ) -> Message | None:
+        async with self._lock:
+            await self._owned_session(user_id, session_id)
+            return next((
+                item.model_copy(deep=True) for item in self._messages.get(session_id, [])
+                if item.id == message_id and item.userId == user_id
+            ), None)
+
+    async def save_chat_assistant(
+        self, user_id: str, message: Message, *, expected: Message | None, turn_id: str,
+    ) -> bool:
+        async with self._lock:
+            await self._owned_session(user_id, message.sessionId)
+            head = self._chat_heads.get(message.sessionId)
+            if (
+                head is None or head[0] != turn_id or head[1] not in {None, message.id}
+                or message.userId != user_id or message.role is not MessageRole.assistant
+                or message.chatContinuation is None or message.chatContinuation.turnId != turn_id
+            ):
+                return False
+            message.chatContinuation.bounded_body()
+            validate_chat_transition(expected.chatContinuation if expected is not None else None, message.chatContinuation)
+            bucket = self._messages.setdefault(message.sessionId, [])
+            index = next((i for i, item in enumerate(bucket) if item.id == message.id), None)
+            if expected is None:
+                if index is not None:
+                    return False
+                bucket.append(message.model_copy(deep=True))
+            else:
+                if index is None or bucket[index] != expected:
+                    return False
+                bucket[index] = message.model_copy(deep=True)
+            self._chat_heads[message.sessionId] = (turn_id, message.id)
+            return True
 
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int
@@ -270,6 +336,8 @@ class InMemorySessionRepository:
                 return False
             user_message.userId = user_id
             pending_assistant.userId = user_id
+            self._invalidate_chat_turn(user_message.sessionId)
+            self._chat_heads[user_message.sessionId] = (user_message.id, None)
             bucket.extend(
                 [
                     user_message.model_copy(deep=True),
@@ -308,12 +376,16 @@ class InMemorySessionRepository:
             return False
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
+        if message.id.startswith("__ai4ia_"):
+            raise DeletionIntegrityError("Reserved chat control identity")
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)
             message.userId = user_id
             bucket = self._messages.setdefault(message.sessionId, [])
             for idx, existing in enumerate(bucket):
                 if existing.id == message.id:
+                    if existing.chatContinuation is not None:
+                        raise SessionConflictError("A pending chat message requires its snapshot CAS.")
                     bucket[idx] = message
                     return message
             bucket.append(message)
@@ -351,6 +423,8 @@ class InMemorySessionRepository:
             ):
                 return False
             self._workflow_checkpoints[key] = checkpoint.model_copy(deep=True)
+            self._invalidate_chat_turn(session.id)
+            self._chat_heads[session.id] = (user_message.id, None)
             messages.extend([user_message.model_copy(deep=True), assistant.model_copy(deep=True)])
             return True
 
@@ -415,6 +489,7 @@ class InMemorySessionRepository:
 
         async with self._lock:
             await self._owned_session(user_id, session_id)
+            self._invalidate_chat_turn(session_id)
             for key, state in list(self._workflow_checkpoints.items()):
                 if key[0] == session_id:
                     self._workflow_checkpoints[key] = cleared_checkpoint(state)

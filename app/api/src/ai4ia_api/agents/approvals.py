@@ -26,13 +26,13 @@ arguments*, not of the tool. Concretely:
    destination host, purpose, risk, argument digest, and a **redacted** argument
    preview (:func:`build_preview`, which reuses ``tools.redact_obj``; there is
    deliberately no second redactor in this codebase).
-3. The chat router turns each draft into a durable :class:`PendingToolApproval`
-   stored on the assistant message, plus a one-time ``grant`` string returned to
-   the browser exactly once over SSE. Only the grant's SHA-256 is persisted, so
-   reading the stored record does not let anyone approve anything.
-4. The user approves. The next turn presents ``{requestId, grant}``. The server
-   re-derives the record **from its own storage** (never from the client) and
-   re-checks every binding before turning it into an invocation approval.
+3. Interactive chat privately checkpoints the original turn and exact executable
+   invocation, separately from its redacted :class:`PendingToolApproval` card.
+   The browser receives a one-time grant; only its SHA-256 is persisted.
+4. Approve-and-continue consumes the grant and claims that same operation with
+   the conversation's conditional snapshot write. The runtime resumes the saved
+   call before another model request. The client supplies identifiers and the
+   grant, never executable arguments. Old preview-only records cannot resume.
 
 **What binds an approval, and where each binding is enforced:**
 
@@ -60,7 +60,8 @@ single use           two independent mechanisms, closing different holes.
                      within one turn. The second is not a refinement of the
                      first: redemption happens once per turn, while the model's
                      tool-call list is exactly what injected context controls.
-possession           ``sha256(grant) == grantHash``, ``hmac.compare_digest``.
+possession           SHA-256 with constant-time comparison. Interactive chat
+                     domain-tags the stored hash so legacy retry verifiers refuse it.
 ===================  ==========================================================
 
 **A client cannot mint one.** The grant is 256 bits of ``secrets.token_urlsafe``
@@ -183,18 +184,11 @@ class ApprovalPolicy(str, Enum):
     have exactly one possible author — the user — so there is nothing to ask
     about.
 
-    **Approval identity vs. endpoint identity.** An approval is keyed on the
-    runtime tool alias, and :func:`~ai4ia_api.agents.mcp_servers.tool_alias`
-    hashes ``(plane, server_name, raw_tool_name)`` — deliberately *not* the
-    endpoint URL, because the alias must stay stable across a turn and the URL is
-    not part of the model-facing identity. Consequence: if the owner re-points a
-    registered server name at a different URL inside an approval's TTL, an
-    approval minted against the old endpoint still key-matches. That is outside
-    this module's threat model (it takes an authenticated action *by the
-    approver*, not injected text, and the destination host shown on the card came
-    from the spec at mint time), but it is the kind of thing that is much cheaper
-    to know than to rediscover. Shortening the TTL or folding the host into the
-    key would both close it if the threat model ever widens.
+    The invocation key uses the stable runtime alias and exact argument digest.
+    Interactive continuation additionally binds its operation and complete tool
+    contract; MCP metadata includes the endpoint, protocol and configuration
+    revision. Changing a destination therefore refuses the saved continuation
+    rather than interpreting the old alias as approval for a new endpoint.
     """
 
     off = "off"
@@ -550,6 +544,8 @@ class PendingToolApproval(BaseModel):
     consumed: bool = False
     expiresAt: datetime
     createdAt: datetime = Field(default_factory=_now)
+    messageId: str | None = None
+    operationId: str | None = None
 
     def is_expired(self, *, now: datetime | None = None) -> bool:
         moment = now or _now()

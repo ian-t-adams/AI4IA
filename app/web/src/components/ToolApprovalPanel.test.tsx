@@ -16,6 +16,8 @@ function prompt(
 ): PendingToolApprovalPrompt {
   return {
     id: "req-1",
+    messageId: "message-1",
+    operationId: "0123456789abcdef:1:0",
     tool: "mcp_courier_abc123",
     label: "mcp:courier/send",
     host: "courier.example.com",
@@ -36,6 +38,24 @@ function prompt(
 }
 
 describe("ToolApprovalPanel", () => {
+  it.each([false, true])("restores review focus without taking it from another control (%s)", async (moveFocus) => {
+    const user = userEvent.setup();
+    const panel = (grant: string, busy = false) => <>
+      <input aria-label="Another control" />
+      <ToolApprovalPanel prompts={[prompt({ grant })]} onApprove={vi.fn()} onDeny={vi.fn()} busy={busy} />
+    </>;
+    const { rerender } = render(panel(""));
+    const review = screen.getByRole("button", { name: /^Review pending call/ });
+    await user.click(review);
+    rerender(panel("", true));
+    act(() => review.blur());
+    if (moveFocus) await user.click(screen.getByRole("textbox", { name: "Another control" }));
+    rerender(panel("renewed-one-time-grant"));
+    expect(screen.getByRole(moveFocus ? "textbox" : "button", {
+      name: moveFocus ? "Another control" : /^Approve and continue/,
+    })).toHaveFocus();
+  });
+
   it("renders nothing when there is nothing to approve", () => {
     const { container } = render(
       <ToolApprovalPanel prompts={[]} onApprove={vi.fn()} onDeny={vi.fn()} />,
@@ -83,11 +103,11 @@ describe("ToolApprovalPanel", () => {
     );
     await user.click(screen.getByRole("button", { name: /^Approve/ }));
     expect(onApprove).toHaveBeenCalledWith(pending);
-    expect(screen.getByRole("button", { name: /Approve and retry/ })).toBeInTheDocument();
-    expect(screen.getByText(/model must re-issue this exact call/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Approve and continue/ })).toBeInTheDocument();
+    expect(screen.getByText(/model does not recreate it/i)).toBeInTheDocument();
   });
 
-  it("denies locally without needing a server round trip", async () => {
+  it("asks the parent to cancel the held call without approving it", async () => {
     const onApprove = vi.fn();
     const onDeny = vi.fn();
     const user = userEvent.setup();
@@ -124,7 +144,7 @@ describe("ToolApprovalPanel", () => {
         onDeny={vi.fn()}
       />,
     );
-    expect(screen.getByRole("button", { name: /Approve and retry/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Approve and continue/ })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent(/expired/i);
     expect(screen.getByRole("button", { name: /^Deny/ })).toBeEnabled();
   });
@@ -139,7 +159,7 @@ describe("ToolApprovalPanel", () => {
         onDeny={vi.fn()}
       />,
     );
-    const approve = screen.getByRole("button", { name: /Approve and retry/ });
+    const approve = screen.getByRole("button", { name: /Approve and continue/ });
     expect(approve).toBeEnabled();
 
     act(() => vi.advanceTimersByTime(1_000));
@@ -159,7 +179,7 @@ describe("ToolApprovalPanel", () => {
         onDeny={vi.fn()}
       />,
     );
-    const approve = screen.getByRole("button", { name: /Approve and retry/ });
+    const approve = screen.getByRole("button", { name: /Approve and continue/ });
     expect(approve).toBeEnabled();
 
     vi.setSystemTime(new Date("2026-08-05T13:00:02Z"));

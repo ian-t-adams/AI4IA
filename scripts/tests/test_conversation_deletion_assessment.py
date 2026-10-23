@@ -135,6 +135,27 @@ def add_ticket(document: dict, *, settled: bool) -> None:
 
 
 class AssessmentTests(unittest.TestCase):
+    def test_chat_control_is_metadata_only_in_legacy_and_v1_inventory(self):
+        document = fixture()
+        for entry in document["observations"]["partitions"]:
+            entry["messages"].append({
+                "id": assessment.CHAT_HEAD_ID, "kind": assessment.CHAT_HEAD_KIND,
+                "userId": entry["ownerId"], "sessionId": entry["sessionId"],
+                "turnId": "synthetic-turn", "assistantId": "synthetic-assistant",
+                "_etag": '"chat-control"', "_ts": 1789000000,
+            })
+        report = observe(RecordingReader(document))
+        self.assert_complete(report)
+        for row in report["cohort"]:
+            self.assertEqual(2, row["messages"]["ordinary"])
+            self.assertIn("chat_turn", [item["kind"] for item in row["messages"]["samples"]])
+        self.assertNotIn("synthetic-turn", json.dumps(report))
+        self.assertNotIn("chatContinuation", assessment.CHILD_SQL)
+        self.assertNotIn("payload", assessment.CHILD_SQL)
+        bad = copy.deepcopy(document)
+        bad["observations"]["partitions"][0]["messages"][-1]["id"] += "-unknown"
+        self.assertNotEqual("complete", observe(RecordingReader(bad))["status"])
+
     def assert_complete(self, report):
         self.assertEqual("complete", report["status"], report["cohort"])
         self.assertEqual(2, report["summary"]["declared"])

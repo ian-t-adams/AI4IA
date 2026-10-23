@@ -15,10 +15,10 @@ import copy
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -69,19 +69,23 @@ from ..agents.runtime import (
     AgentContextBudgetError,
     AgentRunCancelled,
     AgentRunFailed,
+    AgentRunPaused,
     AgentRunResult,
     AgentStep,
     run_agent_turn,
 )
-from ..agents.activity import persisted_trace
+from ..agents.activity import persisted_run_trace
+from ..agents.chat_continuation import (
+    ChatContinuationController, chat_grant_hash, consume_chat_grant, validate_pending_call,
+)
+from ..agents.consent import contract_hash
+from ..sessions.chat_continuation import ChatContinuationError
+from ..memory.context_refs import MemoryContextBinding, MemoryReference
+from ..library.access import get_accessible_document
 from ..agents.receipt import ReceiptDraft
 from ..agents.approvals import (
-    ApprovalDenied,
     ApprovalPolicy,
     ApprovalSink,
-    PendingToolApproval,
-    consume_grant,
-    invocation_approvals_for,
 )
 from ..publishing.execution import (
     bind_execution, current_execution, prepare_execution, skill_loader_excluded,
@@ -152,7 +156,6 @@ from ._chat_streaming import (
     CHAT_COMPLETION_FAILED,
     INCOMPLETE_RESPONSE_FALLBACK,
     _agentic_stream,
-    _mint_approval_events,
     _persist_nonstream_failure,
     _plain_gateway_stream,
     _stream_metadata,
@@ -228,10 +231,134 @@ class ChatRequest(BaseModel):
     allowAutomaticMemory: StrictBool = True
     requireFreshSession: StrictBool = False
     params: ChatParams = ChatParams()
-    # Per-invocation tool approvals the user granted in response to a prompt
-    # raised by an earlier turn in THIS session. Bounded so a caller cannot make
-    # the redemption pass unbounded work.
+    # Retain the old request shape solely for an explicit upgrade/refusal response.
+    # Interactive grants are redeemed only by /chat/continue.
     approvals: list[ToolApprovalDecision] = Field(default_factory=list, max_length=8)
+
+
+class ChatContinuationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sessionId: str = Field(min_length=1, max_length=128)
+    messageId: str = Field(min_length=1, max_length=128)
+    requestId: str = Field(min_length=1, max_length=64)
+    action: Literal["approve", "deny", "review"]
+    grant: str | None = Field(default=None, max_length=256)
+
+
+def _chat_session_binding(value: Session) -> str:
+    return contract_hash(value.model_dump(mode="json", exclude={
+        "title", "createdAt", "updatedAt", "freshTurnClaimed",
+    }))
+
+
+async def _chat_agent_binding(request: Request, user_id: str, name: str) -> str:
+    current = await request.app.state.agent_service.resolve_for(
+        user_id, name, request.app.state.agents, mode="chat",
+    )
+    if current is None or not current.enabled:
+        raise HTTPException(409, "The original agent is no longer available. Send a fresh request.")
+    return contract_hash(current.model_dump(mode="json"))
+
+
+async def _continuation_constraints(
+    body: ChatContinuationRequest, request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AsyncIterator[None]:
+    repo: SessionRepository = request.app.state.session_repo
+    message = await repo.read_chat_assistant(user.internal_user_id, body.sessionId, body.messageId)
+    state = message.chatContinuation if message is not None else None
+    if message is None or state is None:
+        raise HTTPException(409, "This older approval cannot continue an exact call. Send a fresh request.")
+    pending = next((item for item in message.pendingApprovals or [] if item.id == body.requestId), None)
+    if pending is None or pending.operationId != state.operationId or state.status != "waiting":
+        raise HTTPException(409, "This call is no longer awaiting approval. Refresh the conversation.")
+    if state.payload is None:
+        raise HTTPException(409, "This pending call has been cleared. Send a fresh request.")
+    if pending.is_expired() or datetime.now(timezone.utc) >= state.expiresAt:
+        expired = message.model_copy(deep=True)
+        expired.chatContinuation = state.cleared("expired", "approval_expired")
+        expired.continuationStatus = "expired"
+        saved = await repo.save_chat_assistant(
+            user.internal_user_id, expired, expected=message, turn_id=state.turnId,
+        )
+        if saved and body.action == "deny":
+            request.state.chat_resume = expired
+            request.state.chat_expired = True
+            yield
+            return
+        raise HTTPException(409, "This pending call expired. Send a fresh request.")
+    request.state.chat_resume = message
+    if body.action != "deny":
+        try:
+            validate_pending_call(message, pending)
+        except ChatContinuationError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+    stored = ChatRequest.model_validate(state.payload.request)
+    if stored.sessionId != body.sessionId:
+        raise HTTPException(409, "The saved call does not match this conversation.")
+    with constrain_request(tools=stored.allowTools, automatic_memory=stored.allowAutomaticMemory):
+        yield
+
+
+@router.post("/chat/continue", dependencies=[Depends(_continuation_constraints, scope="request")])
+async def continue_chat(
+    body: ChatContinuationRequest, request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    repo: SessionRepository = request.app.state.session_repo
+    message: Message = request.state.chat_resume
+    if getattr(request.state, "chat_expired", False):
+        return {"message": message}
+    expected = message.model_copy(deep=True)
+    state = message.chatContinuation
+    assert state is not None and state.payload is not None
+    pending = next(item for item in message.pendingApprovals or [] if item.id == body.requestId)
+    if body.action == "review":
+        grant = secrets.token_urlsafe(32)
+        pending.grantHash = chat_grant_hash(grant)
+        message.chatContinuation = state.model_copy(update={"revision": state.revision + 1}, deep=True)
+        if not await repo.save_chat_assistant(
+            user.internal_user_id, message, expected=expected, turn_id=state.turnId,
+        ):
+            raise HTTPException(409, "The pending call changed. Refresh before reviewing it.")
+        return {**pending.model_dump(mode="json"), "grant": grant}
+    if body.action == "deny":
+        message.chatContinuation = state.cleared("cancelled", "approval_denied")
+        message.continuationStatus = "cancelled"
+        message.status = MessageStatus.cancelled
+    else:
+        if body.grant is None or not consume_chat_grant(pending, body.grant).granted:
+            emit_security_block("tool_approval", "grant_rejected", "chat_router")
+            raise HTTPException(409, "This approval is invalid, expired, or already used. Review the call again.")
+        pending.consumed = True
+        message.chatContinuation = state.model_copy(update={
+            "status": "running", "revision": state.revision + 1,
+        }, deep=True)
+        message.continuationStatus = "running"
+        message.status = MessageStatus.streaming
+    if not await repo.save_chat_assistant(
+        user.internal_user_id, message, expected=expected, turn_id=state.turnId,
+    ):
+        raise HTTPException(409, "This call was already decided or the conversation changed.")
+    if body.action == "deny":
+        return {"message": message}
+    emit_custom_event("tool_approval", {
+        "source": "chat_router", "outcome": "granted", "tool": pending.label,
+    })
+    request.state.chat_resume = message
+    stored = ChatRequest.model_validate(state.payload.request).model_copy(update={"stream": True})
+    try:
+        return await chat(stored, request, user)
+    except Exception:
+        failed = message.model_copy(deep=True)
+        assert failed.chatContinuation is not None
+        failed.chatContinuation = failed.chatContinuation.cleared("cancelled", "continuation_refused")
+        failed.continuationStatus = "cancelled"
+        failed.status = MessageStatus.error
+        await repo.save_chat_assistant(
+            user.internal_user_id, failed, expected=message, turn_id=state.turnId,
+        )
+        raise
 
 
 async def _request_constraints(body: ChatRequest) -> AsyncIterator[None]:
@@ -482,83 +609,6 @@ def _now() -> datetime:
 # --- Per-invocation tool approval (see agents/approvals.py) --------------------
 
 
-async def _redeem_tool_approvals(
-    *,
-    repo: SessionRepository,
-    user_id: str,
-    session_id: str,
-    prior: Sequence[Message],
-    decisions: Sequence[ToolApprovalDecision],
-) -> frozenset[str]:
-    """Redeem presented grants into this turn's per-invocation approval set.
-
-    ``prior`` is the caller's own session transcript as returned by
-    ``list_messages``, which ownership-checks every read — that is what binds an
-    approval to a user *and* a conversation: a grant minted in another session or
-    for another user simply has no record here, and the lookup fails closed.
-
-    The burn itself is delegated to ``repo.consume_tool_approval``, a single
-    compare-and-set, rather than done here as ``record.consumed = True`` followed
-    by an upsert. That read-modify-write let two concurrent requests presenting
-    the same grant both observe ``consumed=False`` from their own snapshots and
-    both redeem it. Only the caller that actually flips the record proceeds.
-
-    Every rejection path is non-fatal by construction: an unknown, tampered,
-    expired, already-used or lost-the-race approval yields no invocation key, the
-    gated call is denied again, and the turn ends normally with the model
-    explaining what it needs. Nothing here raises, and nothing here ever trusts
-    the client for *what* was approved.
-    """
-    if not decisions:
-        return frozenset()
-    index: dict[str, tuple[Message, PendingToolApproval]] = {}
-    for message in prior:
-        for record in message.pendingApprovals or []:
-            index.setdefault(record.id, (message, record))
-
-    granted: list[PendingToolApproval] = []
-    for decision in decisions:
-        found = index.get(decision.requestId)
-        message, record = found if found is not None else (None, None)
-        # Cheap, local checks first so the reported reason is precise (bad grant
-        # vs expired vs already used). They are necessary but NOT sufficient:
-        # `consumed` read from a snapshot is advisory, and the authoritative
-        # single-use decision is the conditional write below.
-        outcome = consume_grant(record, decision.grant)
-        if not outcome.granted or message is None or record is None:
-            reason = outcome.reason.value if outcome.reason else "denied"
-            emit_security_block("tool_approval", reason, "chat_router")
-            logger.info("tool approval rejected: reason=%s", reason)
-            continue
-        try:
-            won = await repo.consume_tool_approval(
-                user_id, session_id, message.id, record.id
-            )
-        except Exception:  # noqa: BLE001 - fail closed, never break the turn
-            emit_security_block("tool_approval", "consume_failed", "chat_router")
-            logger.warning(
-                "could not record tool approval as consumed; denying", exc_info=True
-            )
-            continue
-        if not won:
-            # Lost the race, or it was already spent: an approval we cannot
-            # prove we just burned must not authorize a call.
-            emit_security_block(
-                "tool_approval", ApprovalDenied.already_used.value, "chat_router"
-            )
-            logger.info(
-                "tool approval rejected: reason=%s", ApprovalDenied.already_used.value
-            )
-            continue
-        record.consumed = True
-        granted.append(record)
-        emit_custom_event(
-            "tool_approval",
-            {"tool": record.label, "source": "chat_router", "outcome": "granted"},
-        )
-    return invocation_approvals_for(granted)
-
-
 def _local_reply_response(
     session_id: str,
     assistant: Message,
@@ -807,6 +857,20 @@ async def chat(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     repo: SessionRepository = request.app.state.session_repo
+    continuation: ChatContinuationController | None = None
+    resume_message: Message | None = getattr(request.state, "chat_resume", None)
+    retained_attachments = [
+        item.model_copy(deep=True) for item in resume_message.attachments
+    ] if resume_message is not None else []
+    resume_state = resume_message.chatContinuation if resume_message is not None else None
+    resume_seed = (
+        resume_state.payload.seed if resume_state is not None and resume_state.payload is not None else None
+    )
+    if body.approvals:
+        raise HTTPException(
+            409, "This approval uses the retired retry path. Reload the app, then review the pending call. "
+            "Older calls may require a fresh request.",
+        )
     catalog: ModelCatalog = request.app.state.catalog
     gateway: ModelGatewayClient = request.app.state.gateway
     # Curated catalog by default; user agents are composed in lazily below only
@@ -867,6 +931,12 @@ async def chat(
     )
 
     session = await repo.get_session(user.internal_user_id, body.sessionId)
+    if resume_seed is not None and _chat_session_binding(session) != resume_seed["sessionBinding"]:
+        raise HTTPException(409, "Conversation settings changed. Send a fresh request.")
+    if resume_seed is not None and resume_seed["sourceAgent"] is not None:
+        original_agent = resume_seed["sourceAgent"]
+        if await _chat_agent_binding(request, user.internal_user_id, original_agent["name"]) != original_agent["digest"]:
+            raise HTTPException(409, "The original agent changed. Send a fresh request.")
     if body.requireFreshSession and (
         body.allowTools or body.allowAutomaticMemory
         or session.deletionProtocol != 1 or session.freshTurnClaimed
@@ -913,6 +983,8 @@ async def chat(
     if parsed.command is not None and parsed.command.kind is CommandKind.unknown:
         cmd_name = parsed.command.name
         if cmd_name in DIRECT_SLASH_TOOLS:
+            if resume_message is not None:
+                raise HTTPException(409, "This command cannot replace a pending tool invocation.")
             command_users: list[Message] = []
             assistant = await execute_tool_command(
                 parsed=parsed,
@@ -953,6 +1025,8 @@ async def chat(
             workflow_service=getattr(request.app.state, "workflow_service", None),
             catalog=catalog,
         ):
+            if resume_message is not None:
+                raise HTTPException(409, "The original tool is no longer available. Send a fresh request.")
             unavailable_reply = f"/{capability_tool} isn't enabled in this environment yet."
             if capability_tool == GENERATE_VIDEO_TOOL_NAME and video_generation_availability(
                 enabled=request.app.state.settings.video_generation_enabled,
@@ -1278,6 +1352,13 @@ async def chat(
             )
         session = claimed
     prior = await repo.list_messages(user.internal_user_id, body.sessionId)
+    original_user = None
+    if resume_state is not None:
+        index = next((i for i, item in enumerate(prior) if item.id == resume_state.turnId), None)
+        if index is None:
+            raise HTTPException(409, "The original turn is no longer available.")
+        original_user = prior[index]
+        prior = prior[:index]
     if body.requireFreshSession and (
         prior or await repo.list_documents(user.internal_user_id, body.sessionId)
     ):
@@ -1290,35 +1371,20 @@ async def chat(
             user.internal_user_id, session, deployment.deploymentName, api, content_for_model,
         )
     publication_run = current_execution()
-    if body.approvals:
-        decision_ids = {decision.requestId for decision in body.approvals}
-        for message in prior:
-            if not any(item.id in decision_ids for item in message.pendingApprovals or []):
-                continue
-            receipt = message.executionReceipt
-            evidence = receipt.runtime.publication if receipt is not None else None
-            if evidence is not None or publication_run is not None:
-                if (
-                    publication_run is None or evidence is None or receipt is None
-                    or publication_run.ref != evidence.source or evidence.effectiveSubsetDigest is None
-                    or receipt.runtime.modelId != publication_run.model_id
-                    or receipt.runtime.deployment != publication_run.deployment.deploymentName
-                ):
-                    raise PublicationError("publication_approval_source_changed")
-                publication_run.expected_subset_digest = evidence.effectiveSubsetDigest
-    # Redeem any per-invocation tool approvals the user granted for a prompt this
-    # session raised earlier. Done here because it needs ``prior`` (the ownership-
-    # checked transcript that *is* the user+session binding) and must burn each
-    # grant before anything can run with it. Rejections are silent-and-safe: the
-    # turn proceeds with no approval and the gated call is denied again.
-    invocation_approvals = await _redeem_tool_approvals(
-        repo=repo,
-        user_id=user.internal_user_id,
-        session_id=body.sessionId,
-        prior=prior,
-        decisions=body.approvals,
-    )
-    user_msg = Message(
+    if resume_message is not None:
+        receipt = resume_message.executionReceipt
+        evidence = receipt.runtime.publication if receipt is not None else None
+        if evidence is not None or publication_run is not None:
+            if (
+                publication_run is None or evidence is None or receipt is None
+                or publication_run.ref != evidence.source or evidence.effectiveSubsetDigest is None
+                or receipt.runtime.modelId != publication_run.model_id
+                or receipt.runtime.deployment != publication_run.deployment.deploymentName
+            ):
+                raise PublicationError("publication_approval_source_changed")
+            publication_run.expected_subset_digest = evidence.effectiveSubsetDigest
+    invocation_approvals: frozenset[str] = frozenset()
+    user_msg = original_user or Message(
         sessionId=body.sessionId,
         userId=user.internal_user_id,
         role=MessageRole.user,
@@ -1326,9 +1392,10 @@ async def chat(
         status=MessageStatus.complete,
         agent=agent_name,
     )
-    await turn_timing.measure_persistence(
-        repo.add_message(user.internal_user_id, user_msg)
-    )
+    if original_user is None:
+        await turn_timing.measure_persistence(
+            repo.add_message(user.internal_user_id, user_msg)
+        )
 
     payload_messages = _history(prior, system_prompt)
     correlation_id = get_correlation_id()
@@ -1341,7 +1408,7 @@ async def chat(
     # full history. When the flag is off this whole branch is skipped, so the turn
     # is byte-for-byte identical to before.
     summary_block = ""
-    if summarizer.enabled and not body.requireFreshSession:
+    if summarizer.enabled and not body.requireFreshSession and resume_seed is None:
         try:
             history_messages, rolling_summary = await summarizer.apply(
                 gateway=gateway,
@@ -1372,7 +1439,7 @@ async def chat(
     memory_guard = MemoryContextGuard(memory, user.internal_user_id)
     recalled = (
         await memory.recall(user.internal_user_id, content_for_model)
-        if await memory_guard.allowed() else []
+        if resume_seed is None and await memory_guard.allowed() else []
     )
     used_memory_records = []
     memory_block = memory.format_context(
@@ -1388,7 +1455,7 @@ async def chat(
     # from the model's context window (fixed fallback when metadata is absent).
     session_context_documents: list[Document] = []
     doc_block = (
-        "" if body.requireFreshSession else await _document_context(
+        "" if body.requireFreshSession or resume_seed is not None else await _document_context(
             repo,
             user.internal_user_id,
             body.sessionId,
@@ -1404,7 +1471,7 @@ async def chat(
     # The per-turn nonce fences the untrusted block and is reused for the
     # fetch_document tool (Tier 3) so both share one anti-injection marker. When
     # retrieval is off (default) or the library is empty, this is "".
-    library_nonce = secrets.token_hex(4)
+    library_nonce = resume_seed["nonce"] if resume_seed is not None else secrets.token_hex(4)
     library_context = RetrievalContext()
     library_block = ""
     receipt_library_sources: list[RetrievedSource] = []
@@ -1416,7 +1483,7 @@ async def chat(
     library_tools_enabled = (
         session.libraryDocumentIds is None or bool(session.libraryDocumentIds)
     )
-    if retrieval is not None and library_tools_enabled:
+    if retrieval is not None and library_tools_enabled and resume_seed is None:
         try:
             library_context = await retrieval.context(
                 user.internal_user_id, content_for_model, nonce=library_nonce,
@@ -1552,6 +1619,16 @@ async def chat(
     # Turn-level provenance taint over only the blocks that actually survived
     # admission. The runtime latches this on again after any tool result.
     untrusted_context = bool(summary_block or memory_block or doc_block or library_block)
+    if resume_seed is not None:
+        payload_messages = copy.deepcopy(resume_seed["prompt"])
+        receipt_blocks = [tuple(item) for item in resume_seed["blocks"]]
+        receipt_block_sources = copy.deepcopy(resume_seed["blockSources"])
+        library_sources = (
+            [RetrievedSource.model_validate(item) for item in resume_seed["sources"]]
+            if resume_seed["sources"] is not None else None
+        )
+        untrusted_context = resume_seed["untrusted"]
+        memory_guard.block = resume_seed["memoryBlock"]
     if dropped_messages:
         logger.info(
             "chat.history_truncated",
@@ -1686,7 +1763,7 @@ async def chat(
     has_prior_chat = any(not m.fromCommand for m in prior)
     session_changes: dict[str, object] = {}
     title_updated = False
-    if session.title == "New chat" and not has_prior_chat:
+    if session.title == "New chat" and not has_prior_chat and resume_seed is None:
         try:
             title_updated = await repo.set_generated_title_if_eligible(
                 user.internal_user_id, session.id, content_for_model[:60]
@@ -1698,7 +1775,7 @@ async def chat(
             )
     # Persist the model choice to the session unless it came purely from the
     # agent's per-turn default (which must not silently rebind the session).
-    if not model_from_agent_default:
+    if not model_from_agent_default and resume_seed is None:
         session.model = model_id
         session_changes["model"] = model_id
     if session_changes:
@@ -1707,6 +1784,75 @@ async def chat(
         )
     elif not title_updated:
         await repo.touch_session(user.internal_user_id, session.id)
+
+    binding = _chat_session_binding(await repo.get_session(user.internal_user_id, session.id))
+    runtime_binding = contract_hash({
+        "model": model_id, "deployment": deployment.model_dump(mode="json"),
+        "api": api, "params": effective_params, "systemPrompt": system_prompt,
+        "agent": agent.model_dump(mode="json") if agent is not None else None,
+    })
+    source_agent_name = parsed.agent or session.agentName
+    seed = resume_seed or {
+        "nonce": library_nonce, "prompt": copy.deepcopy(payload_messages),
+        "blocks": receipt_blocks, "blockSources": receipt_block_sources,
+        "sources": [item.model_dump(mode="json") for item in library_sources] if library_sources is not None else None,
+        "untrusted": untrusted_context, "memoryBlock": memory_guard.block,
+        "sessionBinding": binding, "runtimeBinding": runtime_binding,
+        "sourceAgent": (
+            {"name": source_agent_name, "digest": await _chat_agent_binding(
+                request, user.internal_user_id, source_agent_name,
+            )} if source_agent_name is not None else None
+        ),
+        "memoryContext": (
+            MemoryContextBinding(
+                preference=memory_guard.preference,
+                references=[MemoryReference.from_record(item) for item in used_memory_records],
+            ).model_dump(mode="json") if used_memory_records and memory_guard.block else None
+        ),
+    }
+    if binding != seed["sessionBinding"] or runtime_binding != seed["runtimeBinding"]:
+        raise HTTPException(409, "Conversation settings or the selected agent changed. Send a fresh request.")
+
+    async def recheck_continuation(live_seed: dict[str, Any]) -> None:
+        current = await repo.get_session(user.internal_user_id, session.id)
+        if _chat_session_binding(current) != seed["sessionBinding"]:
+            raise ChatContinuationError("Conversation settings changed. Send a fresh request.")
+        current_entitlement = await entitlements.check(user.internal_user_id)
+        if not current_entitlement.allowed:
+            raise ChatContinuationError("Current account or usage policy does not allow this call.")
+        original_agent = live_seed["sourceAgent"]
+        if original_agent is not None and await _chat_agent_binding(
+            request, user.internal_user_id, original_agent["name"],
+        ) != original_agent["digest"]:
+            raise ChatContinuationError("The original agent changed. Send a fresh request.")
+        memory_binding = live_seed["memoryContext"]
+        if memory_binding is not None:
+            bound = MemoryContextBinding.model_validate(memory_binding)
+            await memory.validate_context_references(user.internal_user_id, bound.preference, bound.references)
+        documents = {item.id: item for item in await repo.list_documents(user.internal_user_id, session.id)}
+        for source in seed["blockSources"].get("documents", []):
+            current_document = documents.get(source["id"])
+            if current_document is None or current_document.text != source["content"]:
+                raise ChatContinuationError("A document supplied to this turn changed or was removed.")
+        library = getattr(request.app.state, "document_library", None)
+        for source in seed["blockSources"].get("library", []):
+            if library is None:
+                raise ChatContinuationError("A document supplied to this turn is no longer available.")
+            current_document = await get_accessible_document(
+                library, user.internal_user_id, source["documentId"], email=user.email,
+            )
+            if (current_document.contentHash or current_document.updatedAt.isoformat()) != source["version"]:
+                raise ChatContinuationError("A document supplied to this turn changed.")
+
+    def continuation_for(assistant: Message) -> ChatContinuationController:
+        receipt_draft.approvals_granted = sum(
+            item.consumed for item in assistant.pendingApprovals or []
+        )
+        return ChatContinuationController(
+            repo, assistant, request=body.model_dump(mode="json"),
+            turn_id=user_msg.id, seed=seed, recheck=recheck_continuation,
+            restored=resume_message is not None,
+        )
 
     # One sink and one policy per turn, hoisted above BOTH tool-calling paths.
     # The agent path has always had them; the plain-chat path below (the MAIN
@@ -1744,6 +1890,8 @@ async def chat(
             True,
         )
     )
+    if resume_state is not None and resume_state.payload is not None:
+        stream_tool_tokens = stream_tool_tokens and resume_state.payload.request["stream"]
 
     # Tool-enabled / orchestrator agent turn: run the gateway-native tool-calling
     # loop governed by the tool-safety registry. The model picks/sequences tools;
@@ -2149,11 +2297,11 @@ async def chat(
                         agent_tool_names.append(LOAD_SKILL_NAME)
             except Exception:  # noqa: BLE001 - MCP must never break a turn
                 logger.warning("mcp/skill capability build failed", exc_info=True)
-        ctx = replace(ctx, prepare_model_context=memory_guard.prepare)
+        ctx = replace(ctx, prepare_model_context=memory_guard.prepare, turn_budgets={})
         if body.stream:
             # Live-stream the agent's activity, then its answer; the generator
             # persists the terminal row before signaling completion.
-            placeholder = Message(
+            placeholder = resume_message or Message(
                 sessionId=body.sessionId,
                 userId=user.internal_user_id,
                 role=MessageRole.assistant,
@@ -2163,6 +2311,16 @@ async def chat(
                 agent=agent_name,
                 sources=library_sources,
             )
+            continuation = continuation_for(placeholder)
+            ctx = replace(
+                ctx, invocation_approvals=continuation.approvals_for(continuation.restored),
+                child_checkpoint=continuation.child_checkpoint,
+                capture_memory_context=continuation.capture_memory_context,
+            )
+            if continuation.restored is not None:
+                usage_sink.extend(
+                    item.usage for item in continuation.restored.delegations if not item.meteredSeparately
+                )
             def _run(
                 on_step: Callable[[AgentStep], Awaitable[None]],
                 on_delta: Callable[[str], Awaitable[None]] | None = None,
@@ -2174,7 +2332,7 @@ async def chat(
                     gateway=gateway,
                     registry=turn_registry,
                     executor=turn_executor,
-                    ctx=ctx,
+                    ctx=replace(ctx, child_on_step=on_step),
                     params=effective_params,
                     model_evidence=model_evidence,
                     extra_tools=extra_tools or None,
@@ -2183,6 +2341,8 @@ async def chat(
                     on_step=on_step,
                     on_delta=on_delta,
                     prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
+                    checkpoint=continuation,
+                    interactive_checkpoint=True,
                 )
 
             return StreamingResponse(
@@ -2190,6 +2350,7 @@ async def chat(
                     repo=repo,
                     user_id=user.internal_user_id,
                     assistant=placeholder,
+                    continuation=continuation,
                     events=_agentic_stream(
                         assistant=placeholder,
                         run=_run,
@@ -2205,17 +2366,29 @@ async def chat(
                         content_for_model=content_for_model,
                         user_message_id=user_msg.id,
                         extra_usage=usage_sink,
-                        get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                        get_attachments=lambda: [*retained_attachments, *image_sink, *video_sink, *doc_sink],
                         get_approval_drafts=approval_sink.drafts,
                         stream_tokens=stream_tool_tokens,
                         receipt_draft=receipt_draft,
                         safety_provider=safety_provider,
+                        continuation=continuation,
                     ),
                 ),
                 media_type="text/event-stream",
             )
 
+        placeholder = Message(
+            sessionId=body.sessionId, userId=user.internal_user_id, role=MessageRole.assistant,
+            content="", status=MessageStatus.streaming, model=deployment.deploymentName,
+            agent=agent_name, sources=library_sources,
+        )
+        continuation = continuation_for(placeholder)
+        ctx = replace(
+            ctx, child_checkpoint=continuation.child_checkpoint,
+            capture_memory_context=continuation.capture_memory_context,
+        )
         try:
+            await continuation.initialize()
             run = await run_agent_turn(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
@@ -2232,9 +2405,14 @@ async def chat(
                 prompt_budget_bytes=(
                     prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
                 ),
+                checkpoint=continuation,
+                interactive_checkpoint=True,
             )
+        except AgentRunPaused as exc:
+            run = exc.partial
         except AgentContextBudgetError as exc:
             await _persist_nonstream_failure(
+                continuation=continuation,
                 repo=repo,
                 metering=metering,
                 user=user,
@@ -2260,10 +2438,12 @@ async def chat(
             ) from exc
         except (AgentRunFailed, AgentRunCancelled) as exc:
             partial = exc.partial
+            receipt_draft.model_evidence = partial.model_evidence or model_evidence
             total_usage = partial.usage
             for sub_usage in usage_sink:
                 total_usage = total_usage.add(sub_usage)
             await _persist_nonstream_failure(
+                continuation=continuation,
                 repo=repo,
                 metering=metering,
                 user=user,
@@ -2276,7 +2456,7 @@ async def chat(
                 correlation_id=correlation_id,
                 content=partial.text or partial.streamed_text,
                 attachments=[*image_sink, *video_sink, *doc_sink],
-                steps=persisted_trace(partial.steps) or None,
+                steps=persisted_run_trace(partial) or None,
                 sources=library_sources,
                 receipt=receipt_draft.build(
                     steps=partial.steps,
@@ -2305,6 +2485,7 @@ async def chat(
             ) from exc.cause
         except ModelGatewayError as exc:
             await _persist_nonstream_failure(
+                continuation=continuation,
                 repo=repo,
                 metering=metering,
                 user=user,
@@ -2335,28 +2516,34 @@ async def chat(
         for sub_usage in usage_sink:
             total_usage = total_usage.add(sub_usage)
         assistant = Message(
+            id=placeholder.id,
             sessionId=body.sessionId,
             userId=user.internal_user_id,
             role=MessageRole.assistant,
             content=(
                 run.text
-                if run.text.strip() or not run.incomplete
-                else INCOMPLETE_RESPONSE_FALLBACK
+                if run.text.strip() else INCOMPLETE_RESPONSE_FALLBACK if run.incomplete
+                else "Review the pending tool call to continue."
+                if continuation.state.status == "waiting" else ""
             ),
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
             attachments=[*image_sink, *video_sink, *doc_sink],
-            steps=persisted_trace(run.steps) or None,
+            steps=persisted_run_trace(run) or None,
             sources=library_sources,
             safety=attributed_safety(run.safety, safety_provider),
+            chatContinuation=continuation.state,
         )
-        approval_events = _mint_approval_events(assistant, approval_sink.drafts())
+        continuation.assistant = assistant
+        assistant.pendingApprovals = placeholder.pendingApprovals
+        approval_events = continuation.approval_events
+        receipt_draft.model_evidence = run.model_evidence
         assistant.executionReceipt = receipt_draft.build(
             steps=run.steps,
             iterations=run.iterations,
             status="incomplete" if run.incomplete else "complete",
-            partial=run.incomplete,
+            partial=run.incomplete or continuation.state.status == "waiting",
             offered=run.offered_tools,
             approvals_requested=len(assistant.pendingApprovals or []),
             dropped_history_messages=run.dropped_context_messages,
@@ -2368,9 +2555,9 @@ async def chat(
         )
         attest_message(assistant)
         await turn_timing.measure_persistence(
-            repo.add_message(user.internal_user_id, assistant)
+            continuation.persist_result()
         )
-        if not run.incomplete:
+        if not run.incomplete and continuation.state.status == "complete":
             await memory.remember(
                 user.internal_user_id, body.sessionId, content_for_model
             )
@@ -2445,6 +2632,7 @@ async def chat(
                 approval_sink=approval_sink,
                 consent_checker=consent_checker,
                 prepare_model_context=memory_guard.prepare,
+                turn_budgets={},
             )
             plain_tools: list[dict] = []
             plain_handlers: dict = {}
@@ -2502,7 +2690,7 @@ async def chat(
                     # no answer (or fails), the generator finishes with a plain call
                     # so the response never dead-ends — the streaming equivalent of
                     # the non-stream fall-through to the RAG path below.
-                    placeholder = Message(
+                    placeholder = resume_message or Message(
                         sessionId=body.sessionId,
                         userId=user.internal_user_id,
                         role=MessageRole.assistant,
@@ -2512,6 +2700,13 @@ async def chat(
                         agent=agent_name,
                         sources=library_sources,
                     )
+                    continuation = continuation_for(placeholder)
+                    ctx = replace(
+                        ctx, invocation_approvals=continuation.approvals_for(continuation.restored),
+                        capture_memory_context=continuation.capture_memory_context,
+                    )
+
+                    plain_continuation = continuation
 
                     def _run_plain(
                         on_step: Callable[[AgentStep], Awaitable[None]],
@@ -2533,6 +2728,8 @@ async def chat(
                             on_step=on_step,
                             on_delta=on_delta,
                             prompt_budget_bytes=prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS,
+                            checkpoint=continuation,
+                            interactive_checkpoint=True,
                         )
 
                     async def _rag_fallback() -> tuple[
@@ -2543,13 +2740,16 @@ async def chat(
                     ]:
                         await memory_guard.prepare(payload_messages)
                         await observe_publication_offers({}, [])
-                        res = await model_evidence.observe(gateway.complete(
+                        await plain_continuation.begin_fallback()
+                        fallback_evidence = receipt_draft.model_evidence or model_evidence
+                        res = await fallback_evidence.observe(gateway.complete(
                             deployment=deployment.deploymentName,
                             messages=payload_messages,
                             params=effective_params,
                             correlation_id=correlation_id,
                             api=api,
                         ))
+                        await plain_continuation.finish_fallback()
                         return (
                             _extract_text(res),
                             TokenUsage.parse(res.get("usage")),
@@ -2565,6 +2765,7 @@ async def chat(
                             repo=repo,
                             user_id=user.internal_user_id,
                             assistant=placeholder,
+                            continuation=continuation,
                             events=_agentic_stream(
                                 assistant=placeholder,
                                 run=_run_plain,
@@ -2584,12 +2785,22 @@ async def chat(
                                 stream_tokens=stream_tool_tokens,
                                 receipt_draft=receipt_draft,
                                 safety_provider=safety_provider,
+                                continuation=continuation,
                             ),
                         ),
                         media_type="text/event-stream",
                     )
 
-                run = await run_agent_turn(
+                placeholder = Message(
+                    sessionId=body.sessionId, userId=user.internal_user_id, role=MessageRole.assistant,
+                    content="", status=MessageStatus.streaming, model=deployment.deploymentName,
+                    agent=agent_name, sources=library_sources,
+                )
+                continuation = continuation_for(placeholder)
+                ctx = replace(ctx, capture_memory_context=continuation.capture_memory_context)
+                await continuation.initialize()
+                try:
+                    run = await run_agent_turn(
                     deployment=deployment.deploymentName,
                     messages=payload_messages,
                     tool_names=[],
@@ -2602,11 +2813,18 @@ async def chat(
                     extra_tools=plain_tools or None,
                     extra_handlers=plain_handlers or None,
                     api=api,
-                    prompt_budget_bytes=(
-                        prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
-                    ),
-                )
+                        prompt_budget_bytes=(
+                            prompt_budget_bytes + TOOL_CONTEXT_RESERVE_TOKENS
+                        ),
+                        checkpoint=continuation,
+                        interactive_checkpoint=True,
+                    )
+                except AgentRunPaused as exc:
+                    run = exc.partial
                 plain_tool_run = run
+                if run.model_evidence is not None:
+                    model_evidence = run.model_evidence
+                    receipt_draft.model_evidence = model_evidence
                 plain_model_attempts = run.iterations
                 plain_drafts = approval_sink.drafts()
                 # Normally the model answers in prose after a held call (see
@@ -2618,6 +2836,7 @@ async def chat(
                 # here either way, with a fixed sentence when the model gave none.
                 if run.text.strip() or plain_drafts or run.incomplete:
                     assistant = Message(
+                        id=placeholder.id,
                         sessionId=body.sessionId,
                         userId=user.internal_user_id,
                         role=MessageRole.assistant,
@@ -2633,16 +2852,20 @@ async def chat(
                         status=MessageStatus.complete,
                         model=deployment.deploymentName,
                         agent=agent_name,
-                        steps=persisted_trace(run.steps) or None,
+                        steps=persisted_run_trace(run) or None,
                         sources=library_sources,
                         safety=attributed_safety(run.safety, safety_provider),
+                        chatContinuation=continuation.state,
                     )
-                    approval_events = _mint_approval_events(assistant, plain_drafts)
+                    continuation.assistant = assistant
+                    assistant.pendingApprovals = placeholder.pendingApprovals
+                    approval_events = continuation.approval_events
+                    receipt_draft.model_evidence = run.model_evidence
                     assistant.executionReceipt = receipt_draft.build(
                         steps=run.steps,
                         iterations=run.iterations,
                         status="incomplete" if run.incomplete else "complete",
-                        partial=run.incomplete,
+                        partial=run.incomplete or continuation.state.status == "waiting",
                         offered=run.offered_tools,
                         approvals_requested=len(assistant.pendingApprovals or []),
                         dropped_history_messages=run.dropped_context_messages,
@@ -2653,9 +2876,9 @@ async def chat(
                     )
                     attest_message(assistant)
                     await turn_timing.measure_persistence(
-                        repo.add_message(user.internal_user_id, assistant)
+                        continuation.persist_result()
                     )
-                    if not run.incomplete:
+                    if not run.incomplete and continuation.state.status == "complete":
                         await memory.remember(
                             user.internal_user_id,
                             body.sessionId,
@@ -2687,7 +2910,9 @@ async def chat(
                 plain_fallback_usage = plain_fallback_usage.add(run.usage)
         except (AgentRunFailed, AgentRunCancelled) as exc:
             partial = exc.partial
+            receipt_draft.model_evidence = partial.model_evidence or model_evidence
             await _persist_nonstream_failure(
+                continuation=continuation,
                 repo=repo,
                 metering=metering,
                 user=user,
@@ -2699,7 +2924,7 @@ async def chat(
                 agent_name=agent_name,
                 correlation_id=correlation_id,
                 content=partial.text or partial.streamed_text,
-                steps=persisted_trace(partial.steps) or None,
+                steps=persisted_run_trace(partial) or None,
                 sources=library_sources,
                 receipt=receipt_draft.build(
                     steps=partial.steps,
@@ -2749,10 +2974,14 @@ async def chat(
             insert_at, {"role": "system", "content": _TOOLS_UNAVAILABLE_NOTICE}
         )
 
+    if resume_message is not None:
+        raise HTTPException(409, "The original tool surface is no longer available. Send a fresh request.")
     await observe_publication_offers({}, [])
     if not body.stream:
         try:
             await memory_guard.prepare(payload_messages)
+            if continuation is not None:
+                await continuation.begin_fallback()
             result = await model_evidence.observe(gateway.complete(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
@@ -2760,8 +2989,11 @@ async def chat(
                 correlation_id=correlation_id,
                 api=api,
             ))
+            if continuation is not None:
+                await continuation.finish_fallback()
         except (ModelGatewayError, asyncio.CancelledError) as exc:
             await _persist_nonstream_failure(
+                continuation=continuation,
                 repo=repo,
                 metering=metering,
                 user=user,
@@ -2904,8 +3136,13 @@ async def chat(
             ),
         )
         attest_message(assistant)
+        if continuation is not None:
+            assistant.id = continuation.assistant.id
+            assistant.chatContinuation = continuation.state
+            continuation.assistant = assistant
         await turn_timing.measure_persistence(
-            repo.add_message(user.internal_user_id, assistant)
+            continuation.persist_result() if continuation is not None
+            else repo.add_message(user.internal_user_id, assistant)
         )
         if not response_incomplete:
             await memory.remember(

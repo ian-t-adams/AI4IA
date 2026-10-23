@@ -153,18 +153,19 @@ def test_stream_rechecks_after_placeholder_persistence(execution_client, monkeyp
             "name": "memory-tester", "systemPrompt": "Answer.", "tools": ["calculator"],
         }).status_code == 201
     repo = client.app.state.session_repo
-    original = repo.add_message
+    method = "save_chat_assistant" if surface == "agent" else "add_message"
+    original = getattr(repo, method)
     entered = []
 
-    async def add_message(uid, message):
-        result = await original(uid, message)
-        if message.role == "assistant" and message.status == "streaming":
+    async def add_message(uid, message, **kwargs):
+        result = await original(uid, message, **kwargs)
+        if not entered and message.role == "assistant" and message.status == "streaming":
             entered.append(True)
             if disable:
                 await set_automatic(client.app.state.memory, uid, False)
         return result
 
-    monkeypatch.setattr(repo, "add_message", add_message)
+    monkeypatch.setattr(repo, method, add_message)
     response = client.post("/api/chat", headers=HEADERS, json={
         "sessionId": session["id"], "stream": True,
         "content": ("@memory-tester " if surface == "agent" else "") + "Describe my preferences",

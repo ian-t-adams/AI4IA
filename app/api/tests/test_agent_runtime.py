@@ -1218,16 +1218,13 @@ async def test_unknown_tool_name_replaced_with_sentinel_in_denied_step_and_log(c
     assert all(s.tool != hostile_name for s in result.steps)
 
 
-async def test_unknown_tool_name_replaced_with_sentinel_in_live_tool_start():
-    """Same guarantee as above, but for the pre-execution ``tool_start``
-    marker, which fires (live-only, via ``on_step``) before either the
-    synthetic-handler or registry check runs -- the earliest point an
-    unvalidated name could leak."""
+@pytest.mark.parametrize("known", [False, True])
+async def test_only_authorized_tools_announce_running_and_unknown_names_never_leak(known):
     registry, executor = build_tools()
     hostile_name = "totally made up tool the model hallucinated"
     gateway = ScriptedGateway(
         [
-            _assistant_tool_call("c1", hostile_name, "{}"),
+            _assistant_tool_call("c1", "calculator" if known else hostile_name, '{"expression":"6*7"}'),
             _assistant_text("Sorry, I can't do that."),
         ]
     )
@@ -1236,7 +1233,7 @@ async def test_unknown_tool_name_replaced_with_sentinel_in_live_tool_start():
     async def on_step(step):
         emitted.append((step.kind, step.tool))
 
-    await run_agent_turn(
+    result = await run_agent_turn(
         deployment="dep",
         messages=_messages(),
         tool_names=["calculator"],
@@ -1247,8 +1244,13 @@ async def test_unknown_tool_name_replaced_with_sentinel_in_live_tool_start():
         on_step=on_step,
     )
     starts = [tool for kind, tool in emitted if kind == "tool_start"]
-    assert starts == ["unknown_tool"]
-    assert hostile_name not in starts
+    assert starts == (["calculator"] if known else [])
+    assert all(tool != hostile_name for _, tool in emitted)
+    assert [tool for kind, tool in emitted if kind == "tool_denied"] == ([] if known else ["unknown_tool"])
+    results = [step for step in result.steps if step.kind == "tool_result"]
+    assert len(results) == int(known)
+    if known:
+        assert results[0].result["result"] == 42
 
 
 async def test_known_tool_name_is_unaffected_by_sentinel_mapping():

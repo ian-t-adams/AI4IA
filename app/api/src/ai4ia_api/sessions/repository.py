@@ -32,6 +32,16 @@ class SessionConflictError(Exception):
 
 @runtime_checkable
 class SessionRepository(Protocol):
+    async def read_chat_assistant(
+        self, user_id: str, session_id: str, message_id: str,
+    ) -> Message | None: ...
+
+    async def save_chat_assistant(
+        self, user_id: str, message: Message, *, expected: Message | None, turn_id: str,
+    ) -> bool: ...
+
+    async def invalidate_chat_turn(self, user_id: str, session_id: str) -> None: ...
+
     async def read_workflow_checkpoint(
         self, user_id: str, session_id: str, checkpoint_id: str,
     ) -> WorkflowCheckpoint | None: ...

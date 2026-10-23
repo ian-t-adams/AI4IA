@@ -198,10 +198,11 @@ export interface MessageAttachment {
 // pre-execution "tool_start" marker) and persisted on the assistant message.
 // Mirrors ai4ia_api.sessions.models.ActivityStep.
 export interface ActivityStep {
-  kind: "tool_start" | "tool_result" | "tool_denied" | "tool_error" | "delegate" | "final" | "workflow_step" | "workflow_error";
+  kind: "tool_start" | "tool_waiting" | "tool_result" | "tool_denied" | "tool_error" | "delegate" | "final" | "workflow_step" | "workflow_error";
   label: string;
   tool?: string | null;
   detail?: string | null;
+  operationId?: string | null;
 }
 
 // One content-safety category's verdict for one half of the exchange. AI4IA
@@ -312,6 +313,7 @@ export interface ReceiptToolCall {
   approval?: ToolApprovalSource | null;
   consentId?: string | null;
   callId?: string | null;
+  operationId?: string | null;
   // result | delegate | denied | error
   outcome: string;
   detail?: string | null;
@@ -523,6 +525,8 @@ export interface MessageCitation {
 // `PendingToolApprovalPrompt` below.
 export interface PendingToolApproval {
   id: string;
+  messageId?: string | null;
+  operationId?: string | null;
   // Runtime dispatch identity (an opaque provider-safe alias for MCP tools).
   tool: string;
   // The durable, human-readable name to show (e.g. `mcp:courier/send`).
@@ -567,6 +571,7 @@ export interface ToolApprovalDecision {
 }
 
 export interface Message {
+  continuationStatus?: string | null;
   workflowRunId?: string | null;
   workflowRunStatus?: string | null;
   workflowToolConsent?: ToolConsentSummary | null;

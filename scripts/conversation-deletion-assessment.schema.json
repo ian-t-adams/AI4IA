@@ -155,7 +155,7 @@
       "required": ["identitySha256", "kind", "etagSha256", "timestamp", "generationSha256", "ttl", "closed", "settled", "uploadStartedAt", "documentIdentitySha256"],
       "properties": {
         "identitySha256": {"$ref": "#/$defs/hash"},
-        "kind": {"enum": ["ordinary", "fence", "upload", "legacy", "v1_active", "initializing", "deleting", "verified"]},
+        "kind": {"enum": ["ordinary", "chat_turn", "fence", "upload", "legacy", "v1_active", "initializing", "deleting", "verified"]},
         "etagSha256": {"$ref": "#/$defs/hash"}, "timestamp": {"$ref": "#/$defs/count"},
         "generationSha256": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
         "ttl": {"enum": [-1, null]}, "closed": {"type": ["boolean", "null"]}, "settled": {"type": ["boolean", "null"]},

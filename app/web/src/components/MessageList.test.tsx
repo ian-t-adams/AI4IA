@@ -1565,7 +1565,7 @@ describe("MessageList execution receipt", () => {
 
   it("does not turn a bounded, empty tool list into a false zero-call receipt", async () => {
     renderReceipt({ toolCallCount: 9, toolsOfferedCount: 12, toolCalls: [], toolsOffered: [], truncated: true });
-    await userEvent.click(screen.getByText(/12 tools offered, 9 invoked/));
+    await userEvent.click(screen.getByText(/12 tools offered, 9 recorded calls/));
     await userEvent.click(screen.getByText("Tool calls · 9"));
     expect(screen.getByText("Tool-call details were not retained")).toBeVisible();
     expect(screen.queryByText("No tools were invoked")).toBeNull();

@@ -8,14 +8,16 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import aclosing
 
-from ..agents.activity import persisted_trace, serialize_step
+from ..agents.activity import persisted_run_trace, persisted_trace, serialize_step
 from ..agents.approvals import (
     ApprovalDraft,
     PendingToolApproval,
     mint_pending_approval,
 )
 from ..agents.receipt import ReceiptDraft
-from ..agents.runtime import AgentRunCancelled, AgentRunFailed, AgentRunResult, AgentStep
+from ..agents.runtime import AgentRunCancelled, AgentRunFailed, AgentRunPaused, AgentRunResult, AgentStep
+from ..agents.chat_continuation import ChatContinuationController
+from ..sessions.chat_continuation import ChatContinuationError
 from ..auth.base import AuthenticatedUser
 from ..catalog import DeploymentOption
 from ..chat_timing import current_chat_timing
@@ -52,11 +54,14 @@ def _stream_metadata(
     user_message_id: str | None,
     assistant_message_id: str,
     sources: list[RetrievedSource] | None = None,
+    continuation_content: str | None = None,
 ) -> str:
     metadata: dict[str, object] = {
         "userMessageId": user_message_id,
         "assistantMessageId": assistant_message_id,
     }
+    if continuation_content is not None:
+        metadata["content"] = continuation_content
     # The span registry is minted before the model runs, so it can ride the very
     # first frame: the browser can then mark citations as they stream in rather
     # than showing raw tokens until the durable row is refetched. Omitted
@@ -101,6 +106,7 @@ async def _persist_terminal_assistant(
     repo: SessionRepository,
     user_id: str,
     assistant: Message,
+    continuation: ChatContinuationController | None = None,
 ) -> bool:
     # Single choke point for every streaming terminal write, which is why the
     # citation attestation happens here: the answer's text is final, and both the
@@ -109,7 +115,10 @@ async def _persist_terminal_assistant(
     # turn (see ai4ia_api.citations).
     attest_message(assistant)
     timing = current_chat_timing()
-    operation = repo.upsert_message(user_id, assistant)
+    operation = (
+        continuation.persist_result() if continuation is not None
+        else repo.upsert_message(user_id, assistant)
+    )
     if timing is not None:
         operation = timing.measure_persistence(operation)
     write = asyncio.create_task(operation)
@@ -146,6 +155,7 @@ async def _persist_nonstream_failure(
     safety_provider: str | None = None,
     safety: MessageSafety | None = None,
     cancelled: bool = False,
+    continuation: ChatContinuationController | None = None,
 ) -> Message:
     """Persist and meter a terminal error/cancellation for an accepted non-streaming turn."""
     assistant = Message(
@@ -165,8 +175,16 @@ async def _persist_nonstream_failure(
         safety=attributed_safety(safety, safety_provider),
     )
     attest_message(assistant)
+    if continuation is not None:
+        assistant.id = continuation.assistant.id
+        assistant.chatContinuation = continuation.state
+        assistant.pendingApprovals = continuation.assistant.pendingApprovals
+        continuation.assistant = assistant
     timing = current_chat_timing()
-    operation = repo.add_message(user.internal_user_id, assistant)
+    operation = (
+        continuation.persist_result() if continuation is not None
+        else repo.add_message(user.internal_user_id, assistant)
+    )
     await (timing.measure_persistence(operation) if timing is not None else operation)
     await metering.record_completion(
         user_id=user.internal_user_id,
@@ -188,12 +206,16 @@ async def _stream_with_placeholder(
     user_id: str,
     assistant: Message,
     events: AsyncGenerator[str, None],
+    continuation: ChatContinuationController | None = None,
 ) -> AsyncGenerator[str, None]:
     """Own placeholder persistence within the response iterator lifecycle."""
     placeholder_persisted = False
     try:
         timing = current_chat_timing()
-        operation = repo.add_message(user_id, assistant)
+        operation = (
+            continuation.initialize() if continuation is not None
+            else repo.add_message(user_id, assistant)
+        )
         if timing is not None:
             operation = timing.measure_persistence(operation)
         write = asyncio.create_task(operation)
@@ -223,7 +245,7 @@ async def _stream_with_placeholder(
         await events.aclose()
         if placeholder_persisted and assistant.status is MessageStatus.streaming:
             assistant.status = MessageStatus.cancelled
-            await _persist_terminal_assistant(repo, user_id, assistant)
+            await _persist_terminal_assistant(repo, user_id, assistant, continuation)
 
 
 # Live activity + final answer for an agentic (tool-using) turn. Runs the turn as
@@ -269,6 +291,7 @@ async def _agentic_stream(
     stream_tokens: bool = False,
     receipt_draft: ReceiptDraft | None = None,
     safety_provider: str | None = None,
+    continuation: ChatContinuationController | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream an agent run and own its terminal persistence lifecycle."""
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=AGENT_EVENT_QUEUE_MAXSIZE)
@@ -330,7 +353,7 @@ async def _agentic_stream(
     final = MessageStatus.complete
     total_usage = TokenUsage.empty()
     content = ""
-    streamed_text = ""
+    streamed_text = continuation.previous_content if continuation is not None else ""
     persisted: list[ActivityStep] | None = None
     remembered = False
     terminal_persisted = False
@@ -342,6 +365,7 @@ async def _agentic_stream(
     result: AgentRunResult | None = None
     run_error: Exception | None = None
     attempted_iterations = 0
+    fallback_usage = TokenUsage.empty()
 
     def finalize_provenance(status: str, *, partial: bool) -> None:
         """Attach the turn's receipt and safety-coverage record before persisting.
@@ -365,6 +389,8 @@ async def _agentic_stream(
         )
         if receipt_draft is None:
             return
+        if source is not None and source.model_evidence is not None:
+            receipt_draft.model_evidence = source.model_evidence
         request_history = (
             list(source.model_requests)
             if source is not None
@@ -393,7 +419,10 @@ async def _agentic_stream(
         )
 
     try:
-        yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
+        yield _stream_metadata(
+            user_message_id, assistant.id, assistant.sources,
+            continuation.previous_content if continuation is not None and continuation.restored is not None else None,
+        )
         while True:
             item = await queue.get()
             if item is sentinel:
@@ -440,15 +469,31 @@ async def _agentic_stream(
             total_usage = partial.usage
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
-            persisted = persisted_trace(partial.steps) or None
+            persisted = persisted_run_trace(partial) or None
             content = streamed_text if streamed_text else partial.text
             raise run_error.cause
+
+        paused = isinstance(run_error, AgentRunPaused)
+        if paused:
+            result = run_error.partial
+            run_error = None
+        if run_error is not None and continuation is not None and continuation.restored is not None:
+            raise run_error
 
         # ``pending_delta`` is the text still owed to the client. Under streaming
         # that is normally nothing (it already went out increment by increment);
         # without streaming it is the whole answer, exactly as before.
         pending_delta = ""
-        if result is not None and ((result.text or "").strip() or result.incomplete):
+        if paused and result is not None:
+            content = streamed_text or result.text
+            if not content.strip():
+                content = "Review the pending tool call to continue."
+                pending_delta = content
+            total_usage = result.usage
+            for extra in extra_usage or []:
+                total_usage = total_usage.add(extra)
+            persisted = persisted_run_trace(result) or None
+        elif result is not None and ((result.text or "").strip() or result.incomplete):
             response_incomplete = result.incomplete
             if result.incomplete and not (result.text or "").strip():
                 pending_delta = (
@@ -458,12 +503,16 @@ async def _agentic_stream(
                 )
                 content = f"{streamed_text}{pending_delta}"
             else:
-                content = streamed_text if streamed_text.strip() else result.text
-                pending_delta = "" if streamed_text.strip() else content
+                if continuation is not None and not result.streamed_text:
+                    pending_delta = ("\n\n" if streamed_text.strip() else "") + result.text
+                    content = streamed_text + pending_delta
+                else:
+                    content = streamed_text if streamed_text.strip() else result.text
+                    pending_delta = "" if streamed_text.strip() else content
             total_usage = result.usage
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
-            persisted = persisted_trace(result.steps) or None
+            persisted = persisted_run_trace(result) or None
         elif fallback is not None:
             # Empty (or failed) tool turn: complete the answer with a plain call so
             # the turn never dead-ends. The steps that did run are still shown, and
@@ -486,11 +535,15 @@ async def _agentic_stream(
                 total_usage = total_usage.add(result.usage)
                 for extra in extra_usage or []:
                     total_usage = total_usage.add(extra)
-                persisted = persisted_trace(result.steps) or None
+                persisted = persisted_run_trace(result) or None
             try:
                 fallback_call_index = attempted_iterations + 1
+                if receipt_draft is not None and result is not None and result.model_evidence is not None:
+                    receipt_draft.model_evidence = result.model_evidence
                 fb_text, fb_usage, fb_safety, fb_incomplete = await fallback()
+                fallback_usage = fb_usage
             except ModelGatewayError:
+                fallback_usage = TokenUsage.parse(None)
                 total_usage = total_usage.add(TokenUsage.parse(None))
                 raise
             response_incomplete = fb_incomplete
@@ -516,7 +569,7 @@ async def _agentic_stream(
                 total_usage = result.usage
                 for extra in extra_usage or []:
                     total_usage = total_usage.add(extra)
-                persisted = persisted_trace(result.steps) or None
+                persisted = persisted_run_trace(result) or None
         elif run_error is not None:
             raise run_error
 
@@ -530,6 +583,7 @@ async def _agentic_stream(
         # AFTER that write succeeds — a grant whose record was never saved would
         # be unredeemable, and worse, would look approvable to the user.
         approval_events = (
+            continuation.approval_events if continuation is not None else
             _mint_approval_events(assistant, get_approval_drafts())
             if get_approval_drafts is not None
             else []
@@ -541,10 +595,10 @@ async def _agentic_stream(
             yield f"data: {json.dumps({'choices': [{'delta': {'content': pending_delta}}]})}\n\n"
         finalize_provenance(
             "incomplete" if response_incomplete else "complete",
-            partial=response_incomplete,
+            partial=response_incomplete or paused,
         )
         terminal_persisted = await _persist_terminal_assistant(
-            repo, user.internal_user_id, assistant
+            repo, user.internal_user_id, assistant, continuation
         )
         if not terminal_persisted:
             yield f"data: {json.dumps({'error': 'The reply could not be saved.', 'persistenceFailed': True})}\n\n"
@@ -561,7 +615,7 @@ async def _agentic_stream(
             assistant.attachments = get_attachments()
         finalize_provenance("error", partial=True)
         terminal_persisted = await _persist_terminal_assistant(
-            repo, user.internal_user_id, assistant
+            repo, user.internal_user_id, assistant, continuation
         )
         detail = (
             CHAT_COMPLETION_FAILED
@@ -572,7 +626,7 @@ async def _agentic_stream(
         if not terminal_persisted:
             error_payload["persistenceFailed"] = True
         yield f"data: {json.dumps(error_payload)}\n\n"
-    except Exception:
+    except Exception as exc:
         final = MessageStatus.error
         assistant.content = content
         assistant.status = final
@@ -581,9 +635,11 @@ async def _agentic_stream(
             assistant.attachments = get_attachments()
         finalize_provenance("error", partial=True)
         terminal_persisted = await _persist_terminal_assistant(
-            repo, user.internal_user_id, assistant
+            repo, user.internal_user_id, assistant, continuation
         )
-        error_payload = {"error": CHAT_COMPLETION_FAILED}
+        error_payload = {
+            "error": exc.detail if isinstance(exc, ChatContinuationError) else CHAT_COMPLETION_FAILED
+        }
         if not terminal_persisted:
             error_payload = {
                 "error": "The failed reply could not be saved.",
@@ -617,7 +673,7 @@ async def _agentic_stream(
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
         if persisted is None and recovered_source is not None:
-            persisted = persisted_trace(recovered_source.steps) or None
+            persisted = persisted_run_trace(recovered_source) or None
         if not terminal_persisted:
             assistant.content = content
             assistant.status = final
@@ -628,29 +684,37 @@ async def _agentic_stream(
                 "cancelled" if final is MessageStatus.cancelled else "error",
                 partial=final is not MessageStatus.complete,
             )
-            await _persist_terminal_assistant(repo, user.internal_user_id, assistant)
+            await _persist_terminal_assistant(repo, user.internal_user_id, assistant, continuation)
         _status_map = {
             MessageStatus.complete: "complete",
             MessageStatus.cancelled: "cancelled",
             MessageStatus.error: "error",
         }
         try:
-            await asyncio.shield(
-                metering.record_completion(
-                    user_id=user.internal_user_id,
-                    session_id=session_id,
-                    model_id=model_id,
-                    deployment=deployment,
-                    usage=total_usage,
-                    status=_status_map.get(
-                        final if terminal_persisted else MessageStatus.error,
-                        "error",
-                    ),  # pyright: ignore[reportArgumentType]
-                    agent=agent_name,
-                    correlation_id=correlation_id,
-                    timing=current_chat_timing(),
+            metered_usage = total_usage
+            if continuation is not None and recovered_source is not None:
+                metered_usage = recovered_source.segment_usage
+                for trace in recovered_source.delegations:
+                    if not trace.metered_separately:
+                        metered_usage = metered_usage.add(trace.segment_usage)
+                metered_usage = metered_usage.add(fallback_usage)
+            if continuation is None or metered_usage.calls:
+                await asyncio.shield(
+                    metering.record_completion(
+                        user_id=user.internal_user_id,
+                        session_id=session_id,
+                        model_id=model_id,
+                        deployment=deployment,
+                        usage=metered_usage,
+                        status=_status_map.get(
+                            final if terminal_persisted else MessageStatus.error,
+                            "error",
+                        ),  # pyright: ignore[reportArgumentType]
+                        agent=agent_name,
+                        correlation_id=correlation_id,
+                        timing=current_chat_timing(),
+                    )
                 )
-            )
         except Exception:  # noqa: BLE001 - metering must never break a turn
             logger.warning("usage metering failed for %s", assistant.id, exc_info=True)
         if (
@@ -659,6 +723,7 @@ async def _agentic_stream(
             and content.strip()
             and not response_incomplete
             and not remembered
+            and (continuation is None or continuation.state.status == "complete")
         ):
             remembered = True
             await asyncio.shield(

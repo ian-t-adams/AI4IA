@@ -128,7 +128,7 @@ async def _seed_indexed_doc(client: TestClient, user_id: str) -> UserDocument:
     return doc
 
 
-def _ask(client: TestClient, sid: str, *, stream: bool) -> None:
+def _ask(client: TestClient, sid: str, *, stream: bool):
     resp = client.post(
         "/api/chat",
         json={"sessionId": sid, "content": "When did Falcon ship?", "stream": stream},
@@ -137,6 +137,7 @@ def _ask(client: TestClient, sid: str, *, stream: bool) -> None:
     if stream:
         # Drain so the terminal upsert runs inside the response lifecycle.
         assert "[DONE]" in resp.text
+    return resp
 
 
 def _assistant_row(client: TestClient, sid: str) -> dict:
@@ -295,7 +296,19 @@ async def _run_tool_stream(reply: str) -> tuple[dict, ToolStreamGateway]:
         uid = _uid(client)
         await _seed_indexed_doc(client, uid)
         sid = _session(client)
-        _ask(client, sid, stream=True)
+        response = _ask(client, sid, stream=True)
+        prompts = [
+            json.loads(line[6:])["approvals"][0]
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and '"approvals"' in line
+        ]
+        assert len(prompts) == 1
+        prompt = prompts[0]
+        resumed = client.post("/api/chat/continue", json={
+            "sessionId": sid, "messageId": prompt["messageId"], "requestId": prompt["id"],
+            "grant": prompt["grant"], "action": "approve",
+        })
+        assert resumed.status_code == 200 and "[DONE]" in resumed.text, resumed.text
         return _assistant_row(client, sid), gateway
     finally:
         client.__exit__(None, None, None)

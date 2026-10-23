@@ -1,0 +1,734 @@
+import asyncio
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+import httpx
+
+from ai4ia_api.sessions.chat_continuation import (
+    CHAT_HEAD_ID,
+    ChatContinuation, ChatContinuationError, ChatContinuationPayload, exact_chat_arguments,
+)
+from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
+from ai4ia_api.sessions.models import Message, MessageAttachment, MessageRole, Session
+from ai4ia_api.sessions.repository import SessionNotFoundError
+from tests.cosmos_deletion_fake import CosmosState
+from tests.test_tool_approval_gate import (
+    _InjectedModelGateway, _bootstrap, _client, _connector, _hold, _turn,
+)
+from tests.test_agent_runtime import _assistant_text, _assistant_tool_call
+from tests.conftest import make_settings
+from ai4ia_api.gateway.client import ModelGatewayClient
+from ai4ia_api.agents.agent_catalog import AgentCatalog, AgentSpec
+from ai4ia_api.agents.tool_exec import ToolDefinition, build_tools
+from ai4ia_api.agents.tools import ToolRisk, ToolSpec
+from ai4ia_api.agents.approvals import PendingToolApproval, consume_grant
+from ai4ia_api.agents.chat_continuation import consume_chat_grant
+from ai4ia_api.request_constraints import automatic_memory_allowed
+from ai4ia_api.usage.pricing import PriceRate, PricingBook
+from ai4ia_api.agents.mcp_client import McpToolResult
+
+
+def resume(client, session, prompt, **overrides):
+    return client.post("/api/chat/continue", json={
+        "sessionId": session, "messageId": prompt["messageId"], "requestId": prompt["id"],
+        "grant": prompt["grant"], "action": "approve", **overrides,
+    })
+
+
+def events(response):
+    return [
+        json.loads(line[6:]) for line in response.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+
+
+def test_exact_call_runs_before_any_new_model_request_in_original_legacy_turn():
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        original = {"to": "owner@example.com", "body": "public hash " + "a" * 64}
+        gateway = _InjectedModelGateway(original)
+        client.app.state.gateway = gateway
+        prompt = _hold(client, session)
+        record = PendingToolApproval.model_validate(prompt)
+        assert not consume_grant(record, prompt["grant"]).granted
+        assert consume_chat_grant(record, prompt["grant"]).granted
+        assert gateway.calls == 1 and connector.tool_calls == []
+        assert "messageId" in prompt and prompt["operationId"]
+        stored = client.get(f"/api/sessions/{session}/messages").json()
+        assert len(stored) == 2 and "chatContinuation" not in json.dumps(stored)
+        first_id = stored[-1]["id"]
+        original_call = connector.call_tool
+
+        async def observed_call(**kwargs):
+            assert gateway.calls == 1
+            assert kwargs["arguments"] == original
+            return await original_call(**kwargs)
+
+        connector.call_tool = observed_call
+        gateway.arguments = {"to": "changed@example.com", "body": "must not replace the held call"}
+        response = resume(client, session, prompt)
+        assert response.status_code == 200 and "[DONE]" in response.text, response.text
+        assert len(connector.tool_calls) == 1 and gateway.calls == 2
+        final = client.get(f"/api/sessions/{session}/messages").json()
+        assert len(final) == 2 and final[-1]["id"] == first_id
+        assert final[-1]["continuationStatus"] == "complete"
+        assert {step["operationId"] for step in final[-1]["steps"]} == {prompt["operationId"]}
+        receipt = final[-1]["executionReceipt"]
+        assert receipt["approvalsRequested"] == receipt["approvalsGranted"] == 1
+        assert receipt["toolCalls"][0]["operationId"] == prompt["operationId"]
+        assert receipt["toolCalls"][0]["callId"] == "c1"
+        assert "chatContinuation" not in json.dumps(final)
+        assert client.app.state.session_repo._sessions[session].deletionProtocol is None
+        row = client.app.state.session_repo._messages[session][-1]
+        assert row.chatContinuation.payload is None
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_sibling_calls_each_require_their_own_operation_approval_without_model_reconstruction():
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        gateway = _InjectedModelGateway(repeat=2)
+        client.app.state.gateway = gateway
+        first = _hold(client, session)
+        response = resume(client, session, first)
+        assert response.status_code == 200, response.text
+        second = next(item["approvals"][0] for item in events(response) if "approvals" in item)
+        assert gateway.calls == 1 and len(connector.tool_calls) == 1
+        assert first["operationId"] != second["operationId"]
+        assert resume(client, session, first).status_code == 409
+        assert resume(client, session, second).status_code == 200
+        assert gateway.calls == 2 and len(connector.tool_calls) == 2
+        assert len(client.get(f"/api/sessions/{session}/messages").json()) == 2
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_waiting_tool_is_not_announced_as_running_before_approval():
+    client = _client(_connector())
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        response = client.post("/api/chat", json={
+            "sessionId": session, "content": "@courierbot Send synthetic.", "stream": True,
+        })
+        stages = [item["step"]["kind"] for item in events(response) if "step" in item]
+        assert stages == ["tool_waiting"]
+        prompt = next(item["approvals"][0] for item in events(response) if "approvals" in item)
+        continued = resume(client, session, prompt)
+        stages = [item["step"]["kind"] for item in events(continued) if "step" in item]
+        assert stages == ["tool_start", "tool_result"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("change", ["grant", "request", "new_turn", "settings", "deny", "expiry"])
+def test_changed_or_closed_approval_refuses_without_tool_egress(change):
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        gateway = _InjectedModelGateway()
+        client.app.state.gateway = gateway
+        prompt = _hold(client, session)
+        changes = {}
+        if change == "grant":
+            changes["grant"] = "invalid"
+        elif change == "request":
+            changes["requestId"] = "not-the-request"
+        elif change == "new_turn":
+            assert _turn(client, session, content="A different request").status_code == 200
+        elif change == "settings":
+            assert client.patch(f"/api/sessions/{session}", json={"systemPrompt": "Changed"}).status_code == 200
+        elif change == "deny":
+            assert resume(client, session, prompt, action="deny").status_code == 200
+        else:
+            row = client.app.state.session_repo._messages[session][-1]
+            row.chatContinuation.expiresAt = datetime.now(timezone.utc) - timedelta(seconds=1)
+        before = gateway.calls
+        result = resume(client, session, prompt, **changes)
+        assert result.status_code == 409, result.text
+        assert gateway.calls == before and connector.tool_calls == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_review_after_reload_rotates_only_the_same_operation_challenge():
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        gateway = _InjectedModelGateway()
+        client.app.state.gateway = gateway
+        first = _hold(client, session)
+        review = resume(client, session, first, action="review")
+        assert review.status_code == 200
+        second = review.json()
+        assert first["grant"] != second["grant"]
+        for name in ("operationId", "messageId", "argumentsDigest", "expiresAt"):
+            assert first[name] == second[name]
+        assert resume(client, session, first).status_code == 409
+        assert resume(client, session, second).status_code == 200
+        assert len(connector.tool_calls) == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_new_operation_gets_its_own_deadline_without_renewing_the_previous_call(monkeypatch):
+    import ai4ia_api.agents.approvals as approval_module
+
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(approval_module, "_now", lambda: now)
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway(repeat=2)
+        first = _hold(client, session)
+        now += timedelta(seconds=500)
+        response = resume(client, session, first)
+        second = next(item["approvals"][0] for item in events(response) if "approvals" in item)
+        assert datetime.fromisoformat(second["expiresAt"]) > datetime.fromisoformat(first["expiresAt"])
+        now += timedelta(seconds=500)
+        assert resume(client, session, second).status_code == 200
+        assert len(connector.tool_calls) == 2
+        rows = client.get(f"/api/sessions/{session}/messages").json()
+        assert rows[-1]["pendingApprovals"][0]["expiresAt"] == first["expiresAt"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_approval_deadlines_do_not_expire_ordinary_non_gated_work(monkeypatch):
+    import ai4ia_api.agents.chat_continuation as continuation_module
+
+    class Clock(datetime):
+        value = datetime.now(timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.value
+
+    class SlowGateway(_InjectedModelGateway):
+        async def complete(self, **kwargs):
+            result = await super().complete(**kwargs)
+            Clock.value += timedelta(minutes=11)
+            return result
+
+    monkeypatch.setattr(continuation_module, "datetime", Clock)
+    connector = _connector()
+    client = _client(connector, tool_approval_mode="off")
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = SlowGateway()
+        response = _turn(client, session)
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["continuationStatus"] == "complete"
+        assert len(connector.tool_calls) == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_linked_agent_resumes_its_held_call_without_replaying_parent_or_child_models():
+    client = _client(_connector())
+    sent = []
+    responses = [
+        _assistant_tool_call("parent-call", "delegate_to_agent", '{"agent":"child","task":"Deliver synthetic data."}'),
+        _assistant_tool_call("child-call", "deliver", '{"text":"Synthetic"}'),
+        _assistant_text("Child completed."),
+        _assistant_text("Parent completed."),
+    ]
+    requests = []
+
+    def transport(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        reply = responses[len(requests) - 1]
+        message = reply["choices"][0]["message"]
+        if "input" in body:
+            output = [
+                {"type": "function_call", "id": f"fc-{len(requests)}", "call_id": call["id"], **call["function"]}
+                for call in message.get("tool_calls", [])
+            ]
+            if message.get("content"):
+                output.append({
+                    "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": message["content"]}],
+                })
+            reply = {
+                "id": f"response-{len(requests)}", "status": "completed", "output": output,
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            }
+        else:
+            reply["usage"] = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        return httpx.Response(200, json=reply)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    gateway = ModelGatewayClient(make_settings(model_gateway_url="https://gateway.test/openai"), http_client=http)
+
+    async def deliver(arguments, context):
+        assert len(requests) == 2
+        sent.append(arguments)
+        return {"delivered": True}
+
+    try:
+        client.app.state.agents = AgentCatalog(agents=[
+            AgentSpec(name="parent", displayName="Parent", description="Parent", systemPrompt="Delegate.", links=["child"]),
+            AgentSpec(name="child", displayName="Child", description="Child", systemPrompt="Deliver.", tools=["deliver"]),
+        ])
+        registry, executor = build_tools([ToolDefinition(
+            ToolSpec(name="deliver", description="Deliver", risk=ToolRisk.external),
+            {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+            deliver,
+        )])
+        client.app.state.tool_registry, client.app.state.tool_executor = registry, executor
+        client.app.state.gateway = gateway
+        session = client.post("/api/sessions", json={"model": "gpt-5.2"}).json()["id"]
+        held = client.post("/api/chat", json={
+            "sessionId": session, "content": "@parent Deliver.", "stream": False,
+        })
+        assert held.status_code == 200, held.text
+        prompt = held.json()["approvals"][0]
+        assert len(requests) == 2 and sent == []
+        previous_price = held.json()["message"]["executionReceipt"]["runtime"]["modelCalls"][0]["cost"]["priceVersion"]
+        client.app.state.usage._pricing = PricingBook(
+            {"gpt-5.2": PriceRate(2, 8)}, currency="USD", version="continued-price",
+        )
+        response = resume(client, session, prompt)
+        assert response.status_code == 200 and "[DONE]" in response.text, response.text
+        assert sent == [{"text": "Synthetic"}] and len(requests) == 4
+        messages = client.get(f"/api/sessions/{session}/messages").json()
+        assert len(messages) == 2 and messages[-1]["content"] == "Parent completed."
+        child = messages[-1]["executionReceipt"]["delegations"][0]
+        assert child["toolCalls"][0]["operationId"] == prompt["operationId"]
+        assert child["toolCalls"][0]["approval"] == "invocation"
+        assert child["approvalsRequested"] == child["approvalsGranted"] == 1
+        assert child["runtime"]["modelCallCount"] == 2
+        assert messages[-1]["executionReceipt"]["runtime"]["modelCalls"][0]["cost"]["priceVersion"] == previous_price
+        assert messages[-1]["executionReceipt"]["runtime"]["modelCalls"][-1]["cost"]["priceVersion"] == "continued-price"
+        recorded_child = [step for step in messages[-1]["steps"] if step.get("operationId") == prompt["operationId"]]
+        assert [step["kind"] for step in recorded_child] == ["tool_waiting", "tool_result"]
+        live_child = [item["step"] for item in events(response) if (
+            "step" in item and item["step"].get("operationId") == prompt["operationId"]
+        )]
+        assert [step["kind"] for step in live_child] == ["tool_start", "tool_result"]
+        records = next(iter(client.app.state.usage._repo._by_user.values()))
+        assert sum(record.calls for record in records) == 4
+    finally:
+        client.__exit__(None, None, None)
+        asyncio.run(http.aclose())
+
+
+def test_lost_external_acknowledgement_is_unknown_and_never_replayed():
+    connector = _connector()
+    original = connector.call_tool
+
+    async def lost_ack(**kwargs):
+        await original(**kwargs)
+        raise ConnectionError("synthetic lost acknowledgement")
+
+    connector.call_tool = lost_ack
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        gateway = _InjectedModelGateway()
+        client.app.state.gateway = gateway
+        prompt = _hold(client, session)
+        response = resume(client, session, prompt)
+        assert '"error"' in response.text and "[DONE]" not in response.text
+        assert len(connector.tool_calls) == 1 and gateway.calls == 1
+        assert resume(client, session, prompt).status_code == 409
+        assert resume(client, session, prompt, action="review").status_code == 409
+        row = client.app.state.session_repo._messages[session][-1]
+        assert row.continuationStatus == "unknown" and row.chatContinuation.payload is None
+        assert len(connector.tool_calls) == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_old_record_is_refused_without_consuming_grant_or_reconstructing_arguments():
+    client = _client(_connector())
+    try:
+        session = _bootstrap(client)
+        gateway = _InjectedModelGateway()
+        client.app.state.gateway = gateway
+        prompt = _hold(client, session)
+        row = client.app.state.session_repo._messages[session][-1]
+        row.chatContinuation = None
+        response = resume(client, session, prompt)
+        assert response.status_code == 409 and "older approval" in response.text
+        assert row.pendingApprovals[0].consumed is False and gateway.calls == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_continuation_retains_artifacts_already_attached_to_the_original_turn():
+    client = _client(_connector())
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(client, session)
+        row = client.app.state.session_repo._messages[session][-1]
+        attachment = MessageAttachment(id="prior-image", prompt="Prior synthetic output")
+        row.attachments.append(attachment)
+        response = resume(client, session, prompt)
+        assert response.status_code == 200 and "[DONE]" in response.text, response.text
+        saved = client.get(f"/api/sessions/{session}/messages").json()[-1]
+        assert saved["attachments"] == [attachment.model_dump(mode="json")]
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("tamper", ["arguments", "tool", "index"])
+def test_private_call_mismatch_refuses_before_consuming_the_grant(tamper):
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(client, session)
+        row = client.app.state.session_repo._messages[session][-1]
+        turn = row.chatContinuation.payload.turn
+        if tamper == "arguments":
+            turn.response.toolCalls[0]["function"]["arguments"] = '{"to":"different@example.com"}'
+        elif tamper == "tool":
+            turn.response.toolCalls[0]["function"]["name"] = "calculator"
+        else:
+            turn.nextToolIndex = 7
+        response = resume(client, session, prompt)
+        assert response.status_code == 409, response.text
+        assert not row.pendingApprovals[0].consumed
+        assert connector.tool_calls == [] and client.app.state.gateway.calls == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_connection_credential_echo_never_enters_a_later_private_checkpoint(authenticated):
+    credential = "fixture-key"
+    connector = _connector()
+    original = connector.call_tool
+
+    async def echo(**kwargs):
+        await original(**kwargs)
+        return McpToolResult(content=f"Opaque result: {credential}")
+
+    connector.call_tool = echo
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        if authenticated:
+            configured = client.put("/api/agents/mcp-servers/courier", json={
+                "endpoint": "https://courier.example.com/rpc", "trusted": True,
+                "authMode": "api_key", "secret": credential,
+            })
+            assert configured.status_code == 200, configured.text
+        client.app.state.gateway = _InjectedModelGateway(repeat=2)
+        prompt = _hold(client, session)
+        first = client.app.state.session_repo._messages[session][-1]
+        assert credential not in json.dumps(first.chatContinuation.bounded_body())
+        response = resume(client, session, prompt)
+        assert response.status_code == 200 and '"approvals"' in response.text, response.text
+        held = client.app.state.session_repo._messages[session][-1]
+        assert (credential in json.dumps(held.chatContinuation.bounded_body())) is (not authenticated)
+        assert connector.tool_calls[0][-1].secret == (credential if authenticated else None)
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_changed_agent_or_model_never_creates_a_replacement_user_turn():
+    for change in ("agent", "model"):
+        connector = _connector()
+        client = _client(connector)
+        try:
+            session = _bootstrap(client)
+            gateway = _InjectedModelGateway()
+            client.app.state.gateway = gateway
+            prompt = _hold(client, session)
+            if change == "agent":
+                assert client.delete("/api/agents/courierbot").status_code == 204
+            else:
+                alternative = next(item.id for item in client.app.state.catalog.models if item.id != "gpt-5.2")
+                assert client.patch(f"/api/sessions/{session}", json={"model": alternative}).status_code == 200
+            result = resume(client, session, prompt)
+            assert result.status_code == 409, result.text
+            assert gateway.calls == 1 and connector.tool_calls == []
+            assert len(client.get(f"/api/sessions/{session}/messages").json()) == 2
+            if change == "model":
+                assert client.get(f"/api/sessions/{session}").json()["model"] == alternative
+        finally:
+            client.__exit__(None, None, None)
+
+
+def test_expired_deny_confirms_payload_cleanup_without_a_new_grant():
+    client = _client(_connector())
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(client, session)
+        row = client.app.state.session_repo._messages[session][-1]
+        row.chatContinuation.expiresAt = datetime.now(timezone.utc) - timedelta(seconds=1)
+        response = resume(client, session, prompt, action="deny")
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["continuationStatus"] == "expired"
+        assert client.app.state.session_repo._messages[session][-1].chatContinuation.payload is None
+        assert client.app.state.gateway.calls == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_lost_claim_acknowledgement_never_dispatches_or_redeems_again():
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(client, session)
+        repo = client.app.state.session_repo
+        original = repo.save_chat_assistant
+
+        async def lost_ack(*args, **kwargs):
+            assert await original(*args, **kwargs)
+            raise ConnectionError("synthetic acknowledgement lost after committed claim")
+
+        repo.save_chat_assistant = lost_ack
+        with pytest.raises(ConnectionError):
+            resume(client, session, prompt)
+        repo.save_chat_assistant = original
+        assert connector.tool_calls == []
+        assert resume(client, session, prompt).status_code == 409
+        assert connector.tool_calls == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+async def test_concurrent_api_approvals_have_at_most_one_external_effect():
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(client, session)
+        original = connector.call_tool
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def held_effect(**kwargs):
+            entered.set()
+            await release.wait()
+            return await original(**kwargs)
+
+        connector.call_tool = held_effect
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url="http://testserver") as api:
+            body = {
+                "sessionId": session, "messageId": prompt["messageId"], "requestId": prompt["id"],
+                "grant": prompt["grant"], "action": "approve",
+            }
+            first = asyncio.create_task(api.post("/api/chat/continue", json=body))
+            await asyncio.wait_for(entered.wait(), 5)
+            second = await api.post("/api/chat/continue", json=body)
+            assert second.status_code == 409
+            release.set()
+            assert (await first).status_code == 200
+        assert len(connector.tool_calls) == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("automatic_memory", [False, True])
+def test_continuation_uses_original_reductions_not_new_client_preferences(automatic_memory):
+    connector = _connector()
+    client = _client(connector)
+    observed = []
+    original = connector.call_tool
+
+    async def controlled(**kwargs):
+        observed.append(automatic_memory_allowed())
+        return await original(**kwargs)
+
+    connector.call_tool = controlled
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        held = client.post("/api/chat", json={
+            "sessionId": session, "content": "@courierbot Send synthetic.",
+            "allowAutomaticMemory": automatic_memory, "stream": False,
+        })
+        prompt = held.json()["approvals"][0]
+        assert resume(client, session, prompt, allowAutomaticMemory=True).status_code == 422
+        assert resume(client, session, prompt, arguments={"to": "different@example.com"}).status_code == 422
+        assert connector.tool_calls == []
+        response = resume(client, session, prompt)
+        assert response.status_code == 200 and "[DONE]" in response.text, response.text
+        assert observed == [automatic_memory]
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.fixture(params=["memory", "cosmos-legacy", "cosmos-v1"])
+def continuation_repo(request):
+    if request.param == "memory":
+        return InMemorySessionRepository()
+    result = CosmosState().repo()
+    result._deletion_enabled = request.param == "cosmos-v1"
+    return result
+
+
+async def seed(repo):
+    session = await repo.create_session(Session(id="session", userId="owner"))
+    user = Message(id="user", userId="owner", sessionId=session.id, role=MessageRole.user, content="Synthetic")
+    await repo.add_message("owner", user)
+    message = Message(
+        id="assistant", userId="owner", sessionId=session.id, role=MessageRole.assistant,
+        chatContinuation=ChatContinuation(
+            turnId=user.id, revision=0, status="running",
+            expiresAt=datetime.now(timezone.utc) + timedelta(minutes=10),
+            payload=ChatContinuationPayload(request={}, seed={"private": "not a public receipt"}),
+        ),
+    )
+    assert await repo.save_chat_assistant("owner", message, expected=None, turn_id=user.id)
+    return session, message
+
+
+async def test_actual_repository_cas_has_one_winner_and_never_returns_private_payload(continuation_repo):
+    repo = continuation_repo
+    session, message = await seed(repo)
+    updated = message.model_copy(deep=True)
+    updated.chatContinuation.revision += 1
+    updated.chatContinuation.status = "dispatched"
+    if hasattr(repo._messages, "before_batch"):
+        gate = asyncio.Event()
+        arrived = 0
+
+        async def both_read_before_writing(operations, partition):
+            nonlocal arrived
+            arrived += 1
+            if arrived >= 2:
+                gate.set()
+            await gate.wait()
+
+        repo._messages.before_batch = both_read_before_writing
+    outcomes = await asyncio.gather(*[
+        repo.save_chat_assistant("owner", updated, expected=message, turn_id="user") for _ in range(2)
+    ])
+    assert sorted(outcomes) == [False, True]
+    with pytest.raises(SessionNotFoundError):
+        await repo.read_chat_assistant("other", session.id, message.id)
+    public = [row.model_dump(mode="json") for row in await repo.list_messages("owner", session.id)]
+    assert "chatContinuation" not in json.dumps(public)
+    assert "not a public receipt" not in json.dumps(public)
+    assert "not a public receipt" not in repr(updated)
+    assert "not a public receipt" not in repr(updated.chatContinuation)
+
+
+async def test_checkpoint_size_limit_has_a_real_allowed_control(continuation_repo):
+    repo = continuation_repo
+    _, message = await seed(repo)
+    allowed = message.model_copy(deep=True)
+    allowed.chatContinuation.revision += 1
+    allowed.chatContinuation.payload.seed["bounded"] = "\u00e9" * 10_000
+    assert await repo.save_chat_assistant("owner", allowed, expected=message, turn_id="user")
+    too_large = allowed.model_copy(deep=True)
+    too_large.chatContinuation.revision += 1
+    too_large.chatContinuation.payload.seed["bounded"] = "\u00e9" * 100_000
+    with pytest.raises(ChatContinuationError, match="too large"):
+        await repo.save_chat_assistant("owner", too_large, expected=allowed, turn_id="user")
+    assert await repo.read_chat_assistant("owner", "session", "assistant") == allowed
+
+
+@pytest.mark.parametrize("remove_user", [False, True])
+async def test_original_user_must_survive_the_dispatch_transaction(remove_user):
+    state = CosmosState()
+    repo = state.repo()
+    session, message = await seed(repo)
+    updated = message.model_copy(deep=True)
+    updated.chatContinuation.revision += 1
+    updated.chatContinuation.status = "dispatched"
+
+    async def concurrent_clear(operations, partition):
+        state.messages.before_batch = None
+        if remove_user:
+            state.messages.items.pop((session.id, "user"))
+
+    state.messages.before_batch = concurrent_clear
+    assert await repo.save_chat_assistant(
+        "owner", updated, expected=message, turn_id="user",
+    ) is (not remove_user)
+
+
+async def test_terminal_payload_and_authority_cannot_be_restored(continuation_repo):
+    repo = continuation_repo
+    _, original = await seed(repo)
+    closed = original.model_copy(deep=True)
+    closed.chatContinuation = original.chatContinuation.cleared("cancelled", "test")
+    assert await repo.save_chat_assistant("owner", closed, expected=original, turn_id="user")
+    restored = original.model_copy(deep=True)
+    restored.chatContinuation.revision = closed.chatContinuation.revision + 1
+    with pytest.raises(ChatContinuationError, match="cannot restore"):
+        await repo.save_chat_assistant("owner", restored, expected=closed, turn_id="user")
+
+
+async def test_v1_cleanup_accepts_only_the_exact_chat_control():
+    from ai4ia_api.sessions.deletion_models import DeletionIntegrityError, FENCE_ID
+
+    for malformed in (False, True):
+        state = CosmosState()
+        repo = state.repo()
+        session, _ = await seed(repo)
+        await repo.begin_deletion("owner", session.id)
+        lease = await repo.claim_deletion("owner", session.id)
+        assert lease is not None
+        await repo.close_deletion_fences(lease)
+        if malformed:
+            state.messages.items[(session.id, CHAT_HEAD_ID)]["kind"] = "unreviewed_control"
+            with pytest.raises(DeletionIntegrityError):
+                await repo.cleanup_child_page(lease, documents=False)
+            assert (session.id, CHAT_HEAD_ID) in state.messages.items
+        else:
+            assert not await repo.cleanup_child_page(lease, documents=False)
+            assert await repo.cleanup_child_page(lease, documents=False)
+            assert set(state.messages.items) == {(session.id, FENCE_ID)}
+
+
+@pytest.mark.parametrize("action", ["new_turn", "clear", "delete"])
+async def test_stale_work_cannot_recreate_a_cancelled_or_deleted_pending_call(continuation_repo, action):
+    repo = continuation_repo
+    session, message = await seed(repo)
+    if action == "new_turn":
+        await repo.add_message("owner", Message(
+            id="next", userId="owner", sessionId=session.id, role=MessageRole.user, content="New task",
+        ))
+    elif action == "clear":
+        await repo.clear_messages("owner", session.id)
+    elif session.deletionProtocol == 1:
+        await repo.begin_deletion("owner", session.id)
+    else:
+        await repo.delete_session("owner", session.id)
+    updated = message.model_copy(deep=True)
+    updated.chatContinuation.revision += 1
+    updated.chatContinuation.status = "dispatched"
+    if action == "delete":
+        with pytest.raises(SessionNotFoundError):
+            await repo.save_chat_assistant("owner", updated, expected=message, turn_id="user")
+    else:
+        assert not await repo.save_chat_assistant("owner", updated, expected=message, turn_id="user")
+        assert not await repo.save_chat_assistant("owner", message, expected=None, turn_id="user")
+
+
+def test_private_execution_arguments_preserve_benign_ids_but_not_explicit_authentication():
+    arguments = {"query": "public hash " + "a" * 64, "document_id": "b" * 32}
+    assert exact_chat_arguments(json.dumps(arguments)) == arguments
+    for query in ("Explain Bearer authentication and token counts.", "Bearer authentication"):
+        assert exact_chat_arguments(json.dumps({"query": query})) == {"query": query}
+    for value in (
+        {"authorization": "Bearer synthetic"}, {"api_key": "synthetic"},
+        {"url": "https://example.com/blob?sig=synthetic"},
+    ):
+        with pytest.raises(ChatContinuationError, match="authentication"):
+            exact_chat_arguments(json.dumps(value))
+    for raw in ('{"x":1,"x":2}', '{"x":NaN}', "[]", '{"x":"' + "a" * 65536 + '"}'):
+        with pytest.raises(ChatContinuationError, match="invalid|limit"):
+            exact_chat_arguments(raw)

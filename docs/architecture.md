@@ -391,6 +391,46 @@ digest, and short expiry. The server consumes its approval with a conditional
 write and spends the grant on one dispatch. Another user, session, argument
 object, or repeated emission cannot reuse it.
 
+Interactive chat retains a private checkpoint of the original logical turn and
+exact executable arguments. **Approve and continue** resumes that operation,
+including a depth-one linked agent, before any new model request; it does not
+append an artificial user message or ask a model to reconstruct arguments.
+The current tool contract, destination, owner permissions and original
+request-only restrictions remain authoritative. Native provider call IDs remain
+receipt evidence; separate content-free operation IDs correlate activity stages.
+Different invocations are never merged merely because their names or arguments
+match. Historical unlinked events remain separate. Interactive grant hashes carry
+the `chat-v1:` domain tag, so the retired retry-turn verifier cannot redeem a new
+continuation grant during a rolling application update. The underlying random
+grant still has 256 bits of entropy; the browser never persists it.
+
+The checkpoint is excluded from message, receipt and browser projections. MCP
+connection authentication continues to resolve from its existing Key Vault
+reference at dispatch; exact connection-credential echoes are removed from tool
+results before they become model/checkpoint data. Explicit authentication material is not accepted as
+checkpointed tool arguments. Ordinary hashes and resource identifiers are not
+treated as credentials merely because the display redactor masks them; this is
+not a general-purpose secret or DLP classifier.
+
+The existing messages partition contains an active-turn control record.
+Starting a new user turn invalidates pending work in the same transaction;
+checkpoint writes CAS that control, the original user message and the full
+assistant snapshot. Clear/cancel/delete invalidate continuation authority.
+Legacy conversations participate without deletion-v1 enrollment; v1 writes
+also retain their existing deletion-sentinel fence. This does not strengthen the
+legacy best-effort cascade's guarantees for unrelated writers.
+
+Execution payloads have a 480 KiB escaped-JSON ceiling within a 512 KiB budget,
+reserving 32 KiB for state transitions. Exact argument objects are limited to
+64 KiB, with bounded nesting and node counts. Each pending call's ten-minute deadline and
+one-use grants limit authority, not physical data retention. Successful terminal,
+cancelled, expired-decision and unknown-outcome transitions clear executable
+payloads while preserving minimal status/fencing evidence. A new user turn,
+clear or deletion also removes pending payloads. An idle record that nobody
+accesses can remain beyond its deadline: no TTL promise, background sweeper,
+new storage service or credential has been introduced. A lost acknowledgement
+never makes a dispatched operation replayable.
+
 Browsing and sandbox execution are held even without retrieved context. Some
 first-party tools with server-fixed destinations use an injection-only posture:
 they prompt when untrusted context can have influenced the request. An

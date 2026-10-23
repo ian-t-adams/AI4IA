@@ -25,6 +25,8 @@ COSMOS_ARM_API = "2024-11-15"
 STORAGE_ARM_API = "2023-05-01"
 COSMOS_DATA_API = "2020-07-15"
 FENCE_ID = "__ai4ia_session_fence_v1__"
+CHAT_HEAD_ID = "__ai4ia_chat_turn_v1"
+CHAT_HEAD_KIND = "chat_turn_head_v1"
 UPLOAD_PREFIX = "__ai4ia_upload_v1__:"
 MAX_COHORT = 12
 PAGE_ITEMS = 25
@@ -80,6 +82,7 @@ CHILD_COLUMNS = (
     "c.id", "c.userId", "c.sessionId", "c.kind", "c.epoch", "c.deletionEpoch",
     "c.deletionProtocol", "c._etag", "c._ts", "c.ttl", "c.closed", "c.settled",
     "c.documentId", "c.startedAt",
+    "c.turnId", "c.assistantId",
 )
 PARENT_SQL = "SELECT " + ", ".join(PARENT_COLUMNS) + " FROM c WHERE c.id = @id AND c.userId = @owner"
 CHILD_SQL = "SELECT " + ", ".join(CHILD_COLUMNS) + " FROM c WHERE c.sessionId = @session"
@@ -567,6 +570,18 @@ def parent_record(raw: object, pair: Pair, observed: datetime) -> tuple[dict[str
 def child_record(raw: object, pair: Pair, parent: dict[str, Any], surface: Surface, observed: datetime) -> tuple[dict[str, Any], str]:
     item = common_record(raw, pair, parent=False)
     kind = item.get("kind")
+    if kind == CHAT_HEAD_KIND:
+        if (
+            surface != "messages" or item["id"] != CHAT_HEAD_ID
+            or not {"turnId", "assistantId"}.issubset(item)
+            or item.keys() - {"id", "userId", "sessionId", "kind", "turnId", "assistantId", "_etag", "_ts", "ttl"}
+            or (item["assistantId"] is not None and item["turnId"] is None)
+        ):
+            raise AssessmentError("invalid_chat_turn_control")
+        for key in ("turnId", "assistantId"):
+            if item[key] is not None:
+                identity(item[key])
+        return item, "chat_turn"
     if "kind" not in item:
         identity(item["id"])
         if item.keys() - {"id", "userId", "sessionId", "_etag", "_ts", "ttl"}:

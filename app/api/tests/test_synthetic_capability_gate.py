@@ -289,11 +289,10 @@ def test_approving_the_exact_call_lets_it_through():
         prompt = held.json()["approvals"][0]
         assert web.calls == []
 
-        # Same call, same arguments; fresh gateway so the script re-emits it.
-        c.app.state.gateway = InjectedGateway("browse_url", {"url": _BENIGN_URL})
-        allowed = _turn(
-            c, sid, approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}]
-        )
+        allowed = c.post("/api/chat/continue", json={
+            "sessionId": sid, "messageId": prompt["messageId"], "requestId": prompt["id"],
+            "grant": prompt["grant"], "action": "approve",
+        })
 
         assert allowed.status_code == 200, allowed.text
         assert [call["url"] for call in web.calls] == [_BENIGN_URL]
@@ -316,7 +315,7 @@ def test_an_approval_does_not_authorize_a_different_url():
             c, sid, approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}]
         )
 
-        assert response.status_code == 200, response.text
+        assert response.status_code == 409, response.text
         assert web.calls == []
         assert _CANARY not in json.dumps(web.calls)
     finally:
@@ -333,13 +332,13 @@ def test_one_approval_authorizes_exactly_one_browse():
     c = _client(web)
     try:
         sid = _session(c)
-        c.app.state.gateway = InjectedGateway("browse_url", {"url": _BENIGN_URL})
+        c.app.state.gateway = InjectedGateway("browse_url", {"url": _BENIGN_URL}, repeat=3)
         prompt = _turn(c, sid).json()["approvals"][0]
 
-        c.app.state.gateway = InjectedGateway("browse_url", {"url": _BENIGN_URL}, repeat=3)
-        response = _turn(
-            c, sid, approvals=[{"requestId": prompt["id"], "grant": prompt["grant"]}]
-        )
+        response = c.post("/api/chat/continue", json={
+            "sessionId": sid, "messageId": prompt["messageId"], "requestId": prompt["id"],
+            "grant": prompt["grant"], "action": "approve",
+        })
 
         assert response.status_code == 200, response.text
         assert len(web.calls) == 1
