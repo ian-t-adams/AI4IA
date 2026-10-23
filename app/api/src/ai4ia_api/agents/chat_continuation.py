@@ -43,7 +43,7 @@ def validate_pending_call(message: Message, pending: PendingToolApproval) -> Non
         raise ChatContinuationError("The saved call is unavailable.")
     matches = [
         turn for turn in [state.payload.turn, *state.payload.children.values()]
-        if turn is not None and turn.phase == "tools"
+        if turn is not None and turn.mode == "interactive" and turn.phase == "tools"
         and f"{turn.activityScope}:{turn.iterations}:{turn.nextToolIndex}" == pending.operationId
     ]
     if len(matches) != 1:

@@ -358,6 +358,9 @@ async def run_agent_turn(
     evidence = model_evidence if model_evidence is not None else ModelCallRecorder()
     restored = checkpoint.restored if checkpoint is not None else None
     if checkpoint is not None:
+        expected_mode = "interactive" if interactive_checkpoint else "workflow"
+        if restored is not None and restored.mode != expected_mode:
+            raise ValueError("The checkpoint does not match this execution mode.")
         if not interactive_checkpoint and (on_delta is not None or max_iters > 2):
             raise ValueError("Durable checkpoints require a bounded non-streaming workflow turn.")
         if restored is not None:
@@ -560,7 +563,8 @@ async def run_agent_turn(
 
         receipts = delegation_receipts(delegated_runs)
         return TurnCheckpoint.model_validate({
-            "version": 1, "phase": phase, "conversation": copy.deepcopy(convo),
+            "version": 1, "mode": "interactive" if interactive_checkpoint else "workflow",
+            "phase": phase, "conversation": copy.deepcopy(convo),
             "toolSchema": copy.deepcopy(schema), "offeredTools": copy.deepcopy(offered_tools),
             "contracts": dict(contracts), "steps": [asdict(step) for step in steps],
             "iterations": iterations, "completedModelCalls": completed_model_calls,

@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..model_evidence import MAX_RECORDED_MODEL_CALLS, ModelCallEvidence, ModelCallRecorder
 from ..safety import MessageSafety
@@ -38,6 +38,7 @@ class CheckpointDelegation(BaseModel):
 class TurnCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
     version: Literal[1] = 1
+    mode: Literal["workflow", "interactive"] = "workflow"
     phase: Literal["ready", "model", "response", "tools", "finished"]
     conversation: list[dict[str, Any]]
     toolSchema: list[dict[str, Any]]
@@ -66,6 +67,15 @@ class TurnCheckpoint(BaseModel):
     activityScope: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
     delegations: list[CheckpointDelegation] = Field(default_factory=list, max_length=8)
 
+    @model_validator(mode="after")
+    def preserve_workflow_bounds(self) -> TurnCheckpoint:
+        if self.mode == "workflow" and (
+            self.iterations > 3 or self.completedModelCalls > 3
+            or len(self.modelRequests) > 3 or len(self.completedText) > 3
+        ):
+            raise ValueError("Workflow checkpoints retain their three-call bound.")
+        return self
+
     @field_validator("capabilityBudgets", mode="before")
     @classmethod
     def complete_budget_state(cls, value: Any) -> Any:
@@ -78,7 +88,7 @@ class TurnCheckpoint(BaseModel):
 
     @classmethod
     def from_persisted(cls, raw: Any) -> TurnCheckpoint:
-        if not isinstance(raw, Mapping) or not (set(cls.model_fields) - {"activityScope", "delegations"}).issubset(raw):
+        if not isinstance(raw, Mapping) or not (set(cls.model_fields) - {"mode", "activityScope", "delegations"}).issubset(raw):
             raise ValueError("Incomplete persisted agent checkpoint.")
         return cls.model_validate(raw)
 

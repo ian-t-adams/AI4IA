@@ -406,7 +406,8 @@ grant still has 256 bits of entropy; the browser never persists it.
 
 The checkpoint is excluded from message, receipt and browser projections. MCP
 connection authentication continues to resolve from its existing Key Vault
-reference at dispatch. Explicit authentication material is not accepted as
+reference at dispatch; exact connection-credential echoes are removed from tool
+results before they become model/checkpoint data. Explicit authentication material is not accepted as
 checkpointed tool arguments. Ordinary hashes and resource identifiers are not
 treated as credentials merely because the display redactor masks them; this is
 not a general-purpose secret or DLP classifier.
