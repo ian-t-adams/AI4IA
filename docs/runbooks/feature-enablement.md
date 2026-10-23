@@ -611,6 +611,8 @@ East US 2 GlobalStandard, portable capacity **10 raw units**. The exact
 subscription offering at 20:51 UTC was GenerallyAvailable, with inference
 retirement `2028-02-20T00:00:00Z`. Its Global counter was **0/250 Count**,
 labelled Requests Per Minute; the offering reports 1 and 1,000 per 60 seconds.
+The exact model/version/SKU capacity read at **21:07 UTC** also reported 250
+available in East US 2; this is an observation, not reserved capacity.
 The SKU default of 5,000 is not adopted. Minimum, step and allowed-values
 metadata were absent, so ten is a conservative proposal within observed quota,
 not proven ARM acceptance or an SLA. Recheck the normal preflight on release;

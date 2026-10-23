@@ -443,6 +443,10 @@ class ClaudeBindingTests(unittest.TestCase):
             ("claude-opus-5-5", "reasoningEffort", ["low", "xhigh"]),
             ("claude-opus-5-5", "samplingSupported", True),
             ("claude-opus-5-5", "anthropicThinking", "enabled"),
+            ("claude-sonnet-5-5", "defaultReasoningEffort", "max"),
+            ("claude-sonnet-5-5", "reasoningEffort", ["low", "medium"]),
+            ("claude-haiku-5-5", "defaultReasoningEffort", True),
+            ("claude-haiku-5-5", "reasoningEffort", None),
         ):
             changed = deepcopy(document)
             row = next(m for m in changed["catalog"] if m["name"] == name)

@@ -231,6 +231,28 @@ class SelectedProvider(Provider):
 
 
 @pytest.mark.parametrize("stream", [False, True])
+async def test_flash_gateway_drops_reasoning_before_any_consumer(stream):
+    provider = SelectedProvider(FLASH)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as http:
+        gateway = ModelGatewayClient(make_settings(), http_client=http)
+        args = dict(
+            deployment=load_catalog().get(FLASH).options[0].deploymentName,
+            messages=[{"role": "user", "content": "synthetic"}],
+        )
+        if stream:
+            chunks = [chunk async for chunk in gateway.stream(**args)]
+            delivered = "".join(chunk.raw for chunk in chunks)
+            assert "".join(chunk.delta for chunk in chunks) == VISIBLE
+            assert next(chunk.usage for chunk in chunks if chunk.usage)["total_tokens"] == 120
+        else:
+            result = await gateway.complete(**args)
+            delivered = json.dumps(result)
+            assert result["choices"][0]["message"]["content"] == VISIBLE
+            assert result["usage"]["total_tokens"] == 120
+        assert FLASH in delivered and HIDDEN not in delivered
+
+
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("model_id", [SONNET, HAIKU, FLASH])
 def test_selected_models_use_app_path_and_hide_reasoning_with_native_model_usage(model_id, stream, caplog):
     provider = SelectedProvider(model_id)
