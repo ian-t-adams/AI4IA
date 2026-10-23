@@ -3429,6 +3429,7 @@ export function ChatApp() {
         {deletionNotice?.owner === owner && (
           <ConversationDeletionNotice
             phase={deletionNotice.phase}
+            status={deletionNotice.status}
             problem={deletionNotice.problem}
             onFinish={() => void continueCleanup(deletionNotice.sessionId, deletionNotice.status)}
             onOpen={() => setDeletionView({ owner, sessionId: deletionNotice.sessionId })}

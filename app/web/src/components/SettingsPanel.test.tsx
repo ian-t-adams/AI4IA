@@ -74,7 +74,9 @@ describe("SettingsPage", () => {
     const onOpen = renderPage();
     const data = screen.getByRole("region", { name: "Data & privacy" });
     expect(data).toHaveTextContent("Delete a conversation from its row in the sidebar.");
-    expect(data).toHaveTextContent("cleans up its messages and attachments right away");
+    expect(data).toHaveTextContent("Deletion status shows cleanup that needs attention.");
+    expect(data).toHaveTextContent("Opening it only reads status.");
+    expect(data).toHaveTextContent("Completed requests and troubleshooting");
     expect(data).toHaveTextContent("backups follow their own retention");
     expect(data).not.toHaveTextContent(/permanently erased|automatically deleted/i);
 

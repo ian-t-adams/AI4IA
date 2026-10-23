@@ -387,7 +387,13 @@ The sidebar's deletion status surface can be reopened after a reload. Refresh
 reads status; **Resume cleanup** explicitly requests one pass. Nothing polls a
 destructive endpoint on a timer, and there is no autonomous recovery worker in
 this slice. After a crash, the durable record is still discoverable; the owner
-resumes it.
+resumes it. The default view shows unfinished requests, with verified requests
+under **Completed history** and identifiers, timestamps and internal phases under
+**Troubleshooting**. Scope and retention details remain under **About deletion
+status**. A partial page is explicitly labeled: no unfinished rows on that page
+is not evidence that later pages contain none. Pagination stays explicit and
+bounded; opening history never sends recovery requests. Unresolved uploads and
+incomplete creation recovery remain accessible.
 
 The owner's own **Delete** continues into cleanup in the same page. When the API
 accepts a v1 deletion that isn't verified yet, the client requests at most six
@@ -398,8 +404,12 @@ caller holds the lease); or at a lost or malformed response, which it reports
 instead of retrying. It never runs for another conversation, and a reload or
 sign-out ends it: nothing resumes it later. The notice then reads **Conversation
 deleted.** for verified cleanup or a 204 (best effort, not verified), or says
-cleanup didn't finish and offers **Finish cleanup**, which runs the same bounded
-passes only when the owner chooses it, and **View deletion status**. Discarding
+cleanup needs attention and offers **Finish cleanup**, which runs the same bounded
+passes only when the owner chooses it. An unconfirmed pass or an outcome needing
+upload/configuration resolution offers **View deletion status** instead. In the
+panel a failed pass offers a read-only refresh before another attempt, and
+unresolved uploads or inconsistent/missing storage records offer refresh and
+their reason rather than an ineffective cleanup action. Discarding
 an incomplete creation from the status panel doesn't start passes.
 
 The web app asks for deletion on the conversation's sidebar row rather than in a

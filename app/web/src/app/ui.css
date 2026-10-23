@@ -581,6 +581,16 @@
   gap: var(--space-2);
 }
 
+.deletion-notice .btn {
+  min-height: 44px;
+}
+
+.deletion-notice-details {
+  min-height: 44px;
+  padding: 10px var(--space-2);
+  cursor: pointer;
+}
+
 /* Deleting asks on the row, and a deletion that didn't complete explains
    itself there. Text stays on the sidebar foreground; the edge marks the tone. */
 .conversation-confirm,

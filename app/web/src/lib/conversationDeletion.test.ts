@@ -4,6 +4,7 @@ import { ApiError } from "./api";
 import {
   CLEANUP_UNCONFIRMED,
   acceptedNoticePhase,
+  cleanupCanResume,
   cleanupProblem,
   deletionFeedbackFor,
   isDeletionStatusFor,
@@ -69,6 +70,16 @@ describe("deletionFeedbackFor", () => {
 });
 
 describe("cleanup after an accepted deletion", () => {
+  it("offers a pass only when no upload or configuration problem needs resolving first", () => {
+    expect(cleanupCanResume(PENDING_DELETION)).toBe(true);
+    expect(cleanupCanResume({ ...PENDING_DELETION, state: "retryable", retryReason: "storage_unavailable" })).toBe(true);
+    expect(cleanupCanResume(VERIFIED_DELETION)).toBe(false);
+    for (const retryReason of ["uploads_unresolved", "integrity_mismatch", "artifact_store_required"] as const) {
+      expect(cleanupCanResume({ ...PENDING_DELETION, retryReason })).toBe(false);
+    }
+    expect(cleanupCanResume({ ...PENDING_DELETION, pendingUploadsTruncated: true })).toBe(false);
+    expect(cleanupCanResume({ ...PENDING_DELETION, pendingUploads: [{ id: "upload", documentId: "doc", startedAt: PENDING_DELETION.requestedAt }] })).toBe(false);
+  });
   it("recognizes only a well-formed status for the exact conversation", () => {
     expect(isDeletionStatusFor({ ...PENDING_DELETION }, PENDING_DELETION.sessionId)).toBe(true);
     expect(isDeletionStatusFor({ ...PENDING_DELETION }, "another")).toBe(false);
@@ -101,4 +112,3 @@ describe("cleanup after an accepted deletion", () => {
     expect(cleanupProblem(undefined)).toBe("There's more to clean up.");
   });
 });
-

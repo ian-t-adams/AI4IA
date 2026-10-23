@@ -96,9 +96,10 @@ function InitializationReservations({ isOpen, pendingIds, discardedIds, onDiscar
       <button ref={refreshRef} type="button" style={buttonStyle} onClick={() => read(null)}>Refresh incomplete creations</button>
       {reading && <p role="status" style={mutedStyle}>Loading incomplete conversation creations...</p>}
       {error && <p role="alert" style={{ margin: 0, color: "var(--danger)" }}>{error}</p>}
-      {!reading && !error && page && items.length === 0 && (
+      {!reading && !error && page && items.length === 0 && !page.hasMore && (
         <p style={mutedStyle}>No incomplete creations reported. This observation is not completion evidence. If a creation failed, refresh later or ask an operator to investigate.</p>
       )}
+      {page?.hasMore && <p style={mutedStyle}>More incomplete creations have not been checked.</p>}
       {page && (
         <ul aria-label="Incomplete conversation creations" aria-busy={reading} style={{ listStyle: "none", padding: 0, margin: 0 }}>
           {items.map((item) => (
