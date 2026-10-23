@@ -181,8 +181,11 @@ def _tool_choice_to_anthropic(value: Any) -> dict[str, Any] | None:
     raise ValueError("unsupported tool_choice for Claude Messages")
 
 
-def _require_text_only(messages: Sequence[dict[str, Any]], source: dict[str, Any]) -> None:
-    """Refuse every tool surface for the adaptive profile before any dispatch.
+def require_text_only(
+    messages: Sequence[dict[str, Any]], source: dict[str, Any], *,
+    profile: str = "Claude adaptive",
+) -> None:
+    """Refuse tools and continuation history that the profile cannot replay.
 
     Opus 5.5 thinking blocks are signed, prefix-bound continuation state that this
     stage never captures or replays, so no tool loop may start or resume, and a
@@ -197,7 +200,7 @@ def _require_text_only(messages: Sequence[dict[str, Any]], source: dict[str, Any
             for message in messages
         )
     ):
-        raise ValueError("The Claude adaptive text-only profile refuses tools and tool history.")
+        raise ValueError(f"The {profile} text-only profile refuses tools and tool history.")
 
 
 def build_anthropic_payload(
@@ -213,7 +216,7 @@ def build_anthropic_payload(
     external = profile if profile is not None and profile.deploymentTarget == "external-claude" else None
     adaptive = external is not None and external.anthropicThinking == "adaptive"
     if adaptive:
-        _require_text_only(messages, source)
+        require_text_only(messages, source)
     system, converted = messages_to_anthropic(messages)
     try:
         max_tokens = max(1, int(source.get("max_tokens", DEFAULT_MAX_TOKENS)))
@@ -240,9 +243,8 @@ def build_anthropic_payload(
 
     if external is not None:
         external.require_external_profile()
-        # Adaptive defaults to Opus 5.5's documented provider default so "model
-        # default" stays truthful; the value is still sent, so receipts record it.
-        effort = source.get("reasoning_effort", "medium" if adaptive else "high")
+        default_effort = external.defaultReasoningEffort or ("medium" if adaptive else "high")
+        effort = source.get("reasoning_effort", default_effort)
         if effort not in (external.reasoningEffort or []):
             raise ValueError("Unsupported effort for the external Claude profile.")
         if not adaptive:

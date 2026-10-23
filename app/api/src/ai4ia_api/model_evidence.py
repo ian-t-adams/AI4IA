@@ -295,7 +295,9 @@ class CapturedModelCall:
         self.completed = self.completed or completed
 
     def snapshot(self) -> ModelCallEvidence:
-        rate = self.pricing.rate(self.model_id or "")
+        rate = self.pricing.rate(
+            self.model_id or "", prompt_tokens=self.usage.prompt if self.usage.known else None,
+        )
         rates_valid = self.pricing.currency == "USD" and (
             rate is None or all(
                 math.isfinite(value) and 0 <= value <= _MAX_PRICE_RATE

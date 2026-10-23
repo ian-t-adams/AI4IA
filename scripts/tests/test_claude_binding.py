@@ -47,7 +47,7 @@ class ClaudeBindingTests(unittest.TestCase):
 
     def verify(self):
         claude.verify_identity(self.binding, self.reader, attached=True)
-        self.assertEqual(claude.verify_target(self.binding, models(), self.reader), 5)
+        self.assertEqual(claude.verify_target(self.binding, models(), self.reader), 9)
         claude.verify_routes(self.binding, self.reader, enabled=True)
 
     def test_exact_active_binding_reads_both_scopes_and_all_generated_fragments(self):
@@ -65,7 +65,7 @@ class ClaudeBindingTests(unittest.TestCase):
         with binding_environment(environment(self.binding)), patch.object(
             claude, "Reader", return_value=self.reader,
         ) as reader:
-            self.assertEqual(claude.verify_configured(models(), routed=True), 5)
+            self.assertEqual(claude.verify_configured(models(), routed=True), 9)
             reader.assert_called_once()
 
     def test_missing_configuration_is_not_activation_evidence(self):
@@ -142,7 +142,7 @@ class ClaudeBindingTests(unittest.TestCase):
                     claude.verify_target(self.binding, models(), self.reader)
                 self.reader.responses[key] = deepcopy(good)
                 # Five external deployments: Opus 5 DZ, Sonnet 5 GS/DZ and Opus 5.5 GS/DZ.
-                self.assertEqual(claude.verify_target(self.binding, models(), self.reader), 5)
+                self.assertEqual(claude.verify_target(self.binding, models(), self.reader), 9)
         # The documented MaaS-only role, which did not authorize Claude Messages
         # live, and the insufficient endpoints/invoke action alone are refused.
         # Control: the exact AIServices role above still verifies.
@@ -376,13 +376,13 @@ class ClaudeBindingTests(unittest.TestCase):
             ]}
 
         self.reader.command = capacity_read
-        self.assertEqual(claude.target_preflight(b, models(), self.reader), 5)
+        self.assertEqual(claude.target_preflight(b, models(), self.reader), 9)
         actual_quota = quotas[0]["limit"]
         quotas[0]["limit"] = 0
         with self.assertRaisesRegex(EvidenceError, "claude_raw_quota_insufficient"):
             claude.target_preflight(b, models(), self.reader)
         quotas[0]["limit"] = actual_quota
-        self.assertEqual(claude.target_preflight(b, models(), self.reader), 5)
+        self.assertEqual(claude.target_preflight(b, models(), self.reader), 9)
         responses[group + "/providers/Microsoft.CognitiveServices/accounts"]["value"] = [{"name": "learning"}]
         with self.assertRaisesRegex(EvidenceError, "claude_target_group_not_empty"):
             claude.target_preflight(b, models(), self.reader)
@@ -399,14 +399,16 @@ class ClaudeBindingTests(unittest.TestCase):
         all_rows = AVAILABILITY.catalog_requirements(document)
         source = AVAILABILITY.catalog_requirements(document, target="source")
         external = AVAILABILITY.catalog_requirements(document, target="external-claude")
-        self.assertEqual(sum(map(len, all_rows.values())), sum(map(len, source.values())) + 5)
-        self.assertEqual(sum(map(len, external.values())), 5)
+        self.assertEqual(sum(map(len, all_rows.values())), sum(map(len, source.values())) + 9)
+        self.assertEqual(sum(map(len, external.values())), 9)
         self.assertTrue(all(row["format"] != "Anthropic" for rows in source.values() for row in rows))
         self.assertEqual(
             [(r["model"]["name"], r["model"]["version"], r["sku"], r["capacity"]) for r in claude.requirements(document)],
             [("claude-opus-5", "2", "DataZoneStandard", 40), ("claude-sonnet-5", "2", "GlobalStandard", 80),
              ("claude-sonnet-5", "2", "DataZoneStandard", 80), ("claude-opus-5-5", "2", "GlobalStandard", 40),
-             ("claude-opus-5-5", "2", "DataZoneStandard", 40)],
+             ("claude-opus-5-5", "2", "DataZoneStandard", 40),
+             ("claude-sonnet-5-5", "2", "GlobalStandard", 80), ("claude-sonnet-5-5", "2", "DataZoneStandard", 80),
+             ("claude-haiku-5-5", "2", "GlobalStandard", 80), ("claude-haiku-5-5", "2", "DataZoneStandard", 27)],
         )
         self.assertIn("sora-2", {model["name"] for model in source_catalog(document)["catalog"]})
         for field in ("deploymentTarget", "anthropicThinking", "samplingSupported", "reasoningEffort"):
@@ -475,7 +477,7 @@ class ClaudeBindingTests(unittest.TestCase):
             rows, [], {}, region="eastus2", now=datetime.now(UTC),
             inventory_state="observed", inventory_observed_at=datetime.now(UTC),
         )
-        self.assertEqual(len(observations), 5)
+        self.assertEqual(len(observations), 9)
         self.assertTrue(all(row.incomplete and row.decision == "unknown" for row in observations))
 
 

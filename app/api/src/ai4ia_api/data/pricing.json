@@ -5,7 +5,8 @@
   "_claudeSource": "Verified 2026-09-20 and 2026-09-25: https://platform.claude.com/docs/en/about-claude/pricing#claude-in-microsoft-foundry-pricing and #model-pricing. Opus 5 $5/$25, Sonnet 5 $2/$10 and Opus 5.5 $4/$20 standard USD/MTok; cache hits are 0.1x input except Opus 5.5 at 0.05x ($0.20). US DataZoneStandard applies 1.1x, including cache reads. Rates are estimates, not a bill cap. Cache writes remain cost-unknown when their duration is not evidenced; no caching is requested by the adapter.",
   "_avatarSource": "Azure Speech pricing (https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/), observed 2026-09-25 for westus2: photo avatar creation $2 per avatar, and real-time standard custom avatar $0.60 per minute. The page footnote says avatar is billed per second, so the live meter (basis second) prices whole seconds at perMinuteUsd/60. The eastus2 home account's prices were not observed separately and are assumed equal. Estimates only; HD custom avatar and rendered (batch) avatar minutes are separate meters that this book does not price.",
   "_octoberRefreshSource": "Verified 2026-10-22 against Azure Retail Prices API 2023-01-01-preview, service Foundry Models, USD Consumption, primary meters, unit 1M, effective 2026-10-01. GPT-6.1 Sol Global Standard short-context input/output $2/$10: eastus2 meters 146da5d0-1643-56df-ac51-9dbadafb7ba4 / 1a0d434b-1dba-5668-bc5e-2b033414246f and swedencentral 544bb7a7-9bfc-544c-a595-70158ffe3068 / add7c23d-fb6e-5bb4-9766-faa739862af0. Grok 4.7 Global Standard short-context input/output $2/$6: eastus2 59f3dd2e-bb58-5ae2-9486-2ff2ec9cb146 / e8e284f8-b569-51f6-9694-f284638a35f8 and swedencentral da32f63f-65c3-54a0-a405-d66ae9e08e66 / 8fcde7fc-eed6-5409-8988-253ad376bb46. These remain flat short-context estimates: long-context, cache and Data Zone meters differ and are not a billing or cap claim. Existing historical receipts keep their original price versions.",
-  "version": "2026-10-22-sol61-grok47",
+  "_selectedModelsSource": "Verified 2026-10-23: https://platform.claude.com/docs/en/models/sonnet-5-5/overview and https://platform.claude.com/docs/en/models/haiku-5-5/overview with https://platform.claude.com/docs/en/about-claude/pricing#claude-in-microsoft-foundry-pricing. Sonnet 5.5 USD/MTok input/output/cache-read 2/10/0.10; Haiku 5.5 0.10/0.50/0.01 through 100000 input tokens (including cache), 0.50/2.50/0.05 above. US DataZone is 1.1x throughout. Tier selection is per call, not a sum across calls. Cache writes with unknown duration remain unknown; private offer/invoice terms were not read. DeepSeek V4 Flash EastUS2 Global Standard Azure Retail primary Consumption meters effective 2026-08-01, unit 1K multiplied by 1000: input f3999386-799b-591a-92e3-e0a61c8dc5d6 (0.00019), output 7a743393-d8eb-54ab-a193-a08069e29512 (0.00051), cached 1846b574-1a20-5d27-b60a-54b855ce7cb8 (0.000028). Missing cache coverage remains cost-unknown, not an uncached estimate.",
+  "version": "2026-10-23-selected",
   "currency": "USD",
   "models": {
     "gpt-6.1-sol": { "inputPer1M": 2.0, "outputPer1M": 10.0 },
@@ -37,12 +38,14 @@
     "claude-opus-5": { "inputPer1M": 5.0, "outputPer1M": 25.0 },
     "claude-sonnet-5": { "inputPer1M": 2.0, "outputPer1M": 10.0 },
     "claude-opus-5-5": { "inputPer1M": 4.0, "outputPer1M": 20.0 },
+    "claude-sonnet-5-5": { "inputPer1M": 2.0, "outputPer1M": 10.0 },
     "Mistral-Large-3": { "inputPer1M": 0.5, "outputPer1M": 1.5 },
     "gpt-4.1-mini": { "inputPer1M": 0.4, "outputPer1M": 1.6 },
     "gpt-4.1-nano": { "inputPer1M": 0.1, "outputPer1M": 0.4 },
     "model-router": { "inputPer1M": 1.25, "outputPer1M": 10.0 },
     "o4-mini": { "inputPer1M": 1.1, "outputPer1M": 4.4 },
     "DeepSeek-V3.2": { "inputPer1M": 0.62, "outputPer1M": 1.85 },
+    "DeepSeek-V4-Flash": { "inputPer1M": 0.19, "outputPer1M": 0.51 },
     "text-embedding-3-large": { "inputPer1M": 0.13, "outputPer1M": 0.0 },
     "embed-v-4-0": { "inputPer1M": 0.12, "outputPer1M": 0.0 },
     "o3-deep-research": { "inputPer1M": 10.0, "outputPer1M": 40.0 },
@@ -61,6 +64,29 @@
     "claude-opus-5-5": {
       "GlobalStandard": { "inputPer1M": 4.0, "outputPer1M": 20.0, "cacheReadPer1M": 0.2 },
       "DataZoneStandard": { "inputPer1M": 4.4, "outputPer1M": 22.0, "cacheReadPer1M": 0.22 }
+    },
+    "claude-sonnet-5-5": {
+      "GlobalStandard": { "inputPer1M": 2.0, "outputPer1M": 10.0, "cacheReadPer1M": 0.1 },
+      "DataZoneStandard": { "inputPer1M": 2.2, "outputPer1M": 11.0, "cacheReadPer1M": 0.11 }
+    },
+    "claude-haiku-5-5": {
+      "GlobalStandard": {
+        "inputPer1M": 0.1, "outputPer1M": 0.5, "cacheReadPer1M": 0.01,
+        "longContext": {
+          "aboveInputTokens": 100000,
+          "inputPer1M": 0.5, "outputPer1M": 2.5, "cacheReadPer1M": 0.05
+        }
+      },
+      "DataZoneStandard": {
+        "inputPer1M": 0.11, "outputPer1M": 0.55, "cacheReadPer1M": 0.011,
+        "longContext": {
+          "aboveInputTokens": 100000,
+          "inputPer1M": 0.55, "outputPer1M": 2.75, "cacheReadPer1M": 0.055
+        }
+      }
+    },
+    "DeepSeek-V4-Flash": {
+      "GlobalStandard": { "inputPer1M": 0.19, "outputPer1M": 0.51, "cacheReadPer1M": 0.028 }
     }
   },
   "referenceModalityModels": {

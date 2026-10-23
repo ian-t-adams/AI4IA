@@ -1315,6 +1315,19 @@ The shipped Balanced pool is Astra/Sol/Luna, not a restriction on other app choi
    reasoning, historical repricing or Cosmos schema change is introduced. See
    [the source/activation contract](docs/runbooks/feature-enablement.md#cross-tenant-claude-source-contract).
 
+The selected Sonnet/Haiku 5.5 version-2 profiles reuse existing external targets.
+Sonnet 5.5 is adaptive text-only: even its `between_tools` mode requires signed
+thinking replay, and `disabled` is invalid. Haiku 5.5 supports disabled thinking
+and tools through high effort. Their sparse `defaultReasoningEffort` is
+catalog-owned (high/medium respectively); omission preserves older profiles.
+Haiku's 100,000-input-token price threshold includes cache input and selects
+rates for the entire individual call. Freeze both tiers before awaiting the
+provider; never price a context-free lookup or summed calls as one cheap prompt.
+DeepSeek V4 Flash's initial single-region profile is text-only with native
+default reasoning; tool continuation would require private reasoning replay.
+Strip `reasoning_content` from JSON and raw SSE while preserving native numerical
+usage/model identity. Missing cache evidence remains cost-unknown.
+
 The alternative default-off `AI4IA_CLAUDE_GATEWAY_ENABLED` mode keeps the same
 proxy and source APIM, adding an existing upstream APIM hop with a dedicated
 API-scoped key. It is mutually exclusive with federation, never a failure

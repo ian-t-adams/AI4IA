@@ -1034,6 +1034,35 @@
       ]
     },
     {
+      "id": "DeepSeek-V4-Flash",
+      "displayName": "DeepSeek V4 Flash",
+      "category": "reasoning-oss",
+      "format": "DeepSeek",
+      "api": "chat",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 384000,
+      "toolCalling": false,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [],
+      "samplingSupported": false,
+      "maxTokensParameter": "max_tokens",
+      "defaultMaxOutputTokens": 16384,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2026-04-23",
+          "deploymentName": "DeepSeek-V4-Flash-slurmfactory-eastus2-glbl"
+        }
+      ]
+    },
+    {
       "id": "gpt-image-1.5",
       "displayName": "gpt-image-1.5",
       "category": "image",
@@ -1988,6 +2017,88 @@
           "sku": "DataZoneStandard",
           "modelVersion": "2",
           "deploymentName": "claude-opus-5-5-slurmfactory-eastus2-dz"
+        }
+      ]
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "displayName": "Claude Sonnet 5.5",
+      "category": "reasoning",
+      "format": "Anthropic",
+      "api": "anthropic",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "toolCalling": false,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "deploymentTarget": "external-claude",
+      "samplingSupported": false,
+      "anthropicThinking": "adaptive",
+      "defaultReasoningEffort": "high",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-sonnet-5-5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-sonnet-5-5-slurmfactory-eastus2-dz"
+        }
+      ]
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "displayName": "Claude Haiku 5.5",
+      "category": "reasoning",
+      "format": "Anthropic",
+      "api": "anthropic",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": [
+        "text"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "deploymentTarget": "external-claude",
+      "samplingSupported": false,
+      "anthropicThinking": "disabled",
+      "defaultReasoningEffort": "medium",
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "GlobalStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-haiku-5-5-slurmfactory-eastus2-glbl"
+        },
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "2",
+          "deploymentName": "claude-haiku-5-5-slurmfactory-eastus2-dz"
         }
       ]
     }

@@ -42,6 +42,7 @@ from .anthropic import (
     anthropic_json_to_chat,
     build_anthropic_payload,
     parse_anthropic_event,
+    require_text_only,
 )
 from .priority import PRIORITY_HEADER, get_request_priority
 from .attempts import (
@@ -710,6 +711,8 @@ class ModelGatewayClient:
         from ..catalog import load_catalog
 
         profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        if profile is not None and profile.conversational and not profile.supportsTools:
+            require_text_only(messages, body, profile="catalog")
         _normalize_params_for_deployment(body, deployment, profile)
         if stream:
             body["stream"] = True
@@ -1431,6 +1434,7 @@ class ModelGatewayClient:
                     err = (data.get("error") or {}).get("message")
                     raise ModelGatewayError(502, err or _REQUEST_FAILED)
                 data = anthropic_json_to_chat(data)
+            _remove_reasoning_content(data)
             if evidence is not None:
                 evidence.report_usage(data.get("usage"), completed=True)
             telemetry.usage(data.get("usage"), completed=True)
@@ -1737,6 +1741,20 @@ class ModelGatewayClient:
                 await client.aclose()
 
 
+def _remove_reasoning_content(payload: dict[str, Any]) -> bool:
+    """Keep native numerical usage, never deliver or retain private reasoning."""
+    changed = False
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        for key in ("message", "delta"):
+            part = choice.get(key)
+            if isinstance(part, dict) and "reasoning_content" in part:
+                part.pop("reasoning_content")
+                changed = True
+    return changed
+
+
 def parse_sse_line(
     line: str, *, telemetry: ModelSpan | None = None, evidence: CapturedModelCall | None = None,
 ) -> ChatChunk | None:
@@ -1752,6 +1770,8 @@ def parse_sse_line(
         obj = json.loads(payload)
     except json.JSONDecodeError:
         return ChatChunk(raw=payload)
+    if isinstance(obj, dict) and _remove_reasoning_content(obj):
+        payload = json.dumps(obj)
     if telemetry is not None and isinstance(obj, dict):
         telemetry.response_metadata(obj)
     if evidence is not None and isinstance(obj, dict):

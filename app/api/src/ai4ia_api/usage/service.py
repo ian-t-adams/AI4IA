@@ -190,6 +190,7 @@ class UsageService:
                 deployment=descriptor.deployment,
                 cache_read_tokens=usage.cacheRead,
                 cache_write_tokens=usage.cacheWrite,
+                calls=usage.calls,
             )
             rec.currency = est.currency
             rec.priceVersion = est.version

@@ -85,7 +85,7 @@ def build_catalog(models: dict) -> dict:
                 **({"deploymentTarget": target} if target != "source" else {}),
                 **{key: model[key] for key in (
                     "samplingSupported", "samplingRequiresNoReasoning", "maxTokensParameter",
-                    "defaultMaxOutputTokens", "anthropicThinking",
+                    "defaultMaxOutputTokens", "anthropicThinking", "defaultReasoningEffort",
                 ) if key in model},
                 "options": options,
             }

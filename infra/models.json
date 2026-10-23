@@ -910,6 +910,29 @@
       ]
     },
     {
+      "name": "DeepSeek-V4-Flash",
+      "displayName": "DeepSeek V4 Flash",
+      "format": "DeepSeek",
+      "category": "reasoning-oss",
+      "api": "chat",
+      "toolCalling": false,
+      "inputModalities": ["text"],
+      "contextWindow": 1000000,
+      "maxOutputTokens": 384000,
+      "defaultMaxOutputTokens": 16384,
+      "maxTokensParameter": "max_tokens",
+      "samplingSupported": false,
+      "reasoningEffort": [],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 10,
+          "version": "2026-04-23"
+        }
+      ]
+    },
+    {
       "name": "gpt-image-1.5",
       "format": "OpenAI",
       "category": "image",
@@ -1586,6 +1609,66 @@
           "region": "eastus2",
           "sku": "DataZoneStandard",
           "capacity": 40,
+          "version": "2"
+        }
+      ]
+    },
+    {
+      "name": "claude-sonnet-5-5",
+      "displayName": "Claude Sonnet 5.5",
+      "format": "Anthropic",
+      "category": "reasoning",
+      "api": "anthropic",
+      "deploymentTarget": "external-claude",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "toolCalling": false,
+      "inputModalities": ["text"],
+      "samplingSupported": false,
+      "anthropicThinking": "adaptive",
+      "defaultReasoningEffort": "high",
+      "reasoningEffort": ["low", "medium", "high"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 80,
+          "version": "2"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 80,
+          "version": "2"
+        }
+      ]
+    },
+    {
+      "name": "claude-haiku-5-5",
+      "displayName": "Claude Haiku 5.5",
+      "format": "Anthropic",
+      "category": "reasoning",
+      "api": "anthropic",
+      "deploymentTarget": "external-claude",
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "toolCalling": true,
+      "inputModalities": ["text"],
+      "samplingSupported": false,
+      "anthropicThinking": "disabled",
+      "defaultReasoningEffort": "medium",
+      "reasoningEffort": ["low", "medium", "high"],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "GlobalStandard",
+          "capacity": 80,
+          "version": "2"
+        },
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 27,
           "version": "2"
         }
       ]

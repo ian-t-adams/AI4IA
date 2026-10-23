@@ -31,6 +31,7 @@ export interface ModelEntry {
   deploymentTarget?: "source" | "external-claude";
   // External Claude profile: "adaptive" is text-only (supportsTools is false).
   anthropicThinking?: "disabled" | "adaptive" | null;
+  defaultReasoningEffort?: "low" | "medium" | "high" | null;
   requiredRealtimeProtocol?: "ga" | null;
   // True for text-chat models offered in the chat/agent pickers; false for
   // capability models (image, video, tts, transcription, embedding, rerank) and

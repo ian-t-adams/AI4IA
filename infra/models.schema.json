@@ -75,6 +75,10 @@
             "enum": ["disabled", "adaptive"],
             "description": "Explicit external-Claude profile. disabled sends thinking disabled and supports the governed text/tool loop. adaptive omits thinking (provider adaptive thinking), is text-only (toolCalling false) and never captures or replays signed thinking blocks."
           },
+          "defaultReasoningEffort": {
+            "enum": ["low", "medium", "high"],
+            "description": "External Claude's explicit default native effort; must belong to reasoningEffort. Omitted retains the existing profile default."
+          },
           "routing": {
             "type": "object",
             "additionalProperties": false,
@@ -203,6 +207,16 @@
           }
         },
         "allOf": [
+          {
+            "if": { "required": ["defaultReasoningEffort"] },
+            "then": {
+              "required": ["deploymentTarget", "api", "reasoningEffort"],
+              "properties": {
+                "deploymentTarget": { "const": "external-claude" },
+                "api": { "const": "anthropic" }
+              }
+            }
+          },
           {
             "if": {
               "required": ["samplingRequiresNoReasoning"],
