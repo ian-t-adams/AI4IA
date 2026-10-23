@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..sessions.models import ActivityStep
-from .runtime import AgentStep
+from .runtime import AgentRunResult, AgentStep
 from .tools import is_safe_tool_name, safe_operation_id
 
 # tool name -> (present-progressive label for live, past-tense label for the trace)
@@ -129,3 +129,22 @@ def persisted_trace(steps: list[AgentStep]) -> list[ActivityStep]:
         if view is not None:
             out.append(view)
     return out
+
+
+def persisted_run_trace(run: AgentRunResult) -> list[ActivityStep]:
+    """Project child activity without moving its calls into the parent's receipt."""
+    steps: list[AgentStep] = []
+    placed: set[int] = set()
+    for step in run.steps:
+        steps.append(step)
+        for index, child in enumerate(run.delegations):
+            if (
+                index not in placed and step.operation_id is not None
+                and child.parent_operation_id == step.operation_id
+            ):
+                steps.extend(child.steps)
+                placed.add(index)
+    for index, child in enumerate(run.delegations):
+        if index not in placed:
+            steps.extend(child.steps)
+    return persisted_trace(steps)

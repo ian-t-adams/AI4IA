@@ -31,6 +31,8 @@ class CheckpointDelegation(BaseModel):
     usage: TokenUsage
     receipt: ExecutionReceipt
     meteredSeparately: bool
+    parentOperationId: str | None = Field(default=None, max_length=30)
+    activitySteps: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
 
 
 class TurnCheckpoint(BaseModel):

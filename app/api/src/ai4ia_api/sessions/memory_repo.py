@@ -42,7 +42,7 @@ from .models import (
     normalize_session_title,
 )
 from .repository import SessionConflictError, SessionNotFoundError
-from .chat_continuation import CHAT_HEAD_ID, validate_chat_transition
+from .chat_continuation import validate_chat_transition
 
 
 class InMemorySessionRepository:
@@ -240,7 +240,7 @@ class InMemorySessionRepository:
             self._documents.pop(session_id, None)
 
     async def add_message(self, user_id: str, message: Message) -> Message:
-        if message.id == CHAT_HEAD_ID:
+        if message.id.startswith("__ai4ia_"):
             raise DeletionIntegrityError("Reserved chat control identity")
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)
@@ -376,7 +376,7 @@ class InMemorySessionRepository:
             return False
 
     async def upsert_message(self, user_id: str, message: Message) -> Message:
-        if message.id == CHAT_HEAD_ID:
+        if message.id.startswith("__ai4ia_"):
             raise DeletionIntegrityError("Reserved chat control identity")
         async with self._lock:
             await self._owned_session(user_id, message.sessionId)

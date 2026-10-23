@@ -12,12 +12,29 @@ from ..sessions.chat_continuation import (
 )
 from ..sessions.models import Message, MessageStatus
 from ..sessions.repository import SessionRepository
-from .approvals import MAX_APPROVAL_REQUESTS_PER_TURN, ApprovalDraft, arguments_digest, mint_pending_approval
+from .approvals import (
+    MAX_APPROVAL_REQUESTS_PER_TURN, ApprovalDraft, ApprovalOutcome, PendingToolApproval,
+    arguments_digest, consume_grant, grant_hash, mint_pending_approval,
+)
 from .tools import ToolSpec
 from .turn_checkpoint import TurnCheckpoint
 from .consent import contract_hash
 from ..memory.context_refs import MemoryContextBinding, MemoryReference
 from ..memory.preferences import MemoryPreference
+
+_GRANT_PREFIX = "chat-v1:"
+
+
+def chat_grant_hash(grant: str) -> str:
+    return _GRANT_PREFIX + grant_hash(grant)
+
+
+def consume_chat_grant(record: PendingToolApproval, grant: str) -> ApprovalOutcome:
+    if not record.grantHash.startswith(_GRANT_PREFIX):
+        return consume_grant(None, grant)
+    return consume_grant(record.model_copy(update={
+        "grantHash": record.grantHash[len(_GRANT_PREFIX):],
+    }), grant)
 
 
 class ChatContinuationController:
@@ -192,6 +209,7 @@ class ChatContinuationController:
         if len(self.assistant.pendingApprovals or []) >= MAX_APPROVAL_REQUESTS_PER_TURN:
             raise ChatContinuationError("This turn reached its approval limit. Send a fresh request.")
         record, grant = mint_pending_approval(draft)
+        record.grantHash = chat_grant_hash(grant)
         record.messageId = self.assistant.id
         record.operationId = f"{state.activityScope}:{state.iterations}:{state.nextToolIndex}"
         record.expiresAt = min(record.expiresAt, self.state.expiresAt)

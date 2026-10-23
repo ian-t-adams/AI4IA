@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
+    from .runtime import AgentStep
     from .turn_checkpoint import TurnCheckpointController
     from ..memory.context_refs import MemoryReference
     from ..memory.preferences import MemoryPreference
@@ -107,6 +108,7 @@ class ToolContext:
     child_checkpoint: Callable[
         [dict[str, Any]], Awaitable[tuple[TurnCheckpointController, frozenset[str]]],
     ] | None = None
+    child_on_step: Callable[[AgentStep], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True)

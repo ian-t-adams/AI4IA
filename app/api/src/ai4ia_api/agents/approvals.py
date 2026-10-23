@@ -60,7 +60,8 @@ single use           two independent mechanisms, closing different holes.
                      within one turn. The second is not a refinement of the
                      first: redemption happens once per turn, while the model's
                      tool-call list is exactly what injected context controls.
-possession           ``sha256(grant) == grantHash``, ``hmac.compare_digest``.
+possession           SHA-256 with constant-time comparison. Interactive chat
+                     domain-tags the stored hash so legacy retry verifiers refuse it.
 ===================  ==========================================================
 
 **A client cannot mint one.** The grant is 256 bits of ``secrets.token_urlsafe``

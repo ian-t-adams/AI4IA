@@ -196,7 +196,7 @@ class Message(BaseModel):
     # Additive and optional exactly like ``steps``/``safety``: existing Cosmos
     # documents lack the field and deserialize to None, so no migration.
     pendingApprovals: list[PendingToolApproval] | None = None
-    chatContinuation: ChatContinuation | None = Field(default=None, exclude=True)
+    chatContinuation: ChatContinuation | None = Field(default=None, exclude=True, repr=False)
     continuationStatus: str | None = None
     # Span-level citation provenance for this turn (audit P1-14). ``sources`` is
     # the server-minted registry of retrieval spans that were injected — what the

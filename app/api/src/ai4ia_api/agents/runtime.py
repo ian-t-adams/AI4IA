@@ -152,6 +152,7 @@ class DelegatedRunTrace:
     model_evidence: ModelCallRecorder | None = None
     receipt: ExecutionReceipt | None = None
     metered_separately: bool = False
+    parent_operation_id: str | None = None
 
 
 @dataclass
@@ -543,6 +544,8 @@ async def run_agent_turn(
             DelegatedRunTrace(
                 agent=item.agent, usage=item.usage, receipt=item.receipt,
                 metered_separately=item.meteredSeparately,
+                parent_operation_id=item.parentOperationId,
+                steps=[AgentStep(**step) for step in item.activitySteps],
             ) for item in restored.delegations
         ]
         if ctx.turn_budgets is not None:
@@ -579,6 +582,11 @@ async def run_agent_turn(
             "delegations": [{
                 "agent": trace.agent, "usage": trace.usage.model_dump(mode="json"),
                 "receipt": receipt.model_dump(mode="json"), "meteredSeparately": trace.metered_separately,
+                "parentOperationId": trace.parent_operation_id,
+                "activitySteps": [{
+                    "kind": step.kind, "tool": step.tool, "detail": step.detail,
+                    "operation_id": step.operation_id,
+                } for step in trace.steps if step.kind != "final"],
             } for trace, receipt in zip(delegated_runs, receipts, strict=True)],
         })
 
@@ -1282,12 +1290,13 @@ async def run_agent_turn(
                         force_final = True
                     continue
                 except DelegatedAgentRunPaused as exc:
+                    exc.trace.parent_operation_id = current_operation_id
                     partial = current_partial_result(include_current_attempt=False)
                     partial.delegations.append(exc.trace)
-                    partial.steps.extend(exc.partial.steps)
                     raise AgentRunPaused(partial, snapshot("tools")) from exc
                 except asyncio.CancelledError as exc:
                     if isinstance(exc, DelegatedAgentRunCancelled):
+                        exc.trace.parent_operation_id = current_operation_id
                         delegated_runs.append(exc.trace)
                         if not exc.trace.metered_separately:
                             usage_agg = usage_agg.add(exc.partial.usage)
@@ -1299,6 +1308,7 @@ async def run_agent_turn(
                     ) from exc
                 except AgentRunFailed as exc:
                     if isinstance(exc, DelegatedAgentRunFailed):
+                        exc.trace.parent_operation_id = current_operation_id
                         delegated_runs.append(exc.trace)
                         if exc.trace.safety is not None:
                             nested_safety = exc.trace.safety.model_copy(deep=True)
@@ -1355,6 +1365,7 @@ async def run_agent_turn(
                     logger.warning("agent delegate error: tool=%s", safe_name)
                     continue
                 if isinstance(raw_result, DelegatedToolResult):
+                    raw_result.trace.parent_operation_id = current_operation_id
                     delegated_runs.append(raw_result.trace)
                     if raw_result.trace.safety is not None:
                         nested_safety = raw_result.trace.safety.model_copy(deep=True)

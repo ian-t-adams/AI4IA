@@ -74,8 +74,8 @@ from ..agents.runtime import (
     AgentStep,
     run_agent_turn,
 )
-from ..agents.activity import persisted_trace
-from ..agents.chat_continuation import ChatContinuationController
+from ..agents.activity import persisted_run_trace
+from ..agents.chat_continuation import ChatContinuationController, chat_grant_hash, consume_chat_grant
 from ..agents.consent import contract_hash
 from ..sessions.chat_continuation import ChatContinuationError
 from ..memory.context_refs import MemoryContextBinding, MemoryReference
@@ -84,8 +84,6 @@ from ..agents.receipt import ReceiptDraft
 from ..agents.approvals import (
     ApprovalPolicy,
     ApprovalSink,
-    consume_grant,
-    grant_hash,
 )
 from ..publishing.execution import (
     bind_execution, current_execution, prepare_execution, skill_loader_excluded,
@@ -231,9 +229,8 @@ class ChatRequest(BaseModel):
     allowAutomaticMemory: StrictBool = True
     requireFreshSession: StrictBool = False
     params: ChatParams = ChatParams()
-    # Per-invocation tool approvals the user granted in response to a prompt
-    # raised by an earlier turn in THIS session. Bounded so a caller cannot make
-    # the redemption pass unbounded work.
+    # Retain the old request shape solely for an explicit upgrade/refusal response.
+    # Interactive grants are redeemed only by /chat/continue.
     approvals: list[ToolApprovalDecision] = Field(default_factory=list, max_length=8)
 
 
@@ -279,9 +276,14 @@ async def _continuation_constraints(
         expired = message.model_copy(deep=True)
         expired.chatContinuation = state.cleared("expired", "approval_expired")
         expired.continuationStatus = "expired"
-        await repo.save_chat_assistant(
+        saved = await repo.save_chat_assistant(
             user.internal_user_id, expired, expected=message, turn_id=state.turnId,
         )
+        if saved and body.action == "deny":
+            request.state.chat_resume = expired
+            request.state.chat_expired = True
+            yield
+            return
         raise HTTPException(409, "This pending call expired. Send a fresh request.")
     request.state.chat_resume = message
     stored = ChatRequest.model_validate(state.payload.request)
@@ -298,13 +300,15 @@ async def continue_chat(
 ):
     repo: SessionRepository = request.app.state.session_repo
     message: Message = request.state.chat_resume
+    if getattr(request.state, "chat_expired", False):
+        return {"message": message}
     expected = message.model_copy(deep=True)
     state = message.chatContinuation
     assert state is not None and state.payload is not None
     pending = next(item for item in message.pendingApprovals or [] if item.id == body.requestId)
     if body.action == "review":
         grant = secrets.token_urlsafe(32)
-        pending.grantHash = grant_hash(grant)
+        pending.grantHash = chat_grant_hash(grant)
         message.chatContinuation = state.model_copy(update={"revision": state.revision + 1}, deep=True)
         if not await repo.save_chat_assistant(
             user.internal_user_id, message, expected=expected, turn_id=state.turnId,
@@ -316,7 +320,7 @@ async def continue_chat(
         message.continuationStatus = "cancelled"
         message.status = MessageStatus.cancelled
     else:
-        if body.grant is None or not consume_grant(pending, body.grant).granted:
+        if body.grant is None or not consume_chat_grant(pending, body.grant).granted:
             emit_security_block("tool_approval", "grant_rejected", "chat_router")
             raise HTTPException(409, "This approval is invalid, expired, or already used. Review the call again.")
         pending.consumed = True
@@ -2315,7 +2319,7 @@ async def chat(
                     gateway=gateway,
                     registry=turn_registry,
                     executor=turn_executor,
-                    ctx=ctx,
+                    ctx=replace(ctx, child_on_step=on_step),
                     params=effective_params,
                     model_evidence=model_evidence,
                     extra_tools=extra_tools or None,
@@ -2439,7 +2443,7 @@ async def chat(
                 correlation_id=correlation_id,
                 content=partial.text or partial.streamed_text,
                 attachments=[*image_sink, *video_sink, *doc_sink],
-                steps=persisted_trace(partial.steps) or None,
+                steps=persisted_run_trace(partial) or None,
                 sources=library_sources,
                 receipt=receipt_draft.build(
                     steps=partial.steps,
@@ -2513,7 +2517,7 @@ async def chat(
             model=deployment.deploymentName,
             agent=agent_name,
             attachments=[*image_sink, *video_sink, *doc_sink],
-            steps=persisted_trace(run.steps) or None,
+            steps=persisted_run_trace(run) or None,
             sources=library_sources,
             safety=attributed_safety(run.safety, safety_provider),
             chatContinuation=continuation.state,
@@ -2835,7 +2839,7 @@ async def chat(
                         status=MessageStatus.complete,
                         model=deployment.deploymentName,
                         agent=agent_name,
-                        steps=persisted_trace(run.steps) or None,
+                        steps=persisted_run_trace(run) or None,
                         sources=library_sources,
                         safety=attributed_safety(run.safety, safety_provider),
                         chatContinuation=continuation.state,
@@ -2907,7 +2911,7 @@ async def chat(
                 agent_name=agent_name,
                 correlation_id=correlation_id,
                 content=partial.text or partial.streamed_text,
-                steps=persisted_trace(partial.steps) or None,
+                steps=persisted_run_trace(partial) or None,
                 sources=library_sources,
                 receipt=receipt_draft.build(
                     steps=partial.steps,

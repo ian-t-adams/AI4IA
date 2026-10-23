@@ -8,7 +8,7 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import aclosing
 
-from ..agents.activity import persisted_trace, serialize_step
+from ..agents.activity import persisted_run_trace, persisted_trace, serialize_step
 from ..agents.approvals import (
     ApprovalDraft,
     PendingToolApproval,
@@ -469,7 +469,7 @@ async def _agentic_stream(
             total_usage = partial.usage
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
-            persisted = persisted_trace(partial.steps) or None
+            persisted = persisted_run_trace(partial) or None
             content = streamed_text if streamed_text else partial.text
             raise run_error.cause
 
@@ -492,7 +492,7 @@ async def _agentic_stream(
             total_usage = result.usage
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
-            persisted = persisted_trace(result.steps) or None
+            persisted = persisted_run_trace(result) or None
         elif result is not None and ((result.text or "").strip() or result.incomplete):
             response_incomplete = result.incomplete
             if result.incomplete and not (result.text or "").strip():
@@ -512,7 +512,7 @@ async def _agentic_stream(
             total_usage = result.usage
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
-            persisted = persisted_trace(result.steps) or None
+            persisted = persisted_run_trace(result) or None
         elif fallback is not None:
             # Empty (or failed) tool turn: complete the answer with a plain call so
             # the turn never dead-ends. The steps that did run are still shown, and
@@ -535,7 +535,7 @@ async def _agentic_stream(
                 total_usage = total_usage.add(result.usage)
                 for extra in extra_usage or []:
                     total_usage = total_usage.add(extra)
-                persisted = persisted_trace(result.steps) or None
+                persisted = persisted_run_trace(result) or None
             try:
                 fallback_call_index = attempted_iterations + 1
                 if receipt_draft is not None and result is not None and result.model_evidence is not None:
@@ -569,7 +569,7 @@ async def _agentic_stream(
                 total_usage = result.usage
                 for extra in extra_usage or []:
                     total_usage = total_usage.add(extra)
-                persisted = persisted_trace(result.steps) or None
+                persisted = persisted_run_trace(result) or None
         elif run_error is not None:
             raise run_error
 
@@ -673,7 +673,7 @@ async def _agentic_stream(
             for extra in extra_usage or []:
                 total_usage = total_usage.add(extra)
         if persisted is None and recovered_source is not None:
-            persisted = persisted_trace(recovered_source.steps) or None
+            persisted = persisted_run_trace(recovered_source) or None
         if not terminal_persisted:
             assistant.content = content
             assistant.status = final

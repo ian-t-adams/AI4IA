@@ -42,10 +42,10 @@ class ChatContinuationError(RuntimeError):
 
 class ChatContinuationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
-    request: dict[str, Any]
-    seed: dict[str, Any]
-    turn: TurnCheckpoint | None = None
-    children: dict[str, TurnCheckpoint] = Field(default_factory=dict, max_length=2)
+    request: dict[str, Any] = Field(repr=False)
+    seed: dict[str, Any] = Field(repr=False)
+    turn: TurnCheckpoint | None = Field(default=None, repr=False)
+    children: dict[str, TurnCheckpoint] = Field(default_factory=dict, max_length=2, repr=False)
     childBindings: dict[str, str] = Field(default_factory=dict, max_length=2)
 
 
@@ -56,7 +56,7 @@ class ChatContinuation(BaseModel):
     revision: int = Field(ge=0)
     status: Literal["running", "waiting", "dispatched", "complete", "cancelled", "expired", "unknown"]
     expiresAt: datetime
-    payload: ChatContinuationPayload | None
+    payload: ChatContinuationPayload | None = Field(repr=False)
     operationId: str | None = None
     reason: str | None = None
 

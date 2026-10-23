@@ -399,7 +399,10 @@ The current tool contract, destination, owner permissions and original
 request-only restrictions remain authoritative. Native provider call IDs remain
 receipt evidence; separate content-free operation IDs correlate activity stages.
 Different invocations are never merged merely because their names or arguments
-match. Historical unlinked events remain separate.
+match. Historical unlinked events remain separate. Interactive grant hashes carry
+the `chat-v1:` domain tag, so the retired retry-turn verifier cannot redeem a new
+continuation grant during a rolling application update. The underlying random
+grant still has 256 bits of entropy; the browser never persists it.
 
 The checkpoint is excluded from message, receipt and browser projections. MCP
 connection authentication continues to resolve from its existing Key Vault

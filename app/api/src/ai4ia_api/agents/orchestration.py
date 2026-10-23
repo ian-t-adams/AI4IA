@@ -243,6 +243,7 @@ def build_delegate_capability(
                 retain_failed_request=True,
                 checkpoint=checkpoint,
                 interactive_checkpoint=checkpoint is not None,
+                on_step=ctx.child_on_step,
             ))
         except AgentRunPaused as exc:
             usage_sink.append(exc.partial.usage)
