@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "@/lib/auth";
 import { PENDING_DELETION, VERIFIED_DELETION } from "@/lib/deletionTestFixtures";
 import type { DeletionPage, DeletionStatus } from "@/lib/types";
-import { ConversationDeletionPanel } from "./ConversationDeletionPanel";
+import { ConversationDeletionNotice, ConversationDeletionPanel } from "./ConversationDeletionPanel";
+import { CLEANUP_UNCONFIRMED } from "@/lib/conversationDeletion";
 import { MemoryPreferenceProvider, type MemoryPreferenceOwner } from "./MemoryPreferenceProvider";
 
 vi.mock("@/lib/auth", () => ({ apiFetch: vi.fn() }));
@@ -45,6 +46,59 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
 
 describe("owner-resumed conversation deletion", () => {
+  it("keeps completed history quiet without treating a filtered first page as complete coverage", async () => {
+    const later = deferred<Response>();
+    fetchMock.mockResolvedValueOnce(json(page([VERIFIED_DELETION], "later")))
+      .mockReturnValueOnce(later.promise);
+    const user = userEvent.setup();
+    render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
+    expect(await screen.findByText(/More requests have not been checked/)).toBeVisible();
+    expect(screen.queryByText("No unfinished deletions reported.")).not.toBeInTheDocument();
+    expect(screen.getByText("Conversation deleted.")).not.toBeVisible();
+    expect(screen.getByText(`Conversation ${VERIFIED_DELETION.sessionId}`)).not.toBeVisible();
+    expect(screen.getByText(/Cleanup last verified/)).not.toBeVisible();
+    expect(screen.getByText("Completed history (1+)")).toBeVisible();
+    await user.click(screen.getByText("Completed history (1+)"));
+    expect(screen.getByText("Conversation deleted.")).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Load more deletion requests" }));
+    expect(screen.getByText("Loading deletion status...")).toBeVisible();
+    expect(screen.queryByText("No unfinished deletions reported.")).not.toBeInTheDocument();
+    await act(async () => later.resolve(json(page([{ ...PENDING_DELETION, sessionId: "later-request" }]))));
+    expect(screen.getByRole("button", { name: "Resume cleanup" })).toBeVisible();
+    expect(screen.getByText(/Removed from chats. Cleanup pending/)).toBeVisible();
+    expect(screen.queryByText(/More requests have not been checked/)).not.toBeInTheDocument();
+    expect(screen.queryByText("No unfinished deletions reported.")).not.toBeInTheDocument();
+    expect(writes()).toHaveLength(0);
+  });
+
+  it("does not claim an empty result when a completed-only page fails to continue", async () => {
+    fetchMock.mockResolvedValueOnce(json(page([VERIFIED_DELETION], "later")))
+      .mockResolvedValueOnce(json({ detail: "History unavailable" }, 503));
+    const user = userEvent.setup();
+    render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Load more deletion requests" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("History unavailable");
+    expect(screen.queryByText("No unfinished deletions reported.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more deletion requests" })).toBeEnabled();
+    expect(screen.getByText("Completed history (1+)")).toBeVisible();
+    expect(writes()).toHaveLength(0);
+  });
+
+  it("moves a newly completed request into history and restores focus without erasing its evidence", async () => {
+    fetchMock.mockImplementation(async (_input, init) => json(init?.method === "POST" ? VERIFIED_DELETION : page([PENDING_DELETION])));
+    const user = userEvent.setup();
+    render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Resume cleanup" }));
+    expect(await screen.findByText("No unfinished deletions reported.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Refresh status" })).toHaveFocus();
+    expect(screen.getByText("Conversation deleted.")).not.toBeVisible();
+    await user.click(screen.getByText("Completed history (1)"));
+    await user.click(screen.getByText("Troubleshooting"));
+    expect(screen.getByText(/Cleanup last verified/)).toBeVisible();
+    expect(writes()).toHaveLength(1);
+  });
+
   it.each(["pending", "retryable"] as const)("only reads on open/refresh and sends one pass per explicit Resume (%s)", async (state) => {
     let current: DeletionStatus = { ...PENDING_DELETION, state };
     let passes = 0;
@@ -60,7 +114,7 @@ describe("owner-resumed conversation deletion", () => {
     render(<Harness />);
     expect(fetchMock).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Open deletion status" }));
-    const resume = await screen.findByRole("button", { name: "Resume cleanup for removed/session" });
+    const resume = await screen.findByRole("button", { name: "Resume cleanup" });
     expect(screen.getByText(/Opening or refreshing this panel only reads status/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
     await waitFor(() => expect(resume).toBeEnabled());
@@ -84,7 +138,7 @@ describe("owner-resumed conversation deletion", () => {
     expect(await screen.findByText(/Cleanup last verified:/)).toBeInTheDocument();
     expect(writes()).toHaveLength(2);
     expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(screen.queryByRole("button", { name: /Resume cleanup for/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Resume cleanup$/ })).not.toBeInTheDocument();
   });
 
   it("distinguishes loading, server failure, and a confirmed empty listing", async () => {
@@ -93,12 +147,13 @@ describe("owner-resumed conversation deletion", () => {
     const user = userEvent.setup();
     render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
     expect(screen.getByRole("status")).toHaveTextContent("Loading deletion status");
-    expect(screen.queryByText(/No resumable deletion/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No unfinished deletions/)).not.toBeInTheDocument();
     await act(async () => pending.resolve(json({ detail: "Deletion status storage is unavailable." }, 503)));
     expect(screen.getByRole("alert")).toHaveTextContent("Deletion status storage is unavailable.");
-    expect(screen.queryByText(/No resumable deletion/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No unfinished deletions/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
-    expect(await screen.findByText(/No resumable deletion requests found/)).toHaveTextContent("Older deletions may not have retained status");
+    expect(await screen.findByText(/No unfinished deletions reported/)).toBeVisible();
+    expect(screen.getByText(/Older deletions may not have retained status/)).not.toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(writes()).toHaveLength(0);
   });
@@ -109,23 +164,54 @@ describe("owner-resumed conversation deletion", () => {
       : json(page([{ ...PENDING_DELETION, state: "retryable", retryReason: "storage_unavailable" }])));
     const user = userEvent.setup();
     render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
-    await user.click(await screen.findByRole("button", { name: /Resume cleanup for/ }));
+    await user.click(await screen.findByRole("button", { name: /^Resume cleanup$/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Conversation cleanup is disabled by the operator.");
     expect(screen.getByRole("alert")).toHaveTextContent("Refresh status");
+    expect(screen.queryByRole("button", { name: "Resume cleanup" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh this deletion" })).toBeEnabled();
     expect(screen.getByText(/Removed from chats. Retry needed/)).toBeInTheDocument();
     expect(screen.queryByText(/Cleanup pass finished/)).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(writes()).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /Resume cleanup for/ })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Resume cleanup$/ })).toBeEnabled());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(writes()).toHaveLength(1);
+  });
+
+  describe("concise deletion notices", () => {
+    const callbacks = () => ({ onFinish: vi.fn(), onOpen: vi.fn(), onDismiss: vi.fn() });
+
+    it.each(["cleaning", "deleted"] as const)("keeps %s to one status and dismiss", (phase) => {
+      render(<ConversationDeletionNotice phase={phase} {...callbacks()} />);
+      expect(screen.getByRole("status")).toHaveTextContent(phase === "cleaning" ? "Deleting the conversation" : "Conversation deleted.");
+      expect(screen.getAllByRole("button")).toHaveLength(1);
+      expect(screen.queryByText("Troubleshooting")).not.toBeInTheDocument();
+    });
+
+    it.each([
+      [PENDING_DELETION, "There's more to clean up.", "Finish cleanup"],
+      [PENDING_DELETION, CLEANUP_UNCONFIRMED, "View deletion status"],
+      [{ ...PENDING_DELETION, retryReason: "uploads_unresolved" as const }, "An upload is unresolved.", "View deletion status"],
+      [{ ...PENDING_DELETION, retryReason: "artifact_store_required" as const }, "Contact your administrator.", "View deletion status"],
+    ])("offers one primary recovery for %s / %s", async (status, problem, label) => {
+      const handlers = callbacks();
+      const user = userEvent.setup();
+      render(<ConversationDeletionNotice phase="incomplete" status={status} problem={problem} {...handlers} />);
+      expect(screen.getByRole("status")).toHaveTextContent("Removed from chats. Cleanup needs attention.");
+      expect(screen.getByText(problem)).toBeVisible();
+      expect(screen.getAllByRole("button")).toHaveLength(label === "Finish cleanup" ? 3 : 2);
+      if (label === "Finish cleanup") expect(screen.getByRole("button", { name: "View deletion status" })).not.toBeVisible();
+      await user.click(screen.getByRole("button", { name: label }));
+      expect(label === "Finish cleanup" ? handlers.onFinish : handlers.onOpen).toHaveBeenCalledTimes(1);
+      expect(label === "Finish cleanup" ? handlers.onOpen : handlers.onFinish).not.toHaveBeenCalled();
+    });
   });
 
   it.each([
     ["storage_unavailable", /Storage is unavailable/],
     ["cleanup_timeout", /reached its time limit/],
-    ["concurrent_change", /Data changed during the last pass/],
+    ["concurrent_change", /Data changed during cleanup/],
     ["integrity_mismatch", /inconsistent deletion records/],
     ["uploads_unresolved", /uploads have no confirmed outcome/],
     ["artifact_store_required", /original-file storage is not configured/],
@@ -134,7 +220,9 @@ describe("owner-resumed conversation deletion", () => {
     render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByText(expected)).toBeInTheDocument();
     expect(screen.getByText(/Removed from chats. Retry needed/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Resume cleanup for/ })).toBeEnabled();
+    const needsChange = ["integrity_mismatch", "uploads_unresolved", "artifact_store_required"].includes(retryReason);
+    expect(screen.getByRole("button", { name: needsChange ? "Refresh this deletion" : "Resume cleanup" })).toBeEnabled();
+    if (needsChange) expect(screen.queryByRole("button", { name: "Resume cleanup" })).not.toBeInTheDocument();
     expect(writes()).toHaveLength(0);
   });
 
@@ -157,11 +245,11 @@ describe("owner-resumed conversation deletion", () => {
     expect(screen.getByText(/They do not expire into verified cleanup/)).toBeVisible();
     expect(screen.queryByText("PRIVATE UPLOAD CONTENT")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /force|complete|ignore upload/i })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Resume cleanup for/ }));
-    expect(await screen.findByText(/Cleanup pass finished/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh this deletion" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(screen.getByText(/Removed from chats. Retry needed/)).toBeInTheDocument();
     expect(screen.queryByText(/Cleanup last verified:/)).not.toBeInTheDocument();
-    expect(writes()).toHaveLength(1);
+    expect(writes()).toHaveLength(0);
   });
 
   it("labels the last verification timestamp and its exclusions, not physical erasure", async () => {
@@ -170,13 +258,20 @@ describe("owner-resumed conversation deletion", () => {
     render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
     const verified = await screen.findByText(/Cleanup last verified:/);
     expect(verified.querySelector("time")).toHaveAttribute("datetime", VERIFIED_DELETION.lastVerifiedAt);
+    expect(verified).not.toBeVisible();
+    expect(screen.getByText("No unfinished deletions reported.")).toBeVisible();
+    await user.click(screen.getByText("Completed history (1)"));
+    expect(screen.getByText("Conversation deleted.")).toBeVisible();
+    expect(verified).not.toBeVisible();
+    await user.click(screen.getByText("Troubleshooting"));
+    expect(verified).toBeVisible();
     expect(screen.getByText(/not proof of physical erasure/)).toBeInTheDocument();
-    await user.click(screen.getByText("What this status covers"));
+    await user.click(screen.getByText("About deletion status"));
     expect(screen.getByText(/Verification covers conversation content and inline originals only/)).toHaveTextContent(
       /does not cover backups, provider sandboxes, library documents, memories, or generated and processed media/,
     );
     expect(screen.getByText(/Minimal deletion records and write fences/)).toHaveTextContent("retained indefinitely");
-    expect(screen.queryByRole("button", { name: /Resume cleanup for/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Resume cleanup$/ })).not.toBeInTheDocument();
     expect(writes()).toHaveLength(0);
   });
 
@@ -199,14 +294,15 @@ describe("owner-resumed conversation deletion", () => {
     expect(within(rows).getAllByRole("listitem")).toHaveLength(50);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: "Load more deletion requests" }));
-    await screen.findByRole("heading", { name: "Conversation last" });
-    expect(within(rows).getAllByRole("listitem")).toHaveLength(51);
+    await screen.findByRole("heading", { name: "Conversation last", hidden: true });
+    expect(within(rows).getAllByRole("listitem")).toHaveLength(50);
+    expect(within(screen.getByRole("list", { name: "Completed deletions", hidden: true })).getAllByRole("listitem", { hidden: true })).toHaveLength(1);
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/sessions/deletions?cursor=cursor%2F%2B+%3F", { cache: "no-store" });
     expect(screen.queryByRole("button", { name: "Load more deletion requests" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
     await screen.findByRole("button", { name: "Load more deletion requests" });
     expect(within(rows).getAllByRole("listitem")).toHaveLength(50);
-    expect(screen.queryByRole("heading", { name: "Conversation last" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Conversation last", hidden: true })).not.toBeInTheDocument();
     expect(writes()).toHaveLength(0);
   });
 
@@ -218,9 +314,9 @@ describe("owner-resumed conversation deletion", () => {
     render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
     await user.click(await screen.findByRole("button", { name: "Load more deletion requests" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Next page unavailable");
-    expect(screen.getByRole("heading", { name: "Conversation removed/session" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Conversation removed/session", hidden: true })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Load more deletion requests" }));
-    await screen.findByRole("heading", { name: "Conversation second" });
+    await screen.findByRole("heading", { name: "Conversation second", hidden: true });
     expect(fetchMock.mock.calls[1][0]).toBe(fetchMock.mock.calls[2][0]);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -229,7 +325,7 @@ describe("owner-resumed conversation deletion", () => {
     fetchMock.mockResolvedValueOnce(json({ items: [], hasMore: true, nextCursor: null }));
     render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("next deletion-status page is unavailable");
-    expect(screen.queryByText(/No resumable deletion/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No unfinished deletions/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Load more deletion requests" })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -259,7 +355,7 @@ describe("owner-resumed conversation deletion", () => {
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
     await screen.findByText(/Cleanup last verified:/);
     await act(async () => oldPage.resolve(json(page([{ ...PENDING_DELETION, sessionId: "stale-row" }], "stale-next"))));
-    expect(screen.queryByRole("heading", { name: "Conversation stale-row" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Conversation stale-row", hidden: true })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Load more deletion requests" })).not.toBeInTheDocument();
   });
 
@@ -284,7 +380,7 @@ describe("owner-resumed conversation deletion", () => {
     const user = userEvent.setup();
     render(<Harness />);
     await user.click(screen.getByRole("button", { name: "Open deletion status" }));
-    const resume = await screen.findByRole("button", { name: /Resume cleanup for/ });
+    const resume = await screen.findByRole("button", { name: /^Resume cleanup$/ });
     fireEvent.click(resume);
     fireEvent.click(resume);
     expect(resume).toBeDisabled();
@@ -292,7 +388,7 @@ describe("owner-resumed conversation deletion", () => {
     expect(writes()).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Close deletion status" }));
     await user.click(screen.getByRole("button", { name: "Open deletion status" }));
-    const reopened = await screen.findByRole("button", { name: /Resume cleanup for/ });
+    const reopened = await screen.findByRole("button", { name: /^Resume cleanup$/ });
     expect(reopened).toBeDisabled();
     await user.click(reopened);
     expect(writes()).toHaveLength(1);
@@ -317,10 +413,10 @@ describe("owner-resumed conversation deletion", () => {
     const user = userEvent.setup();
     render(<Harness initialSessionId={PENDING_DELETION.sessionId} />);
     await user.click(screen.getByRole("button", { name: "Open deletion status" }));
-    await user.click(await screen.findByRole("button", { name: /Resume cleanup for/ }));
+    await user.click(await screen.findByRole("button", { name: /^Resume cleanup$/ }));
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/sessions/removed%2Fsession/deletion", { cache: "no-store" });
     await user.click(screen.getByRole("button", { name: "All deletion requests" }));
-    expect(await screen.findByRole("button", { name: /Resume cleanup for/ })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: /^Resume cleanup$/ })).toBeDisabled();
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions/deletions", { cache: "no-store" });
     await act(async () => request.resolve(json(VERIFIED_DELETION)));
     expect(screen.getByText(/Removed from chats. Cleanup pending/)).toBeInTheDocument();
@@ -343,9 +439,9 @@ describe("owner-resumed conversation deletion", () => {
     });
     const user = userEvent.setup();
     rtlRender(<MemoryPreferenceProvider owner={owner}><ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} /></MemoryPreferenceProvider>);
-    if (operation === "resume") await user.click(await screen.findByRole("button", { name: /Resume cleanup for/ }));
+    if (operation === "resume") await user.click(await screen.findByRole("button", { name: /^Resume cleanup$/ }));
     act(() => { currentOwner = "bob"; for (const notify of subscribers) notify(); });
-    const bobResume = await screen.findByRole("button", { name: /Resume cleanup for/ });
+    const bobResume = await screen.findByRole("button", { name: /^Resume cleanup$/ });
     expect(bobResume).toBeEnabled();
     const calls = fetchMock.mock.calls.length;
     await act(async () => old.resolve(json(operation === "read" ? page([VERIFIED_DELETION]) : VERIFIED_DELETION)));
@@ -366,7 +462,7 @@ describe("owner-resumed conversation deletion", () => {
     };
     fetchMock.mockImplementation(async (_input, init) => json(init?.method === "POST" ? VERIFIED_DELETION : page([PENDING_DELETION])));
     rtlRender(<MemoryPreferenceProvider owner={owner}><ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} /></MemoryPreferenceProvider>);
-    const resume = await screen.findByRole("button", { name: /Resume cleanup for/ });
+    const resume = await screen.findByRole("button", { name: /^Resume cleanup$/ });
     currentOwner = null;
     fireEvent.click(resume);
     expect(writes()).toHaveLength(0);
@@ -389,11 +485,11 @@ describe("owner-resumed conversation deletion", () => {
     fetchMock.mockImplementation(async (_input, init) => init?.method === "POST" ? pending.promise : json(page([PENDING_DELETION])));
     const user = userEvent.setup();
     rtlRender(<MemoryPreferenceProvider owner={owner}><ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} /></MemoryPreferenceProvider>);
-    await user.click(await screen.findByRole("button", { name: /Resume cleanup for/ }));
+    await user.click(await screen.findByRole("button", { name: /^Resume cleanup$/ }));
     act(() => { currentOwner = "bob"; for (const notify of subscribers) notify(); });
-    expect(await screen.findByRole("button", { name: /Resume cleanup for/ })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: /^Resume cleanup$/ })).toBeEnabled();
     act(() => { currentOwner = "alice"; for (const notify of subscribers) notify(); });
-    const returning = await screen.findByRole("button", { name: /Resume cleanup for/ });
+    const returning = await screen.findByRole("button", { name: /^Resume cleanup$/ });
     expect(returning).toBeDisabled();
     await user.click(returning);
     expect(writes()).toHaveLength(1);
@@ -424,16 +520,18 @@ describe("owner-resumed conversation deletion", () => {
     const opener = screen.getByRole("button", { name: "Open deletion status" });
     await user.click(opener);
     const dialog = screen.getByRole("dialog", { name: "Conversation deletion status" });
-    await screen.findByRole("button", { name: /Resume cleanup for/ });
+    await screen.findByRole("button", { name: /^Resume cleanup$/ });
     const close = screen.getByRole("button", { name: "Close deletion status" });
     await waitFor(() => expect(close).toHaveFocus());
     expect(dialog.firstElementChild).toHaveStyle({ overflowY: "auto" });
-    expect(screen.getByRole("heading", { name: "Conversation removed/session" }).closest("li")).toHaveStyle({ overflowWrap: "anywhere" });
+    expect(screen.getByRole("heading", { name: "Conversation removed/session", hidden: true }).closest("li")).toHaveStyle({ overflowWrap: "anywhere" });
     await user.tab({ shift: true });
     expect(screen.getByText("Incomplete conversation creation")).toHaveFocus();
     await user.tab();
     expect(close).toHaveFocus();
-    screen.getByText("Progress details").focus();
+    screen.getByText("Troubleshooting").focus();
+    await user.tab();
+    expect(screen.getByText("About deletion status")).toHaveFocus();
     await user.tab();
     expect(screen.getByText("Incomplete conversation creation")).toHaveFocus();
     await user.tab();

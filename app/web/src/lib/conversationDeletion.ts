@@ -103,6 +103,15 @@ export const CLEANUP_PASSES = 6;
 
 export type DeletionNoticePhase = "cleaning" | "deleted" | "incomplete";
 
+/** Some retained outcomes need a changed condition, not another cleanup pass. */
+export function cleanupCanResume(status: DeletionStatus): boolean {
+  return status.state !== "cleanup_verified"
+    && status.pendingUploads.length === 0 && !status.pendingUploadsTruncated
+    && status.retryReason !== "uploads_unresolved"
+    && status.retryReason !== "integrity_mismatch"
+    && status.retryReason !== "artifact_store_required";
+}
+
 export function isDeletionStatusFor(value: unknown, sessionId: string): value is DeletionStatus {
   return typeof value === "object" && value !== null
     && "sessionId" in value && value.sessionId === sessionId

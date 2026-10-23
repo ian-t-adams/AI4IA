@@ -160,10 +160,9 @@ export function SettingsPage({
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start" }}>
           <p style={{ margin: 0, maxWidth: "65ch" }}>
-            Deleting a conversation removes it from your chats and cleans up its messages and
-            attachments right away. If a cleanup can&apos;t finish, Deletion status lists it so you
-            can finish it later; opening it only reads status. Library documents, memories and
-            generated media are kept, and backups follow their own retention.
+            Deletion status shows cleanup that needs attention. Opening it only reads status.
+            Completed requests and troubleshooting are available there too. Library documents,
+            memories and generated media are kept, and backups follow their own retention.
           </p>
           <button type="button" className="btn" onClick={onOpenDeletionStatus}>
             Deletion status
