@@ -32,7 +32,7 @@ public sealed class DecisionRoutingTests
                 ["x-LLMModel"] = deployment, ["api-key"] = "caller-secret",
                 ["Authorization"] = "Bearer caller-token",
             },
-            Encoding.UTF8.GetBytes("""{"model":"caller-model","state":"synthetic","questions":{"q":{"type":"noul","instructions":"Is this synthetic?"}}}"""),
+            Encoding.UTF8.GetBytes("""{"model":"caller-model","state":"synthetic","questions":{"q":{"type":"noul","instructions":"Is this synthetic?"},"team":{"type":"choice","instructions":"Choose a team.","criteria":{"design":"Visual","engineering":"Crashes"}},"severity":{"type":"score","instructions":"Rate severity.","criteria":["Minor","Major"]}}}"""),
             Method: method), provider)
         {
             UseCatalog = true,
@@ -56,7 +56,7 @@ public sealed class DecisionRoutingTests
     [DataRow(503, false)]
     public async Task NativeDecisionUsesExactRouteAndNeverRequestsReplay(int status, bool eof)
     {
-        byte[] native = """{"model":"microsoft-decision-1","answers":{"q":{"type":"noul","noul":0.75}},"usage":{"input_tokens":10,"output_tokens":1}}"""u8.ToArray();
+        byte[] native = """{"model":"microsoft-decision-1","answers":{"q":{"type":"noul","noul":0.75},"team":{"type":"choice","choice":"design","probabilities":{"design":0.8,"engineering":0.2}},"severity":{"type":"score","score":0.3,"confidence":0.9,"probabilities":{"0":0.7,"1":0.3}}},"usage":{"input_tokens":10,"output_tokens":1}}"""u8.ToArray();
         await using var provider = new WireServer(_ => Task.FromResult(new WireReply(
             status, RawBody: native, EofDelimited: eof,
             Headers: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
