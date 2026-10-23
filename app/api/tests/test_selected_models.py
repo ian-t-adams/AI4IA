@@ -193,7 +193,11 @@ class SelectedProvider(Provider):
             return transport_response(body, {
                 "model": FLASH,
                 "choices": [{"message": {"role": "assistant", "content": VISIBLE, "reasoning_content": HIDDEN}}],
-                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+                "usage": {
+                    "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+                    "prompt_tokens_details": {"cached_tokens": 40},
+                    "completion_tokens_details": {"reasoning_tokens": 10},
+                },
             })
         block = {
             "type": "tool_use", "id": "synthetic-calculator", "name": "calculator",
@@ -244,12 +248,17 @@ async def test_flash_gateway_drops_reasoning_before_any_consumer(stream):
             delivered = "".join(chunk.raw for chunk in chunks)
             assert "".join(chunk.delta for chunk in chunks) == VISIBLE
             assert next(chunk.usage for chunk in chunks if chunk.usage)["total_tokens"] == 120
+            usage = next(chunk.usage for chunk in chunks if chunk.usage)
         else:
             result = await gateway.complete(**args)
             delivered = json.dumps(result)
             assert result["choices"][0]["message"]["content"] == VISIBLE
             assert result["usage"]["total_tokens"] == 120
+            usage = result["usage"]
         assert FLASH in delivered and HIDDEN not in delivered
+        native = TokenUsage.parse(usage).nativeUsage.calls[0]
+        assert native.values["completion_tokens_details.reasoning_tokens"] == 10
+        assert native.values["prompt_tokens_details.cached_tokens"] == 40
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -274,6 +283,14 @@ def test_selected_models_use_app_path_and_hide_reasoning_with_native_model_usage
         assert call["promptTokens"] == (100 if model_id == FLASH else 100_001)
         assert call["completionTokens"] == 20
         assert call["cost"]["coverage"] == ("unknown" if model_id == FLASH else "known")
+        if model_id == FLASH:
+            native = call["nativeUsage"]
+            assert native["api"] == "chat" and native["status"] == "reported"
+            assert native["values"] == {
+                "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+                "prompt_tokens_details.cached_tokens": 40,
+                "completion_tokens_details.reasoning_tokens": 10,
+            }
         if model_id == HAIKU:
             assert (call["cost"]["priceInputPer1M"], call["cost"]["priceOutputPer1M"]) == (0.5, 2.5)
         for surface in (response.text, json.dumps(messages), caplog.text):

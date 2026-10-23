@@ -642,7 +642,7 @@ allocation and retirement-sensitive row remain unchanged.
 Release stays serialized after the preceding releases and requires the owner's
 explicit merge/deploy and paid-acceptance clearance. Proposed acceptance, only
 after that clearance: fresh catalog/route and exact deployment readback, then
-at most **eight app requests / ten model calls**, with at most **2,048 output
+at most **eight app requests / ten logical model calls**, with at most **2,048 output
 tokens per call** and short synthetic inputs. Cover JSON and SSE for all three
 options, plus one Haiku calculator loop on each transport. Tools and automatic
 memory stay off except that exact local calculator; no external tools, long
@@ -652,6 +652,9 @@ native usage/model reports, effective settings, no private reasoning and
 correct known/unknown cost evidence. Delete only the newly created test
 conversations through their owner API and verify cleanup; never enroll existing
 records, change retirements or clean up shared resources.
+Existing transport retries are distinct from logical calls; this envelope is
+not an invoice cap or proof of one physical attempt. Stop on a failed
+acceptance case rather than adding a retry/probe loop.
 
 ## Enablement notes
 
