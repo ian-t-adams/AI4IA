@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 import pytest
@@ -18,6 +19,10 @@ from ai4ia_api.model_evidence import ModelCallRecorder
 from ai4ia_api.receipts import MAX_RECEIPT_BYTES, ExecutionReceipt
 from ai4ia_api.usage.pricing import PriceRate, PricingBook
 from tests.conftest import make_settings
+
+TOKEN_USAGE_CASES = json.loads(
+    (Path(__file__).parents[2] / "web" / "test-fixtures" / "token_usage_accounting.json").read_text()
+)
 
 
 def transport_response(body, result):
@@ -166,6 +171,62 @@ def test_missing_usage_or_price_is_unknown_not_zero(stream, usage, priced):
         assert saved["usage"]["cost"]["totalCalls"] == 1
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("model", ["grok-4.7", "gpt-5.2"])
+@pytest.mark.parametrize("case", TOKEN_USAGE_CASES["cases"], ids=lambda case: case["name"])
+def test_native_usage_discrepancy_is_visible_and_unpriced_through_json_sse_and_saved_receipts(
+    stream, model, case,
+):
+    def respond(_body, _index, result):
+        result["model"] = model
+        result["usage"] = case["usage"]
+        return result
+
+    with transport_client(respond=respond) as (client, requests):
+        client.app.state.usage._pricing = PricingBook(
+            {model: PriceRate(TOKEN_USAGE_CASES["priceInputPer1M"], TOKEN_USAGE_CASES["priceOutputPer1M"])},
+            currency="USD", version="receipt-test-v1",
+        )
+        created = client.post("/api/sessions", json={"model": model})
+        assert created.status_code == 201, created.text
+        sid = created.json()["id"]
+        response = client.post("/api/chat", json={
+            "sessionId": sid, "content": "Synthetic accounting control", "stream": stream,
+            "allowTools": False, "allowAutomaticMemory": False,
+        })
+        assert response.status_code == 200, response.text
+        saved = receipts(client, sid)[0]
+        cost = saved["usage"]["cost"]
+        known = case["costKnown"]
+        assert cost["coverage"] == ("known" if known else "unknown")
+        assert cost["estCostMicroUsd"] == case["costMicroUsd"]
+        assert cost["pricedCalls"] == int(known)
+        assert cost["totalCalls"] == len(requests) == 1
+        call = saved["runtime"]["modelCalls"][0]
+        assert call["cost"]["reason"] == (None if known else "usage_totals_mismatch")
+        assert call["cost"]["priceVersion"] == "receipt-test-v1"
+        assert (call["cost"]["priceInputPer1M"], call["cost"]["priceOutputPer1M"]) == (2, 8)
+        for counts in (call, saved["usage"]):
+            assert (counts["promptTokens"], counts["completionTokens"], counts["totalTokens"]) == (
+                22, 5, case["usage"]["total_tokens"],
+            )
+        assert call["usageKnown"] and call["usageComplete"] and call["providerCompleted"]
+        messages = client.get(f"/api/sessions/{sid}/messages").json()
+        assert messages[-1]["content"] == "Done."
+        if not stream:
+            assert response.json()["message"]["executionReceipt"] == saved
+        restored = ExecutionReceipt.model_validate_json(json.dumps(saved))
+        assert restored.model_dump(mode="json") == saved
+        assert len(json.dumps(restored.model_dump(mode="json")).encode("ascii")) <= MAX_RECEIPT_BYTES
+        summary = client.get("/api/usage").json()
+        assert summary["totalCostMicroUsd"] == (case["costMicroUsd"] or 0)
+        assert summary["costUnknownRequests"] == int(not known)
+        assert summary["totalTokens"] == case["usage"]["total_tokens"]
+        client.app.state.usage._pricing = PricingBook({}, currency="USD", version="later-prices")
+        assert receipts(client, sid)[0] == saved
+        assert client.get("/api/usage").json()["costUnknownRequests"] == int(not known)
+
+
 @pytest.mark.parametrize("raw", [
     None, {}, {"total_tokens": 10}, {"prompt_tokens": 10},
     {"prompt_tokens": True, "completion_tokens": 1},
@@ -237,7 +298,8 @@ def test_first_transport_failure_keeps_parameters_and_unknown_cost_without_excep
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_agent_tool_loop_records_each_real_call_and_partial_cost(stream):
+@pytest.mark.parametrize("second_usage", ["missing", "mismatch", "reconciled"])
+def test_agent_tool_loop_records_each_real_call_and_cost_coverage(stream, second_usage):
     from tests.test_agent_runtime import _assistant_tool_call
 
     def respond(_body, index, result):
@@ -245,8 +307,10 @@ def test_agent_tool_loop_records_each_real_call_and_partial_cost(stream):
             result["choices"] = _assistant_tool_call(
                 "calc-1", "calculator", '{"expression":"6*7"}',
             )["choices"]
-        else:
+        elif second_usage == "missing":
             result.pop("usage")
+        elif second_usage == "mismatch":
+            result["usage"] = {"prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 82}
         return result
 
     with transport_client(respond=respond) as (client, requests):
@@ -263,10 +327,14 @@ def test_agent_tool_loop_records_each_real_call_and_partial_cost(stream):
         for call, body in zip(calls, requests, strict=True):
             assert call["parameters"]["toolChoice"] == body["tool_choice"] == "auto"
             assert call["parameters"]["maxOutputTokens"] == body["max_completion_tokens"]
-        assert saved["usage"]["cost"]["coverage"] == "partial"
-        assert saved["usage"]["cost"]["estCostMicroUsd"] == 4000
-        assert saved["usage"]["cost"]["pricedCalls"] == 1
+        known = second_usage == "reconciled"
+        assert saved["usage"]["cost"]["coverage"] == ("known" if known else "partial")
+        assert saved["usage"]["cost"]["estCostMicroUsd"] == (8000 if known else 4000)
+        assert saved["usage"]["cost"]["pricedCalls"] == (2 if known else 1)
         assert saved["usage"]["cost"]["totalCalls"] == 2
+        assert calls[1]["cost"]["reason"] == (
+            "usage_totals_mismatch" if second_usage == "mismatch" else None
+        )
 
 
 async def test_final_no_tool_call_has_its_own_effective_parameter_posture():
@@ -415,6 +483,38 @@ def test_historical_receipts_do_not_receive_new_evidence():
     assert restored.runtime.modelCalls is None
     assert restored.runtime.modelCallCount is None
     assert restored.usage.cost is None
+
+
+def test_historical_grok_estimates_are_not_reclassified_or_given_native_total_evidence_on_read():
+    recorder = ModelCallRecorder(
+        model_id="grok-4.7", deployment="synthetic-deployment",
+        pricing=PricingBook({"grok-4.7": PriceRate(2, 8)}, currency="USD", version="original"),
+    )
+    call = recorder.start("synthetic-deployment", "chat")
+    call.report_usage({"prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 82}, completed=True)
+    historical = call.snapshot().model_dump(mode="json")
+    historical.pop("totalTokens")
+    historical["cost"].pop("reason")
+    historical["cost"].update(coverage="known", estCostMicroUsd=84)
+    saved = ExecutionReceipt.model_validate({
+        "runtime": {"modelCalls": [historical], "modelCallCount": 1},
+        "usage": {
+            "known": True, "complete": True, "calls": 1,
+            "promptTokens": 22, "completionTokens": 5, "totalTokens": 82,
+            "cost": {
+                "coverage": "known", "estCostMicroUsd": 84, "totalCalls": 1,
+                "pricedCalls": 1, "priceVersions": ["original"],
+            },
+        },
+    })
+    restored = ExecutionReceipt.model_validate_json(saved.model_dump_json())
+    assert restored.usage.cost.estCostMicroUsd == 84
+    assert restored.usage.cost.coverage == "known"
+    assert restored.usage.totalTokens == 82
+    evidence = restored.runtime.modelCalls[0]
+    assert evidence.totalTokens is None and evidence.cost.reason is None
+    assert evidence.cost.coverage == "known" and evidence.cost.estCostMicroUsd == 84
+    assert evidence.cost.priceVersion == "original"
 
 
 def test_receipt_owner_authorization_is_unchanged_with_new_fields():
@@ -601,7 +701,8 @@ def test_nonstream_cancellation_keeps_the_accepted_turn_receipt(content):
 
 
 @pytest.mark.parametrize("quota", [False, True])
-def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota):
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota, mismatch):
     from ai4ia_api.agents.runtime import AgentStep
     from ai4ia_api.model_evidence import MAX_RECORDED_MODEL_CALLS
     from ai4ia_api.receipts import ReceiptRuntime
@@ -614,7 +715,10 @@ def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota):
     for _ in range(MAX_RECORDED_MODEL_CALLS + 1):
         call = evidence.start("deployment", "responses")
         call.request({"max_output_tokens": 16384, "reasoning": {"effort": "high"}})
-        call.report_usage({"prompt_tokens": 1000, "completion_tokens": 250}, completed=True)
+        call.report_usage({
+            "prompt_tokens": 1000, "completion_tokens": 250,
+            "total_tokens": 1251 if mismatch else 1250,
+        }, completed=True)
         if quota:
             for index in range(2):
                 call.report_admission(AdmissionEvidence(
@@ -644,8 +748,10 @@ def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota):
     assert saved.truncated
     assert saved.runtime.modelCallCount == MAX_RECORDED_MODEL_CALLS + 1
     assert "model_calls_capped" in saved.notes
-    assert saved.usage.cost.coverage == "partial"
+    assert saved.usage.cost.coverage == ("unknown" if mismatch else "partial")
     assert saved.usage.cost.priceVersions == ("bounds-v1",)
+    assert saved.runtime.modelCalls[0].totalTokens == (1251 if mismatch else 1250)
+    assert saved.runtime.modelCalls[0].cost.reason == ("usage_totals_mismatch" if mismatch else None)
     if quota:
         assert saved.runtime.modelCalls[0].admissions
     small = ReceiptDraft(model_evidence=ModelCallRecorder()).build()
@@ -712,14 +818,20 @@ def test_stream_usage_compatibility_retry_is_one_logical_call_with_two_attempts(
         assert saved["usage"]["cost"]["estCostMicroUsd"] == 4000
 
 
-def test_durable_step_and_persistence_never_reprice_recorded_evidence():
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_durable_step_and_persistence_never_reprice_recorded_evidence(mismatch):
     from functools import partial
 
     from ai4ia_api.workflows.durable import DurableWorkflowService
     from ai4ia_api.workflows.models import Workflow
     from tests.test_workflows_api import _mk_agent, _wf_body
 
-    with transport_client() as (client, requests):
+    def respond(_body, _index, result):
+        if mismatch:
+            result["usage"] = {"prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 82}
+        return result
+
+    with transport_client(respond=respond) as (client, requests):
         for name in ("drafter", "editor"):
             assert _mk_agent(client, name).status_code == 201
         created = client.post("/api/workflows", json=_wf_body())
@@ -744,6 +856,7 @@ def test_durable_step_and_persistence_never_reprice_recorded_evidence():
             service._execute_step, step=workflow.steps[0], index=0, previous="", context=context,
         ))
         before = outcome["result"]["receipt"]
+        assert outcome["usage"].get("totalMismatch", False) is mismatch
         assert len(requests) == 1
         assert before["runtime"]["modelCalls"][0]["parameterSource"] == "workflow_default"
         state.usage._pricing = PricingBook(
@@ -755,7 +868,8 @@ def test_durable_step_and_persistence_never_reprice_recorded_evidence():
         })
         saved = client.get(f"/api/sessions/{sid}/messages").json()[-1]
         assert saved["workflowStepReceipts"][0] == before
-        assert saved["executionReceipt"]["usage"]["cost"]["estCostMicroUsd"] == 4000
+        assert saved["executionReceipt"]["usage"]["cost"]["estCostMicroUsd"] == (None if mismatch else 4000)
+        assert saved["executionReceipt"]["usage"]["cost"]["coverage"] == ("unknown" if mismatch else "known")
         assert saved["executionReceipt"]["usage"]["cost"]["priceVersions"] == ["receipt-test-v1"]
 
 

@@ -54,6 +54,29 @@ def test_build_record_billable_complete_known_with_price():
     assert rec.region == "eastus2"
 
 
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_ledger_keeps_counts_and_unknown_cost_after_aggregate_usage_roundtrip(mismatch):
+    usage = TokenUsage.empty()
+    for prompt, completion, total in (
+        (22, 5, 82 if mismatch else 27),
+        (100, 5, 50 if mismatch else 105),
+    ):
+        usage = usage.add(TokenUsage.parse({
+            "prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total,
+        }))
+    restored = TokenUsage.model_validate_json(usage.model_dump_json())
+    record = _service().build_record(
+        user_id="u1", session_id="s1", model_id="gpt-x", deployment=_deployment(),
+        usage=restored, status="complete", agent=None, correlation_id=None,
+    )
+    assert record.costKnown is not mismatch
+    assert record.estCostMicroUsd == (None if mismatch else 324)
+    assert record.costUnknownReason == ("usage_totals_mismatch" if mismatch else None)
+    assert (record.promptTokens, record.completionTokens, record.totalTokens) == (122, 10, 132)
+    assert record.billable and record.usageKnown and record.usageComplete
+    assert (record.priceInputPer1M, record.priceOutputPer1M, record.priceVersion) == (2.0, 8.0, "p-1")
+
+
 def test_build_record_unknown_usage_not_billable_no_cost():
     rec = _service().build_record(
         user_id="u1",

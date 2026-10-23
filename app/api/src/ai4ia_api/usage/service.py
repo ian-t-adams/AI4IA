@@ -185,6 +185,8 @@ class UsageService:
                 model_id,
                 prompt_tokens=usage.prompt,
                 completion_tokens=usage.completion,
+                total_tokens=usage.total,
+                totals_mismatch=usage.totalMismatch,
                 deployment=descriptor.deployment,
                 cache_read_tokens=usage.cacheRead,
                 cache_write_tokens=usage.cacheWrite,
@@ -193,6 +195,7 @@ class UsageService:
             rec.priceVersion = est.version
             rec.priceInputPer1M = est.input_per_1m
             rec.priceOutputPer1M = est.output_per_1m
+            rec.costUnknownReason = est.reason
             if est.known and est.micro_usd is not None:
                 rec.costKnown = True
                 rec.estCostMicroUsd = est.micro_usd

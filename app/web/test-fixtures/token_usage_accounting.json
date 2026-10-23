@@ -1,0 +1,24 @@
+{
+  "priceInputPer1M": 2,
+  "priceOutputPer1M": 8,
+  "cases": [
+    {
+      "name": "reported-total-82",
+      "usage": { "prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 82 },
+      "costKnown": false,
+      "costMicroUsd": null
+    },
+    {
+      "name": "reported-total-80",
+      "usage": { "prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 80 },
+      "costKnown": false,
+      "costMicroUsd": null
+    },
+    {
+      "name": "reconciled-control",
+      "usage": { "prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 27 },
+      "costKnown": true,
+      "costMicroUsd": 84
+    }
+  ]
+}

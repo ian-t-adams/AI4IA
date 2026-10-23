@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .agents.tools import redact
 from .hard_quota.models import AdmissionEvidence
 from .usage.models import TokenUsage
-from .usage.pricing import PricingBook
+from .usage.pricing import CostUnknownReason, PricingBook
 
 if TYPE_CHECKING:
     from .catalog import ModelCatalog
@@ -57,6 +57,7 @@ class EffectiveModelParameters(_Evidence):
 
 class ModelCostEstimate(_Evidence):
     coverage: Literal["known", "unknown"] = "unknown"
+    reason: CostUnknownReason | None = None
     estCostMicroUsd: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
     currency: Literal["USD"] = "USD"
     pricingBasis: Literal["input_output_tokens"] = "input_output_tokens"
@@ -104,6 +105,7 @@ class ModelCallEvidence(_Evidence):
     usageComplete: bool = False
     promptTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
     completionTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
+    totalTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
     cost: ModelCostEstimate = Field(default_factory=ModelCostEstimate)
     admissions: tuple[AdmissionEvidence, ...] = Field(default=(), max_length=2)
 
@@ -305,6 +307,8 @@ class CapturedModelCall:
             self.model_id or "",
             prompt_tokens=self.usage.prompt if usable_usage else None,
             completion_tokens=self.usage.completion if usable_usage else None,
+            total_tokens=self.usage.total if self.usage.known else None,
+            totals_mismatch=self.usage.totalMismatch,
             cache_read_tokens=self.usage.cacheRead,
             cache_write_tokens=self.usage.cacheWrite,
         )
@@ -328,8 +332,13 @@ class CapturedModelCall:
             usageKnown=self.usage.known, usageComplete=self.usage.known and self.usage.complete,
             promptTokens=self.usage.prompt if self.usage.known else None,
             completionTokens=self.usage.completion if self.usage.known else None,
+            totalTokens=(
+                self.usage.total
+                if self.usage.known and 0 <= self.usage.total <= _MAX_SAFE_INTEGER else None
+            ),
             cost=ModelCostEstimate(
                 coverage="known" if known else "unknown",
+                reason=estimate.reason,
                 estCostMicroUsd=estimate.micro_usd if known else None,
                 priceVersion=_identifier(estimate.version),
                 priceInputPer1M=estimate.input_per_1m if rates_valid else None,
