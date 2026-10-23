@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { ParamControls } from "./ParamControls";
 import type { ChatParams, ModelEntry } from "@/lib/types";
@@ -28,6 +30,22 @@ function setup(params: ChatParams = {}, model?: ModelEntry | null) {
 }
 
 describe("ParamControls", () => {
+  it("keeps values inline with their labels despite the inspector's stacked field rule", () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync(resolve("src", "app", "globals.css"), "utf8");
+    document.head.append(style);
+    try {
+      render(<div className="inspector-body"><ParamControls params={{}} onChange={vi.fn()} model={MODEL} /></div>);
+      for (const text of [/Temperature:/, /Top P:/, /Max tokens/]) {
+        const control = screen.getByLabelText(text, { selector: "input" });
+        const label = document.querySelector(`label[for="${control.id}"]`)!;
+        expect(getComputedStyle(label).display).toBe("block");
+      }
+    } finally {
+      style.remove();
+    }
+  });
+
   it("gives Temperature, Top P, and Max tokens each an accessible, keyboard-reachable help trigger", () => {
     setup({}, MODEL);
     expect(screen.getByRole("button", { name: "Help: Temperature" })).toBeInTheDocument();

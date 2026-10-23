@@ -25,7 +25,6 @@ import { Pill, pillToneColor } from "./Pill";
 import {
   checkRow,
   fieldset,
-  iconBtn,
   inputStyle,
   labelStyle,
   primaryBtn,
@@ -261,22 +260,13 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
             </li>
           )}
           {mine.map((s) => (
-            <li key={s.id} style={{ display: "flex", alignItems: "center" }}>
+            <li key={s.id} className="studio-list-row">
               <button
+                className="studio-list-select"
                 onClick={() => startEdit(s)}
                 aria-current={editing === s.name ? "true" : undefined}
-                style={{
-                  flex: 1,
-                  textAlign: "left",
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: editing === s.name ? "var(--bg)" : "transparent",
-                  color: "var(--fg)",
-                  overflow: "hidden",
-                }}
               >
-                <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span style={{ display: "block" }}>
                   {s.lastError ? "⚠ " : ""}
                   {s.displayName || s.name}
                   {!s.enabled && <span style={{ color: "var(--fg-muted)" }}> (off)</span>}
@@ -293,11 +283,11 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
                 </span>
               </button>
               <button
+                className="studio-list-delete"
                 onClick={() => remove(s.name)}
                 disabled={busy}
                 aria-label={`Delete ${s.name}`}
                 title="Delete"
-                style={iconBtn}
               >
                 ✕
               </button>

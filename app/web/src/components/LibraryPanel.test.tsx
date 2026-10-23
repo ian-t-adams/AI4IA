@@ -9,6 +9,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import type { LibraryDocument } from "@/lib/library";
 import { LibraryPanel } from "./LibraryPanel";
@@ -74,6 +76,28 @@ afterEach(() => {
 });
 
 describe("LibraryPanel delete", () => {
+  it("wraps full filenames separately from reachable row actions without changing operations", async () => {
+    const filename = "regional_dependency_evidence_0123456789abcdef0123456789abcdef.pdf";
+    mocks.listLibraryDocuments.mockResolvedValue([{ ...DOC, filename }]);
+    const style = document.createElement("style");
+    style.textContent = readFileSync(resolve("src", "app", "globals.css"), "utf8");
+    document.head.append(style);
+    try {
+      render(<LibraryPanel onClose={vi.fn()} variant="page" />);
+      const name = await screen.findByText(filename, { exact: true });
+      expect(name).not.toHaveStyle({ whiteSpace: "nowrap" });
+      expect(getComputedStyle(name.parentElement!).overflowWrap).toBe("anywhere");
+      const button = screen.getByRole("button", { name: `Permanently delete ${filename}` });
+      expect(getComputedStyle(button).minWidth).toBe("44px");
+      expect(getComputedStyle(button).minHeight).toBe("44px");
+      expect(getComputedStyle(button.parentElement!).flexWrap).toBe("wrap");
+      expect(mocks.deleteLibraryDocument).not.toHaveBeenCalled();
+      expect(mocks.saveLibraryDocumentToMemory).not.toHaveBeenCalled();
+    } finally {
+      style.remove();
+    }
+  });
+
   it("names the delete button for permanence and confirms with irreversible wording before calling the API", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();

@@ -91,27 +91,9 @@ function LibraryDocumentRow({
 }) {
   const analysis = analysisLabel(document);
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: "10px 12px",
-        borderRadius: 8,
-        border: "1px solid var(--border)",
-        background: "var(--bg)",
-      }}
-    >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontWeight: 600,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-          title={document.filename}
-        >
+    <div className="library-document-row">
+      <div className="library-document-info">
+        <div style={{ fontWeight: 600 }}>
           {document.filename}
         </div>
         <div style={{ fontSize: "0.75em", color: "var(--fg-muted)" }}>
@@ -123,17 +105,19 @@ function LibraryDocumentRow({
           {extraDetails}
         </div>
       </div>
-      <span
-        style={{
-          fontSize: "0.75em",
-          fontWeight: 600,
-          color: LIBRARY_STATUS_COLORS[document.status],
-          whiteSpace: "nowrap",
-        }}
-      >
-        {LIBRARY_STATUS_LABELS[document.status]}
-      </span>
-      {children}
+      <div className="library-document-actions">
+        <span
+          style={{
+            fontSize: "0.75em",
+            fontWeight: 600,
+            color: LIBRARY_STATUS_COLORS[document.status],
+            whiteSpace: "nowrap",
+          }}
+        >
+          {LIBRARY_STATUS_LABELS[document.status]}
+        </span>
+        {children}
+      </div>
     </div>
   );
 }
@@ -386,8 +370,9 @@ export function LibraryPanel({
         headerGap={0}
       >
         <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
-          Upload documents to your personal library. Once ready, the assistant
-          can reference and cite them across all your chats. Use 🧠 to save a
+          {variant !== "page" ? <>Upload documents to your personal library. Once ready, the assistant
+          can reference and cite them across all your chats. </> : null}
+          Use 🧠 to save a
           document&apos;s gist to durable memory for recall even when the library
           isn&apos;t queried.
         </p>

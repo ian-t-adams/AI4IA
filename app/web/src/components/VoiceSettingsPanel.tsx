@@ -130,14 +130,18 @@ export interface VoiceSettingsPanelProps {
 const FIELD_STYLE: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
+  minWidth: 0,
   gap: 4,
-  fontSize: "0.8em",
+  fontSize: "var(--text-sm)",
   color: "var(--fg-muted)",
 };
 
 const CONTROL_STYLE: React.CSSProperties = {
-  padding: "6px 8px",
-  borderRadius: 6,
+  width: "100%",
+  minWidth: 0,
+  minHeight: 44,
+  padding: "8px 10px",
+  borderRadius: 8,
   border: "1px solid var(--border)",
   background: "var(--bg)",
   color: "var(--fg)",
@@ -239,14 +243,7 @@ export function VoiceSettingsPanel({
 
   return (
     <div className="voice-settings-panel">
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 10,
-          padding: 10,
-        }}
-      >
+      <div className="voice-settings-fields">
         <div style={FIELD_STYLE}>
           <label htmlFor={`${idPrefix}-provider`}>Provider</label>
           <select
@@ -327,16 +324,7 @@ export function VoiceSettingsPanel({
               </div>
             )}
             {selectedSpeechModel && (
-              <div
-                style={{
-                  ...FIELD_STYLE,
-                  flexBasis: "100%",
-                  padding: "6px 8px",
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg)",
-                }}
-              >
+              <div style={FIELD_STYLE}>
                 <span>{selectedSpeechModel.description}</span>
                 <strong>
                   {selectedSpeechModel.profile === "native_audio"
@@ -490,24 +478,32 @@ export function VoiceSettingsPanel({
           </div>
         )}
 
-        <div style={{ flexBasis: "100%" }}>
+        {isSpeechProvider && (
+          <label className="voice-setting-toggle" htmlFor={`${idPrefix}-speech-interrupt`}>
+            <input
+              id={`${idPrefix}-speech-interrupt`}
+              type="checkbox"
+              checked={speechSettings.interruptResponse}
+              disabled={locked}
+              onChange={(e) =>
+                patchSpeechSettings({ interruptResponse: e.target.checked })
+              }
+            />
+            <span>Stop the reply when I start talking</span>
+          </label>
+        )}
+
+        <div className="voice-audio-settings">
           <div
             style={{
-              fontSize: "0.8em",
+              fontSize: "var(--text-sm)",
               color: "var(--fg-muted)",
               fontWeight: 600,
             }}
           >
             Audio controls
           </div>
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 10,
-              padding: "8px 0 2px",
-            }}
-          >
+          <div className="voice-settings-fields">
             <div style={FIELD_STYLE}>
               <label htmlFor={`${idPrefix}-temperature`}>Temperature</label>
               <input
@@ -679,42 +675,20 @@ export function VoiceSettingsPanel({
                   </span>
                 </div>
 
-                <div style={{ ...FIELD_STYLE, maxWidth: 260 }}>
-                  <span>Input processing</span>
+                <details className="voice-processing-note">
+                  <summary>Input processing</summary>
                   <strong style={{ color: "var(--fg)" }}>Managed by Azure Speech</strong>
-                  <span>
+                  <p>
                     {speechSettings.locale}; deep noise suppression and echo cancellation.
                     With a photo avatar, your browser is also asked to cancel the
                     avatar&apos;s voice, unless precise echo cancellation gives Azure
                     what this page plays instead.
-                  </span>
-                </div>
+                  </p>
+                </details>
 
-                <label
-                  style={{
-                    ...FIELD_STYLE,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 6,
-                    alignSelf: "flex-end",
-                  }}
-                  htmlFor={`${idPrefix}-speech-interrupt`}
-                >
-                  <input
-                    id={`${idPrefix}-speech-interrupt`}
-                    type="checkbox"
-                    checked={speechSettings.interruptResponse}
-                    disabled={locked}
-                    onChange={(e) =>
-                      patchSpeechSettings({ interruptResponse: e.target.checked })
-                    }
-                  />
-                  Stop the reply when I start talking
-                </label>
-
-                <div style={{ ...FIELD_STYLE, maxWidth: 260, alignSelf: "flex-end" }}>
+                <div style={FIELD_STYLE}>
                   <label
-                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                    className="voice-setting-toggle"
                     htmlFor={`${idPrefix}-speech-truncate`}
                   >
                     <input
@@ -725,7 +699,7 @@ export function VoiceSettingsPanel({
                       disabled={locked}
                       onChange={(e) => patchSpeechSettings({ autoTruncate: e.target.checked })}
                     />
-                    Let Azure trim interrupted replies
+                    <span>Let Azure trim interrupted replies</span>
                   </label>
                   <span id={`${idPrefix}-speech-truncate-description`}>
                     Keeps only the part you heard in the conversation. When off, the browser
@@ -826,13 +800,8 @@ export function VoiceSettingsPanel({
               onClick={onReset}
               disabled={locked}
               style={{
-                alignSelf: "flex-end",
+                ...CONTROL_STYLE,
                 padding: "6px 10px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--fg)",
-                fontSize: "0.8em",
                 cursor: locked ? "not-allowed" : "pointer",
               }}
             >

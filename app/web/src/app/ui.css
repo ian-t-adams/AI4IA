@@ -2311,6 +2311,12 @@
   min-width: 0;
 }
 
+.page .studio-surface {
+  height: min(760px, calc(100dvh - 180px));
+  min-height: 480px;
+  overflow: hidden;
+}
+
 /* ---- Inspector sheet ----------------------------------------------------- */
 
 .conversation-inspector {
@@ -2331,6 +2337,17 @@
 }
 
 @media (max-width: 720px) {
+  .page .studio-surface {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .page .studio-tabpanel,
+  .page .studio-workpanel {
+    overflow: visible;
+  }
+
   .chat-header {
     gap: var(--space-1);
     padding: 0 var(--space-2);

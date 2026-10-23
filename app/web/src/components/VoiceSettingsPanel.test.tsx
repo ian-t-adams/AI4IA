@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { VoiceSettingsPanel, type VoiceSettingsPanelProps } from "./VoiceSettingsPanel";
 import {
@@ -75,6 +77,56 @@ function setup(overrides: Partial<VoiceSettingsPanelProps> = {}) {
 }
 
 describe("VoiceSettingsPanel", () => {
+  it("keeps both Speech checkboxes beside their labels inside the inspector", async () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync(resolve("src", "app", "globals.css"), "utf8");
+    document.head.append(style);
+    try {
+      const { user, onSpeechSettingsChange, onSettingsChange } = setup({
+        provider: "speech_voice_live",
+        activeProvider: voiceProviderCatalog.providers[1],
+      });
+      const panel = document.querySelector(".voice-settings-panel")!;
+      panel.parentElement!.classList.add("inspector-body");
+      const interrupt = screen.getByRole("checkbox", { name: "Stop the reply when I start talking" });
+      const trim = screen.getByRole("checkbox", { name: "Let Azure trim interrupted replies" });
+      for (const control of [interrupt, trim]) {
+        const label = control.closest("label")!;
+        expect(getComputedStyle(label).flexDirection).toBe("row");
+        expect(getComputedStyle(label).minHeight).toBe("44px");
+      }
+      expect(trim).toHaveAccessibleDescription(/Keeps only the part you heard/);
+      expect(interrupt.compareDocumentPosition(screen.getByText("Audio controls")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(onSpeechSettingsChange).not.toHaveBeenCalled();
+      expect(onSettingsChange).not.toHaveBeenCalled();
+      await user.click(screen.getByText("Let Azure trim interrupted replies", { exact: true }));
+      expect(onSpeechSettingsChange).toHaveBeenCalledExactlyOnceWith({
+        ...DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
+        autoTruncate: !DEFAULT_SPEECH_VOICE_LIVE_SETTINGS.autoTruncate,
+      });
+    } finally {
+      style.remove();
+    }
+  });
+
+  it("keeps full-width fields and discloses managed processing without changing settings", async () => {
+    const { user, onSpeechSettingsChange } = setup({
+      provider: "speech_voice_live",
+      activeProvider: voiceProviderCatalog.providers[1],
+    });
+    for (const name of ["Temperature", "Speaking rate"]) {
+      expect(screen.getByRole("spinbutton", { name })).toHaveStyle({
+        width: "100%", minWidth: "0", minHeight: "44px",
+      });
+    }
+    const summary = screen.getByText("Input processing", { exact: true });
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    await user.click(summary);
+    expect(summary.closest("details")).toHaveAttribute("open");
+    expect(screen.getByText("Managed by Azure Speech")).toBeVisible();
+    expect(onSpeechSettingsChange).not.toHaveBeenCalled();
+  });
+
   it.each(["preview", "ga"] as const)("keeps RT2 selectable under the %s selector", async (protocol) => {
     const { user, rerender, onModelChange } = setup({ openaiRealtimeProtocol: protocol });
     const model = screen.getByRole("combobox", { name: "Realtime model" });
