@@ -6,6 +6,7 @@ from azure.cosmos.exceptions import CosmosResourceExistsError
 from ai4ia_api.usage.cosmos_repo import CosmosUsageRepository
 from ai4ia_api.usage.memory_repo import InMemoryUsageRepository
 from ai4ia_api.usage.models import UsageRecord, UsageRollupRow, cost_bearing_attempt
+from ai4ia_api.usage.native import NativeUsageBatch, capture_usage
 from ai4ia_api.usage.pricing import PricingBook
 from ai4ia_api.usage.repository import UsageRecordConflict
 from ai4ia_api.usage.service import UsageService
@@ -51,6 +52,23 @@ async def test_frozen_delivery_does_not_consult_current_prices(repo):
     rows = await repo.list_for_session("owner", "session", limit=10)
     assert rows[0].priceVersion == "original"
     assert rows[0].estCostMicroUsd == 42
+
+
+async def test_native_fields_survive_exact_frozen_delivery_and_cannot_change_on_a_duplicate(repo):
+    def details(reasoning):
+        usage = capture_usage({
+            "prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12,
+            "completion_tokens_details": {"reasoning_tokens": reasoning},
+        }, api="chat")
+        return NativeUsageBatch(calls=(usage.native,), totalCalls=1)
+
+    frozen = record().model_copy(update={"nativeUsage": details(3)})
+    assert await repo.record_once(frozen) is True
+    assert await repo.record_once(UsageRecord.model_validate_json(frozen.model_dump_json())) is False
+    rows = await repo.list_for_session("owner", "session", limit=10)
+    assert rows[0].nativeUsage == frozen.nativeUsage
+    with pytest.raises(UsageRecordConflict):
+        await repo.record_once(frozen.model_copy(update={"nativeUsage": details(4)}))
 
 
 async def test_strict_delivery_propagates_write_failure():

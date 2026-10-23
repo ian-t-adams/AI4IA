@@ -141,7 +141,10 @@ def test_dispatch_outbox_preserves_unreconciled_usage_without_claiming_a_known_c
             {"gpt-5.4": PriceRate(200, 800)}, currency="USD", version="after-dispatch",
         )
         result = _assistant_text("done")
-        result["usage"] = {"prompt_tokens": 22, "completion_tokens": 5, "total_tokens": total}
+        result["usage"] = {
+            "prompt_tokens": 22, "completion_tokens": 5, "total_tokens": total,
+            "completion_tokens_details": {"reasoning_tokens": 53},
+        }
         return httpx.Response(200, json=result)
 
     state.gateway = ModelGatewayClient(state.settings, httpx.AsyncClient(transport=httpx.MockTransport(respond)))
@@ -160,6 +163,10 @@ def test_dispatch_outbox_preserves_unreconciled_usage_without_claiming_a_known_c
     assert (record.promptTokens, record.completionTokens, record.totalTokens) == (22, 5, total)
     assert record.priceVersion == "before-dispatch"
     assert record.priceInputPer1M == 2 and record.priceOutputPer1M == 8
+    assert record.nativeUsage.calls[0].values == {
+        "prompt_tokens": 22, "completion_tokens": 5, "total_tokens": total,
+        "completion_tokens_details.reasoning_tokens": 53,
+    }
     assert not state.hard_quota.enabled
 
 

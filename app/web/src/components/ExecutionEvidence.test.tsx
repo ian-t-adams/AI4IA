@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import type { ExecutionReceipt, ModelCallEvidence, ReceiptCostSummary } from "@/lib/types";
 import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
 import tokenUsageAccounting from "../../test-fixtures/token_usage_accounting.json";
+import nativeUsageDetails from "../../test-fixtures/native_usage_details.json";
 
 afterEach(cleanup);
 
@@ -248,6 +249,62 @@ it("does not derive missing per-call totals or reclassify saved historical costs
   expect(screen.getByText("Estimated $0.0080")).toBeInTheDocument();
   expect(screen.queryByText(/Reported total differs/)).toBeNull();
   expect(screen.queryByText(/1250 total tokens/)).toBeNull();
+  expect(screen.queryByText("Native usage fields")).toBeNull();
+});
+
+it.each(nativeUsageDetails.cases)("keeps $name native evidence separate from interpreted costs", async (fixture) => {
+  const modelCall: ModelCallEvidence = {
+    ...call(1, 1024),
+    api: fixture.api === "responses" ? "responses" : "chat",
+    nativeUsage: {
+      api: fixture.api === "responses" ? "responses" : "chat",
+      semantics: "provider_reported",
+      status: fixture.status === "partial" ? "partial" : "reported",
+      values: fixture.values,
+      invalidFields: fixture.status === "partial"
+        ? ["input_tokens_details.cached_tokens", "output_tokens_details.reasoning_tokens"] : [],
+    },
+    cost: {
+      ...call(1, 1024).cost,
+      coverage: fixture.costKnown ? "known" : "unknown",
+      estCostMicroUsd: fixture.costKnown ? 4000 : null,
+      reason: fixture.costKnown ? null : "usage_totals_mismatch",
+    },
+  };
+  render(<ExecutionReceiptPanel receipt={receipt({
+    runtime: { modelCalls: [modelCall], modelCallCount: 1 },
+  })} embedded />);
+  await userEvent.click(screen.getByText("Model calls and parameters"));
+  await userEvent.click(screen.getByText(`Model call 1 · ${fixture.api} · recorded`));
+  const summary = screen.getByText("Native usage fields");
+  const panel = within(summary.parentElement!);
+  expect(summary.parentElement).not.toHaveAttribute("open");
+  await userEvent.click(summary);
+  expect(panel.getByText(/Categories may overlap/)).toBeVisible();
+  expect(panel.getByText(/do not reconcile cost or establish Azure billed charges/)).toBeVisible();
+  for (const [field, value] of Object.entries(fixture.values)) {
+    expect(panel.getByText(field).parentElement).toHaveTextContent(String(value));
+  }
+  for (const field of fixture.invalidFields) {
+    expect(panel.getByText(field).parentElement).toHaveTextContent("Invalid value (not retained)");
+  }
+  if (fixture.name === "unreported-breakdown-and-total") {
+    expect(panel.queryByText("total_tokens")).toBeNull();
+    expect(panel.queryByText("completion_tokens_details.reasoning_tokens")).toBeNull();
+  }
+  expect(screen.getByText("Call cost").parentElement).toHaveTextContent(fixture.costKnown ? "Estimated" : "Unknown");
+});
+
+it.each(["unreported", "invalid"] as const)("labels an %s native usage object without fake zero values", (status) => {
+  render(<ExecutionReceiptPanel receipt={receipt({
+    runtime: { modelCalls: [{
+      ...call(1, 1024),
+      nativeUsage: { api: "chat", semantics: "provider_reported", status, values: {}, invalidFields: [] },
+    }] },
+  })} embedded />);
+  expect(screen.getByText(status === "invalid"
+    ? "Invalid native usage object (not retained)." : "No allowlisted numeric fields reported.")).toBeInTheDocument();
+  expect(screen.queryByText("reasoning_tokens")).toBeNull();
 });
 
 it("uses the same recorded controls and cost in delegated and workflow step receipts", () => {
