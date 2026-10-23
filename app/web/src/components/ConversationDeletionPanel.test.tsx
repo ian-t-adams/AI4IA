@@ -179,6 +179,22 @@ describe("owner-resumed conversation deletion", () => {
     expect(writes()).toHaveLength(1);
   });
 
+  it("keeps an unconfirmed pass blocked until a refresh actually observes that request", async () => {
+    fetchMock.mockResolvedValueOnce(json(page([PENDING_DELETION])))
+      .mockRejectedValueOnce(new TypeError("Lost response"))
+      .mockResolvedValueOnce(json({ detail: "Status unavailable" }, 503))
+      .mockResolvedValueOnce(json(page([PENDING_DELETION])));
+    const user = userEvent.setup();
+    render(<ConversationDeletionPanel onShowAll={vi.fn()} onClose={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Resume cleanup" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh this deletion" }));
+    expect(await screen.findByText(/Status unavailable/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Resume cleanup" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh this deletion" }));
+    expect(await screen.findByRole("button", { name: "Resume cleanup" })).toBeEnabled();
+    expect(writes()).toHaveLength(1);
+  });
+
   describe("concise deletion notices", () => {
     const callbacks = () => ({ onFinish: vi.fn(), onOpen: vi.fn(), onDismiss: vi.fn() });
 

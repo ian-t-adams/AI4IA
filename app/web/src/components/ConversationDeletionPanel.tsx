@@ -205,6 +205,9 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
           ? [...new Map([...current.items, ...result.items].map((item) => [item.sessionId, item])).values()]
           : result.items,
       }));
+      setActions((current) => Object.fromEntries(
+        Object.entries(current).filter(([id]) => !result.items.some((item) => item.sessionId === id)),
+      ));
     } catch (reason) {
       if (isCurrent()) setError(`Couldn't ${cursor ? "load more deletion requests" : "load deletion status"}. ${apiErrorDetail(reason)} Use Refresh status to try again; any progress shown is last observed.`);
     } finally {
@@ -225,7 +228,6 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
     readRef.current = request;
     setReading(true);
     setError(null);
-    if (!cursor) setActions({});
     void load(request, cursor);
   };
 
