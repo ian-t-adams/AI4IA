@@ -348,6 +348,28 @@ describe("using an avatar in Voice Live", () => {
   });
 });
 
+describe.each(["dialog", "page"] as const)("%s focus ownership", (variant) => {
+  it.each([
+    ["New avatar", "Name"],
+    ["Delete Host A", "Keep"],
+  ])("keeps %s's chosen control focused after delayed modal autofocus", async (action, target) => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    const user = userEvent.setup();
+    render(<PhotoAvatarsPanel variant={variant} onClose={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: action }));
+    const chosen = target === "Name"
+      ? screen.getByLabelText("Name")
+      : screen.getByRole("button", { name: target });
+    expect(chosen).toHaveFocus();
+    expect(vi.getTimerCount()).toBe(variant === "dialog" ? 1 : 0);
+
+    act(() => vi.advanceTimersToNextFrame());
+
+    expect(chosen).toHaveFocus();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe("creating an avatar", () => {
   it("keeps Create disabled until every statement is attested, then sends the server's version", async () => {
     const user = userEvent.setup();
