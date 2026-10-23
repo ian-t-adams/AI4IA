@@ -193,6 +193,14 @@ updating prices does not change a saved receipt. Older receipts show parameters
 and cost as **not recorded**, rather than reconstructing them from current settings.
 Response-model metadata does not reprice the call or establish its actual billed cost.
 
+For new calls, a reported total that differs from input plus output makes cost
+**Unknown**, even when token prices are available. The call details retain the
+input, output and total counts and explain the mismatch; the app does not assign
+the difference to reasoning, cached tokens or any other billing category.
+Other fully priced calls can still contribute a **Known subtotal**.
+Previously saved estimates are not recalculated or reclassified. In particular,
+older Grok estimates with this discrepancy remain provisional, not verified bills.
+
 **These are not chain-of-thought.** They show what the application supplied and
 executed, not the model's private reasoning or proof of which source caused an
 answer. Shortened payloads retain their original redacted size and digest.

@@ -436,6 +436,24 @@ fields and render as not recorded; no migration or retrospective rewrite runs.
 Call details are bounded and keep pre-bound counts, while the complete receipt
 still fits 32 KiB, including ASCII-escaped durable-task serialization.
 
+Input/output pricing also checks the reported token total. Contradictory totals
+retain their original counts and reporting-completeness semantics, but produce
+no scalar cost: the fixed `usage_totals_mismatch` reason accompanies the unknown
+per-call estimate and ledger row. `TokenUsage.totalMismatch` survives aggregation
+and durable continuation, so opposite discrepancies cannot cancel into a priced
+aggregate. Missing native totals retain the existing input-plus-output fallback;
+historical per-call totals and mismatch reasons remain unrecorded, never inferred
+on receipt reads.
+
+This covers the [Grok observation on #609](https://github.com/ian-t-adams/AI4IA/pull/609#issuecomment-6347777508):
+reported totals of 82/80 with input/output counts of 22+5.
+[Azure's Grok API documentation](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-grok#api-endpoints)
+defines completion tokens as including reasoning tokens; it does not explain
+that discrepancy. No missing category, billed amount or provider defect is
+inferred. Existing cache-read/write coverage rules and frozen prices are
+unchanged. Previously stored estimates remain provisional where this discrepancy
+applies; there is no retrospective receipt or ledger rewrite.
+
 They are diagnostic evidence, not a complete replay log or a model's private
 reasoning. Historical receipts can retain admitted source text after a source is
 deleted, just as a past answer can. Active-store deletion is therefore not

@@ -136,6 +136,11 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    before the provider await through the shared pricing helper. Missing usage or
    prices remain unknown, and receipt reads never reprice history. New evidence
    must still fit the 32 KiB receipt budget under escaped durable serialization.
+   A reported total inconsistent with input plus output is cost-unknown, not
+   inferred reasoning or cached usage. Preserve native counts and the mismatch
+   through aggregation/continuation, even when opposite differences cancel.
+   Per-call receipt and ledger pricing share this guard; historical estimates
+   and missing per-call evidence are never rewritten on read.
    Price-document versions must survive the actual receipt identifier/redaction
    path unchanged. Keep them compact and public; never weaken credential
    redaction to preserve an overlong, token-shaped version identifier.

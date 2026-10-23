@@ -19,10 +19,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from ..catalog import DeploymentOption
 from ..hard_quota.models import MAX_ADMISSION_EVIDENCE, AdmissionEvidence
+from .pricing import CostUnknownReason
 
 UsageStatus = Literal["complete", "cancelled", "error"]
 
@@ -88,6 +89,9 @@ class TokenUsage(BaseModel):
     complete: bool = True
     # Number of model calls that contributed (1 for a plain turn, N for agents).
     calls: int = 0
+    # Retain an observed contradiction even if later calls' differences cancel.
+    # Reporting completeness is independent of input/output pricing coverage.
+    totalMismatch: bool = False
     # In-process pricing evidence only. Missing after a durable continuation is
     # unknown, not an assertion that earlier Claude input was uncached.
     cacheRead: int | None = Field(default=None, exclude=True)
@@ -129,6 +133,7 @@ class TokenUsage(BaseModel):
         )
         return cls(
             prompt=p, completion=c, total=t, known=True, complete=True, calls=1,
+            totalMismatch=t != p + c,
             cacheRead=read if valid_cache else None, cacheWrite=write if valid_cache else None,
         )
 
@@ -145,6 +150,7 @@ class TokenUsage(BaseModel):
             known=self.known or other.known,
             complete=self.complete and other.complete and (other.calls == 0 or other.known),
             calls=self.calls + other.calls,
+            totalMismatch=self.totalMismatch or other.totalMismatch,
             cacheRead=(
                 other.cacheRead if self.calls == 0 else self.cacheRead if other.calls == 0
                 else self.cacheRead + other.cacheRead
@@ -276,6 +282,7 @@ class UsageRecord(BaseModel):
     # Cost stored as integer micro-USD to avoid float drift in accumulated
     # totals; ``estCostUsd`` is a display convenience derived from it.
     costKnown: bool = False
+    costUnknownReason: CostUnknownReason | None = None
     estCostMicroUsd: int | None = None
     currency: str = "USD"
     # Snapshot of the rates used so summaries never recompute from current prices.
@@ -290,6 +297,13 @@ class UsageRecord(BaseModel):
     hardQuota: tuple[AdmissionEvidence, ...] = Field(default=(), max_length=MAX_ADMISSION_EVIDENCE)
     hardQuotaCount: int | None = Field(default=None, ge=0)
     createdAt: datetime = Field(default_factory=_now)
+
+    @model_serializer(mode="wrap")
+    def preserve_cost_history(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        result = handler(self)
+        if result.get("costUnknownReason") is None:
+            result.pop("costUnknownReason", None)
+        return result
 
     @model_validator(mode="before")
     @classmethod

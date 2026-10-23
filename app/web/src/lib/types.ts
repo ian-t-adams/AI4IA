@@ -349,6 +349,7 @@ export interface EffectiveModelParameters {
 
 export interface ModelCostEstimate {
   coverage: "known" | "unknown";
+  reason?: "usage_totals_mismatch" | null;
   estCostMicroUsd?: number | null;
   currency: "USD";
   pricingBasis: "input_output_tokens";
@@ -386,6 +387,7 @@ export interface ModelCallEvidence {
   usageComplete: boolean;
   promptTokens?: number | null;
   completionTokens?: number | null;
+  totalTokens?: number | null;
   cost: ModelCostEstimate;
 }
 

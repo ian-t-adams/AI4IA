@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from ai4ia_api.usage.models import (
     TokenUsage,
     UsageRecord,
@@ -44,6 +46,38 @@ def test_parse_malformed_numeric_fields_never_raises():
 def test_parse_derives_total_when_absent():
     tu = TokenUsage.parse({"prompt_tokens": 7, "completion_tokens": 3})
     assert tu.total == 10 and tu.known is True
+
+
+@pytest.mark.parametrize("total", [82, 80, 26, 27])
+def test_total_mismatch_preserves_the_reported_counts_and_reporting_completeness(total):
+    usage = TokenUsage.parse({"prompt_tokens": 22, "completion_tokens": 5, "total_tokens": total})
+    assert (usage.prompt, usage.completion, usage.total) == (22, 5, total)
+    assert usage.known and usage.complete and usage.calls == 1
+    assert usage.totalMismatch is (total != 27)
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_offsetting_mismatches_cannot_disappear_in_aggregation_or_durable_roundtrip(mismatch):
+    from ai4ia_api.workflows.durable import _merge_usage, _usage_from_dict, _usage_to_dict
+
+    first = TokenUsage.parse({
+        "prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 82 if mismatch else 27,
+    })
+    second = TokenUsage.parse({
+        "prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 50 if mismatch else 105,
+    })
+    aggregate = TokenUsage.empty().add(first).add(second)
+    assert aggregate.total == aggregate.prompt + aggregate.completion == 132
+    assert aggregate.totalMismatch is mismatch
+    restored = TokenUsage.model_validate_json(aggregate.model_dump_json())
+    assert restored.totalMismatch is mismatch
+    assert restored.add(TokenUsage.empty()).totalMismatch is mismatch
+    assert TokenUsage.empty().add(restored).totalMismatch is mismatch
+    merged = _merge_usage(_usage_to_dict(first), _usage_to_dict(second))
+    assert _usage_from_dict(merged) == restored
+    assert merged.get("totalMismatch", False) is mismatch
+    if not mismatch:
+        assert "totalMismatch" not in merged
 
 
 def test_add_all_known_stays_complete():
