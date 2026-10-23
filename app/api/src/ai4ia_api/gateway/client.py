@@ -39,6 +39,7 @@ from ..model_traits import (
     supports_sampling,
 )
 from ..safety import MessageSafety, parse_safety
+from ..usage.native import capture_usage
 from .anthropic import (
     ANTHROPIC_API,
     MAX_TOKENS_STOP,
@@ -46,6 +47,7 @@ from .anthropic import (
     anthropic_json_to_chat,
     build_anthropic_payload,
     parse_anthropic_event,
+    require_text_only,
 )
 from .priority import PRIORITY_HEADER, get_request_priority
 from .attempts import (
@@ -332,10 +334,10 @@ def _responses_text(obj: dict[str, Any]) -> str:
 
 def _responses_usage_to_chat(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     """Translate Responses usage -> chat-completions usage keys so the existing
-    ``TokenUsage.parse`` meters Responses turns unchanged. Carries the reasoning
-    token count through for audit (parse ignores unknown keys)."""
+    ``TokenUsage.parse`` meters Responses turns unchanged. Native numeric
+    evidence keeps its original paths separately from this compatibility shape."""
     if not isinstance(usage, dict):
-        return None
+        return capture_usage(usage, api="responses")
     mapped: dict[str, Any] = {
         "prompt_tokens": usage.get("input_tokens"),
         "completion_tokens": usage.get("output_tokens"),
@@ -346,7 +348,7 @@ def _responses_usage_to_chat(usage: dict[str, Any] | None) -> dict[str, Any] | N
         mapped["completion_tokens_details"] = {
             "reasoning_tokens": details["reasoning_tokens"]
         }
-    return mapped
+    return capture_usage(usage, api="responses", mapped=mapped)
 
 
 def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
@@ -696,6 +698,8 @@ class ModelGatewayClient:
                             usage = anthropic_json_to_chat(body).get("usage")
                         elif surface == "embedding" and isinstance(usage, dict):
                             usage = {**usage, "completion_tokens": 0}
+                        elif surface == "chat":
+                            usage = capture_usage(usage, api="chat")
                 admission.report(usage)
                 if evidence is not None:
                     evidence.report_usage(usage, completed=True)
@@ -801,6 +805,8 @@ class ModelGatewayClient:
         profile = load_catalog(self._catalog_path).for_deployment(deployment)
         if profile is not None and profile.api == "decision":
             raise ValueError("Decision deployments cannot serve chat.")
+        if profile is not None and profile.conversational and not profile.supportsTools:
+            require_text_only(messages, body, profile="catalog")
         _normalize_params_for_deployment(body, deployment, profile)
         if stream:
             body["stream"] = True
@@ -1526,6 +1532,9 @@ class ModelGatewayClient:
                     err = (data.get("error") or {}).get("message")
                     raise ModelGatewayError(502, err or _REQUEST_FAILED)
                 data = anthropic_json_to_chat(data)
+            elif "usage" in data:
+                data["usage"] = capture_usage(data["usage"], api="chat")
+            _remove_reasoning_content(data)
             if evidence is not None:
                 evidence.report_usage(data.get("usage"), completed=True)
             telemetry.usage(data.get("usage"), completed=True)
@@ -1832,6 +1841,20 @@ class ModelGatewayClient:
                 await client.aclose()
 
 
+def _remove_reasoning_content(payload: dict[str, Any]) -> bool:
+    """Keep native numerical usage, never deliver or retain private reasoning."""
+    changed = False
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        for key in ("message", "delta"):
+            part = choice.get(key)
+            if isinstance(part, dict) and "reasoning_content" in part:
+                part.pop("reasoning_content")
+                changed = True
+    return changed
+
+
 def parse_sse_line(
     line: str, *, telemetry: ModelSpan | None = None, evidence: CapturedModelCall | None = None,
 ) -> ChatChunk | None:
@@ -1847,6 +1870,8 @@ def parse_sse_line(
         obj = json.loads(payload)
     except json.JSONDecodeError:
         return ChatChunk(raw=payload)
+    if isinstance(obj, dict) and _remove_reasoning_content(obj):
+        payload = json.dumps(obj)
     if telemetry is not None and isinstance(obj, dict):
         telemetry.response_metadata(obj)
     if evidence is not None and isinstance(obj, dict):
@@ -1861,7 +1886,8 @@ def parse_sse_line(
     # The final usage chunk (when include_usage is set) has empty ``choices`` and
     # a populated ``usage`` object; surface it so the caller can meter the turn.
     return ChatChunk(
-        delta=delta, raw=payload, usage=obj.get("usage"), safety=parse_safety(obj)
+        delta=delta, raw=payload, usage=capture_usage(obj.get("usage"), api="chat"),
+        safety=parse_safety(obj),
     )
 
 

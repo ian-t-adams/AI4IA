@@ -108,7 +108,10 @@ export function ParamControls({
               How long this model thinks before it starts writing the reply. Higher
               effort spends more hidden reasoning tokens, which usually improves
               hard analytical and coding answers but costs more and takes longer.
-              &ldquo;Model default&rdquo; leaves the choice to the model. For
+              {model?.defaultReasoningEffort
+                ? <>The model default sends {model.defaultReasoningEffort} effort. </>
+                : <>&ldquo;Model default&rdquo; uses the provider profile&apos;s default. </>}
+              For
               straightforward questions a lower setting is often just as good and
               noticeably faster.
             </HelpTooltip>

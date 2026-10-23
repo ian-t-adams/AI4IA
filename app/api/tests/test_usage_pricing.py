@@ -161,13 +161,14 @@ def test_catalog_free_view_prices_every_deployment_free_lookup_identically():
     # (their base `models` rows must not leak through), and only the catalog
     # book prices an exact deployment.
     for model_id, sku_rates in scoped.items():
-        assert model_id in raw["models"]
+        assert model_id in raw["models"] or all("longContext" in rate for rate in sku_rates.values())
         assert full.rate(model_id) is None and view.rate(model_id) is None
         entry = load_catalog().get(model_id)
         assert entry is not None
         for option in (option for option in entry.options if option.sku in sku_rates):
-            assert full.rate(model_id, deployment=option.deploymentName) is not None
-            assert view.rate(model_id, deployment=option.deploymentName) is None
+            for prompt in (0, 100_000, 100_001, 1_000_000):
+                assert full.rate(model_id, deployment=option.deploymentName, prompt_tokens=prompt) is not None
+                assert view.rate(model_id, deployment=option.deploymentName, prompt_tokens=prompt) is None
 
 
 def test_catalog_free_view_never_imports_the_catalog_or_application_settings():
@@ -492,7 +493,7 @@ def test_every_token_billed_catalog_model_has_a_price() -> None:
             model["name"], deployment=(
                 f"{model['name']}-{catalog['naming']['subscriptionToken']}-{deployment['region']}"
                 f"-{catalog['naming']['skuShort'][deployment['sku']]}"
-            ),
+            ), prompt_tokens=0,
         ) is None
     )
     assert not missing, (

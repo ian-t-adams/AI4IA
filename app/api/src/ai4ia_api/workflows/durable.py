@@ -981,6 +981,7 @@ def _usage_to_dict(usage: TokenUsage) -> dict[str, Any]:
         "complete": usage.complete,
         "calls": usage.calls,
         **({"totalMismatch": True} if usage.totalMismatch else {}),
+        **({"nativeUsage": usage.nativeUsage.model_dump(mode="json")} if usage.nativeUsage else {}),
     }
 
 
@@ -1039,6 +1040,7 @@ def _usage_from_dict(raw: dict[str, Any]) -> TokenUsage:
         complete=bool(raw.get("complete", True)),
         calls=raw.get("calls") or 0,
         totalMismatch=bool(raw.get("totalMismatch", False)),
+        nativeUsage=raw.get("nativeUsage"),
     )
 
 

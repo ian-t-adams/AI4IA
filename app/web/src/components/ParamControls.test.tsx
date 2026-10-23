@@ -112,6 +112,13 @@ describe("ParamControls", () => {
     expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
   });
 
+  it.each(["medium", "high"] as const)("explains the catalog-owned %s default without selecting it", async (effort) => {
+    setup({}, { ...MODEL, defaultReasoningEffort: effort, reasoningEffortOptions: ["low", "medium", "high"] });
+    expect(screen.getByLabelText("Reasoning effort")).toHaveValue("");
+    await userEvent.click(screen.getByRole("button", { name: "Help: Reasoning effort" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent(`The model default sends ${effort} effort.`);
+  });
+
   it("offers exactly the reasoning-effort values the server says the model allows", () => {
     const reasoning: ModelEntry = {
       ...MODEL,

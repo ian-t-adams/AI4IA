@@ -31,6 +31,7 @@ export interface ModelEntry {
   deploymentTarget?: "source" | "external-claude";
   // External Claude profile: "adaptive" is text-only (supportsTools is false).
   anthropicThinking?: "disabled" | "adaptive" | null;
+  defaultReasoningEffort?: "low" | "medium" | "high" | null;
   requiredRealtimeProtocol?: "ga" | null;
   // True for text-chat models offered in the chat/agent pickers; false for
   // capability models (image, video, tts, transcription, embedding, rerank) and
@@ -373,6 +374,23 @@ export interface ReceiptCostSummary {
   priceVersionsTruncated: boolean;
 }
 
+export type NativeUsageField =
+  | "prompt_tokens" | "completion_tokens" | "total_tokens"
+  | "prompt_tokens_details.text_tokens" | "prompt_tokens_details.cached_tokens"
+  | "prompt_tokens_details.audio_tokens" | "prompt_tokens_details.image_tokens"
+  | "completion_tokens_details.reasoning_tokens" | "completion_tokens_details.audio_tokens"
+  | "completion_tokens_details.accepted_prediction_tokens" | "completion_tokens_details.rejected_prediction_tokens"
+  | "input_tokens" | "output_tokens" | "input_tokens_details.cached_tokens"
+  | "output_tokens_details.reasoning_tokens" | "cost_in_usd_ticks" | "cost_in_nano_usd";
+
+export interface NativeUsage {
+  api: "chat" | "responses";
+  semantics: "provider_reported";
+  status: "reported" | "partial" | "invalid" | "unreported";
+  values: Partial<Record<NativeUsageField, number>>;
+  invalidFields: NativeUsageField[];
+}
+
 export interface ModelCallEvidence {
   iteration: number;
   scope: "application_effective";
@@ -392,6 +410,7 @@ export interface ModelCallEvidence {
   promptTokens?: number | null;
   completionTokens?: number | null;
   totalTokens?: number | null;
+  nativeUsage?: NativeUsage | null;
   cost: ModelCostEstimate;
 }
 

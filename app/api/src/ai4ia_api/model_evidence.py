@@ -14,11 +14,14 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, ValidationError, model_serializer,
+)
 
 from .agents.tools import redact
 from .hard_quota.models import AdmissionEvidence
 from .usage.models import TokenUsage
+from .usage.native import NativeUsage
 from .usage.pricing import CostUnknownReason, PricingBook
 
 if TYPE_CHECKING:
@@ -106,8 +109,16 @@ class ModelCallEvidence(_Evidence):
     promptTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
     completionTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
     totalTokens: int | None = Field(default=None, ge=0, le=_MAX_SAFE_INTEGER, strict=True)
+    nativeUsage: NativeUsage | None = None
     cost: ModelCostEstimate = Field(default_factory=ModelCostEstimate)
     admissions: tuple[AdmissionEvidence, ...] = Field(default=(), max_length=2)
+
+    @model_serializer(mode="wrap")
+    def preserve_native_history(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        result = handler(self)
+        if self.nativeUsage is None:
+            result.pop("nativeUsage", None)
+        return result
 
 
 def _identifier(value: str | None) -> str | None:
@@ -162,14 +173,15 @@ def _parameters(body: dict[str, Any]) -> tuple[EffectiveModelParameters, bool]:
 def _usage(raw: dict[str, Any] | None) -> TokenUsage:
     # TokenUsage's legacy parser accepts totals-only reports. Those cannot price
     # input/output independently, so they must not turn into a free estimate.
+    parsed = TokenUsage.parse(raw)
     if not isinstance(raw, dict) or not all(
         isinstance(raw.get(key), int)
         and not isinstance(raw[key], bool)
         and 0 <= raw[key] <= _MAX_SAFE_INTEGER
         for key in ("prompt_tokens", "completion_tokens")
     ):
-        return TokenUsage.parse(None)
-    return TokenUsage.parse(raw)
+        return TokenUsage(known=False, complete=False, calls=1, nativeUsage=parsed.nativeUsage)
+    return parsed
 
 
 def _api(value: str) -> ModelApi:
@@ -295,7 +307,9 @@ class CapturedModelCall:
         self.completed = self.completed or completed
 
     def snapshot(self) -> ModelCallEvidence:
-        rate = self.pricing.rate(self.model_id or "")
+        rate = self.pricing.rate(
+            self.model_id or "", prompt_tokens=self.usage.prompt if self.usage.known else None,
+        )
         rates_valid = self.pricing.currency == "USD" and (
             rate is None or all(
                 math.isfinite(value) and 0 <= value <= _MAX_PRICE_RATE
@@ -336,6 +350,7 @@ class CapturedModelCall:
                 self.usage.total
                 if self.usage.known and 0 <= self.usage.total <= _MAX_SAFE_INTEGER else None
             ),
+            nativeUsage=self.usage.nativeUsage.calls[0] if self.usage.nativeUsage else None,
             cost=ModelCostEstimate(
                 coverage="known" if known else "unknown",
                 reason=estimate.reason,

@@ -133,6 +133,7 @@ class UsageService:
             promptTokens=usage.prompt if usage.known else None,
             completionTokens=usage.completion if usage.known else None,
             totalTokens=usage.total if usage.known else None,
+            nativeUsage=usage.nativeUsage,
             billableUnits=float(unit_count) if unit_count is not None else None,
             billingUnit=billing_unit if unit_billable else None,
             imageSize=image_size,
@@ -190,6 +191,7 @@ class UsageService:
                 deployment=descriptor.deployment,
                 cache_read_tokens=usage.cacheRead,
                 cache_write_tokens=usage.cacheWrite,
+                calls=usage.calls,
             )
             rec.currency = est.currency
             rec.priceVersion = est.version

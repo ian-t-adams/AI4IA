@@ -241,7 +241,7 @@ async def stream_iteration(
     if api != "chat":
         stream_kwargs["api"] = api
     async for chunk in gateway.stream(**stream_kwargs):
-        if chunk.usage:
+        if chunk.usage is not None:
             usage = chunk.usage
             if on_usage is not None:
                 on_usage(chunk.usage)

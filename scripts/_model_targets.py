@@ -10,6 +10,12 @@ def model_target(model: dict[str, Any]) -> ModelTarget:
     value = model.get("deploymentTarget", "source")
     if value not in ("source", "external-claude"):
         raise ValueError("unsupported model deploymentTarget")
+    default_effort = model.get("defaultReasoningEffort")
+    if "defaultReasoningEffort" in model and (
+        value != "external-claude" or default_effort not in ("low", "medium", "high")
+        or default_effort not in (model.get("reasoningEffort") or [])
+    ):
+        raise ValueError("defaultReasoningEffort requires an offered external Claude effort")
     if model.get("format") == "Anthropic" and value != "external-claude":
         raise ValueError("Anthropic catalog rows require the explicit external-claude target")
     if value == "external-claude":

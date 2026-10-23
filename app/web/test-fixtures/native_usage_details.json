@@ -1,0 +1,120 @@
+{
+  "cases": [
+    {
+      "name": "synthetic-exclusive-reasoning",
+      "api": "chat",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 9,
+        "total_tokens": 135,
+        "prompt_tokens_details": { "cached_tokens": 6 },
+        "completion_tokens_details": { "reasoning_tokens": 94 },
+        "cost_in_usd_ticks": 12345
+      },
+      "values": {
+        "prompt_tokens": 32,
+        "completion_tokens": 9,
+        "total_tokens": 135,
+        "prompt_tokens_details.cached_tokens": 6,
+        "completion_tokens_details.reasoning_tokens": 94,
+        "cost_in_usd_ticks": 12345
+      },
+      "invalidFields": [],
+      "status": "reported",
+      "costKnown": false
+    },
+    {
+      "name": "synthetic-inclusive-reasoning",
+      "api": "chat",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 103,
+        "total_tokens": 135,
+        "completion_tokens_details": { "reasoning_tokens": 94 }
+      },
+      "values": {
+        "prompt_tokens": 32,
+        "completion_tokens": 103,
+        "total_tokens": 135,
+        "completion_tokens_details.reasoning_tokens": 94
+      },
+      "invalidFields": [],
+      "status": "reported",
+      "costKnown": true
+    },
+    {
+      "name": "synthetic-responses-reasoning",
+      "api": "responses",
+      "usage": {
+        "input_tokens": 32,
+        "output_tokens": 9,
+        "total_tokens": 151,
+        "input_tokens_details": { "cached_tokens": 8 },
+        "output_tokens_details": { "reasoning_tokens": 110 }
+      },
+      "values": {
+        "input_tokens": 32,
+        "output_tokens": 9,
+        "total_tokens": 151,
+        "input_tokens_details.cached_tokens": 8,
+        "output_tokens_details.reasoning_tokens": 110
+      },
+      "invalidFields": [],
+      "status": "reported",
+      "costKnown": false
+    },
+    {
+      "name": "synthetic-cache-subset-and-explicit-zero",
+      "api": "chat",
+      "usage": {
+        "prompt_tokens": 125,
+        "completion_tokens": 48,
+        "total_tokens": 173,
+        "prompt_tokens_details": {
+          "text_tokens": 125,
+          "cached_tokens": 98,
+          "audio_tokens": 0,
+          "image_tokens": 0
+        },
+        "completion_tokens_details": { "reasoning_tokens": 0 }
+      },
+      "values": {
+        "prompt_tokens": 125,
+        "completion_tokens": 48,
+        "total_tokens": 173,
+        "prompt_tokens_details.text_tokens": 125,
+        "prompt_tokens_details.cached_tokens": 98,
+        "prompt_tokens_details.audio_tokens": 0,
+        "prompt_tokens_details.image_tokens": 0,
+        "completion_tokens_details.reasoning_tokens": 0
+      },
+      "invalidFields": [],
+      "status": "reported",
+      "costKnown": true
+    },
+    {
+      "name": "unreported-breakdown-and-total",
+      "api": "chat",
+      "usage": { "prompt_tokens": 22, "completion_tokens": 5 },
+      "values": { "prompt_tokens": 22, "completion_tokens": 5 },
+      "invalidFields": [],
+      "status": "reported",
+      "costKnown": true
+    },
+    {
+      "name": "malformed-responses-detail",
+      "api": "responses",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 5,
+        "total_tokens": 80,
+        "output_tokens_details": { "reasoning_tokens": -1 },
+        "input_tokens_details": "not-a-numeric-detail-object"
+      },
+      "values": { "input_tokens": 22, "output_tokens": 5, "total_tokens": 80 },
+      "invalidFields": ["input_tokens_details.cached_tokens", "output_tokens_details.reasoning_tokens"],
+      "status": "partial",
+      "costKnown": false
+    }
+  ]
+}

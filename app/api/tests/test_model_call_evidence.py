@@ -702,11 +702,13 @@ def test_nonstream_cancellation_keeps_the_accepted_turn_receipt(content):
 
 @pytest.mark.parametrize("quota", [False, True])
 @pytest.mark.parametrize("mismatch", [False, True])
-def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota, mismatch):
+@pytest.mark.parametrize("native", [False, True])
+def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota, mismatch, native):
     from ai4ia_api.agents.runtime import AgentStep
     from ai4ia_api.model_evidence import MAX_RECORDED_MODEL_CALLS
     from ai4ia_api.receipts import ReceiptRuntime
     from ai4ia_api.hard_quota.models import AdmissionEvidence, Amounts
+    from ai4ia_api.usage.native import MAX_NATIVE_USAGE_VALUE, capture_usage
 
     evidence = ModelCallRecorder(
         model_id="model", deployment="deployment",
@@ -715,10 +717,23 @@ def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota, m
     for _ in range(MAX_RECORDED_MODEL_CALLS + 1):
         call = evidence.start("deployment", "responses")
         call.request({"max_output_tokens": 16384, "reasoning": {"effort": "high"}})
-        call.report_usage({
+        raw_usage = {
             "prompt_tokens": 1000, "completion_tokens": 250,
             "total_tokens": 1251 if mismatch else 1250,
-        }, completed=True)
+        }
+        if native:
+            raw_usage.update({
+                "prompt_tokens_details": {
+                    key: MAX_NATIVE_USAGE_VALUE for key in ("text_tokens", "cached_tokens", "audio_tokens", "image_tokens")
+                },
+                "completion_tokens_details": {
+                    key: MAX_NATIVE_USAGE_VALUE for key in (
+                        "reasoning_tokens", "audio_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens",
+                    )
+                },
+                "cost_in_usd_ticks": MAX_NATIVE_USAGE_VALUE,
+            })
+        call.report_usage(capture_usage(raw_usage, api="chat") if native else raw_usage, completed=True)
         if quota:
             for index in range(2):
                 call.report_admission(AdmissionEvidence(
@@ -752,6 +767,8 @@ def test_full_receipt_remains_bounded_with_all_evidence_lists_populated(quota, m
     assert saved.usage.cost.priceVersions == ("bounds-v1",)
     assert saved.runtime.modelCalls[0].totalTokens == (1251 if mismatch else 1250)
     assert saved.runtime.modelCalls[0].cost.reason == ("usage_totals_mismatch" if mismatch else None)
+    if native:
+        assert saved.runtime.modelCalls[0].nativeUsage.values["cost_in_usd_ticks"] == MAX_NATIVE_USAGE_VALUE
     if quota:
         assert saved.runtime.modelCalls[0].admissions
     small = ReceiptDraft(model_evidence=ModelCallRecorder()).build()
@@ -828,7 +845,10 @@ def test_durable_step_and_persistence_never_reprice_recorded_evidence(mismatch):
 
     def respond(_body, _index, result):
         if mismatch:
-            result["usage"] = {"prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 82}
+            result["usage"] = {
+                "prompt_tokens": 22, "completion_tokens": 5, "total_tokens": 82,
+                "completion_tokens_details": {"reasoning_tokens": 55},
+            }
         return result
 
     with transport_client(respond=respond) as (client, requests):
@@ -857,6 +877,7 @@ def test_durable_step_and_persistence_never_reprice_recorded_evidence(mismatch):
         ))
         before = outcome["result"]["receipt"]
         assert outcome["usage"].get("totalMismatch", False) is mismatch
+        assert outcome["usage"]["nativeUsage"]["calls"][0] == before["runtime"]["modelCalls"][0]["nativeUsage"]
         assert len(requests) == 1
         assert before["runtime"]["modelCalls"][0]["parameterSource"] == "workflow_default"
         state.usage._pricing = PricingBook(

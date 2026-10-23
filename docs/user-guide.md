@@ -255,6 +255,16 @@ Other fully priced calls can still contribute a **Known subtotal**.
 Previously saved estimates are not recalculated or reclassified. In particular,
 older Grok estimates with this discrepancy remain provisional, not verified bills.
 
+For new Chat Completions and Responses calls, **Native usage fields** inside
+each model-call detail shows a small numeric-only selection from the provider's
+usage object, using its original field names. It is collapsed by default.
+Missing fields are not zero; invalid values are labelled without retaining
+their contents. A reported `reasoning_tokens` count is a count, not reasoning
+text, and may already be included in another count. These fields do not explain
+an inconsistent total or change its cost estimate. Reported cost ticks or
+nano-USD are not verified Azure charges and are not converted or added to spend.
+Older receipts do not acquire this evidence on read.
+
 **These are not chain-of-thought.** They show what the application supplied and
 executed, not the model's private reasoning or proof of which source caused an
 answer. Shortened payloads retain their original redacted size and digest.
