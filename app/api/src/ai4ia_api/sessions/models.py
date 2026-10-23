@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, ValidationError, field_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, ValidationError, field_validator, model_serializer
 
 from ..agents.approvals import PendingToolApproval
 from ..agents.consent import ToolConsentState, ToolConsentSummary
@@ -21,6 +21,7 @@ from ..citations import MessageCitation, RetrievedSource
 from ..receipts import ExecutionReceipt
 from ..safety import MessageSafety
 from ..publishing.refs import AssetVersionRef, publication_handle
+from .chat_continuation import ChatContinuation
 
 
 def _now() -> datetime:
@@ -119,9 +120,19 @@ class ActivityStep(BaseModel):
     label: str
     tool: str | None = None
     detail: str | None = None
+    operationId: str | None = Field(default=None, max_length=30)
 
 
 class Message(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    @field_validator("chatContinuation", mode="before")
+    @classmethod
+    def complete_private_continuation(cls, value):
+        if value is None or isinstance(value, ChatContinuation):
+            return value
+        return ChatContinuation.from_persisted(value)
+
     id: str = Field(default_factory=_new_id)
     sessionId: str
     userId: str
@@ -185,6 +196,8 @@ class Message(BaseModel):
     # Additive and optional exactly like ``steps``/``safety``: existing Cosmos
     # documents lack the field and deserialize to None, so no migration.
     pendingApprovals: list[PendingToolApproval] | None = None
+    chatContinuation: ChatContinuation | None = Field(default=None, exclude=True)
+    continuationStatus: str | None = None
     # Span-level citation provenance for this turn (audit P1-14). ``sources`` is
     # the server-minted registry of retrieval spans that were injected — what the
     # answer *could* have cited — and ``citations`` records what it actually did

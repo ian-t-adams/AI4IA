@@ -227,6 +227,7 @@ def _make_handler(
             raise ToolExecutionError("MCP tool-call budget exhausted for this turn.")
 
         timer = obs.Timer()
+        dispatched = False
         try:
             # DNS-rebinding defense: re-validate the server host at call time with
             # the same resolver discovery used. A host that resolved public at
@@ -251,6 +252,7 @@ def _make_handler(
                 "tool.invoke", tool_name=canonical_tool_name(alias, ctx.tool_aliases),
                 tool_contract_digest=implemented_contract,
             ))
+            dispatched = True
             result = await connector.call_tool(
                 endpoint=endpoint,
                 auth=auth,
@@ -292,7 +294,7 @@ def _make_handler(
                 latency_ms=timer.ms,
                 detail=category,
             )
-            raise ToolExecutionError("MCP tool execution failed.") from exc
+            raise ToolExecutionError("MCP tool execution failed.", outcome_unknown=dispatched) from exc
 
         # Reachable: the server connected and responded. ``isError`` is a tool-level
         # result (e.g. bad arguments), NOT a connectivity failure, so it does NOT

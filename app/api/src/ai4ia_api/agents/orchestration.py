@@ -39,9 +39,11 @@ from .agent_catalog import AgentCatalog, AgentSpec
 from .runtime import (
     AgentRunCancelled,
     AgentRunFailed,
+    AgentRunPaused,
     AgentRunResult,
     DelegatedAgentRunFailed,
     DelegatedAgentRunCancelled,
+    DelegatedAgentRunPaused,
     DelegatedRunTrace,
     DelegatedToolResult,
     run_agent_turn,
@@ -170,6 +172,12 @@ def build_delegate_capability(
             return {"error": f"agent '{target_name}' is unavailable."}
 
         budget["used"] += 1
+        checkpoint = None
+        invocation_approvals = frozenset()
+        if ctx.child_checkpoint is not None:
+            checkpoint, invocation_approvals = await ctx.child_checkpoint({
+                "agent": target.model_dump(mode="json"), "deployment": deployment, "api": api,
+            })
         sub_messages = [
             {"role": "system", "content": target.systemPrompt},
             {"role": "user", "content": task},
@@ -180,6 +188,10 @@ def build_delegate_capability(
             untrusted_context=True,
             approval_sink=ctx.approval_sink,
             consent_checker=ctx.consent_checker,
+            invocation_approvals=invocation_approvals,
+            turn_budgets={} if checkpoint is not None else None,
+            prepare_model_context=ctx.prepare_model_context,
+            capture_memory_context=ctx.capture_memory_context,
         )
         sub_offered_tools = executor.schema_for(
             target.tools,
@@ -229,7 +241,20 @@ def build_delegate_capability(
                 api=api,
                 model_evidence=evidence,
                 retain_failed_request=True,
+                checkpoint=checkpoint,
+                interactive_checkpoint=checkpoint is not None,
             ))
+        except AgentRunPaused as exc:
+            usage_sink.append(exc.partial.usage)
+            runtime.publication = exc.partial.publication
+            raise DelegatedAgentRunPaused(exc, DelegatedRunTrace(
+                agent=target_name, effective_prompt=exc.partial.effective_prompt,
+                model_requests=exc.partial.model_requests, offered_tools=exc.partial.offered_tools,
+                steps=exc.partial.steps, iterations=exc.partial.iterations, usage=exc.partial.usage,
+                segment_usage=exc.partial.segment_usage,
+                safety=exc.partial.safety, status="incomplete", partial=True,
+                runtime=runtime, model_evidence=exc.partial.model_evidence,
+            )) from exc
         except AgentRunCancelled as exc:
             runtime.publication = exc.partial.publication
             raise DelegatedAgentRunCancelled(
@@ -241,8 +266,9 @@ def build_delegate_capability(
                     offered_tools=exc.partial.offered_tools,
                     steps=exc.partial.steps, iterations=exc.partial.iterations,
                     usage=exc.partial.usage, safety=exc.partial.safety,
+                    segment_usage=exc.partial.segment_usage,
                     status="cancelled", partial=True,
-                    runtime=runtime, model_evidence=evidence,
+                    runtime=runtime, model_evidence=exc.partial.model_evidence or evidence,
                 ),
             ) from exc
         except AgentRunFailed as exc:
@@ -258,10 +284,11 @@ def build_delegate_capability(
                     steps=exc.partial.steps,
                     iterations=exc.partial.iterations,
                     usage=exc.partial.usage,
+                    segment_usage=exc.partial.segment_usage,
                     safety=exc.partial.safety,
                     status="error",
                     partial=True,
-                    runtime=runtime, model_evidence=evidence,
+                    runtime=runtime, model_evidence=exc.partial.model_evidence or evidence,
                 ),
             ) from exc
         except ModelGatewayError as exc:
@@ -270,6 +297,7 @@ def build_delegate_capability(
                 model=deployment,
                 iterations=1,
                 usage=TokenUsage.parse(None),
+                segment_usage=TokenUsage.parse(None),
                 effective_prompt=sub_messages,
                 model_requests=[sub_messages],
                 offered_tools=sub_offered_tools,
@@ -282,6 +310,7 @@ def build_delegate_capability(
                     effective_prompt=sub_messages,
                     iterations=1,
                     usage=partial.usage,
+                    segment_usage=partial.segment_usage,
                     status="error",
                     partial=True,
                     runtime=runtime, model_evidence=evidence,
@@ -300,10 +329,11 @@ def build_delegate_capability(
             steps=run.steps,
             iterations=run.iterations,
             usage=run.usage,
+            segment_usage=run.segment_usage,
             safety=run.safety,
             status="incomplete" if run.incomplete else "complete",
             partial=run.incomplete,
-            runtime=runtime, model_evidence=evidence,
+            runtime=runtime, model_evidence=run.model_evidence or evidence,
         )
         if run.incomplete:
             return DelegatedToolResult(

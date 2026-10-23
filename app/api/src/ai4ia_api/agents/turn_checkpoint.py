@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..model_evidence import MAX_RECORDED_MODEL_CALLS, ModelCallEvidence, ModelCallRecorder
 from ..safety import MessageSafety
 from ..usage.models import TokenUsage
+from ..receipts import ExecutionReceipt
 from .approvals import ApprovalDraft
 from .tools import ToolSpec
 
@@ -16,7 +17,7 @@ TURN_BUDGET_KEYS = frozenset({"document", "recall", "mcp", "web_calls", "web_cha
 
 
 class CheckpointResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
     content: str
     toolCalls: list[dict[str, Any]]
     outputItems: list[dict[str, Any]]
@@ -25,8 +26,15 @@ class CheckpointResponse(BaseModel):
     tail: bool = False
 
 
+class CheckpointDelegation(BaseModel):
+    agent: str
+    usage: TokenUsage
+    receipt: ExecutionReceipt
+    meteredSeparately: bool
+
+
 class TurnCheckpoint(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, hide_input_in_errors=True)
     version: Literal[1] = 1
     phase: Literal["ready", "model", "response", "tools", "finished"]
     conversation: list[dict[str, Any]]
@@ -34,8 +42,8 @@ class TurnCheckpoint(BaseModel):
     offeredTools: list[dict[str, Any]]
     contracts: dict[str, str]
     steps: list[dict[str, Any]]
-    iterations: int = Field(ge=0, le=3)
-    completedModelCalls: int = Field(ge=0, le=3)
+    iterations: int = Field(ge=0, le=5)
+    completedModelCalls: int = Field(ge=0, le=5)
     toolCallsUsed: int = Field(ge=0, le=16)
     nextToolIndex: int = Field(ge=0, le=8)
     currentToolCounted: bool
@@ -46,13 +54,15 @@ class TurnCheckpoint(BaseModel):
     deniedOnce: list[str]
     usage: TokenUsage
     effectivePrompt: list[dict[str, Any]]
-    modelRequests: list[list[dict[str, Any]]] = Field(max_length=3)
+    modelRequests: list[list[dict[str, Any]]] = Field(max_length=5)
     modelEvidence: list[ModelCallEvidence] = Field(max_length=MAX_RECORDED_MODEL_CALLS)
     modelEvidenceCount: int = Field(ge=0)
     safety: MessageSafety | None
     droppedContextMessages: int = Field(ge=0)
-    completedText: list[str] = Field(max_length=3)
+    completedText: list[str] = Field(max_length=5)
     capabilityBudgets: dict[str, int]
+    activityScope: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+    delegations: list[CheckpointDelegation] = Field(default_factory=list, max_length=8)
 
     @field_validator("capabilityBudgets", mode="before")
     @classmethod
@@ -66,7 +76,7 @@ class TurnCheckpoint(BaseModel):
 
     @classmethod
     def from_persisted(cls, raw: Any) -> TurnCheckpoint:
-        if not isinstance(raw, Mapping) or not set(cls.model_fields).issubset(raw):
+        if not isinstance(raw, Mapping) or not (set(cls.model_fields) - {"activityScope", "delegations"}).issubset(raw):
             raise ValueError("Incomplete persisted agent checkpoint.")
         return cls.model_validate(raw)
 

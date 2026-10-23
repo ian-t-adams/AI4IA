@@ -104,7 +104,7 @@ def test_plain_chat_uses_synthetic_consent_without_an_agent():
             assert response.status_code == 200, response.text
             assert len(calls) == int(enabled)
             receipt = response.json()["message"]["executionReceipt"]
-            assert receipt["toolCalls"][0]["outcome"] == ("delegate" if enabled else "denied")
+            assert receipt["toolCalls"][0]["outcome"] == ("delegate" if enabled else "waiting")
             if enabled:
                 assert receipt["toolCalls"][0]["approval"] == "session"
 

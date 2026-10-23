@@ -12,6 +12,7 @@ migration are separate acceptance states.
 |---|---|
 | Conversation title, instructions, summary, consent and associations | Replaced by minimal deletion metadata before child cleanup |
 | Messages, receipts embedded in those messages, session attachment metadata/text | Removed from the existing session partitions by bounded cleanup |
+| Private pending chat execution and its exact typed active-turn control | Removed with conversation messages; neither is a deletion fence or an enrollment marker |
 | Retained inline original bytes | Only the original authenticated owner/session prefix in the originally recorded inline Blob target |
 | Owner tombstone, closed child fences | Retained indefinitely, with no application TTL or id reuse |
 | Unresolved upload-attempt records | Retained until the original PUT conclusively returns and its completion is acknowledged; no automatic expiry |

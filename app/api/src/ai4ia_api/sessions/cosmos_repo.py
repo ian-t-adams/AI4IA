@@ -34,11 +34,14 @@ from .deletion_models import (
 from .models import (
     Document,
     Message,
+    MessageRole,
+    MessageStatus,
     Session,
     normalize_session_patch_changes,
     normalize_session_title,
 )
 from .repository import SessionConflictError, SessionNotFoundError
+from .chat_continuation import CHAT_HEAD_ID, CHAT_HEAD_KIND, is_chat_head, validate_chat_transition
 
 
 class CosmosSessionRepository(CosmosDeletionMixin):
@@ -92,6 +95,8 @@ class CosmosSessionRepository(CosmosDeletionMixin):
                     "ttl": -1,
                 })
         elif isinstance(model, Message):
+            if model.chatContinuation is not None:
+                doc["chatContinuation"] = model.chatContinuation.bounded_body()
             doc["workflowToolConsentState"] = (
                 model.workflowToolConsentState.model_dump(mode="json")
                 if model.workflowToolConsentState is not None else None
@@ -522,6 +527,7 @@ class CosmosSessionRepository(CosmosDeletionMixin):
             # and a v1 record never falls back to this unverified path.
             raise DeletionDisabledError()
         await self._owned_session(user_id, session_id)
+        await self.invalidate_chat_turn(user_id, session_id)
         # Delete child messages first (partition = sessionId).
         query = "SELECT c.id FROM c WHERE c.sessionId = @sid"
         params = [{"name": "@sid", "value": session_id}]
@@ -555,8 +561,12 @@ class CosmosSessionRepository(CosmosDeletionMixin):
             raise SessionNotFoundError(session_id) from exc
 
     async def add_message(self, user_id: str, message: Message) -> Message:
+        self._assert_child_id(message.id)
         session = await self._owned_session(user_id, message.sessionId)
         message.userId = user_id
+        if message.role is MessageRole.user:
+            await self._advance_chat_turn(user_id, message.sessionId, message)
+            return message
         if session.deletionProtocol == 1:
             self._assert_child_id(message.id)
             await self._fenced_batch(
@@ -565,6 +575,136 @@ class CosmosSessionRepository(CosmosDeletionMixin):
         else:
             await self._messages.create_item(self._to_doc(message))
         return message
+
+    async def _chat_raw(self, session_id: str, item_id: str) -> dict[str, Any] | None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+        try:
+            return await self._messages.read_item(item=item_id, partition_key=session_id)
+        except CosmosResourceNotFoundError:
+            return None
+
+    async def _chat_batch(self, session: Session, operations: list[tuple]) -> None:
+        if session.deletionProtocol == 1:
+            await self._fenced_batch(self._messages, session, operations)
+        else:
+            await self._messages.execute_item_batch(
+                batch_operations=[(op, args, dict(options)) for op, args, options in operations],
+                partition_key=session.id,
+            )
+
+    async def _advance_chat_turn(
+        self, user_id: str, session_id: str, message: Message | None,
+        *, extra_operations: list[tuple] | None = None, claim: bool = False,
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosBatchOperationError
+
+        for _ in range(CAS_ATTEMPTS):
+            session = await self._owned_session(user_id, session_id)
+            head = await self._chat_raw(session_id, CHAT_HEAD_ID)
+            if message is None and head is None:
+                return True
+            if head is not None and not is_chat_head(head, user_id, session_id):
+                raise DeletionIntegrityError("Chat turn ownership mismatch")
+            updated = {
+                "id": CHAT_HEAD_ID, "kind": CHAT_HEAD_KIND, "userId": user_id,
+                "sessionId": session_id, "turnId": message.id if message is not None else None,
+                "assistantId": None,
+            }
+            operations: list[tuple] = [
+                ("create", (updated,), {}) if head is None else
+                ("replace", (CHAT_HEAD_ID, updated), {"if_match_etag": require_etag(head)})
+            ]
+            if head is not None and isinstance(head.get("assistantId"), str):
+                prior_raw = await self._chat_raw(session_id, head["assistantId"])
+                if prior_raw is not None:
+                    prior = Message.model_validate(prior_raw)
+                    if prior.userId != user_id:
+                        raise DeletionIntegrityError("Chat message ownership mismatch")
+                    state = prior.chatContinuation
+                    if state is not None and state.payload is not None:
+                        terminal = "unknown" if state.status == "dispatched" else "cancelled"
+                        prior.chatContinuation = state.cleared(terminal, "conversation_changed")
+                        prior.continuationStatus = terminal
+                        prior.status = MessageStatus.cancelled
+                        for approval in prior.pendingApprovals or []:
+                            approval.consumed = True
+                        operations.append((
+                            "replace", (prior.id, self._to_doc(prior)),
+                            {"if_match_etag": require_etag(prior_raw)},
+                        ))
+            if message is not None:
+                operations.append(("create", (self._to_doc(message),), {}))
+            first_claim = len(operations) - 1
+            operations.extend(extra_operations or [])
+            try:
+                await self._chat_batch(session, operations)
+                return True
+            except CosmosBatchOperationError as exc:
+                offset = 1 if session.deletionProtocol == 1 else 0
+                if claim and any(
+                    batch_failed_at(exc, i + offset, 409) for i in range(first_claim, len(operations))
+                ):
+                    return False
+                if any(batch_failed_at(exc, i + offset, 404, 409, 412) for i in range(len(operations))):
+                    continue
+                raise
+        raise SessionConflictError("The conversation changed; refresh before continuing.")
+
+    async def invalidate_chat_turn(self, user_id: str, session_id: str) -> None:
+        await self._advance_chat_turn(user_id, session_id, None)
+
+    async def read_chat_assistant(
+        self, user_id: str, session_id: str, message_id: str,
+    ) -> Message | None:
+        await self._owned_session(user_id, session_id)
+        self._assert_child_id(message_id)
+        raw = await self._chat_raw(session_id, message_id)
+        if raw is None:
+            return None
+        if raw.get("userId") != user_id or raw.get("sessionId") != session_id or "kind" in raw:
+            raise DeletionIntegrityError("Chat message ownership mismatch")
+        return Message.model_validate(raw)
+
+    async def save_chat_assistant(
+        self, user_id: str, message: Message, *, expected: Message | None, turn_id: str,
+    ) -> bool:
+        from azure.cosmos.exceptions import CosmosBatchOperationError
+
+        session = await self._owned_session(user_id, message.sessionId)
+        self._assert_child_id(message.id)
+        head = await self._chat_raw(session.id, CHAT_HEAD_ID)
+        raw = await self._chat_raw(session.id, message.id)
+        original = await self._chat_raw(session.id, turn_id)
+        if (
+            head is None or not is_chat_head(head, user_id, session.id)
+            or head.get("turnId") != turn_id or head.get("assistantId") not in {None, message.id}
+            or message.userId != user_id or message.role is not MessageRole.assistant
+            or message.chatContinuation is None or message.chatContinuation.turnId != turn_id
+            or (expected is None and raw is not None)
+            or (expected is not None and (raw is None or Message.model_validate(raw) != expected))
+            or original is None or original.get("userId") != user_id or original.get("role") != "user"
+        ):
+            return False
+        body = self._to_doc(message)
+        validate_chat_transition(expected.chatContinuation if expected is not None else None, message.chatContinuation)
+        updated_head = {key: value for key, value in head.items() if not key.startswith("_")}
+        updated_head["assistantId"] = message.id
+        operations = [
+            ("replace", (CHAT_HEAD_ID, updated_head), {"if_match_etag": require_etag(head)}),
+            ("replace", (turn_id, {key: value for key, value in original.items() if not key.startswith("_")}),
+             {"if_match_etag": require_etag(original)}),
+            ("create", (body,), {}) if raw is None else
+            ("replace", (message.id, body), {"if_match_etag": require_etag(raw)}),
+        ]
+        try:
+            await self._chat_batch(session, operations)
+        except CosmosBatchOperationError as exc:
+            offset = 1 if session.deletionProtocol == 1 else 0
+            if any(batch_failed_at(exc, i + offset, 404, 409, 412) for i in range(3)):
+                return False
+            raise
+        return True
 
     async def add_message_if_summary_version(
         self, user_id: str, message: Message, *, expected_version: int
@@ -603,39 +743,17 @@ class CosmosSessionRepository(CosmosDeletionMixin):
         user_message: Message,
         pending_assistant: Message,
     ) -> bool:
-        from azure.cosmos.exceptions import CosmosBatchOperationError
-
         if user_message.sessionId != pending_assistant.sessionId:
             raise ValueError("workflow claim messages must share one session")
         session = await self._owned_session(user_id, user_message.sessionId)
         user_message.userId = user_id
         pending_assistant.userId = user_id
-        operations = [
-            ("create", (self._to_doc(user_message),), {}),
-            ("create", (self._to_doc(pending_assistant),), {}),
-        ]
-        try:
-            if session.deletionProtocol == 1:
-                self._assert_child_id(user_message.id)
-                self._assert_child_id(pending_assistant.id)
-                await self._fenced_batch(self._messages, session, operations)
-            else:
-                await self._messages.execute_item_batch(
-                    batch_operations=operations,
-                    partition_key=user_message.sessionId,
-                )
-        except CosmosBatchOperationError as exc:
-            if getattr(exc, "status_code", None) == 409:
-                return False
-            operation_responses = getattr(exc, "operation_responses", None) or []
-            if any(
-                isinstance(response, dict)
-                and response.get("statusCode") == 409
-                for response in operation_responses
-            ):
-                return False
-            raise
-        return True
+        self._assert_child_id(user_message.id)
+        self._assert_child_id(pending_assistant.id)
+        return await self._advance_chat_turn(
+            user_id, session.id, user_message,
+            extra_operations=[("create", (self._to_doc(pending_assistant),), {})], claim=True,
+        )
 
     async def replace_message_if_workflow_status(
         self,
@@ -723,8 +841,6 @@ class CosmosSessionRepository(CosmosDeletionMixin):
         self, user_id: str, user_message: Message, assistant: Message,
         checkpoint: WorkflowCheckpoint,
     ) -> bool:
-        from azure.cosmos.exceptions import CosmosBatchOperationError
-
         from ..workflows.checkpoint_contract import validate_pair
         from ..workflows.automation_models import writable_body
 
@@ -732,17 +848,12 @@ class CosmosSessionRepository(CosmosDeletionMixin):
         validate_pair(session, checkpoint, assistant, user_message=user_message)
         for item_id in (checkpoint.id, user_message.id, assistant.id):
             self._assert_child_id(item_id)
-        try:
-            await self._fenced_batch(self._messages, session, [
-                ("create", (self._to_doc(user_message),), {}),
+        return await self._advance_chat_turn(
+            user_id, session.id, user_message, extra_operations=[
                 ("create", (self._to_doc(assistant),), {}),
                 ("create", (writable_body(checkpoint),), {}),
-            ])
-        except CosmosBatchOperationError as exc:
-            if any(batch_failed_at(exc, index, 409) for index in (1, 2, 3)):
-                return False
-            raise
-        return True
+            ], claim=True,
+        )
 
     async def replace_workflow_checkpoint(
         self, user_id: str, checkpoint: WorkflowCheckpoint, assistant: Message, *,
@@ -812,8 +923,12 @@ class CosmosSessionRepository(CosmosDeletionMixin):
     async def upsert_message(self, user_id: str, message: Message) -> Message:
         from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
 
+        self._assert_child_id(message.id)
         session = await self._owned_session(user_id, message.sessionId)
         message.userId = user_id
+        existing = await self._chat_raw(message.sessionId, message.id)
+        if existing is not None and existing.get("chatContinuation") is not None:
+            raise SessionConflictError("A pending chat message requires its snapshot CAS.")
         if session.deletionProtocol != 1:
             await self._messages.upsert_item(self._to_doc(message))
             return message
@@ -947,6 +1062,7 @@ class CosmosSessionRepository(CosmosDeletionMixin):
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
         session = await self._owned_session(user_id, session_id)
+        await self.invalidate_chat_turn(user_id, session_id)
         if session.deletionProtocol == 1:
             await self._clear_workflow_checkpoints(user_id, session)
         query = (

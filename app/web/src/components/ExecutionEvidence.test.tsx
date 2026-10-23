@@ -5,9 +5,30 @@ import { afterEach, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExecutionReceipt, ModelCallEvidence, ReceiptCostSummary } from "@/lib/types";
-import { ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
+import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
 
 afterEach(cleanup);
+
+it("updates one activity row per operation without merging repeated tools or older unlinked events", () => {
+  const { container, rerender } = render(<ActivityPanel live steps={[
+    { kind: "tool_start", tool: "calculator", label: "Calculating", operationId: "first" },
+  ]} />);
+  expect(container.querySelectorAll(".activity-row")).toHaveLength(1);
+  rerender(<ActivityPanel live={false} steps={[
+    { kind: "tool_start", tool: "calculator", label: "Calculating", operationId: "first" },
+    { kind: "tool_result", tool: "calculator", label: "Calculated", operationId: "first" },
+    { kind: "tool_start", tool: "calculator", label: "Calculating", operationId: "second" },
+    { kind: "tool_error", tool: "calculator", label: "Calculation failed", operationId: "second" },
+    { kind: "tool_start", tool: "calculator", label: "Old start" },
+    { kind: "tool_result", tool: "calculator", label: "Old result" },
+  ]} />);
+  expect(container.querySelectorAll(".activity-row")).toHaveLength(4);
+  expect(screen.queryByText("Calculating")).toBeNull();
+  expect(screen.getByText("Calculated")).toBeInTheDocument();
+  expect(screen.getByText("Calculation failed")).toBeInTheDocument();
+  expect(screen.getByText("Old start")).toBeInTheDocument();
+  expect(screen.getByText("Old result")).toBeInTheDocument();
+});
 
 it("keeps long post-call values readable instead of clipping them to a fixed character count", () => {
   const css = readFileSync(resolve("src", "app", "globals.css"), "utf8");

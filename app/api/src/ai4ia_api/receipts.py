@@ -284,6 +284,7 @@ class ReceiptToolCall(BaseModel):
     approval: ApprovalSource | None = None
     consentId: str | None = Field(default=None, max_length=64)
     callId: str | None = Field(default=None, max_length=128)
+    operationId: str | None = Field(default=None, max_length=30)
 
 
 class ReceiptRuntime(BaseModel):

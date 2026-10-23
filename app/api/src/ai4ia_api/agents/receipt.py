@@ -41,11 +41,12 @@ from ..model_evidence import ModelCallRecorder
 from ..usage.models import TokenUsage
 from .runtime import AgentStep, DelegatedRunTrace
 from .consent import ToolConsentSummary
-from .tools import redact
+from .tools import redact, safe_operation_id
 
 # Runtime step kind -> receipt outcome. ``tool_start`` and ``final`` are absent
 # on purpose: neither is a finalized tool call.
 _OUTCOMES: dict[str, str] = {
+    "tool_waiting": "waiting",
     "tool_result": "result",
     "delegate": "delegate",
     "tool_denied": "denied",
@@ -64,6 +65,12 @@ def receipt_tool_calls(steps: list[AgentStep] | None) -> list[ReceiptToolCall]:
     """Every finalized tool call in ``steps``, in execution order."""
     calls: list[ReceiptToolCall] = []
     for step in steps or []:
+        if step.kind == "tool_waiting" and step.operation_id is not None and any(
+            later.operation_id == step.operation_id and later.kind in {
+                "tool_result", "delegate", "tool_denied", "tool_error",
+            } for later in steps or []
+        ):
+            continue
         outcome = _OUTCOMES.get(getattr(step, "kind", ""))
         if outcome is None:
             continue
@@ -86,6 +93,7 @@ def receipt_tool_calls(steps: list[AgentStep] | None) -> list[ReceiptToolCall]:
                     else None
                 ),
                 callId=redact(step.call_id)[:128] if step.call_id else None,
+                operationId=safe_operation_id(step.operation_id),
             )
         )
     return calls

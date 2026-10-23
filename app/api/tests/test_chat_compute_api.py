@@ -192,20 +192,16 @@ async def test_compute_turn_invokes_run_code():
         assert prompts[0]["tool"] == "run_code"
         assert prompts[0]["argumentsPreview"]["task"] == "sum the amounts"
 
-        # Same call, same arguments (fresh gateway so the script re-emits it),
-        # now carrying the grant the server minted.
-        client.app.state.gateway = ScriptedGateway(doc_id=doc.id)
         resp = client.post(
-            "/api/chat",
+            "/api/chat/continue",
             json={
-                **body,
-                "approvals": [
-                    {"requestId": prompts[0]["id"], "grant": prompts[0]["grant"]}
-                ],
+                "sessionId": sid, "messageId": prompts[0]["messageId"],
+                "requestId": prompts[0]["id"], "grant": prompts[0]["grant"], "action": "approve",
             },
         )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["message"]["content"] == "The total is 30."
+        saved = client.get(f"/api/sessions/{sid}/messages").json()
+        assert saved[-1]["content"] == "The total is 30."
         # The Code Interpreter was actually invoked over the ready document.
         assert len(ci.calls) == 1
         assert "name,amount" in ci.calls[0]["user_input"]

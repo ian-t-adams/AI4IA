@@ -104,6 +104,15 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    contract scope before dispatch, and never grant new tools or permissions.
    Include automatically injected registry tools such as `load_skill` and their
    meaningful resource metadata in those snapshots.
+   Interactive exact-call approval resumes the private original-turn checkpoint,
+   never a preview or a model-generated retry. Preserve the active-turn/original
+   user-message/assistant-snapshot CAS across new messages, cancellation and
+   cleanup, including legacy conversations without deletion-v1 enrollment.
+   Connection credentials remain in existing secret resolvers; private execution
+   arguments are distinct from redacted display/audit projections. Preserve size
+   bounds, original request denials, one-use operation grants and unknown-outcome
+   refusal. Expiry limits authority, not guaranteed physical erasure; no sweeper
+   or workflow activation is implied. See the architecture's approval contract.
    `ChatRequest.allowTools=false` and `allowAutomaticMemory=false` are
    request-only denials, not grants or durable preference edits. Keep their
    nested-AND context alive through SSE, tool dispatch and automatic memory IO.

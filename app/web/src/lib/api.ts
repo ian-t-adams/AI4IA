@@ -1111,6 +1111,7 @@ export interface StreamHandlers {
   onMetadata: (metadata: {
     userMessageId: string | null;
     assistantMessageId: string;
+    content?: string;
     // The turn's span registry (audit P1-14), when retrieval ran. Absent on an
     // unattested turn, which is deliberately different from an empty array.
     sources?: RetrievedSource[] | null;
@@ -1133,6 +1134,20 @@ export interface StreamHandlers {
   }) => void;
 }
 
+export async function reviewToolApproval(sessionId: string, prompt: PendingToolApprovalPrompt): Promise<PendingToolApprovalPrompt> {
+  return jsonOrThrow(await apiFetch("/api/chat/continue", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, messageId: prompt.messageId, requestId: prompt.id, action: "review" }),
+  }));
+}
+
+export async function denyToolApproval(sessionId: string, prompt: PendingToolApprovalPrompt): Promise<{ message: Message }> {
+  return jsonOrThrow(await apiFetch("/api/chat/continue", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, messageId: prompt.messageId, requestId: prompt.id, action: "deny" }),
+  }));
+}
+
 // Streams a chat completion. Returns an abort function the caller can invoke
 // to cancel the in-flight request (the backend persists a cancelled status).
 export function streamChat(
@@ -1146,6 +1161,7 @@ export function streamChat(
     // Per-invocation tool approvals redeemed on this turn. Opaque to the client:
     // the server re-derives what each one authorizes from its own record.
     approvals?: ToolApprovalDecision[];
+    continuation?: { messageId: string; requestId: string; grant: string };
   },
   handlers: StreamHandlers,
 ): () => void {
@@ -1155,10 +1171,12 @@ export function streamChat(
     let sawDone = false;
     let sawMetadata = false;
     try {
-      const resp = await apiFetch("/api/chat", {
+      const resp = await apiFetch(input.continuation ? "/api/chat/continue" : "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...input, stream: true }),
+        body: JSON.stringify(input.continuation ? {
+          sessionId: input.sessionId, ...input.continuation, action: "approve",
+        } : { ...input, stream: true }),
         signal: controller.signal,
       });
       if (!resp.ok || !resp.body) {
@@ -1246,6 +1264,7 @@ export function streamChat(
                 userMessageId,
                 assistantMessageId,
                 sources,
+                ...(typeof obj.metadata.content === "string" ? { content: obj.metadata.content } : {}),
               });
               continue;
             }

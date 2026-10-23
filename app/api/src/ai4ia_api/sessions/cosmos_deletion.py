@@ -528,6 +528,7 @@ class CosmosDeletionMixin:
     ) -> bool:
         """Remove at most CLEANUP_ITEMS rows. False means bounded work remains."""
         from azure.cosmos.exceptions import CosmosResourceNotFoundError
+        from .chat_continuation import is_chat_head
 
         container = self._documents if documents else self._messages
         token = await self._closed_fence_barrier(container, lease)
@@ -547,12 +548,13 @@ class CosmosDeletionMixin:
             )
         ]
         for raw in rows:
+            chat_head = not documents and is_chat_head(raw, lease.record.userId, lease.record.id)
             if (
                 raw.get("userId") != lease.record.userId
                 or raw.get("sessionId") != lease.record.id
                 or not isinstance(raw.get("id"), str)
-                or raw["id"].startswith("__ai4ia_")
-                or raw.get("kind") is not None
+                or (raw["id"].startswith("__ai4ia_") and not chat_head)
+                or (raw.get("kind") is not None and not chat_head)
             ):
                 raise DeletionIntegrityError("Unexpected conversation child")
         for raw in rows:

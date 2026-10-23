@@ -561,8 +561,19 @@ document, memory, or tool context.
 The card identifies the tool, destination, and bounded argument preview.
 Warnings identify hidden or omitted arguments. Approve only if the action
 matches your intent: a source can contain instructions designed to steer the
-assistant. Each approval is bound to one call's exact arguments, expires after
-ten minutes, and cannot authorize a different call or conversation.
+assistant. **Approve and continue** runs the saved exact call in the same turn,
+without asking the model to recreate it or adding another user message.
+Each approval is bound to one invocation, expires within ten minutes, and cannot
+authorize a different call or conversation. Activity updates the same operation
+from waiting through running to its outcome; a genuinely repeated call remains
+separate.
+
+After reloading, **Review pending call** obtains a fresh one-time challenge for
+the same saved operation, then lets you approve it. **Deny** cancels the held
+work. A new message supersedes pending work. Older approval cards created before
+exact-call continuation require a fresh request; they cannot safely reconstruct
+their arguments. An interrupted call with an unknown external outcome is not
+automatically retried.
 
 ### Auto-approving enabled tools
 

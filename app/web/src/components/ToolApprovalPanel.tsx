@@ -23,10 +23,8 @@ import { Pill } from "./Pill";
  *   alias the model sees.
  *
  * The card is presentation only. Approving posts an opaque `{requestId, grant}`
- * pair; the server re-derives what that authorizes from its own record, so a
- * tampered card cannot approve a different call. Denying sends nothing at all —
- * absence of a grant *is* the denial, which is why there is no "deny" endpoint
- * to fail and no state to get stuck in.
+ * pair; the server re-derives what that authorizes from its private checkpoint.
+ * Denial cancels the held operation without executing it.
  */
 export function ToolApprovalPanel({
   prompts,
@@ -43,6 +41,7 @@ export function ToolApprovalPanel({
   return (
     <section
       aria-label="Tool approvals"
+      aria-busy={busy}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -79,6 +78,8 @@ function ToolApprovalCard({
   const elided = new Set(prompt.argumentsElided ?? []);
   const omitted = prompt.argumentsOmitted ?? 0;
   const expiresAt = Date.parse(prompt.expiresAt);
+  const continuable = Boolean(prompt.messageId && prompt.operationId);
+  const action = prompt.grant ? "Approve and continue" : "Review pending call";
   const [expired, setExpired] = useState(
     () => !Number.isFinite(expiresAt) || expiresAt <= Date.now(),
   );
@@ -145,13 +146,14 @@ function ToolApprovalCard({
         This request was not run. Content in this conversation — including
         uploaded documents, saved memories and tool results — can influence what
         a tool is asked to send, so outbound calls need your approval for these
-        exact values. Approval starts a retry turn; the model must re-issue this
-        exact call before anything runs.
+        exact values. {continuable
+          ? "Approval continues this saved call in the same turn; it does not ask the model to recreate it."
+          : "This older request cannot be continued exactly. Send a fresh request to use this tool."}
       </p>
 
       {expired ? (
         <p role="alert" style={{ margin: 0, fontSize: "0.82em", color: "var(--danger)" }}>
-          This approval has expired. Deny it and ask again to generate a fresh request.
+          This approval has expired. Send a fresh request to use this tool.
         </p>
       ) : null}
 
@@ -168,7 +170,7 @@ function ToolApprovalCard({
         >
           {preview.map(([key, value]) => (
             <div key={key} style={{ display: "contents" }}>
-              <dt style={{ color: "var(--fg-muted)", whiteSpace: "nowrap" }}>
+              <dt style={{ color: "var(--fg-muted)", overflowWrap: "anywhere", minWidth: 0 }}>
                 {key}
               </dt>
               <dd
@@ -221,10 +223,10 @@ function ToolApprovalCard({
         </p>
       ) : null}
 
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button
           type="button"
-          disabled={busy || expired}
+          disabled={busy || expired || !continuable}
           onClick={() => {
             if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
               setExpired(true);
@@ -232,7 +234,7 @@ function ToolApprovalCard({
             }
             onApprove(prompt);
           }}
-          aria-label={`Approve and retry ${prompt.label}`}
+          aria-label={`${action} ${prompt.label}`}
           style={{
             // --accent-fg is derived per accent by ThemeProvider, so it stays
             // readable on a user-chosen accent. Never hardcode a foreground
@@ -244,7 +246,7 @@ function ToolApprovalCard({
             padding: "6px 12px",
           }}
         >
-          Approve and retry
+          {action}
         </button>
         <button
           type="button"

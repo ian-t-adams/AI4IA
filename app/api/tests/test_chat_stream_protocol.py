@@ -248,16 +248,16 @@ def test_a_streamed_tool_turn_persists_exactly_what_it_streamed_before_done(monk
     client = _tool_client()
     try:
         repo = client.app.state.session_repo
-        original_upsert = repo.upsert_message
+        original_upsert = repo.save_chat_assistant
         events: list[str] = []
         _track_terminal_yields(monkeypatch, events)
 
-        async def tracked_upsert(user_id, message):
-            result = await original_upsert(user_id, message)
+        async def tracked_upsert(user_id, message, **kwargs):
+            result = await original_upsert(user_id, message, **kwargs)
             events.append(f"upsert:{message.status.value}")
             return result
 
-        monkeypatch.setattr(repo, "upsert_message", tracked_upsert)
+        monkeypatch.setattr(repo, "save_chat_assistant", tracked_upsert)
         body = _tool_turn(client)
         sessions = client.get("/api/sessions").json()
         session_id = sessions[0]["id"] if isinstance(sessions, list) else sessions["items"][0]["id"]
@@ -531,16 +531,16 @@ def test_plain_stream_persists_terminal_row_before_done(client, monkeypatch):
 def test_agentic_and_local_streams_emit_durable_ids_first(client, monkeypatch):
     session_id = _create_session(client)
     repo = client.app.state.session_repo
-    original_upsert = repo.upsert_message
+    original_upsert = repo.save_chat_assistant
     events: list[str] = []
     _track_terminal_yields(monkeypatch, events)
 
-    async def tracked_upsert(user_id, message):
-        result = await original_upsert(user_id, message)
+    async def tracked_upsert(user_id, message, **kwargs):
+        result = await original_upsert(user_id, message, **kwargs)
         events.append(f"upsert:{message.status.value}")
         return result
 
-    monkeypatch.setattr(repo, "upsert_message", tracked_upsert)
+    monkeypatch.setattr(repo, "save_chat_assistant", tracked_upsert)
     agentic = client.post(
         "/api/chat",
         json={

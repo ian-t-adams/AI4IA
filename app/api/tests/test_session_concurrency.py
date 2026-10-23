@@ -260,19 +260,25 @@ class _WorkflowMessages:
         staged = copy.deepcopy(self.items)
         next_etag = self.etag
         for index, batch_operation in enumerate(batch_operations):
-            operation, args, *_kwargs = batch_operation
+            operation, args, options = batch_operation
             if self.fail_batch_operation == index:
                 raise RuntimeError("injected batch failure")
-            assert operation == "create"
-            body = args[0]
+            assert operation in {"create", "replace"}
+            body = args[0] if operation == "create" else args[1]
             assert body["sessionId"] == partition_key
-            if body["id"] in staged:
+            if operation == "create" and body["id"] in staged:
                 raise CosmosBatchOperationError(
                     error_index=index,
                     headers={},
                     status_code=409,
                     message="exists",
                     operation_responses=[],
+                )
+            if operation == "replace" and (
+                body["id"] not in staged or staged[body["id"]]["_etag"] != options["if_match_etag"]
+            ):
+                raise CosmosBatchOperationError(
+                    error_index=index, headers={}, status_code=412, message="etag", operation_responses=[],
                 )
             next_etag += 1
             staged[body["id"]] = {
@@ -326,7 +332,9 @@ async def test_cosmos_workflow_pair_claim_and_status_cas():
     assert not await repo.claim_workflow_run_if_absent(
         "u1", user_message.model_copy(), pending.model_copy()
     )
-    assert set(repo._messages.items) == {"run-user", "run-assistant"}
+    from ai4ia_api.sessions.chat_continuation import CHAT_HEAD_ID
+
+    assert set(repo._messages.items) == {"run-user", "run-assistant", CHAT_HEAD_ID}
     accepted = pending.model_copy(update={"workflowRunStatus": "accepted"})
     assert await repo.replace_message_if_workflow_status(
         "u1",
@@ -700,6 +708,9 @@ class _EmptyQueryContainer:
     ``delete_session``'s cascade loops are no-ops before it reaches the
     final (concurrently-raced) ``sessions.delete_item`` call."""
 
+    async def read_item(self, *, item, partition_key):
+        raise CosmosResourceNotFoundError(message="missing")
+
     async def query_items(self, *, query, parameters=None, partition_key=None):
         return
         yield  # pragma: no cover - makes this an async generator
@@ -790,6 +801,9 @@ class _RacedChildContainer:
     def __init__(self, ids: list[str]) -> None:
         self._ids = list(ids)
         self.delete_attempts: list[str] = []
+
+    async def read_item(self, *, item, partition_key):
+        raise CosmosResourceNotFoundError(message="missing")
 
     async def query_items(self, *, query, parameters=None, partition_key=None):
         for item_id in list(self._ids):

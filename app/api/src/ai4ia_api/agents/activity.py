@@ -24,7 +24,7 @@ from typing import Any
 
 from ..sessions.models import ActivityStep
 from .runtime import AgentStep
-from .tools import is_safe_tool_name
+from .tools import is_safe_tool_name, safe_operation_id
 
 # tool name -> (present-progressive label for live, past-tense label for the trace)
 _TOOL_VERBS: dict[str, tuple[str, str]] = {
@@ -103,6 +103,8 @@ def serialize_step(step: AgentStep) -> ActivityStep | None:
         label = past
     elif kind == "tool_denied":
         label = f"Blocked {_humanize(tool)}"
+    elif kind == "tool_waiting":
+        label = f"Waiting for approval: {_humanize(tool)}"
     elif kind == "tool_error":
         label = f"{_humanize(tool).capitalize()} didn't complete"
     else:
@@ -113,6 +115,9 @@ def serialize_step(step: AgentStep) -> ActivityStep | None:
     detail = _safe_detail(step.detail)
     if detail:
         out["detail"] = detail
+    operation_id = safe_operation_id(step.operation_id)
+    if operation_id is not None:
+        out["operationId"] = operation_id
     return ActivityStep(**out)
 
 

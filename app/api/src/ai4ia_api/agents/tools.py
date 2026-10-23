@@ -166,6 +166,18 @@ class ToolRegistry:
 # --- Redaction of secret-looking values in logged tool I/O ---------------------
 
 _REDACTED = "***REDACTED***"
+
+
+def safe_operation_id(value: Any) -> str | None:
+    """Accept only the runtime's content-free invocation identity."""
+    if (
+        isinstance(value, str) and len(value) <= 30
+        and re.fullmatch(r"[0-9a-f]{16}:[1-9][0-9]*:[0-9]+", value)
+    ):
+        return value
+    return None
+
+
 # key=value / key: value pairs where the key names a credential.
 _KV_SECRET_RE = re.compile(
     # Label alternation covers the names this stack actually carries, not only

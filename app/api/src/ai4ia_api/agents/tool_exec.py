@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
+    from .turn_checkpoint import TurnCheckpointController
     from ..memory.context_refs import MemoryReference
     from ..memory.preferences import MemoryPreference
 
@@ -39,8 +40,11 @@ ToolHandler = Callable[[dict[str, Any], "ToolContext"], Any]
 
 
 class ToolExecutionError(Exception):
-    """A tool handler failed at runtime (surfaced to the model as a tool result)."""
+    """A handler failed, optionally after an externally observable dispatch."""
 
+    def __init__(self, message: str, *, outcome_unknown: bool = False) -> None:
+        super().__init__(message)
+        self.outcome_unknown = outcome_unknown
 
 class ToolValidationError(Exception):
     """Model-supplied arguments did not satisfy the tool's parameter schema."""
@@ -99,6 +103,9 @@ class ToolContext:
     turn_budgets: dict[str, int] | None = None
     capture_memory_context: Callable[
         [MemoryPreference, list[MemoryReference]], Awaitable[None],
+    ] | None = None
+    child_checkpoint: Callable[
+        [dict[str, Any]], Awaitable[tuple[TurnCheckpointController, frozenset[str]]],
     ] | None = None
 
 

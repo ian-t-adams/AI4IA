@@ -88,6 +88,8 @@ const restricted = { allowTools: false, allowAutomaticMemory: false } as const;
 function approval(id = "request-1"): PendingToolApprovalPrompt {
   return {
     id,
+    messageId: "assistant-0",
+    operationId: "0123456789abcdef:1:0",
     tool: "synthetic_tool",
     label: "Synthetic tool",
     host: null,
@@ -203,17 +205,19 @@ describe("ChatApp per-turn text-only requests", () => {
     const user = await openChat();
     if (textOnly) await user.click(checkbox());
     await submit(user, "question with a continuation");
-    // A tool-free server should not prompt. Inject one to prove that a retry
-    // cannot drop denials even if an unexpected prompt reaches the browser.
+    // An unexpected prompt cannot use the browser's next draft to replace
+    // the original server-owned restrictions.
     await finish(0, [approval()]);
     if (!textOnly) await user.click(checkbox());
-    await user.click(screen.getByRole("button", { name: "Approve and retry Synthetic tool" }));
+    await user.click(screen.getByRole("button", { name: "Approve and continue Synthetic tool" }));
     expect(streams).toHaveLength(2);
     expect(streams[1].input).toMatchObject({
       sessionId: "A",
-      approvals: [{ requestId: "request-1", grant: "synthetic-grant" }],
-      ...(textOnly ? restricted : {}),
+      content: "",
+      continuation: { messageId: "assistant-0", requestId: "request-1", grant: "synthetic-grant" },
     });
+    expect(streams[1].input).not.toHaveProperty("allowTools");
+    expect(streams[1].input).not.toHaveProperty("allowAutomaticMemory");
     if (!textOnly) {
       expect(streams[1].input).not.toHaveProperty("allowTools");
       expect(streams[1].input).not.toHaveProperty("allowAutomaticMemory");

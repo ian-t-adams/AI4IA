@@ -389,6 +389,23 @@ export function ChatApp() {
   const [toolApprovals, setToolApprovals] = useState<
     (PendingToolApprovalPrompt & { restrictions: ChatRequestRestrictions })[]
   >([]);
+  const [continuingMessageId, setContinuingMessageId] = useState<string | null>(null);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const approvalGenerationRef = useRef(0);
+  const visibleToolApprovals = useMemo(() => {
+    if (streaming && continuingMessageId === null) return [];
+    const live = new Map(toolApprovals.map((item) => [item.id, item]));
+    const recovered = messages.flatMap((message) =>
+      (message.continuationStatus === "waiting" || (
+        !message.continuationStatus && message.id === messages.at(-1)?.id
+      ))
+        ? (message.pendingApprovals ?? []).filter((item) => !item.consumed).map((item) =>
+          live.get(item.id) ?? { ...item, grant: "", restrictions: {} })
+        : [],
+    );
+    const known = new Set(recovered.map((item) => item.id));
+    return [...recovered, ...toolApprovals.filter((item) => !known.has(item.id))];
+  }, [messages, toolApprovals, streaming, continuingMessageId]);
   const [error, setError] = useState<string | null>(null);
   // Server-authoritative image-editing availability (flags, store and a
   // routable editing model). It only hides UI; the edit endpoint re-checks.
@@ -907,6 +924,9 @@ export function ChatApp() {
       setDocuments([]);
       setLibraryDocs([]);
       setToolApprovals([]);
+      approvalGenerationRef.current += 1;
+      setApprovalBusy(false);
+      setContinuingMessageId(null);
       setTextOnly(false);
       const mySessionListGeneration = ++sessionListGenerationRef.current;
       try {
@@ -1020,6 +1040,9 @@ export function ChatApp() {
     setDocuments([]);
     setLibraryDocs([]);
     setToolApprovals([]);
+    approvalGenerationRef.current += 1;
+    setApprovalBusy(false);
+    setContinuingMessageId(null);
     setTextOnly(false);
     setSessionLoading(false);
     setSelectedModel(pickDefaultModel(models));
@@ -2706,17 +2729,22 @@ export function ChatApp() {
       content: string,
       restrictions: ChatRequestRestrictions = {},
       approvals?: ToolApprovalDecision[],
+      continuation?: PendingToolApprovalPrompt,
     ) => {
       if (streamingRef.current) return;
       if (!selectedModel) {
         setError("Select a model first.");
         return;
       }
-      // Snapshot before session creation or any stream work. Approval retries
-      // carry this turn's denials, not the next draft's checkbox state.
+      // New requests snapshot the draft. Continuations send only identifiers;
+      // the server restores the original turn's reductions.
       const requestRestrictions = { ...restrictions };
       setError(null);
-      if (approvals?.length) {
+      approvalGenerationRef.current += 1;
+      setApprovalBusy(false);
+      if (continuation) {
+        setToolApprovals((previous) => previous.filter((prompt) => prompt.id !== continuation.id));
+      } else if (approvals?.length) {
         const redeemed = new Set(approvals.map((approval) => approval.requestId));
         // Approving one prompt must not deny every sibling. The server can issue
         // up to four independent prompts; only the selected grant is spent.
@@ -2739,9 +2767,13 @@ export function ChatApp() {
       const mySelectionGeneration = selectionGenerationRef.current;
       const mySignOutGeneration = signOutGenerationRef.current;
       setStreaming(true);
-      setStreamingText("");
+      const continuedMessage = continuation
+        ? messages.find((message) => message.id === continuation.messageId)
+        : undefined;
+      setContinuingMessageId(continuation?.messageId ?? null);
+      setStreamingText(continuedMessage?.content ?? "");
       setStreamMaterialized(false);
-      setLiveSteps([]);
+      setLiveSteps(continuedMessage?.steps ?? []);
       setStreamingSources(null);
       clearReconciliationTimers();
       const turnGeneration = ++turnGenerationRef.current;
@@ -2809,9 +2841,11 @@ export function ChatApp() {
       const assistantCreatedAt = new Date(
         userCreatedAt.getTime() + 1,
       ).toISOString();
-      const temporaryAssistantId = `tmp-assistant-${optimisticUser.id.slice(4)}`;
+      const temporaryAssistantId = continuation?.messageId ?? `tmp-assistant-${optimisticUser.id.slice(4)}`;
       setStreamingStartedAt(assistantCreatedAt);
-      setMessages((prev) => [...prev, optimisticUser]);
+      setMessages((prev) => continuation
+        ? prev.map((message) => message.id === continuation.messageId ? { ...message, status: "streaming" } : message)
+        : [...prev, optimisticUser]);
 
       const isCommand = content.trimStart().startsWith("/");
       let metadata: {
@@ -2819,8 +2853,8 @@ export function ChatApp() {
         assistantMessageId: string;
         sources?: RetrievedSource[] | null;
       } | null = null;
-      let bufferedText = "";
-      let bufferedSteps: ActivityStep[] = [];
+      let bufferedText = continuedMessage?.content ?? "";
+      let bufferedSteps: ActivityStep[] = continuedMessage?.steps ?? [];
       let finalized = false;
       const ownsTurn = () =>
         mountedRef.current &&
@@ -2933,11 +2967,15 @@ export function ChatApp() {
         setStreamMaterialized(true);
 
         let reconciliationAmbiguous = false;
-        if (metadata) {
+        if (metadata || continuation?.messageId) {
           try {
             const fresh = await api.listMessages(sessionId);
             if (!ownsTurn()) return;
-            reconciliationAmbiguous = !applyFresh(fresh);
+            if (metadata) {
+              reconciliationAmbiguous = !applyFresh(fresh);
+            } else {
+              setMessages(fresh);
+            }
             setInspectorVersion((value) => value + 1);
           } catch {
             if (!ownsTurn()) return;
@@ -3023,10 +3061,19 @@ export function ChatApp() {
       };
 
       abortRef.current = api.streamChat(
-        { sessionId, content, model: selectedModel, params, approvals, ...requestRestrictions },
+        {
+          sessionId, content, model: selectedModel, params, approvals, ...requestRestrictions,
+          ...(continuation?.messageId ? { continuation: {
+            messageId: continuation.messageId, requestId: continuation.id, grant: continuation.grant,
+          } } : {}),
+        },
         {
           onMetadata: (value) => {
             metadata = value;
+            if (continuation && value.content !== undefined) {
+              bufferedText = value.content;
+              if (ownsTurn()) setStreamingText(bufferedText);
+            }
             trackPendingAssistant(sessionId, value.assistantMessageId);
             if (ownsTurn()) setStreamingSources(value.sources ?? null);
             if (!ownsTurn() || !value.userMessageId) return;
@@ -3098,6 +3145,7 @@ export function ChatApp() {
       refreshSessions,
       scheduleReconciliation,
       selectedModel,
+      messages,
       trackPendingAssistant,
     ],
   );
@@ -3110,7 +3158,7 @@ export function ChatApp() {
 
   const displayMessages: DisplayMessage[] = useMemo(() => {
     const base: DisplayMessage[] = messages
-      .filter((m) => m.role !== "system")
+      .filter((m) => m.role !== "system" && !(streaming && !streamMaterialized && m.id === continuingMessageId))
       .map((m) => ({
         id: m.id,
         role: m.role,
@@ -3128,7 +3176,7 @@ export function ChatApp() {
       }));
     if (streaming && !streamMaterialized) {
       base.push({
-        id: "streaming",
+        id: continuingMessageId ?? "streaming",
         role: "assistant",
         content: streamingText,
         createdAt: streamingStartedAt ?? undefined,
@@ -3153,6 +3201,7 @@ export function ChatApp() {
     streamingStartedAt,
     liveSteps,
     streamingSources,
+    continuingMessageId,
     inlineVoice.messages,
     inlineVoice.boundSessionId,
     activeId,
@@ -3559,26 +3608,59 @@ export function ChatApp() {
                   <InlineVoiceLiveStatus voice={inlineVoice} onRetry={startInlineVoice} />
                 ) : null}
             <ToolApprovalPanel
-              prompts={toolApprovals}
-              busy={streaming}
+              prompts={visibleToolApprovals}
+              busy={streaming || approvalBusy}
               onApprove={(prompt) => {
-                const pending = toolApprovals.find((item) => item.id === prompt.id);
-                if (!pending) {
+                const pending = visibleToolApprovals.find((item) => item.id === prompt.id);
+                if (!pending || !activeId || !pending.messageId) {
                   setError("This tool approval is no longer available. Send a new message.");
                   return;
                 }
-                void send(
-                  `Approved: run ${prompt.label} with exactly the arguments I was shown.`,
-                  pending.restrictions,
-                  [{ requestId: prompt.id, grant: prompt.grant }],
-                );
+                if (!pending.grant) {
+                  const sessionId = activeId;
+                  const generation = ++approvalGenerationRef.current;
+                  const selection = selectionGenerationRef.current;
+                  const turn = turnGenerationRef.current;
+                  const current = () => mountedRef.current && sessionIdRef.current === sessionId
+                    && approvalGenerationRef.current === generation
+                    && selectionGenerationRef.current === selection && turnGenerationRef.current === turn;
+                  setApprovalBusy(true);
+                  void api.reviewToolApproval(sessionId, pending).then((reviewed) => {
+                    if (current()) {
+                      setToolApprovals([{ ...reviewed, restrictions: {} }]);
+                    }
+                  }).catch((reason: unknown) => {
+                    if (current()) setError(api.apiErrorDetail(reason));
+                  }).finally(() => {
+                    if (approvalGenerationRef.current === generation) setApprovalBusy(false);
+                  });
+                  return;
+                }
+                void send("", {}, undefined, pending);
               }}
               onDeny={(prompt) => {
-                // Denial is the absence of a grant: drop it and never send it. No
-                // server round trip means no failure mode and nothing to hang on.
-                setToolApprovals((previous) =>
-                  previous.filter((item) => item.id !== prompt.id),
-                );
+                if (!activeId || !prompt.messageId) {
+                  setToolApprovals((previous) => previous.filter((item) => item.id !== prompt.id));
+                  return;
+                }
+                const sessionId = activeId;
+                const generation = ++approvalGenerationRef.current;
+                const selection = selectionGenerationRef.current;
+                const turn = turnGenerationRef.current;
+                const current = () => mountedRef.current && sessionIdRef.current === sessionId
+                  && approvalGenerationRef.current === generation
+                  && selectionGenerationRef.current === selection && turnGenerationRef.current === turn;
+                setApprovalBusy(true);
+                void api.denyToolApproval(sessionId, prompt).then(({ message }) => {
+                  if (current()) {
+                    setMessages((previous) => previous.map((item) => item.id === message.id ? message : item));
+                    setToolApprovals((previous) => previous.filter((item) => item.id !== prompt.id));
+                  }
+                }).catch((reason: unknown) => {
+                  if (current()) setError(api.apiErrorDetail(reason));
+                }).finally(() => {
+                  if (approvalGenerationRef.current === generation) setApprovalBusy(false);
+                });
               }}
             />
             <Composer

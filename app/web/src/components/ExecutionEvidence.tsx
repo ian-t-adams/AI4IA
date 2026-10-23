@@ -638,12 +638,24 @@ function stepGlyph(kind: string): string {
 // current tool spins, finished ones tick off), and a collapsed "Activity" trace
 // once complete. Replaces the bare blinking cursor for tool-using turns.
 export function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: boolean }) {
+  const activity: ActivityStep[] = [];
+  const positions = new Map<string, number>();
+  for (const step of steps) {
+    const id = step.operationId;
+    const position = id ? positions.get(id) : undefined;
+    if (position === undefined) {
+      if (id) positions.set(id, activity.length);
+      activity.push(step);
+    } else {
+      activity[position] = step;
+    }
+  }
   const lastRunning =
-    live && steps.length > 0 && steps[steps.length - 1].kind === "tool_start";
-  const rows = steps.map((s, i) => {
-    const running = live && i === steps.length - 1 && s.kind === "tool_start";
+    live && activity.some((step) => step.kind === "tool_start");
+  const rows = activity.map((s, i) => {
+    const running = live && s.kind === "tool_start";
     return (
-      <div key={i} className={`activity-row${running ? " running" : ""}`}>
+      <div key={s.operationId ?? `historical-${i}`} className={`activity-row${running ? " running" : ""}`}>
         {running ? (
           <span className="activity-spinner" aria-hidden="true" />
         ) : (
@@ -652,7 +664,7 @@ export function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: bo
           </span>
         )}
         <span className="activity-label">{s.label}</span>
-        {s.detail && <span className="activity-detail">{s.detail}</span>}
+        {s.detail && s.kind !== "tool_waiting" && <span className="activity-detail">{s.detail}</span>}
       </div>
     );
   });
@@ -677,7 +689,7 @@ export function ActivityPanel({ steps, live }: { steps: ActivityStep[]; live: bo
   return (
     <details className="activity activity-trace">
       <summary>
-        Activity · {steps.length} step{steps.length === 1 ? "" : "s"}
+        Activity · {activity.length} step{activity.length === 1 ? "" : "s"}
       </summary>
       <div className="activity-rows">{rows}</div>
     </details>

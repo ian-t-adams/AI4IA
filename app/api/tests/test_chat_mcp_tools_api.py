@@ -171,20 +171,16 @@ def test_trusted_mcp_tool_needs_this_call_approved_then_runs():
         assert "grant" not in stored[0]
         assert prompt["grant"] not in json.dumps(messages)
 
-        c.app.state.gateway = _McpToolThenAnswerGateway()
         approved = c.post(
-            "/api/chat",
+            "/api/chat/continue",
             json={
-                "sessionId": sid,
-                "content": "@weatherbot yes, go ahead",
-                "stream": False,
-                "approvals": [
-                    {"requestId": prompt["id"], "grant": prompt["grant"]}
-                ],
+                "sessionId": sid, "messageId": prompt["messageId"],
+                "requestId": prompt["id"], "grant": prompt["grant"], "action": "approve",
             },
         )
         assert approved.status_code == 200, approved.text
-        assert approved.json()["message"]["content"] == "Clear skies."
+        saved = c.get(f"/api/sessions/{sid}/messages").json()
+        assert saved[-1]["content"] == "Clear skies."
         # The remote tool was actually invoked against its own endpoint.
         assert len(connector.tool_calls) == 1
         endpoint, tool, _args, _auth = connector.tool_calls[0]
@@ -212,9 +208,8 @@ def test_untrusted_mcp_tool_is_denied_without_approval_in_chat_turn():
             json={"sessionId": sid, "content": "@weatherbot forecast?", "stream": False},
         )
         assert resp.status_code == 200, resp.text
-        # The model still produced a final answer, but the untrusted tool was
-        # denied (approval required) and never actually invoked.
-        assert gw.calls == 2
+        # The exact call waits without spending another model request.
+        assert gw.calls == 1
         assert connector.tool_calls == []
     finally:
         c.__exit__(None, None, None)
