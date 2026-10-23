@@ -75,6 +75,7 @@ from .routers import chat as chat_router
 from .routers import client_events as client_events_router
 from .routers import docprocessing as docprocessing_router
 from .routers import documents as documents_router
+from .routers import decisions as decisions_router
 from .routers import entitlements as entitlements_router
 from .routers import health as health_router
 from .routers import images as images_router
@@ -679,6 +680,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat_router.router)
     app.include_router(client_events_router.router)
     app.include_router(documents_router.router)
+    app.include_router(decisions_router.router)
     app.include_router(images_router.router)
     app.include_router(inspector_router.router)
     app.include_router(videos_router.router)

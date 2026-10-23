@@ -17,6 +17,51 @@ feature posture.
 > modality outside that decision still requires review; an enabled gate is not
 > evidence that all safety signals are captured.
 
+## Decision playground
+
+The **Decisions** tab in Studio is admitted by the runtime-enabled `decision`
+catalog category, eligible residency options and authenticated model policy, not
+a browser flag. The desired inventory adds only Microsoft-Decision-1 version `1`
+in eastus2 `DataZoneStandard`, capacity `1` raw unit. No second region, quota
+increase, new identity, role or provider credential is required by this source
+change. Do not mistake catalog availability for live deployment acceptance.
+
+Native calls use the existing API -> SimpleL7Proxy -> APIM path. The proxy-facing
+deployment-scoped `systemone` operation is an exact POST allowlist; APIM rewrites
+to the selected services endpoint's `/providers/microsoft/v1/systemone`, binds
+the selected deployment in `model`, drops caller query parameters and uses the
+existing `https://cognitiveservices.azure.com/` managed-identity audience.
+There is no direct-provider exception, new API key or Copilot credential reuse.
+Decision calls do not select the separate attempts-v1 transport or establish a
+verified hard-dollar bound. Application/APIM retries and proxy requeue hints
+are suppressed for this operation; accepted work is never replayed by the client.
+
+The wire contract is the
+[official Foundry Decision documentation](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision).
+Native `noul`, score distributions and `input_tokens`/`output_tokens` also follow
+the [official Azure SDK runner and validators](https://github.com/Azure/azure-sdk-for-python/blob/762d184ec36fe4c1082a2c2939382e70dd942b59/sdk/evaluation/azure-ai-evaluation/azure/ai/evaluation/_evaluators/_common/_model_runners.py).
+The adapter keeps rounded probabilities unchanged and checks their total with
+the SDK's precision-aware tolerance. It never creates a rationale or substitutes
+another model. Only numeric usage metadata enters the existing owner ledger.
+
+Price is deliberately unknown. The October 2026 public Retail meter for
+`MicrosoftDecision1 1M Tokens`, SKU `Pi 1 glbl`, does not establish the price or
+billing semantics of DataZoneStandard. Do not apply a guessed multiplier or treat
+unknown as free. Hard token/USD admission refuses this unbounded surface.
+
+Before an approved rollout, freshly validate this exact offering/version/SKU,
+raw quota and capacity in the explicit subscription; the default 500-unit
+allocation is not the chosen one. Preserve all existing model rows and all
+retirement decisions. Merge/provision and paid acceptance require the separate
+release gate. Proposed acceptance after approval: one synthetic text request
+containing all three question types through the authenticated app, then one
+parsed-JSON request, with at most two total paid calls and no retry. Check native
+answers, reported model and usage, unknown cost, US processing and the owner
+usage row; stop on refusal or unknown outcome. These checks do not authorize
+additional calls. Runtime rollback sets this catalog row's `runtimeEnabled` to
+false and regenerates catalog/policies; it does not delete the deployment or
+release quota.
+
 ## Flag inventory
 
 

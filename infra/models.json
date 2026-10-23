@@ -1589,6 +1589,25 @@
           "version": "2"
         }
       ]
+    },
+    {
+      "name": "Microsoft-Decision-1",
+      "displayName": "Microsoft Decision 1 (Preview)",
+      "format": "Microsoft",
+      "category": "decision",
+      "api": "decision",
+      "toolCalling": false,
+      "samplingSupported": false,
+      "inputModalities": ["text", "json"],
+      "reasoningEffort": [],
+      "deployments": [
+        {
+          "region": "eastus2",
+          "sku": "DataZoneStandard",
+          "capacity": 1,
+          "version": "1"
+        }
+      ]
     }
   ]
 }

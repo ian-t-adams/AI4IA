@@ -9,6 +9,7 @@ be fixed at integration time without code changes.
 from __future__ import annotations
 
 import base64
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
@@ -19,6 +20,9 @@ from typing import Any, TYPE_CHECKING
 import httpx
 
 from ..config import GatewayAuthMode, GatewayProviderStyle, Settings
+from ..decisions import (
+    MAX_RESPONSE_BYTES, DecisionExecution, DecisionRequest, decision_usage, read_json, validate_answers,
+)
 from ..chat_timing import current_chat_timing
 from ..genai_telemetry import ModelSpan, ModelTelemetry
 from ..model_evidence import CapturedModelCall, begin_model_call
@@ -553,6 +557,91 @@ class ModelGatewayClient:
         """Provider-aware availability, still not a prepared request proof."""
         return self.attempt_capability if api in {"chat", "responses", "embedding"} else None
 
+    async def decide(
+        self, *, deployment: str, request: DecisionRequest, execution: DecisionExecution,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        from ..catalog import load_catalog
+        from ..hard_quota.dispatch import current_dispatch_catalog
+
+        catalog = current_dispatch_catalog() or load_catalog(self._catalog_path)
+        entry = catalog.for_deployment(deployment)
+        if (
+            entry is None or entry.api != "decision" or entry.category != "decision"
+            or not any(o.deploymentName == deployment for o in catalog.eligible_options(entry))
+        ):
+            raise ModelGatewayError(400, "Decision model is unavailable.")
+        payload = request.native(deployment)
+        url = f"{self._base}/deployments/{deployment}/systemone"
+        headers = {**self._auth_headers(correlation_id), "Accept-Encoding": "identity"}
+        telemetry = self._model_telemetry.start(deployment, "decision")
+        try:
+            async with asyncio.timeout(min(self._timeout, 60)), AsyncExitStack() as stack:
+                client = self._http or await stack.enter_async_context(
+                    httpx.AsyncClient(timeout=min(self._timeout, 60), follow_redirects=False)
+                )
+                async with admitted_dispatch(
+                    "decision", payload, deployment=deployment, target=url,
+                    required=self._hard_quota_enabled, policy_required=self._group_policy_enabled,
+                ) as admission:
+                    telemetry.request(admission.payload)
+                    execution.dispatched = True
+                    with telemetry.http_scope():
+                        async with client.stream(
+                            "POST", url, headers=headers, json=admission.payload, follow_redirects=False,
+                        ) as response:
+                            execution.provider_completed = response.status_code == 200
+                            if response.status_code != 200:
+                                raise ModelGatewayError(
+                                    response.status_code, "Decision provider rejected the request.",
+                                )
+                            if response.headers.get("content-encoding", "identity") != "identity":
+                                raise ValueError("Unexpected Decision response encoding.")
+                            if response.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+                                raise ValueError("Unexpected Decision content type.")
+                            content = bytearray()
+                            async for chunk in response.aiter_raw():
+                                if len(content) + len(chunk) > MAX_RESPONSE_BYTES:
+                                    raise ValueError("Decision response exceeds 64 KiB.")
+                                content.extend(chunk)
+                    raw = read_json(bytes(content))
+                    if not isinstance(raw, dict):
+                        raise ValueError("Invalid Decision response.")
+                    execution.usage = decision_usage(raw.get("usage"))
+                    model = raw.get("model")
+                    if not isinstance(model, str) or not model.strip() or len(model) > 128:
+                        raise ValueError("Invalid reported Decision model.")
+                    answers = validate_answers(raw.get("answers"), request.questions)
+                    if "usage" in raw and not execution.usage.known:
+                        raise ValueError("Invalid Decision usage.")
+                    usage = execution.usage
+                    native_usage = {
+                        "prompt_tokens": usage.prompt, "completion_tokens": usage.completion,
+                        "total_tokens": usage.total,
+                    } if usage.known else None
+                    admission.report(native_usage)
+                    telemetry.usage(native_usage, completed=True)
+                    return {
+                        "reportedModel": model, "answers": answers,
+                        "usage": {
+                            "inputTokens": usage.prompt if usage.known else None,
+                            "outputTokens": usage.completion if usage.known else None,
+                            "totalTokens": usage.total if usage.known else None,
+                            "known": usage.known,
+                        },
+                    }
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            telemetry.error(exc)
+            raise ModelGatewayError(502, "Decision provider returned an invalid response.") from exc
+        except (httpx.HTTPError, TimeoutError) as exc:
+            telemetry.error(exc)
+            raise ModelGatewayError(502, "Decision request failed or timed out; outcome may be unknown.") from exc
+        except BaseException as exc:
+            telemetry.error(exc)
+            raise
+        finally:
+            telemetry.finish()
+
     async def _post(
         self, client: httpx.AsyncClient, url: str, *, surface: Surface,
         deployment: str, payload: dict[str, Any], api: str = "chat",
@@ -710,6 +799,8 @@ class ModelGatewayClient:
         from ..catalog import load_catalog
 
         profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        if profile is not None and profile.api == "decision":
+            raise ValueError("Decision deployments cannot serve chat.")
         _normalize_params_for_deployment(body, deployment, profile)
         if stream:
             body["stream"] = True
@@ -747,6 +838,8 @@ class ModelGatewayClient:
         from ..catalog import load_catalog
 
         profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        if profile is not None and profile.api == "decision":
+            raise ValueError("Decision deployments cannot serve chat.")
         if profile is not None and not profile.runtimeEnabled:
             raise ValueError("The selected model is runtime-disabled.")
         if profile is not None and profile.deploymentTarget == "external-claude" and not self._claude_enabled:
@@ -785,6 +878,8 @@ class ModelGatewayClient:
         from ..catalog import load_catalog
 
         profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        if profile is not None and profile.api == "decision":
+            raise ValueError("Decision deployments cannot serve chat.")
         body: dict[str, Any] = {
             # Caller params FIRST so every server-owned field below wins. This
             # surface is the sharper of the two: ``model``, ``input`` and

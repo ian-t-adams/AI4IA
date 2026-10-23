@@ -136,6 +136,38 @@ def _assert_clean(span):
     assert span.attributes["gen_ai.provider.name"] == span.attributes["gen_ai.system"]
 
 
+async def test_decision_native_usage_is_content_free_and_not_labeled_chat(capture):
+    from ai4ia_api.decisions import DecisionExecution, DecisionRequest
+    from tests.test_decisions import BODY, NATIVE, MODEL
+
+    exporter, provider = capture
+    request = DecisionRequest.model_validate({**BODY, "input": POISON, "inputFormat": "text"})
+    instrumentor = HTTPXClientInstrumentor()
+    instrumentor.instrument(tracer_provider=provider)
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, headers={"content-type": "application/json"},
+                stream=httpx.ByteStream(json.dumps(NATIVE).encode()),
+            )
+        )) as http:
+            await _gateway(http).decide(
+                deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+                request=request, execution=DecisionExecution(), correlation_id=POISON,
+            )
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        span = spans[0]
+        _assert_clean(span)
+        assert span.attributes["gen_ai.operation.name"] == "decision"
+        assert span.attributes["gen_ai.provider.name"] == "azure.ai.inference"
+        assert span.attributes["gen_ai.usage.input_tokens"] == 123
+        assert span.attributes["gen_ai.usage.output_tokens"] == 7
+        assert not any("answer" in key or "state" in key for key in span.attributes)
+    finally:
+        instrumentor.uninstrument()
+
+
 @pytest.mark.parametrize("api", ["chat", "responses", "anthropic"])
 @pytest.mark.parametrize("stream", [False, True])
 async def test_actual_adapted_requests_and_native_returns_are_content_free(capture, api, stream):

@@ -64,7 +64,7 @@ def cost_bearing_attempt(rec: "UsageRollupSource") -> bool:
         rec.billable
         or rec.providerCompleted
         or rec.workflowDispatchClaimed
-        or rec.provider in {CODE_INTERPRETER_PROVIDER, PHOTO_AVATAR_PROVIDER}
+        or rec.provider in {CODE_INTERPRETER_PROVIDER, PHOTO_AVATAR_PROVIDER, "microsoft_decision"}
     )
 #: Target/agent label carried alongside the provider, so the admin agents panel
 #: also shows sandbox executions as their own row.

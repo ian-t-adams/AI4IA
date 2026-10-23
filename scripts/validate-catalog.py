@@ -117,11 +117,18 @@ def main() -> int:
             "mai",
             "bfl",
             "mistral_ocr",
+            "decision",
         }:
             errors.append(
                 f"{name}: api '{api}' must be 'chat', 'responses', 'anthropic', "
-                "'mai', 'bfl', or 'mistral_ocr'"
+                "'mai', 'bfl', 'mistral_ocr', or 'decision'"
             )
+        if (api == "decision" or model["category"] == "decision") and (
+            api != "decision" or model["category"] != "decision" or model["format"] != "Microsoft"
+            or model.get("toolCalling") is not False or model.get("samplingSupported") is not False
+            or model.get("inputModalities") != ["text", "json"]
+        ):
+            errors.append(f"{name}: decision requires a nonchat Microsoft text/JSON profile")
         for dep in model["deployments"]:
             region = dep["region"]
             sku = dep["sku"]

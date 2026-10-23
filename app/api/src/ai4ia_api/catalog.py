@@ -191,6 +191,12 @@ class ModelEntry(BaseModel):
     @model_validator(mode="after")
     def external_profile(self) -> ModelEntry:
         self.require_external_profile()
+        if (self.api == "decision" or self.category == "decision") and (
+            self.api != "decision" or self.category != "decision" or self.format != "Microsoft"
+            or self.toolCalling is not False or self.samplingSupported is not False
+            or self.inputModalities != ["text", "json"]
+        ):
+            raise ValueError("Decision requires a nonchat Microsoft text/JSON profile.")
         if self.samplingRequiresNoReasoning and (
             self.api != "responses" or self.samplingSupported is not True
             or "none" not in self.reasoningEffortOptions

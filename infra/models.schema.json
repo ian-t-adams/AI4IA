@@ -48,7 +48,7 @@
           },
           "api": {
             "type": "string",
-            "enum": ["chat", "responses", "anthropic", "mai", "bfl", "mistral_ocr"],
+            "enum": ["chat", "responses", "anthropic", "mai", "bfl", "mistral_ocr", "decision"],
             "description": "Provider protocol used by the runtime and gateway. Defaults to chat when omitted."
           },
           "deploymentTarget": {
@@ -113,7 +113,7 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "enum": ["text", "image", "audio", "video", "document"]
+              "enum": ["text", "image", "audio", "video", "document", "json"]
             }
           },
           "imageSizes": {

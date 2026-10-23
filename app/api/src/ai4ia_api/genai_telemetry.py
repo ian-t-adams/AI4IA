@@ -82,8 +82,11 @@ class ModelSpan:
 
         if not is_instrumentation_enabled():
             return
-        operation = "generate_content" if api == "responses" else "chat"
-        provider = "anthropic" if api == "anthropic" else "openai" if api != "mai" else "azure.ai.inference"
+        operation = "decision" if api == "decision" else "generate_content" if api == "responses" else "chat"
+        provider = (
+            "azure.ai.inference" if api in {"mai", "decision"}
+            else "anthropic" if api == "anthropic" else "openai"
+        )
         attributes: dict[str, str] = {
             "gen_ai.operation.name": operation,
             "gen_ai.provider.name": provider,

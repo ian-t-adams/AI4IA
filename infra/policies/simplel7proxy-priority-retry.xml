@@ -148,6 +148,11 @@ REFACTOR:
 		<include-fragment fragment-id="endpoint_selection_catalog_10_32" />
 		<include-fragment fragment-id="endpoint_selection_catalog_11_32" />
 		<include-fragment fragment-id="endpoint_selection_setup_32" />
+		<set-variable name="decisionRequest" value="@{
+			JObject selected = (JObject)context.Variables[&quot;selectedBackends&quot;];
+			JObject first = selected.Properties().FirstOrDefault()?.Value as JObject;
+			return first?.Value&lt;string&gt;(&quot;path&quot;) == &quot;providers/microsoft/v1&quot;;
+		}" />
 		<set-variable name="pathDeploymentMatchesModel" value="@{
 			string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
 			string marker = &quot;deployments/&quot;;
@@ -176,6 +181,9 @@ REFACTOR:
 			int slash = path.IndexOf('/', markerIndex + marker.Length);
 			if (slash &lt; 0) { return false; }
 			string operation = path.Substring(slash + 1).TrimEnd('/');
+			if (context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;decisionRequest&quot;, false)) {
+				return context.Request.Method == &quot;POST&quot; &amp;&amp; path == &quot;deployments/&quot; + path.Substring(markerIndex + marker.Length, slash - markerIndex - marker.Length) + &quot;/systemone&quot;;
+			}
 			foreach (string candidate in allowed.Split(' ')) {
 				if (string.Equals(candidate, operation, StringComparison.OrdinalIgnoreCase)) { return true; }
 			}
@@ -266,12 +274,14 @@ REFACTOR:
 			return list;
 		}" />
 		<set-variable name="RetryCount" value="@{
+			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return 1; }
 			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return 1; }
 			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
 				.Value&lt;int>(&quot;retryCount&quot;) ?? 1;
 		}" />
 		<set-variable name="RequeueAllowed" value="@{
+			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return false; }
 			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return false; }
 			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
@@ -331,7 +341,7 @@ REFACTOR:
 	</inbound>
 	<!-- Control if and how the requests are forwarded to services  -->
 	<backend>
-		<retry condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true))" count="50" interval="1" delta="1">
+		<retry condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; !context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false) &amp;&amp; context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true))" count="50" interval="1" delta="1">
 			<set-variable name="PolicyCycleCounter" value="@(context.Variables.GetValueOrDefault&lt;int>(&quot;PolicyCycleCounter&quot;) + 1)" />
 			<!-- Keep the request-local throttle map. APIM's cache is eventually
 			     consistent, so reloading it here can erase the backend marked by
@@ -590,6 +600,7 @@ REFACTOR:
 						string requested = context.Variables.GetValueOrDefault&lt;string>(&quot;model&quot;, &quot;&quot;);
 						string selected = context.Variables.GetValueOrDefault&lt;string>(&quot;selectedDeployment&quot;, &quot;&quot;);
 						string protocol = context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;openai&quot;);
+						if (protocol == &quot;providers/microsoft/v1&quot;) { return &quot;/systemone&quot;; }
 						if (string.Equals(protocol, &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase)) {
 							return &quot;/v1/messages&quot;;
 						}
@@ -629,6 +640,14 @@ REFACTOR:
 						return &quot;/&quot; + path.TrimStart('/');
 					}" />
 					<choose>
+						<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false))">
+							<rewrite-uri template="/systemone" copy-unmatched-params="false" />
+							<set-body>@{
+								JObject body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+								body["model"] = context.Variables.GetValueOrDefault&lt;string&gt;("selectedDeployment", "");
+								return body.ToString(Newtonsoft.Json.Formatting.None);
+							}</set-body>
+						</when>
 						<when condition="@(string.Equals(context.Variables.GetValueOrDefault&lt;string>(&quot;backendProtocolPath&quot;, &quot;&quot;), &quot;anthropic&quot;, StringComparison.OrdinalIgnoreCase))">
 							<!-- Claude's endpoint is fixed and rejects the Azure OpenAI
 							     api-version query. APIM owns both the path and protocol
@@ -1012,6 +1031,7 @@ REFACTOR:
 				return count;
 			}" />
 			<set-variable name="RetryRemaining" value="@{
+				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return false; }
 				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return false; }
 				var isPermError = context.Variables.GetValueOrDefault&lt;bool>(&quot;isPermError&quot;, false);
 				var retryCount = context.Variables.GetValueOrDefault&lt;int>(&quot;RetryCount&quot;, -1);
@@ -1024,6 +1044,7 @@ REFACTOR:
 			}" />
 
 			<set-variable name="Return429" value="@{
+				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return false; }
 				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return false; }
 				var isPermError = context.Variables.GetValueOrDefault&lt;bool>(&quot;isPermError&quot;, false);
 				var RetryRemaining = context.Variables.GetValueOrDefault&lt;bool>(&quot;RetryRemaining&quot;, true);
@@ -1067,6 +1088,10 @@ REFACTOR:
 
 			<!-- Determine if next action is retry, requeue, or return response -->
 			<choose>
+				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false))">
+					<set-variable name="RetryRemaining" value="@(false)" />
+					<set-variable name="Return429" value="@(false)" />
+				</when>
 				<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))">
 					<set-variable name="RetryRemaining" value="@(false)" />
 					<set-variable name="Return429" value="@(false)" />
@@ -1225,7 +1250,7 @@ REFACTOR:
 		     The <retry> exits gracefully to outbound instead of on-error, so anything reaching here
 		     with no unthrottled backend left is that leaked case: return 429 instead of a bare 500. -->
 		<choose>
-			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; !(context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Response != null &amp;&amp; context.Response.StatusCode == 200) &amp;&amp; context.Variables.GetValueOrDefault&lt;int>(&quot;unThrottledBackends&quot;, -1) == 0)">
+			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; !context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false) &amp;&amp; !(context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Response != null &amp;&amp; context.Response.StatusCode == 200) &amp;&amp; context.Variables.GetValueOrDefault&lt;int>(&quot;unThrottledBackends&quot;, -1) == 0)">
 				<set-status code="429" reason="No Backends Available" />
 				<set-body>@(new JObject { { "statusCode", 429 }, { "statusReason", "No Backends Available" } }.ToString(Newtonsoft.Json.Formatting.None))</set-body>
 				<set-header name="retry-after-ms" exists-action="override">
@@ -1251,6 +1276,7 @@ REFACTOR:
 		     decodes it and accounts for native usage. -->
 		<choose>
 			<when condition="@{
+				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return false; }
 				string encoding = context.Response.Headers.GetValueOrDefault(&quot;Content-Encoding&quot;, &quot;&quot;);
 				if (!string.IsNullOrWhiteSpace(encoding)) { return false; }
 				string ct = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;) ?? &quot;&quot;;
@@ -1293,6 +1319,9 @@ REFACTOR:
 		</set-header>
 		<!-- <include-fragment fragment-id="LogResponseFragment" /> -->
 		<choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false))">
+				<set-header name="S7PREQUEUE" exists-action="delete" />
+			</when>
 			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))">
 				<set-header name="S7PREQUEUE" exists-action="delete" />
 				<set-header name="x-ai4ia-attempt-ack" exists-action="override">
@@ -1303,6 +1332,15 @@ REFACTOR:
 	</outbound>
 	<!-- Handle exceptions and customize error responses  -->
 	<on-error>
+		<choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false))">
+				<return-response>
+					<set-status code="502" reason="Decision gateway failed" />
+					<set-header name="S7PREQUEUE" exists-action="delete" />
+					<set-body>{"error":{"code":"decision_gateway_failed"}}</set-body>
+				</return-response>
+			</when>
+		</choose>
 		<choose>
 			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;claudeFederated&quot;, false))">
 				<return-response>

@@ -13,6 +13,7 @@ from .models import MAX_QUANTITY, Amounts, Bounds, Surface
 # The transport sites and their meters are intentionally finite. Adding an
 # outbound metered client requires adding a site and a paired no-dispatch test.
 COVERAGE: dict[Surface, str] = {
+    "decision": "request only; native decision token/dollar bounds unverified",
     "chat": "request only without a reviewed downstream-attempt envelope",
     "embedding": "request only without catalog context and a downstream-attempt envelope",
     "image": "request only; image/multimodal tokens and dollars unbounded",

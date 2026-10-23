@@ -143,6 +143,7 @@ ROUTABLE_CATEGORIES = frozenset(
         "chat",
         "chat-fast",
         "document-ocr",
+        "decision",
         "embedding",
         "image",
         "realtime",
@@ -196,7 +197,7 @@ def backend_row(
     target: str = "source",
     operations: tuple[str, ...] | None = None,
 ) -> str:
-    endpoint_kind = "services-endpoint" if provider_path == "mai" else "endpoint"
+    endpoint_kind = "services-endpoint" if provider_path in {"mai", "providers/microsoft/v1"} else "endpoint"
     named_value = f"{{{{foundry-{region}-{endpoint_kind}}}}}"
     auth = "MI"
     if target == "external-claude":
@@ -249,6 +250,10 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
             )
         # Validated for every row, so a misplaced imageEditing fails generation.
         operations = image_operations(model)
+        if category == "decision":
+            if model.get("api") != "decision" or model["format"] != "Microsoft":
+                raise ValueError("Decision requires its native Microsoft provider route.")
+            operations = ("systemone",)
         # A runtime-disabled row stays in desired inventory (Bicep still
         # reconciles its deployments) but gets no HTTP route, so nothing on the
         # governed path can reach it even if an application seam were missed.
@@ -261,6 +266,7 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
             "mai": "mai",
             "bfl": "providers/blackforestlabs/v1",
             "mistral_ocr": "providers/mistral/azure",
+            "decision": "providers/microsoft/v1",
         }.get(api, "openai")
         operation_path = None
         if api == "bfl":
@@ -271,6 +277,10 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
                 )
         elif api == "mistral_ocr":
             operation_path = "ocr"
+        elif api == "decision":
+            if category != "decision":
+                raise ValueError("Decision is not a chat protocol.")
+            operation_path = "systemone"
         elif api == "mai" and category == "image":
             operation_path = "v1/images/generations"
         elif category == "video":
