@@ -95,7 +95,10 @@ def validate_chat_transition(prior: ChatContinuation | None, updated: ChatContin
         return
     if (
         updated.turnId != prior.turnId or updated.revision != prior.revision + 1
-        or updated.expiresAt != prior.expiresAt
+        or (
+            updated.expiresAt != prior.expiresAt
+            and not (updated.status == "waiting" and updated.operationId != prior.operationId)
+        )
         or (prior.payload is None and updated.payload is not None)
         or (
             prior.status in {"complete", "cancelled", "expired", "unknown"}

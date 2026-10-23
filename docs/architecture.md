@@ -421,7 +421,7 @@ legacy best-effort cascade's guarantees for unrelated writers.
 
 Execution payloads have a 480 KiB escaped-JSON ceiling within a 512 KiB budget,
 reserving 32 KiB for state transitions. Exact argument objects are limited to
-64 KiB, with bounded nesting and node counts. The ten-minute turn deadline and
+64 KiB, with bounded nesting and node counts. Each pending call's ten-minute deadline and
 one-use grants limit authority, not physical data retention. Successful terminal,
 cancelled, expired-decision and unknown-outcome transitions clear executable
 payloads while preserving minimal status/fencing evidence. A new user turn,

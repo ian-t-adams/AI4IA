@@ -37,6 +37,29 @@ def consume_chat_grant(record: PendingToolApproval, grant: str) -> ApprovalOutco
     }), grant)
 
 
+def validate_pending_call(message: Message, pending: PendingToolApproval) -> None:
+    state = message.chatContinuation
+    if state is None or state.payload is None:
+        raise ChatContinuationError("The saved call is unavailable.")
+    matches = [
+        turn for turn in [state.payload.turn, *state.payload.children.values()]
+        if turn is not None and turn.phase == "tools"
+        and f"{turn.activityScope}:{turn.iterations}:{turn.nextToolIndex}" == pending.operationId
+    ]
+    if len(matches) != 1:
+        raise ChatContinuationError("The saved call no longer matches its approval. Send a fresh request.")
+    turn = matches[0]
+    if turn.response is None or turn.nextToolIndex >= len(turn.response.toolCalls):
+        raise ChatContinuationError("The saved call is incomplete. Send a fresh request.")
+    function = turn.response.toolCalls[turn.nextToolIndex].get("function") or {}
+    arguments = exact_chat_arguments(function.get("arguments") or "{}")
+    if (
+        pending.messageId != message.id or function.get("name") != pending.tool
+        or pending.tool not in turn.contracts or arguments_digest(arguments) != pending.argumentsDigest
+    ):
+        raise ChatContinuationError("The saved call no longer matches its approval. Send a fresh request.")
+
+
 class ChatContinuationController:
     def __init__(
         self, repo: SessionRepository, assistant: Message, *, request: dict[str, Any],
@@ -99,9 +122,6 @@ class ChatContinuationController:
         self._expected = self.assistant.model_copy(deep=True)
 
     async def _check(self) -> None:
-        if datetime.now(timezone.utc) >= self.state.expiresAt:
-            await self._save(self.state.cleared("expired", "approval_expired"))
-            raise ChatContinuationError("This pending call expired. Send a fresh request.")
         if self.state.status != "running":
             raise ChatContinuationError("This operation has no new dispatch authority.")
         if self.restored is not None:
@@ -212,7 +232,6 @@ class ChatContinuationController:
         record.grantHash = chat_grant_hash(grant)
         record.messageId = self.assistant.id
         record.operationId = f"{state.activityScope}:{state.iterations}:{state.nextToolIndex}"
-        record.expiresAt = min(record.expiresAt, self.state.expiresAt)
         updated = self.state.model_copy(deep=True)
         if updated.payload is None:
             raise ChatContinuationError("The pending call was cleared.")
@@ -235,6 +254,7 @@ class ChatContinuationController:
                 exact_chat_arguments((call.get("function") or {}).get("arguments") or "{}")
         updated.status = "waiting"
         updated.operationId = record.operationId
+        updated.expiresAt = record.expiresAt
         updated.revision += 1
         self.assistant.pendingApprovals = [*(self.assistant.pendingApprovals or []), record]
         await self._save(updated)

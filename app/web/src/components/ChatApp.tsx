@@ -3168,6 +3168,7 @@ export function ChatApp() {
         attachments: m.attachments,
         source: m.source,
         steps: m.steps,
+        continuationStatus: m.continuationStatus,
         safety: m.safety,
         sources: m.sources,
         citations: m.citations,

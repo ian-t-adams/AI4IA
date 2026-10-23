@@ -168,6 +168,11 @@ class ToolRegistry:
 _REDACTED = "***REDACTED***"
 
 
+def redact_known_secret(text: str, secret: str | None) -> str:
+    """Connection credentials must not become returned model/checkpoint data."""
+    return text.replace(secret, _REDACTED) if secret else text
+
+
 def safe_operation_id(value: Any) -> str | None:
     """Accept only the runtime's content-free invocation identity."""
     if (

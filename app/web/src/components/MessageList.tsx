@@ -45,6 +45,7 @@ interface DisplayMessage {
   source?: Message["source"];
   // Agent activity: streamed live while pending, persisted for the finished turn.
   steps?: ActivityStep[] | null;
+  continuationStatus?: Message["continuationStatus"];
   // Annotate-only content-safety verdicts for the turn.
   safety?: MessageSafety | null;
   // The turn's span registry and the citations checked against it (P1-14).
@@ -716,7 +717,7 @@ function Bubble({
       </div>
       <div className="message-details">
         {!msg.pending && msg.steps && msg.steps.length > 0 ? (
-          <ActivityPanel steps={msg.steps} live={false} />
+          <ActivityPanel steps={msg.steps} live={false} continuationStatus={msg.continuationStatus} />
         ) : null}
         {/* Annotate-only safety verdicts, shown once the turn is settled so a
             partial verdict is never presented as final. */}

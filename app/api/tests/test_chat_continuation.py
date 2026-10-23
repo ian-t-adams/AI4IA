@@ -26,6 +26,7 @@ from ai4ia_api.agents.approvals import PendingToolApproval, consume_grant
 from ai4ia_api.agents.chat_continuation import consume_chat_grant
 from ai4ia_api.request_constraints import automatic_memory_allowed
 from ai4ia_api.usage.pricing import PriceRate, PricingBook
+from ai4ia_api.agents.mcp_client import McpToolResult
 
 
 def resume(client, session, prompt, **overrides):
@@ -76,6 +77,7 @@ def test_exact_call_runs_before_any_new_model_request_in_original_legacy_turn():
         assert final[-1]["continuationStatus"] == "complete"
         assert {step["operationId"] for step in final[-1]["steps"]} == {prompt["operationId"]}
         receipt = final[-1]["executionReceipt"]
+        assert receipt["approvalsRequested"] == receipt["approvalsGranted"] == 1
         assert receipt["toolCalls"][0]["operationId"] == prompt["operationId"]
         assert receipt["toolCalls"][0]["callId"] == "c1"
         assert "chatContinuation" not in json.dumps(final)
@@ -103,6 +105,24 @@ def test_sibling_calls_each_require_their_own_operation_approval_without_model_r
         assert resume(client, session, second).status_code == 200
         assert gateway.calls == 2 and len(connector.tool_calls) == 2
         assert len(client.get(f"/api/sessions/{session}/messages").json()) == 2
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_waiting_tool_is_not_announced_as_running_before_approval():
+    client = _client(_connector())
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        response = client.post("/api/chat", json={
+            "sessionId": session, "content": "@courierbot Send synthetic.", "stream": True,
+        })
+        stages = [item["step"]["kind"] for item in events(response) if "step" in item]
+        assert stages == ["tool_waiting"]
+        prompt = next(item["approvals"][0] for item in events(response) if "approvals" in item)
+        continued = resume(client, session, prompt)
+        stages = [item["step"]["kind"] for item in events(continued) if "step" in item]
+        assert stages == ["tool_start", "tool_result"]
     finally:
         client.__exit__(None, None, None)
 
@@ -154,6 +174,60 @@ def test_review_after_reload_rotates_only_the_same_operation_challenge():
             assert first[name] == second[name]
         assert resume(client, session, first).status_code == 409
         assert resume(client, session, second).status_code == 200
+        assert len(connector.tool_calls) == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_new_operation_gets_its_own_deadline_without_renewing_the_previous_call(monkeypatch):
+    import ai4ia_api.agents.approvals as approval_module
+
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(approval_module, "_now", lambda: now)
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway(repeat=2)
+        first = _hold(client, session)
+        now += timedelta(seconds=500)
+        response = resume(client, session, first)
+        second = next(item["approvals"][0] for item in events(response) if "approvals" in item)
+        assert datetime.fromisoformat(second["expiresAt"]) > datetime.fromisoformat(first["expiresAt"])
+        now += timedelta(seconds=500)
+        assert resume(client, session, second).status_code == 200
+        assert len(connector.tool_calls) == 2
+        rows = client.get(f"/api/sessions/{session}/messages").json()
+        assert rows[-1]["pendingApprovals"][0]["expiresAt"] == first["expiresAt"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_approval_deadlines_do_not_expire_ordinary_non_gated_work(monkeypatch):
+    import ai4ia_api.agents.chat_continuation as continuation_module
+
+    class Clock(datetime):
+        value = datetime.now(timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.value
+
+    class SlowGateway(_InjectedModelGateway):
+        async def complete(self, **kwargs):
+            result = await super().complete(**kwargs)
+            Clock.value += timedelta(minutes=11)
+            return result
+
+    monkeypatch.setattr(continuation_module, "datetime", Clock)
+    connector = _connector()
+    client = _client(connector, tool_approval_mode="off")
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = SlowGateway()
+        response = _turn(client, session)
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["continuationStatus"] == "complete"
         assert len(connector.tool_calls) == 1
     finally:
         client.__exit__(None, None, None)
@@ -232,6 +306,7 @@ def test_linked_agent_resumes_its_held_call_without_replaying_parent_or_child_mo
         child = messages[-1]["executionReceipt"]["delegations"][0]
         assert child["toolCalls"][0]["operationId"] == prompt["operationId"]
         assert child["toolCalls"][0]["approval"] == "invocation"
+        assert child["approvalsRequested"] == child["approvalsGranted"] == 1
         assert child["runtime"]["modelCallCount"] == 2
         assert messages[-1]["executionReceipt"]["runtime"]["modelCalls"][0]["cost"]["priceVersion"] == previous_price
         assert messages[-1]["executionReceipt"]["runtime"]["modelCalls"][-1]["cost"]["priceVersion"] == "continued-price"
@@ -287,6 +362,63 @@ def test_old_record_is_refused_without_consuming_grant_or_reconstructing_argumen
         response = resume(client, session, prompt)
         assert response.status_code == 409 and "older approval" in response.text
         assert row.pendingApprovals[0].consumed is False and gateway.calls == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("tamper", ["arguments", "tool", "index"])
+def test_private_call_mismatch_refuses_before_consuming_the_grant(tamper):
+    connector = _connector()
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(client, session)
+        row = client.app.state.session_repo._messages[session][-1]
+        turn = row.chatContinuation.payload.turn
+        if tamper == "arguments":
+            turn.response.toolCalls[0]["function"]["arguments"] = '{"to":"different@example.com"}'
+        elif tamper == "tool":
+            turn.response.toolCalls[0]["function"]["name"] = "calculator"
+        else:
+            turn.nextToolIndex = 7
+        response = resume(client, session, prompt)
+        assert response.status_code == 409, response.text
+        assert not row.pendingApprovals[0].consumed
+        assert connector.tool_calls == [] and client.app.state.gateway.calls == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_connection_credential_echo_never_enters_a_later_private_checkpoint(authenticated):
+    credential = "fixture-key"
+    connector = _connector()
+    original = connector.call_tool
+
+    async def echo(**kwargs):
+        await original(**kwargs)
+        return McpToolResult(content=f"Opaque result: {credential}")
+
+    connector.call_tool = echo
+    client = _client(connector)
+    try:
+        session = _bootstrap(client)
+        if authenticated:
+            configured = client.put("/api/agents/mcp-servers/courier", json={
+                "endpoint": "https://courier.example.com/rpc", "trusted": True,
+                "authMode": "api_key", "secret": credential,
+            })
+            assert configured.status_code == 200, configured.text
+        client.app.state.gateway = _InjectedModelGateway(repeat=2)
+        prompt = _hold(client, session)
+        first = client.app.state.session_repo._messages[session][-1]
+        assert credential not in json.dumps(first.chatContinuation.bounded_body())
+        response = resume(client, session, prompt)
+        assert response.status_code == 200 and '"approvals"' in response.text, response.text
+        held = client.app.state.session_repo._messages[session][-1]
+        assert (credential in json.dumps(held.chatContinuation.bounded_body())) is (not authenticated)
+        assert connector.tool_calls[0][-1].secret == (credential if authenticated else None)
     finally:
         client.__exit__(None, None, None)
 

@@ -75,7 +75,9 @@ from ..agents.runtime import (
     run_agent_turn,
 )
 from ..agents.activity import persisted_run_trace
-from ..agents.chat_continuation import ChatContinuationController, chat_grant_hash, consume_chat_grant
+from ..agents.chat_continuation import (
+    ChatContinuationController, chat_grant_hash, consume_chat_grant, validate_pending_call,
+)
 from ..agents.consent import contract_hash
 from ..sessions.chat_continuation import ChatContinuationError
 from ..memory.context_refs import MemoryContextBinding, MemoryReference
@@ -286,6 +288,11 @@ async def _continuation_constraints(
             return
         raise HTTPException(409, "This pending call expired. Send a fresh request.")
     request.state.chat_resume = message
+    if body.action != "deny":
+        try:
+            validate_pending_call(message, pending)
+        except ChatContinuationError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
     stored = ChatRequest.model_validate(state.payload.request)
     if stored.sessionId != body.sessionId:
         raise HTTPException(409, "The saved call does not match this conversation.")
@@ -1835,6 +1842,9 @@ async def chat(
                 raise ChatContinuationError("A document supplied to this turn changed.")
 
     def continuation_for(assistant: Message) -> ChatContinuationController:
+        receipt_draft.approvals_granted = sum(
+            item.consumed for item in assistant.pendingApprovals or []
+        )
         return ChatContinuationController(
             repo, assistant, request=body.model_dump(mode="json"),
             turn_id=user_msg.id, seed=seed, recheck=recheck_continuation,

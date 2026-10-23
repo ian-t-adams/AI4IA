@@ -79,7 +79,7 @@ from .tool_exec import (
     ToolExecutor,
     build_tools,
 )
-from .tools import ToolRegistry
+from .tools import ToolRegistry, redact_known_secret
 from ..policy.context import canonical_tool_name, require_policy
 from ..policy.models import PolicyError, PolicyRequest
 
@@ -308,7 +308,7 @@ def _make_handler(
             outcome=obs.OUTCOME_TOOL_ERROR if result.is_error else obs.OUTCOME_OK,
             latency_ms=timer.ms,
         )
-        return {"content": result.content, "isError": result.is_error}
+        return {"content": redact_known_secret(result.content, secret), "isError": result.is_error}
 
     return handler
 

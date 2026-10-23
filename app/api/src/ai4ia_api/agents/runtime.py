@@ -976,18 +976,21 @@ async def run_agent_turn(
         )
 
     async def before_tool(name: str, parsed: dict[str, Any]) -> None:
-        if checkpoint is None:
-            return
-        try:
-            await checkpoint.before_tool(
-                snapshot("tools"), tool=name, arguments=parsed, contract=contracts[name],
-            )
-        except asyncio.CancelledError as exc:
-            raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
-        except Exception as exc:
-            raise AgentRunFailed(
-                cause=exc, partial=current_partial_result(include_current_attempt=False),
-            ) from exc
+        if checkpoint is not None:
+            try:
+                await checkpoint.before_tool(
+                    snapshot("tools"), tool=name, arguments=parsed, contract=contracts[name],
+                )
+            except asyncio.CancelledError as exc:
+                raise AgentRunCancelled(current_partial_result(include_current_attempt=False)) from exc
+            except Exception as exc:
+                raise AgentRunFailed(
+                    cause=exc, partial=current_partial_result(include_current_attempt=False),
+                ) from exc
+        await record(AgentStep(
+            kind="tool_start", tool=name if is_safe_tool_name(name) else "unknown_tool",
+            arguments=redact_obj(parsed),
+        ), persist=False)
 
     async def model_completed() -> None:
         if checkpoint is None:
@@ -1122,13 +1125,6 @@ async def run_agent_turn(
                 await record(AgentStep(kind="tool_error", tool=safe_name, detail="invalid_arguments"))
                 continue
             call_arguments = parsed
-
-            # Emit a pre-execution marker so the UI can show "running X" live. It
-            # is NOT persisted (only the finalized result/denied/error step is).
-            await record(
-                AgentStep(kind="tool_start", tool=safe_name, arguments=redact_obj(parsed)),
-                persist=False,
-            )
 
             # --- Per-invocation approval (agents/approvals.py) ---------------
             # Deliberately layered ON TOP of registry authorization rather than

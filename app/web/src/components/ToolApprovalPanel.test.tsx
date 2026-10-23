@@ -86,7 +86,7 @@ describe("ToolApprovalPanel", () => {
     await user.click(screen.getByRole("button", { name: /^Approve/ }));
     expect(onApprove).toHaveBeenCalledWith(pending);
     expect(screen.getByRole("button", { name: /Approve and continue/ })).toBeInTheDocument();
-    expect(screen.getByText(/does not ask the model to recreate it/i)).toBeInTheDocument();
+    expect(screen.getByText(/model does not recreate it/i)).toBeInTheDocument();
   });
 
   it("asks the parent to cancel the held call without approving it", async () => {

@@ -113,6 +113,8 @@ def delegation_receipts(
             model_evidence=trace.model_evidence,
             offered=trace.offered_tools,
             calls=receipt_tool_calls(trace.steps),
+            approvals_requested=sum(step.kind == "tool_waiting" for step in trace.steps),
+            approvals_granted=sum(step.approval == "invocation" for step in trace.steps),
             iterations=trace.iterations,
             usage=trace.usage,
             safety=attributed_safety(trace.safety, provider),

@@ -42,11 +42,15 @@ export function ToolApprovalPanel({
     <section
       aria-label="Tool approvals"
       aria-busy={busy}
+      tabIndex={0}
       style={{
         display: "flex",
         flexDirection: "column",
         gap: 8,
         margin: "0 0 8px",
+        maxHeight: "50dvh",
+        overflowY: "auto",
+        flexShrink: 0,
       }}
     >
       {prompts.map((prompt) => (
@@ -143,11 +147,9 @@ function ToolApprovalCard({
       </div>
 
       <p style={{ margin: 0, fontSize: "0.85em", color: "var(--fg-muted)" }}>
-        This request was not run. Content in this conversation — including
-        uploaded documents, saved memories and tool results — can influence what
-        a tool is asked to send, so outbound calls need your approval for these
-        exact values. {continuable
-          ? "Approval continues this saved call in the same turn; it does not ask the model to recreate it."
+        This call has not run. Documents, memories and tool results can influence
+        its arguments, so review the destination and values before approving. {continuable
+          ? "Approval continues this saved call in the same turn; the model does not recreate it."
           : "This older request cannot be continued exactly. Send a fresh request to use this tool."}
       </p>
 
