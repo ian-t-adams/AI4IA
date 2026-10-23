@@ -28,6 +28,15 @@ edit-and-rerun allocation, not a claim about token throughput. No second region,
 increase, new identity, role or provider credential is required by this source
 change. Do not mistake catalog availability for live deployment acceptance.
 
+Scoped CLI observations on 2026-10-23 at 21:51-21:52 UTC found the exact
+Microsoft/AIServices v1 eastus2 offering (`decision=true`, `chatCompletion=false`,
+US DataZoneStandard), quota `0/60 Count` labeled Requests Per Minute, and
+`availableCapacity=60` with terminal pagination on API `2024-10-01`.
+The separate Azure MCP quota reader returned 403. No authentication change was
+needed for the existing CLI reader. Minimum/step metadata was absent: the
+five-unit desired allocation remains subject to normal preflight and provider
+validation, and these observations reserve nothing or prove inference access.
+
 Native calls use the existing API -> SimpleL7Proxy -> APIM path. The proxy-facing
 deployment-scoped `systemone` operation is an exact POST allowlist; APIM rewrites
 to the selected services endpoint's `/providers/microsoft/v1/systemone`, binds

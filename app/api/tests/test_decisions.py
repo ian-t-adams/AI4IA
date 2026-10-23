@@ -282,6 +282,61 @@ async def test_cancellation_closes_native_transport_without_replay():
         assert closed.is_set() and len(calls) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("framing", ["length", "chunked", "truncated", "oversize"])
+async def test_native_three_type_response_over_real_loopback_http(framing):
+    from ai4ia_api.gateway.client import ModelGatewayError
+
+    sends = []
+    finished = asyncio.Event()
+    native = json.dumps(NATIVE).encode()
+
+    async def respond(reader, writer):
+        try:
+            header = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1]) for line in header.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            sends.append(json.loads(await reader.readexactly(length)))
+            body = b"x" * 65537 if framing == "oversize" else native
+            if framing == "chunked":
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                for part in (body[:43], body[43:]):
+                    writer.write(f"{len(part):x}\r\n".encode() + part + b"\r\n")
+                writer.write(b"0\r\n\r\n")
+            else:
+                writer.write(
+                    f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                    + (body[:43] if framing == "truncated" else body)
+                )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            finished.set()
+
+    async with await asyncio.start_server(respond, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        gateway = ModelGatewayClient(make_settings(model_gateway_url=f"http://127.0.0.1:{port}"))
+        execution = DecisionExecution()
+        call = gateway.decide(
+            deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+            request=DecisionRequest.model_validate(BODY), execution=execution,
+        )
+        if framing in {"truncated", "oversize"}:
+            with pytest.raises(ModelGatewayError):
+                await call
+            assert not execution.usage.known
+        else:
+            response = await call
+            assert response["answers"] == NATIVE["answers"]
+            assert execution.usage.total == 130
+        await asyncio.wait_for(finished.wait(), 5)
+        assert len(sends) == 1
+        assert sends[0]["state"] == json.loads(BODY["input"])
+
+
 def test_attempt_failure_is_cost_unknown_in_ledger(rig):
     client, _, _ = rig
     from ai4ia_api.usage.service import UsageService
