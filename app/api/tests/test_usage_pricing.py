@@ -41,6 +41,28 @@ def test_estimate_small_token_counts_round_to_micro():
     assert est.known is True
 
 
+@pytest.mark.parametrize("total", [82, 80, 26, 27, None])
+def test_unreconciled_token_totals_have_unknown_cost_without_losing_frozen_prices(total):
+    estimate = _book().estimate(
+        "gpt-x", prompt_tokens=22, completion_tokens=5, total_tokens=total,
+    )
+    known = total in (None, 27)
+    assert estimate.known is known
+    assert estimate.micro_usd == (84 if known else None)
+    assert estimate.reason == (None if known else "usage_totals_mismatch")
+    assert (estimate.input_per_1m, estimate.output_per_1m, estimate.version) == (2.0, 8.0, "test-1")
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_aggregate_mismatch_remains_unpriced_even_when_the_summed_totals_agree(mismatch):
+    estimate = _book().estimate(
+        "gpt-x", prompt_tokens=122, completion_tokens=10, total_tokens=132,
+        totals_mismatch=mismatch,
+    )
+    assert estimate.known is not mismatch
+    assert estimate.micro_usd == (None if mismatch else 324)
+
+
 def test_estimate_unknown_model_is_not_known():
     est = _book().estimate("nope", prompt_tokens=10, completion_tokens=10)
     assert est.known is False

@@ -193,6 +193,14 @@ updating prices does not change a saved receipt. Older receipts show parameters
 and cost as **not recorded**, rather than reconstructing them from current settings.
 Response-model metadata does not reprice the call or establish its actual billed cost.
 
+For new calls, a reported total that differs from input plus output makes cost
+**Unknown**, even when token prices are available. The call details retain the
+input, output and total counts and explain the mismatch; the app does not assign
+the difference to reasoning, cached tokens or any other billing category.
+Other fully priced calls can still contribute a **Known subtotal**.
+Previously saved estimates are not recalculated or reclassified. In particular,
+older Grok estimates with this discrepancy remain provisional, not verified bills.
+
 **These are not chain-of-thought.** They show what the application supplied and
 executed, not the model's private reasoning or proof of which source caused an
 answer. Shortened payloads retain their original redacted size and digest.
@@ -637,8 +645,14 @@ To delete a conversation, choose the bin icon on its sidebar row and confirm on
 the row. The icon is always shown on the open conversation; on other rows, hover
 over it or tab to it. The conversation leaves your list and the app cleans up its
 messages and attachments right away, then tells you when it's done. If cleanup
-doesn't finish, the notice says so and offers **Finish cleanup**; **Deletion
-status** in the sidebar lists unfinished deletions. If the app can't confirm what
+doesn't finish, the notice offers **Finish cleanup**, or **View deletion status**
+when the outcome needs checking or an upload or configuration problem must be
+resolved first. **Deletion status** in the sidebar focuses on unfinished
+deletions. Completed requests are under **Completed history**; identifiers,
+verification timestamps and progress details are under **Troubleshooting**.
+If more requests have not been checked, choose **Load more deletion requests**;
+an empty loaded page does not mean all cleanup is finished. Opening these views
+never runs cleanup. If the app can't confirm what
 happened, the row says so and offers **Try again**, which checks the same request
 and won't delete twice. Conversations created before resumable deletion was
 turned on are deleted the older, best-effort way.

@@ -644,7 +644,7 @@ describe("ChatApp session state reliability", () => {
     await waitFor(() => expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B"));
     expect(mocks.listSessionDeletions).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Deletion status" }));
-    await screen.findByRole("heading", { name: "Conversation removed/session" });
+    await screen.findByRole("heading", { name: "Conversation removed/session", hidden: true });
     expect(document.querySelector("main")).toHaveAttribute("inert");
     expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Close deletion status" }));
@@ -654,7 +654,7 @@ describe("ChatApp session state reliability", () => {
     render(<ChatApp />);
     expect(mocks.listSessionDeletions).toHaveBeenCalledTimes(1);
     await user.click(await screen.findByRole("button", { name: "Deletion status" }));
-    await screen.findByRole("heading", { name: "Conversation removed/session" });
+    await screen.findByRole("heading", { name: "Conversation removed/session", hidden: true });
     expect(mocks.listSessionDeletions).toHaveBeenCalledTimes(2);
     expect(mocks.deleteSession).not.toHaveBeenCalled();
     expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
@@ -701,7 +701,7 @@ describe("ChatApp session state reliability", () => {
     const user = userEvent.setup();
     render(<ChatApp />);
     await confirmDeletion(user, "Session A");
-    expect(await screen.findByText(/cleaning up its messages didn't finish/)).toBeInTheDocument();
+    expect(await screen.findByText(/Cleanup needs attention/)).toBeInTheDocument();
     expect(screen.getByText("There's more to clean up.")).toBeInTheDocument();
     expect(mocks.reconcileSessionDeletion).toHaveBeenCalledTimes(CLEANUP_PASSES);
     expect(mocks.reconcileSessionDeletion.mock.calls.every(([id]) => id === "A")).toBe(true);
@@ -726,12 +726,14 @@ describe("ChatApp session state reliability", () => {
     render(<ChatApp />);
     await confirmDeletion(user, "Session A");
     expect(await screen.findByText(problem)).toBeInTheDocument();
-    expect(screen.getByText(/cleaning up its messages didn't finish/)).toHaveAttribute("role", "status");
+    expect(screen.getByText(/Cleanup needs attention/)).toHaveAttribute("role", "status");
     expect(mocks.reconcileSessionDeletion).toHaveBeenCalledExactlyOnceWith("A");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     // Reading its status never runs cleanup.
+    const details = screen.queryByText("Troubleshooting");
+    if (details) await user.click(details);
     await user.click(screen.getByRole("button", { name: "View deletion status" }));
-    await screen.findByRole("heading", { name: "Conversation A" });
+    await screen.findByRole("heading", { name: "Conversation A", hidden: true });
     expect(mocks.getSessionDeletion).toHaveBeenCalledExactlyOnceWith("A");
     expect(mocks.reconcileSessionDeletion).toHaveBeenCalledTimes(1);
   });
@@ -837,7 +839,7 @@ describe("ChatApp session state reliability", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't confirm whether/);
     expect(screen.getByRole("button", { name: "Session A" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Try again" }));
-    await screen.findByRole("button", { name: "View deletion status" });
+    await screen.findByRole("button", { name: "Finish cleanup" });
     expect(mocks.deleteSession.mock.calls).toEqual([["A"], ["A"]]);
     expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -858,7 +860,7 @@ describe("ChatApp session state reliability", () => {
     await user.click(screen.getByRole("button", { name: "Session B" }));
     await waitFor(() => expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B"));
     await act(async () => pending.resolve({ ...PENDING_DELETION, sessionId: "A" }));
-    await screen.findByRole("button", { name: "View deletion status" });
+    await screen.findByRole("button", { name: "Finish cleanup" });
     expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "B");
     expect(screen.getByRole("button", { name: "Delete Session B" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Delete Session A" })).not.toBeInTheDocument();
@@ -894,7 +896,7 @@ describe("ChatApp session state reliability", () => {
     expect(screen.queryByRole("button", { name: "Delete Session A" })).not.toBeInTheDocument();
     if (fails && !newer) expect(screen.getByRole("alert")).toHaveTextContent("Deletion refresh failed");
     else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(await screen.findByText(/cleaning up its messages didn't finish/)).toHaveAttribute("role", "status");
+    expect(await screen.findByText(/Cleanup needs attention/)).toHaveAttribute("role", "status");
   });
 
   it("does not publish a pending deletion or start its list refresh after sign-out", async () => {
@@ -918,7 +920,7 @@ describe("ChatApp session state reliability", () => {
     await user.click(screen.getByRole("button", { name: "Send draft message" }));
     await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("button", { name: "Deletion status" }));
-    await screen.findByRole("heading", { name: "Conversation removed/session" });
+    await screen.findByRole("heading", { name: "Conversation removed/session", hidden: true });
     expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Close deletion status" }));
     const newChat = screen.getByRole("button", { name: "New chat" });
@@ -948,7 +950,7 @@ describe("ChatApp session state reliability", () => {
     await user.click(screen.getByRole("button", { name: "Deletion status" }));
     await user.click(screen.getByText("Incomplete conversation creation"));
     await user.click(await screen.findByRole("button", { name: "Discard incomplete creation A" }));
-    await screen.findByRole("heading", { name: "Conversation A" });
+    await screen.findByRole("heading", { name: "Conversation A", hidden: true });
     await user.click(screen.getByRole("button", { name: "Close deletion status" }));
     expect(screen.queryByRole("button", { name: "Session A" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Conversation")).toHaveAttribute(
@@ -979,7 +981,7 @@ describe("ChatApp session state reliability", () => {
     await user.click(screen.getByRole("button", { name: "Deletion status" }));
     await user.click(screen.getByText("Incomplete conversation creation"));
     await user.click(await screen.findByRole("button", { name: "Discard incomplete creation C" }));
-    if (accepted) await screen.findByRole("heading", { name: "Conversation C" });
+    if (accepted) await screen.findByRole("heading", { name: "Conversation C", hidden: true });
     else await screen.findByText(/Discard was not accepted/);
     await user.click(screen.getByRole("button", { name: "Close deletion status" }));
     await act(async () => creation.resolve(session("C")));
@@ -1012,7 +1014,7 @@ describe("ChatApp session state reliability", () => {
     await user.click(screen.getByRole("button", { name: "Deletion status" }));
     await user.click(screen.getByText("Incomplete conversation creation"));
     await user.click(await screen.findByRole("button", { name: "Discard incomplete creation A" }));
-    if (accepted) await screen.findByRole("heading", { name: "Conversation A" });
+    if (accepted) await screen.findByRole("heading", { name: "Conversation A", hidden: true });
     else await screen.findByText(/Discard not accepted/);
     await user.click(screen.getByRole("button", { name: "Close deletion status" }));
     await act(async () => messages.resolve([{
@@ -1022,7 +1024,7 @@ describe("ChatApp session state reliability", () => {
     if (accepted) {
       expect(screen.queryByText("Late private transcript")).not.toBeInTheDocument();
       // A discard from the panel says where cleanup stands; it doesn't run it.
-      expect(screen.getByText(/cleaning up its messages didn't finish/)).toHaveAttribute("role", "status");
+      expect(screen.getByText(/Cleanup needs attention/)).toHaveAttribute("role", "status");
       expect(mocks.reconcileSessionDeletion).not.toHaveBeenCalled();
       expect(screen.getByLabelText("Conversation")).toHaveAttribute("data-conversation-id", "draft");
     } else {

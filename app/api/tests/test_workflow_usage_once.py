@@ -97,6 +97,40 @@ async def test_missing_accounting_fields_cannot_default_into_a_match():
         await repo._usage.create_item(body)
 
 
+async def test_legacy_frozen_row_does_not_require_unrecorded_cost_reason():
+    repo = object.__new__(CosmosUsageRepository)
+    repo._usage = Container("userId")
+    frozen = record()
+    body = frozen.model_dump(mode="json")
+    assert "costUnknownReason" not in body
+    await repo._usage.create_item(body)
+    assert await repo.record_once(frozen) is False
+    rows = await repo.list_for_session("owner", "session", limit=10)
+    assert rows[0].costUnknownReason is None
+    assert rows[0].costKnown and rows[0].estCostMicroUsd == 42
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+async def test_new_cost_mismatch_reason_must_survive_frozen_delivery(recorded):
+    repo = object.__new__(CosmosUsageRepository)
+    repo._usage = Container("userId")
+    frozen = record().model_copy(update={
+        "costKnown": False, "estCostMicroUsd": None, "costUnknownReason": "usage_totals_mismatch",
+    })
+    body = frozen.model_dump(mode="json")
+    assert body["costUnknownReason"] == "usage_totals_mismatch"
+    if not recorded:
+        del body["costUnknownReason"]
+    await repo._usage.create_item(body)
+    if recorded:
+        assert await repo.record_once(frozen) is False
+        rows = await repo.list_for_session("owner", "session", limit=10)
+        assert rows[0].costUnknownReason == "usage_totals_mismatch"
+    else:
+        with pytest.raises(UsageRecordConflict):
+            await repo.record_once(frozen)
+
+
 def test_uncertain_workflow_attempt_stays_cost_unknown_in_projected_rollups():
     uncertain = record().model_copy(update={
         "status": "error", "providerCompleted": False, "billable": False,

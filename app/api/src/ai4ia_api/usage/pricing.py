@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 _PACKAGED = Path(__file__).resolve().parents[1] / "data" / "pricing.json"
+CostUnknownReason = Literal["usage_totals_mismatch"]
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class PriceRate:
 
 @dataclass(frozen=True)
 class CostEstimate:
-    """Result of an estimate. ``known`` is False when no price was found."""
+    """A price-backed estimate only when the supplied usage can be priced."""
 
     micro_usd: int | None
     known: bool
@@ -33,6 +34,7 @@ class CostEstimate:
     output_per_1m: float | None
     currency: str
     version: str | None
+    reason: CostUnknownReason | None = None
 
 
 @dataclass(frozen=True)
@@ -117,13 +119,21 @@ class PricingBook:
         self, model_id: str, *, prompt_tokens: int | None, completion_tokens: int | None,
         deployment: str | None = None, cache_read_tokens: int | None = None,
         cache_write_tokens: int | None = None,
+        total_tokens: int | None = None, totals_mismatch: bool = False,
     ) -> CostEstimate:
         rate = self.rate(model_id, deployment=deployment)
+        totals_mismatch = totals_mismatch or (
+            total_tokens is not None and prompt_tokens is not None and completion_tokens is not None
+            and total_tokens != prompt_tokens + completion_tokens
+        )
         cache_unknown = rate is not None and rate.cache_read_per_1m is not None and (
             cache_read_tokens is None or cache_write_tokens != 0
             or prompt_tokens is None or not 0 <= cache_read_tokens <= prompt_tokens
         )
-        if rate is None or prompt_tokens is None or completion_tokens is None or cache_unknown:
+        if (
+            rate is None or prompt_tokens is None or completion_tokens is None
+            or cache_unknown or totals_mismatch
+        ):
             return CostEstimate(
                 micro_usd=None,
                 known=False,
@@ -131,6 +141,7 @@ class PricingBook:
                 output_per_1m=rate.output_per_1m if rate else None,
                 currency=self._currency,
                 version=self._version,
+                reason="usage_totals_mismatch" if totals_mismatch else None,
             )
         cached = cache_read_tokens if rate.cache_read_per_1m is not None else 0
         micro = round(

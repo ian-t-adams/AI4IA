@@ -980,6 +980,7 @@ def _usage_to_dict(usage: TokenUsage) -> dict[str, Any]:
         "known": usage.known,
         "complete": usage.complete,
         "calls": usage.calls,
+        **({"totalMismatch": True} if usage.totalMismatch else {}),
     }
 
 
@@ -1037,6 +1038,7 @@ def _usage_from_dict(raw: dict[str, Any]) -> TokenUsage:
         # incomplete and silently flag all durable usage as unreliable.
         complete=bool(raw.get("complete", True)),
         calls=raw.get("calls") or 0,
+        totalMismatch=bool(raw.get("totalMismatch", False)),
     )
 
 

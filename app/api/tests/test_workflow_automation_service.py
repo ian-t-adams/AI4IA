@@ -14,6 +14,7 @@ from ai4ia_api.gateway.client import ModelGatewayClient
 from ai4ia_api.hard_quota.dispatch import admitted_dispatch
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
 from ai4ia_api.request_constraints import constrain_request
+from ai4ia_api.usage.pricing import PriceRate, PricingBook
 from ai4ia_api.workflows.automation_access import WorkflowAccess, WorkflowSelection
 from ai4ia_api.workflows.automation_common import AutomationError, ExecutionLimits
 from ai4ia_api.workflows.automation_service import WorkflowAutomationService
@@ -123,6 +124,43 @@ def test_real_gateway_operations_are_recorded_once_and_run_completes(client):
     ))
     assert len(records) == 2
     assert all(record.workflowDispatchClaimed and record.totalTokens == 15 for record in records)
+
+
+@pytest.mark.parametrize("total", [82, 80, 27])
+def test_dispatch_outbox_preserves_unreconciled_usage_without_claiming_a_known_cost(client, total):
+    service, _, _ = install(client)
+    state = client.app.state
+    state.usage._pricing = PricingBook(
+        {"gpt-5.4": PriceRate(2, 8)}, currency="USD", version="before-dispatch",
+    )
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        state.usage._pricing = PricingBook(
+            {"gpt-5.4": PriceRate(200, 800)}, currency="USD", version="after-dispatch",
+        )
+        result = _assistant_text("done")
+        result["usage"] = {"prompt_tokens": 22, "completion_tokens": 5, "total_tokens": total}
+        return httpx.Response(200, json=result)
+
+    state.gateway = ModelGatewayClient(state.settings, httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+    user, run = begin(client, service)
+    result = client.portal.call(service.advance, user.internal_user_id, run.runId)
+    assert result["status"] == "completed", result
+    assert len(calls) == 1
+    records = client.portal.call(partial(
+        state.usage._repo.list_for_session, user.internal_user_id, run.sessionId, limit=20,
+    ))
+    assert len(records) == 1
+    record = records[0]
+    assert record.costKnown is (total == 27)
+    assert record.estCostMicroUsd == (84 if total == 27 else None)
+    assert record.costUnknownReason == (None if total == 27 else "usage_totals_mismatch")
+    assert (record.promptTokens, record.completionTokens, record.totalTokens) == (22, 5, total)
+    assert record.priceVersion == "before-dispatch"
+    assert record.priceInputPer1M == 2 and record.priceOutputPer1M == 8
+    assert not state.hard_quota.enabled
 
 
 def test_review_after_restart_redeems_exact_call_without_another_model_request(client):

@@ -150,8 +150,16 @@ function ModelCallPanel({ call }: { call: ModelCallEvidence }) {
     ] as [string, string]] : []),
     ["HTTP attempts", String(call.httpAttempts)],
     ["Provider completion", call.providerCompleted ? "Observed" : "Not observed"],
+    ["Token usage", call.usageKnown
+      ? `${call.promptTokens ?? "Unknown"} input / ${call.completionTokens ?? "Unknown"} output / ${
+          call.totalTokens == null ? "total not recorded" : `${call.totalTokens} total tokens`
+        }` : "Not recorded"],
     ["Call cost", cost.coverage === "known" && cost.estCostMicroUsd != null
       ? `Estimated ${receiptUsd(cost.estCostMicroUsd)}` : "Unknown"],
+    ...(cost.reason === "usage_totals_mismatch" ? [[
+      "Cost coverage detail",
+      "Reported total differs from input + output; cost is unknown. The usage category and billed amount are unknown.",
+    ] as [string, string]] : []),
     ["Price version at execution", cost.priceVersion ?? "Not recorded"],
     ["Pricing basis", cost.priceInputPer1M != null && cost.priceOutputPer1M != null
       ? `${cost.priceInputPer1M} / ${cost.priceOutputPer1M} USD per million input / output tokens`

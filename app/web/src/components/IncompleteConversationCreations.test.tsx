@@ -64,6 +64,21 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("incomplete conversation creation recovery", () => {
+  it("does not describe an empty partial page as no incomplete creations", async () => {
+    initializationRead.mockResolvedValueOnce(json(initializationPage([], "next")))
+      .mockResolvedValueOnce(json(initializationPage([INITIALIZING_SESSION])));
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByText("Incomplete conversation creation"));
+    expect(await screen.findByText("More incomplete creations have not been checked.")).toBeVisible();
+    expect(screen.queryByText(/No incomplete creations reported/)).not.toBeInTheDocument();
+    expect(initializationRead).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Load more incomplete creations" }));
+    expect(await screen.findByRole("button", { name: discardLabel })).toBeEnabled();
+    expect(discardRequest).not.toHaveBeenCalled();
+    expect(resumeRequest).not.toHaveBeenCalled();
+  });
+
   it("keeps reservations under disclosure and only reads on open or refresh, never inventing chat content", async () => {
     initializationRead.mockImplementation(async () => json(initializationPage([{
       ...INITIALIZING_SESSION, title: "PRIVATE TITLE", instructions: "PRIVATE INSTRUCTIONS", transcript: "PRIVATE TRANSCRIPT",
@@ -103,14 +118,14 @@ describe("incomplete conversation creation recovery", () => {
     vi.mocked(window.confirm).mockReturnValue(true);
     await user.click(discard);
     expect(window.confirm).toHaveBeenLastCalledWith(expect.stringMatching(/cancels this creation and prevents it from publishing.*already finished.*deletes that same conversation/));
-    await screen.findByRole("heading", { name: "Conversation reserved/creation" });
+    await screen.findByRole("heading", { name: "Conversation reserved/creation", hidden: true });
     expect(screen.queryByRole("heading", { name: "Creation reserved/creation" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh incomplete creations" })).toHaveFocus();
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/reserved%2Fcreation", { method: "DELETE" });
     expect(discardRequest).toHaveBeenCalledTimes(1);
     expect(resumeRequest).not.toHaveBeenCalled();
     expect(screen.getByText(/Removed from chats. Cleanup pending/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Resume cleanup for reserved/creation" }));
+    await user.click(screen.getByRole("button", { name: "Resume cleanup" }));
     await screen.findByText(/Cleanup last verified:/);
     expect(resumeRequest).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls.map((call) => call[1]?.method ?? "GET")).toEqual(["GET", "GET", "DELETE", "POST"]);
@@ -179,7 +194,7 @@ describe("incomplete conversation creation recovery", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(status === 204 ? "did not confirm deletion status" : "Creation could not be discarded");
     expect(screen.getByRole("heading", { name: "Creation reserved/creation" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: discardLabel })).toBeEnabled();
-    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation", hidden: true })).not.toBeInTheDocument();
     expect(discardRequest).toHaveBeenCalledTimes(1);
     expect(resumeRequest).not.toHaveBeenCalled();
   });
@@ -197,10 +212,10 @@ describe("incomplete conversation creation recovery", () => {
     expect(discardRequest).toHaveBeenCalledTimes(1);
     expect(window.confirm).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("heading", { name: "Creation reserved/creation" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation", hidden: true })).not.toBeInTheDocument();
     await act(async () => request.resolve(json(accepted, 202)));
     expect(screen.queryByRole("heading", { name: "Creation reserved/creation" })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Conversation reserved/creation" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Conversation reserved/creation", hidden: true })).toBeInTheDocument();
   });
 
   it("reads bounded pages through the opaque cursor without automatically following it", async () => {
@@ -231,15 +246,15 @@ describe("incomplete conversation creation recovery", () => {
     await screen.findByRole("button", { name: discardLabel });
     await user.click(screen.getByRole("button", { name: "Refresh incomplete creations" }));
     await user.click(screen.getByRole("button", { name: discardLabel }));
-    if (success) await screen.findByRole("heading", { name: "Conversation reserved/creation" });
+    if (success) await screen.findByRole("heading", { name: "Conversation reserved/creation", hidden: true });
     else await screen.findByRole("alert");
     await act(async () => oldRead.resolve(json(initializationPage([INITIALIZING_SESSION]))));
     if (success) {
       expect(screen.queryByRole("heading", { name: "Creation reserved/creation" })).not.toBeInTheDocument();
-      expect(screen.getByRole("heading", { name: "Conversation reserved/creation" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Conversation reserved/creation", hidden: true })).toBeInTheDocument();
     } else {
       expect(screen.getByRole("heading", { name: "Creation reserved/creation" })).toBeInTheDocument();
-      expect(screen.queryByRole("heading", { name: "Conversation reserved/creation" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Conversation reserved/creation", hidden: true })).not.toBeInTheDocument();
     }
     expect(initializationRead).toHaveBeenCalledTimes(2);
     expect(resumeRequest).not.toHaveBeenCalled();
@@ -252,14 +267,14 @@ describe("incomplete conversation creation recovery", () => {
     renderPanel();
     await user.click(screen.getByText("Incomplete conversation creation"));
     await user.click(await screen.findByRole("button", { name: discardLabel }));
-    await screen.findByRole("heading", { name: "Conversation reserved/creation" });
+    await screen.findByRole("heading", { name: "Conversation reserved/creation", hidden: true });
     await act(async () => oldJobs.resolve(json(page(hasOldRow ? [{ ...accepted, state: "retryable", updatedAt: "2026-09-09T12:00:00Z" }] : []))));
     expect(screen.getByText(/Removed from chats. Cleanup pending/)).toBeInTheDocument();
     expect(screen.queryByText(/Removed from chats. Retry needed/)).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Creation reserved/creation" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
     await screen.findByText(/Cleanup last verified:/);
-    expect(within(screen.getByRole("list", { name: "Deletion requests" })).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(screen.getByRole("list", { name: "Completed deletions", hidden: true })).getAllByRole("listitem", { hidden: true })).toHaveLength(1);
     expect(screen.queryByRole("heading", { name: "Creation reserved/creation" })).not.toBeInTheDocument();
     expect(resumeRequest).not.toHaveBeenCalled();
   });
@@ -295,7 +310,7 @@ describe("incomplete conversation creation recovery", () => {
     expect(discardRequest).toHaveBeenCalledTimes(1);
     await act(async () => request.resolve(json(accepted, 202)));
     expect(reopened).toBeEnabled();
-    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation", hidden: true })).not.toBeInTheDocument();
     expect(initializationRead).toHaveBeenCalledTimes(2);
     expect(deletionRead).toHaveBeenCalledTimes(2);
     initializationRead.mockResolvedValueOnce(json(initializationPage([])));
@@ -303,7 +318,7 @@ describe("incomplete conversation creation recovery", () => {
     await user.click(screen.getByRole("button", { name: "Refresh incomplete creations" }));
     await screen.findByText(/No incomplete creations reported/);
     await user.click(screen.getByRole("button", { name: "Refresh status" }));
-    await screen.findByRole("heading", { name: "Conversation reserved/creation" });
+    await screen.findByRole("heading", { name: "Conversation reserved/creation", hidden: true });
     expect(discardRequest).toHaveBeenCalledTimes(1);
     expect(resumeRequest).not.toHaveBeenCalled();
   });
@@ -327,9 +342,9 @@ describe("incomplete conversation creation recovery", () => {
     expect(bob).toBeEnabled();
     await act(async () => old.resolve(json(accepted, 202)));
     expect(bob).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Conversation reserved/creation", hidden: true })).not.toBeInTheDocument();
     await user.click(bob);
-    await screen.findByRole("heading", { name: "Conversation reserved/creation" });
+    await screen.findByRole("heading", { name: "Conversation reserved/creation", hidden: true });
     expect(discardRequest).toHaveBeenCalledTimes(2);
   });
 });

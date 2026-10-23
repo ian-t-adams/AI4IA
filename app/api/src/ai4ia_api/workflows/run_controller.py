@@ -520,8 +520,10 @@ class RunController:
                 )
                 estimate = pricing.estimate(
                     record.model, prompt_tokens=tokens.prompt, completion_tokens=tokens.completion,
+                    total_tokens=tokens.total, totals_mismatch=tokens.totalMismatch,
                 )
                 record.costKnown = estimate.known
+                record.costUnknownReason = estimate.reason
                 record.estCostMicroUsd = estimate.micro_usd
                 record.pricingBasis = "input_output_tokens"
             if effect.money is not None:

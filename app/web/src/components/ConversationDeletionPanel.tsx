@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { apiErrorDetail, deleteSession, getSessionDeletion, listSessionDeletions, reconcileSessionDeletion } from "@/lib/api";
-import type { DeletionNoticePhase } from "@/lib/conversationDeletion";
+import { CLEANUP_UNCONFIRMED, cleanupCanResume, type DeletionNoticePhase } from "@/lib/conversationDeletion";
 import type { DeletionPage, DeletionStatus } from "@/lib/types";
 import { useCurrentOwner } from "./MemoryPreferenceProvider";
 import { ModalShell } from "./ModalShell";
@@ -15,9 +15,9 @@ const buttonStyle: CSSProperties = {
 const mutedStyle: CSSProperties = { margin: 0, color: "var(--fg-muted)", fontSize: "0.85em" };
 const noPendingIds: ReadonlySet<string> = new Set();
 const retryReasons: Record<NonNullable<DeletionStatus["retryReason"]>, string> = {
-  storage_unavailable: "Storage is unavailable. Try Resume cleanup when it is available again.",
-  cleanup_timeout: "The cleanup pass reached its time limit. Resume cleanup to request another pass.",
-  concurrent_change: "Data changed during the last pass. Resume cleanup to check again.",
+  storage_unavailable: "Storage is unavailable. Try again when it is available.",
+  cleanup_timeout: "Cleanup reached its time limit. You can continue where it stopped.",
+  concurrent_change: "Data changed during cleanup. You can check again.",
   integrity_mismatch: "The last pass found inconsistent deletion records. Contact your administrator.",
   uploads_unresolved: "Some uploads have no confirmed outcome. Cleanup cannot be verified yet.",
   artifact_store_required: "Required original-file storage is not configured. Contact your administrator.",
@@ -37,13 +37,15 @@ function DeletionProgress({ status }: { status: DeletionStatus }) {
 
 // After the owner deletes a conversation: one plain line while it's being
 // deleted, then whether it finished. Only an unfinished cleanup offers actions.
-export function ConversationDeletionNotice({ phase, problem, onFinish, onOpen, onDismiss }: {
+export function ConversationDeletionNotice({ phase, status, problem, onFinish, onOpen, onDismiss }: {
   phase: DeletionNoticePhase;
+  status?: DeletionStatus;
   problem?: string;
   onFinish: () => void;
   onOpen: () => void;
   onDismiss: () => void;
 }) {
+  const canFinish = status && cleanupCanResume(status) && problem !== CLEANUP_UNCONFIRMED;
   return (
     <div className="deletion-notice" data-phase={phase}>
       <div className="deletion-notice-text">
@@ -52,17 +54,22 @@ export function ConversationDeletionNotice({ phase, problem, onFinish, onOpen, o
             ? "Deleting the conversation\u2026"
             : phase === "deleted"
               ? "Conversation deleted."
-              : "Removed from your chats, but cleaning up its messages didn't finish."}
+              : "Removed from chats. Cleanup needs attention."}
         </p>
         {phase === "incomplete" && problem ? <p>{problem}</p> : null}
       </div>
       <div className="deletion-notice-actions">
         {phase === "incomplete" ? (
-          <>
-            <button type="button" className="btn btn-sm" onClick={onFinish}>Finish cleanup</button>
-            <button type="button" className="btn btn-sm" onClick={onOpen}>View deletion status</button>
-          </>
+          <button type="button" className="btn btn-sm" onClick={canFinish ? onFinish : onOpen}>
+            {canFinish ? "Finish cleanup" : "View deletion status"}
+          </button>
         ) : null}
+        {phase === "incomplete" && canFinish && (
+          <details>
+            <summary className="deletion-notice-details">Troubleshooting</summary>
+            <button type="button" className="btn btn-sm" onClick={onOpen}>View deletion status</button>
+          </details>
+        )}
         <button type="button" className="btn btn-sm btn-ghost" onClick={onDismiss} aria-label="Dismiss deletion notice">Dismiss</button>
       </div>
     </div>
@@ -71,34 +78,37 @@ export function ConversationDeletionNotice({ phase, problem, onFinish, onOpen, o
 
 type RowAction = { error?: string; finished?: boolean };
 
-function DeletionRow({ status, action, busy, reading, onResume }: {
-  status: DeletionStatus; action?: RowAction; busy: boolean; reading: boolean; onResume: () => void;
+function DeletionRow({ status, action, busy, reading, onResume, onRefresh }: {
+  status: DeletionStatus; action?: RowAction; busy: boolean; reading: boolean; onResume: () => void; onRefresh: () => void;
 }) {
   const uploadsUnresolved = status.pendingUploads.length > 0 || status.pendingUploadsTruncated;
+  const verified = status.state === "cleanup_verified";
+  const canResume = cleanupCanResume(status) && !action?.error;
   return (
     <li style={{ padding: "16px 0", borderTop: "1px solid var(--border)", overflowWrap: "anywhere" }}>
-      <h3 style={{ margin: "0 0 6px", fontSize: "0.95em" }}>Conversation {status.sessionId}</h3>
-      <p role="status" style={{ margin: "0 0 6px", color: status.state === "cleanup_verified" ? "var(--info)" : "var(--warn)" }}>
-        Removed from chats. <DeletionProgress status={status} />
+      <p role="status" style={{ margin: "0 0 6px", fontWeight: 600, color: verified ? "var(--info)" : "var(--warn)" }}>
+        {verified ? "Conversation deleted." : busy ? "Cleaning up..." : <>Removed from chats. <DeletionProgress status={status} /></>}
       </p>
-      <p style={mutedStyle}>Last observed: <Timestamp value={status.updatedAt} />.</p>
+      <p style={mutedStyle}>Requested <Timestamp value={status.requestedAt} /></p>
       {status.retryReason && <p style={{ ...mutedStyle, marginTop: 6 }}>{retryReasons[status.retryReason]}</p>}
       {action?.error && <p role="alert" style={{ margin: "8px 0", color: "var(--danger)" }}>{action.error}</p>}
-      {action?.finished && <p role="status" style={{ ...mutedStyle, marginTop: 8 }}>Cleanup pass finished. No automatic cleanup will follow.</p>}
-      {status.state !== "cleanup_verified" && (
+      {!verified && (
         <button
           type="button"
           disabled={reading || busy}
-          aria-label={`Resume cleanup for ${status.sessionId}`}
-          onClick={onResume}
+          aria-label={canResume ? "Resume cleanup" : "Refresh this deletion"}
+          onClick={canResume ? onResume : onRefresh}
           style={{ ...buttonStyle, marginTop: 10, background: "var(--accent)", color: "var(--accent-fg)" }}
         >
-          {busy ? "Resuming cleanup..." : "Resume cleanup"}
+          {busy ? "Cleaning up..." : canResume ? "Resume cleanup" : "Refresh status"}
         </button>
       )}
       <details style={{ marginTop: 8 }}>
-        <summary tabIndex={0} style={{ minHeight: 44, padding: "10px 0", cursor: "pointer" }}>Progress details</summary>
-        <p style={mutedStyle}>Requested: <Timestamp value={status.requestedAt} />. Phase: {status.phase}. Passes attempted: {status.attempts}.</p>
+        <summary tabIndex={0} style={{ minHeight: 44, padding: "10px 0", cursor: "pointer" }}>Troubleshooting</summary>
+        <h3 style={{ margin: "0 0 6px", fontSize: "0.95em" }}>Conversation {status.sessionId}</h3>
+        {verified && <p style={mutedStyle}><DeletionProgress status={status} /></p>}
+        <p style={mutedStyle}>Last observed: <Timestamp value={status.updatedAt} />. Phase: {status.phase}. Passes attempted: {status.attempts}.</p>
+        {action?.finished && <p style={mutedStyle}>Cleanup pass finished. No automatic cleanup will follow.</p>}
         <p style={mutedStyle}>
           Messages: {status.messagesVerified ? "verified" : "not verified"}; conversation documents: {status.documentsVerified ? "verified" : "not verified"}; inline originals: {status.attachmentsVerified ? "verified" : "not verified"}.
         </p>
@@ -145,10 +155,21 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
   const mountedRef = useRef(false);
   const readRef = useRef<symbol | null>(null);
   const resumesRef = useRef(new Map<string, symbol>());
+  const refreshRef = useRef<HTMLButtonElement>(null);
+  const focusRefreshRef = useRef(false);
   const displayedItems = [
     ...[...knownDiscards.values()].map((entry) => entry.status),
     ...(page?.items ?? []).filter((item) => !knownDiscards.has(item.sessionId)),
   ];
+  const outstanding = displayedItems.filter((item) => item.state !== "cleanup_verified");
+  const completed = displayedItems.filter((item) => item.state === "cleanup_verified");
+
+  useLayoutEffect(() => {
+    if (focusRefreshRef.current && pendingIds.size === 0) {
+      focusRefreshRef.current = false;
+      refreshRef.current?.focus();
+    }
+  });
 
   useLayoutEffect(() => {
     mountedRef.current = true;
@@ -184,6 +205,9 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
           ? [...new Map([...current.items, ...result.items].map((item) => [item.sessionId, item])).values()]
           : result.items,
       }));
+      setActions((current) => Object.fromEntries(
+        Object.entries(current).filter(([id]) => !result.items.some((item) => item.sessionId === id)),
+      ));
     } catch (reason) {
       if (isCurrent()) setError(`Couldn't ${cursor ? "load more deletion requests" : "load deletion status"}. ${apiErrorDetail(reason)} Use Refresh status to try again; any progress shown is last observed.`);
     } finally {
@@ -204,7 +228,6 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
     readRef.current = request;
     setReading(true);
     setError(null);
-    if (!cursor) setActions({});
     void load(request, cursor);
   };
 
@@ -228,12 +251,15 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
   const resume = async (id: string) => {
     if (!isOpen() || readRef.current || pendingIds.has(id) || resumesRef.current.has(id)) return;
     const request = Symbol();
+    const trigger = document.activeElement;
     resumesRef.current.set(id, request);
     setActions((current) => ({ ...current, [id]: {} }));
     const isCurrent = () => mountedRef.current && isOpen() && resumesRef.current.get(id) === request;
     try {
       const status = await onResume(id);
       if (!status || !isCurrent()) return;
+      if (status.state === "cleanup_verified"
+        && (document.activeElement === trigger || document.activeElement === document.body)) focusRefreshRef.current = true;
       observeMutation(status);
       setActions((current) => ({ ...current, [id]: { finished: true } }));
     } catch (reason) {
@@ -248,20 +274,41 @@ function DeletionRequests({ sessionId, isOpen, pendingIds, onResume, onDiscard, 
   return (
     <>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        <button type="button" style={buttonStyle} disabled={pendingIds.size > 0} onClick={() => read(null)}>Refresh status</button>
+        <button ref={refreshRef} type="button" style={buttonStyle} disabled={pendingIds.size > 0} onClick={() => read(null)}>Refresh status</button>
         {sessionId && <button type="button" style={buttonStyle} onClick={onShowAll}>All deletion requests</button>}
       </div>
       {reading && <p role="status" style={mutedStyle}>Loading deletion status...</p>}
       {error && <p role="alert" style={{ margin: 0, color: "var(--danger)" }}>{error}</p>}
-      {!reading && !error && page && displayedItems.length === 0 && <p style={mutedStyle}>No resumable deletion requests found. Older deletions may not have retained status.</p>}
-      {(page || knownDiscards.size > 0) && (
+      {!reading && !error && page && outstanding.length === 0 && (
+        <p role="status" style={mutedStyle}>{page.hasMore
+          ? "No unfinished deletions in the loaded requests. More requests have not been checked."
+          : "No unfinished deletions reported."}</p>
+      )}
+      {outstanding.length > 0 && (
         <ul aria-label="Deletion requests" aria-busy={reading} style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          {displayedItems.map((status) => <DeletionRow key={status.sessionId} status={status} action={actions[status.sessionId]} busy={pendingIds.has(status.sessionId)} reading={reading} onResume={() => void resume(status.sessionId)} />)}
+          {outstanding.map((status) => <DeletionRow key={status.sessionId} status={status} action={actions[status.sessionId]} busy={pendingIds.has(status.sessionId)} reading={reading} onResume={() => void resume(status.sessionId)} onRefresh={() => read(null)} />)}
         </ul>
       )}
       {page?.hasMore && (
-        <button type="button" style={buttonStyle} disabled={reading || pendingIds.size > 0} onClick={() => read(page.nextCursor)}>Load more deletion requests</button>
+        <div>
+          {outstanding.length > 0 && <p style={mutedStyle}>More requests have not been checked.</p>}
+          <button type="button" style={{ ...buttonStyle, marginTop: 8 }} disabled={reading || pendingIds.size > 0} onClick={() => read(page.nextCursor)}>Load more deletion requests</button>
+        </div>
       )}
+      {completed.length > 0 && (
+        <details>
+          <summary tabIndex={0} style={{ minHeight: 44, padding: "10px 0", cursor: "pointer" }}>Completed history ({completed.length}{page?.hasMore ? "+" : ""})</summary>
+          <ul aria-label="Completed deletions" aria-busy={reading} style={{ listStyle: "none", margin: 0, padding: 0 }}>
+            {completed.map((status) => <DeletionRow key={status.sessionId} status={status} action={actions[status.sessionId]} busy={false} reading={reading} onResume={() => {}} onRefresh={() => read(null)} />)}
+          </ul>
+        </details>
+      )}
+      <details>
+        <summary tabIndex={0} style={{ minHeight: 44, padding: "10px 0", cursor: "pointer" }}>About deletion status</summary>
+        <p style={mutedStyle}>Status is last observed progress, not proof of physical erasure. Older deletions may not have retained status.</p>
+        <p style={mutedStyle}>Opening or refreshing this panel only reads status. Resume cleanup requests one bounded pass for that conversation. Nothing resumes automatically after a reload; closing this panel does not undo a request already sent.</p>
+        <p style={mutedStyle}>Verification covers conversation content and inline originals only. It does not cover backups, provider sandboxes, library documents, memories, or generated and processed media. Minimal deletion records and write fences are retained indefinitely.</p>
+      </details>
       {!sessionId && (
         <IncompleteConversationCreations isOpen={isOpen} pendingIds={pendingIds}
           discardedIds={new Set(knownDiscards.keys())} onDiscard={discard} />
@@ -318,12 +365,6 @@ export function ConversationDeletionPanel({ open = true, sessionId = null, onSho
 
   return (
     <ModalShell ariaLabel="Conversation deletion status" title="Deletion status" closeLabel="Close deletion status" onClose={() => { activeRef.current = false; onClose(); }}>
-      <p style={mutedStyle}>Deletion requests below are for conversations removed from chats. Status is last observed progress, not proof of physical erasure.</p>
-      <p style={mutedStyle}>Deleting a conversation cleans it up right away. For one that didn&apos;t finish, Resume cleanup requests one more bounded pass. Opening or refreshing this panel only reads status, and closing it does not undo a request already sent.</p>
-      <details>
-        <summary tabIndex={0} style={{ minHeight: 44, padding: "10px 0", cursor: "pointer" }}>What this status covers</summary>
-        <p style={mutedStyle}>Verification covers conversation content and inline originals only. It does not cover backups, provider sandboxes, library documents, memories, or generated and processed media. Minimal deletion records and write fences are retained indefinitely.</p>
-      </details>
       <DeletionRequests key={JSON.stringify([owner.key, sessionId])} sessionId={sessionId} isOpen={isOpen}
         pendingIds={pending.get(owner.key) ?? noPendingIds} onResume={(id) => run(id, "resume")}
         onDiscard={(id) => run(id, "discard")} onShowAll={onShowAll} />
