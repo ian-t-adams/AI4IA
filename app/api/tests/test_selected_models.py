@@ -52,7 +52,7 @@ def test_selected_catalog_profiles_and_generated_development_parity():
     assert not flash.supportsTools and not flash.supportsSampling
     assert flash.reasoningEffortOptions == [] and flash.inputModalities == ["text"]
     assert (flash.contextWindow, flash.maxOutputTokens, flash.defaultMaxOutputTokens) == (
-        1_000_000, 384_000, 16_384,
+        1_000_000, 384_000, 2_048,
     )
     assert next(m for m in source["catalog"] if m["name"] == FLASH)["deployments"] == [
         {"region": "eastus2", "sku": "GlobalStandard", "capacity": 10, "version": "2026-04-23"},
@@ -232,6 +232,29 @@ class SelectedProvider(Provider):
         ]
         return httpx.Response(200, text="".join(f"data: {json.dumps(event)}\n\n" for event in events),
                               headers={"content-type": "text/event-stream"})
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("params,expected", [
+    ({}, 2048),
+    ({"max_tokens": 1024}, 2048),
+    ({"max_tokens": 1500}, 1500),
+    ({"max_tokens": 4096}, 4096),
+])
+def test_flash_ordinary_browser_default_and_explicit_limits_reach_native_request(stream, params, expected):
+    provider = SelectedProvider(FLASH)
+    with claude_client(provider=provider, gateway_mode=True) as (client, _):
+        sid = client.post("/api/sessions", json={"model": FLASH}).json()["id"]
+        response = client.post("/api/chat", json={
+            "sessionId": sid, "content": "Synthetic default control", "stream": stream,
+            "allowTools": False, "allowAutomaticMemory": False, "params": params,
+        })
+        assert response.status_code == 200, response.text
+        [wire] = provider.claude
+        assert wire["max_tokens"] == expected and "max_completion_tokens" not in wire
+        saved = client.get(f"/api/sessions/{sid}/messages").json()[-1]
+        assert saved["executionReceipt"]["runtime"]["modelCalls"][0]["parameters"]["maxOutputTokens"] == expected
+        assert client.delete(f"/api/sessions/{sid}").status_code == 204
 
 
 @pytest.mark.parametrize("stream", [False, True])

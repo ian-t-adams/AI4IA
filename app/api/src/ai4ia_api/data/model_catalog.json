@@ -1051,7 +1051,7 @@
       "reasoningEffort": [],
       "samplingSupported": false,
       "maxTokensParameter": "max_tokens",
-      "defaultMaxOutputTokens": 16384,
+      "defaultMaxOutputTokens": 2048,
       "options": [
         {
           "region": "eastus2",
