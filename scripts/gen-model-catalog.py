@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _generator import build_parser, check_or_write
 from _model_targets import image_editing, image_editing_default, model_target, runtime_enabled
+from _model_naming import deployment_name
 from _model_routing import routing_configuration
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +34,6 @@ TARGET = REPO_ROOT / "app" / "api" / "src" / "ai4ia_api" / "data" / "model_catal
 
 def build_catalog(models: dict) -> dict:
     naming = models["naming"]
-    sku_short = naming["skuShort"]
     regions = models["regions"]
     # Deployment-name token — the single source of truth in infra/models.json `naming`,
     # matching infra/main.bicep (which reads the same field). Change it there for a tenant move.
@@ -54,9 +54,7 @@ def build_catalog(models: dict) -> dict:
                     "dataZone": region_meta.get("dataZone"),
                     "sku": sku,
                     "modelVersion": dep["version"],
-                    "deploymentName": (
-                        f"{model['name']}-{subscription_token}-{region}-{sku_short[sku]}"
-                    ),
+                    "deploymentName": deployment_name(models, model["name"], dep),
                 }
             )
         items.append(

@@ -83,6 +83,64 @@ def test_checked_in_models_json_declares_both_tokens():
     assert naming["foundryToken"] == "aiforia"
 
 
+def test_decision_resource_alias_preserves_provider_identity_and_all_legacy_names():
+    from ai4ia_api.catalog import _transform_infra_models
+
+    source = json.loads(_MODELS.read_text(encoding="utf-8"))
+    rows = {row["name"]: row for row in source["catalog"]}
+    assert rows["Microsoft-Decision-1"]["deploymentNameBase"] == "decision-1"
+    assert len(rows) >= 53
+    generated = _load_gen().build_catalog(source)
+    fallback = _transform_infra_models(source)
+    assert [(m["id"], m["options"]) for m in generated["models"]] == [
+        (m["id"], m["options"]) for m in fallback["models"]
+    ]
+    for model in generated["models"]:
+        original = rows[model["id"]]
+        for option in model["options"]:
+            if model["id"] == "Microsoft-Decision-1":
+                assert option["deploymentName"] == "decision-1-slurmfactory-eastus2-dz"
+                assert model["format"] == "Microsoft" and option["modelVersion"] == "1"
+                assert model["api"] == "decision"
+            else:
+                assert "deploymentNameBase" not in original
+                expected = (
+                    f"{original['name']}-{source['naming']['subscriptionToken']}-{option['region']}"
+                    f"-{source['naming']['skuShort'][option['sku']]}"
+                )
+                assert option["deploymentName"] == expected
+
+
+def test_decision_alias_is_required_bounded_and_cannot_rename_other_models():
+    import copy
+    import jsonschema
+    import pytest
+    from ai4ia_api.catalog import _transform_infra_models
+
+    source = json.loads(_MODELS.read_text(encoding="utf-8"))
+    schema = json.loads((_REPO_ROOT / "infra" / "models.schema.json").read_text(encoding="utf-8"))
+    source["catalog"] = [next(m for m in source["catalog"] if m["name"] == "Microsoft-Decision-1")]
+    for bad in (None, "", "Microsoft-Decision-1", "microsoft-decision-1", "invalid/name", "x" * 33, True):
+        changed = copy.deepcopy(source)
+        row = changed["catalog"][0]
+        if bad is None:
+            row.pop("deploymentNameBase")
+        else:
+            row["deploymentNameBase"] = bad
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(changed, schema)
+        for transform in (_load_gen().build_catalog, _transform_infra_models):
+            with pytest.raises(ValueError, match="deploymentNameBase"):
+                transform(changed)
+    for transform in (_load_gen().build_catalog, _transform_infra_models):
+        changed = copy.deepcopy(source)
+        changed["catalog"][0]["category"] = "chat"
+        with pytest.raises(ValueError, match="deploymentNameBase"):
+            transform(changed)
+    jsonschema.validate(source, schema)
+    assert _load_gen().build_catalog(source)["models"][0]["options"][0]["deploymentName"].startswith("decision-1-")
+
+
 def test_required_realtime_protocol_survives_generator_and_dev_fallback():
     from ai4ia_api.catalog import ModelCatalog, _transform_infra_models
 

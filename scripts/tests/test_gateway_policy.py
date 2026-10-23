@@ -74,7 +74,7 @@ class GatewayPolicyTests(unittest.TestCase):
         for model in required:
             deployment = model["deployments"][0]
             name = gateway_generator.deployment_name(
-                model=model["name"], subscription_token=models["naming"]["subscriptionToken"],
+                model=model.get("deploymentNameBase", model["name"]), subscription_token=models["naming"]["subscriptionToken"],
                 region=deployment["region"], sku=deployment["sku"],
                 sku_short=models["naming"]["skuShort"],
             )
@@ -152,7 +152,7 @@ class GatewayPolicyTests(unittest.TestCase):
         naming = models["naming"]
         expected = {
             gateway_generator.deployment_name(
-                model=model["name"], subscription_token=naming["subscriptionToken"],
+                model=model.get("deploymentNameBase", model["name"]), subscription_token=naming["subscriptionToken"],
                 region=deployment["region"], sku=deployment["sku"], sku_short=naming["skuShort"],
             ): f"{{{{foundry-{deployment['region']}-realtime-wss-endpoint}}}}/openai/v1/realtime"
             for model in models["catalog"]
@@ -331,7 +331,7 @@ class GatewayPolicyTests(unittest.TestCase):
                 continue
             names = [
                 gateway_generator.deployment_name(
-                    model=model["name"], subscription_token=naming["subscriptionToken"],
+                    model=model.get("deploymentNameBase", model["name"]), subscription_token=naming["subscriptionToken"],
                     region=deployment["region"], sku=deployment["sku"],
                     sku_short=naming["skuShort"],
                 )
@@ -721,7 +721,7 @@ class GatewayPolicyTests(unittest.TestCase):
             for deployment in model["deployments"]:
                 region = deployment["region"]
                 name = gateway_generator.deployment_name(
-                    model=model["name"], subscription_token=naming["subscriptionToken"],
+                    model=model.get("deploymentNameBase", model["name"]), subscription_token=naming["subscriptionToken"],
                     region=region, sku=deployment["sku"], sku_short=naming["skuShort"],
                 )
                 block = by_key[name.lower()]
@@ -1144,7 +1144,7 @@ class GatewayPolicyTests(unittest.TestCase):
             disabled += not enabled
             for deployment in model["deployments"]:
                 name = gateway_generator.deployment_name(
-                    model=model["name"],
+                    model=model.get("deploymentNameBase", model["name"]),
                     subscription_token=naming["subscriptionToken"],
                     region=deployment["region"],
                     sku=deployment["sku"],

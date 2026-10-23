@@ -138,7 +138,7 @@ def _assert_clean(span):
 
 async def test_decision_native_usage_is_content_free_and_not_labeled_chat(capture):
     from ai4ia_api.decisions import DecisionExecution, DecisionRequest
-    from tests.test_decisions import BODY, NATIVE, MODEL
+    from tests.test_decisions import BODY, NATIVE, DEPLOYMENT
 
     exporter, provider = capture
     request = DecisionRequest.model_validate({**BODY, "input": POISON, "inputFormat": "text"})
@@ -152,7 +152,7 @@ async def test_decision_native_usage_is_content_free_and_not_labeled_chat(captur
             )
         )) as http:
             await _gateway(http).decide(
-                deployment=f"{MODEL}-slurmfactory-eastus2-dz",
+                deployment=DEPLOYMENT,
                 request=request, execution=DecisionExecution(), correlation_id=POISON,
             )
         spans = exporter.get_finished_spans()

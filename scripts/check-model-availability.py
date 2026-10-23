@@ -71,6 +71,7 @@ import _model_retirement as retirement
 from _claude_binding import verify_configured
 from _model_routing import offered_routing_models, routing_configuration, routing_matches
 from _model_targets import ModelTarget, model_target
+from _model_naming import deployment_name
 from _production_capacity import (
     PROFILES,
     bind_scope,
@@ -164,13 +165,6 @@ def catalog_requirements(
         raise capacity_evidence.EvidenceError("invalid_capacity_profile")
     if capacity_profile == "production":
         parse_policy(models, required=True, include_anthropic=include_anthropic)
-    naming = models.get("naming") or {}
-    pattern = str(
-        naming.get("pattern")
-        or "{model}-{subscriptionToken}-{region}-{skuShort}"
-    )
-    subscription_token = str(naming.get("subscriptionToken") or "")
-    sku_short = naming.get("skuShort") or {}
     by_region: dict[str, list[dict[str, Any]]] = {}
     for entry in models.get("catalog", []):
         declared_target = model_target(entry)
@@ -184,15 +178,10 @@ def catalog_requirements(
             sku = deployment.get("sku", "")
             if not region:
                 continue
-            deployment_name = pattern.format(
-                model=entry["name"],
-                subscriptionToken=subscription_token,
-                region=region,
-                skuShort=sku_short[sku],
-            )
+            resource_name = deployment_name(models, entry["name"], deployment)
             by_region.setdefault(region, []).append(
                 {
-                    "deploymentName": deployment_name,
+                    "deploymentName": resource_name,
                     "name": entry["name"],
                     "format": entry.get("format", "OpenAI"),
                     "sku": sku,

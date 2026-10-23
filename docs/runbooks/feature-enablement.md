@@ -28,6 +28,14 @@ edit-and-rerun allocation, not a claim about token throughput. No second region,
 increase, new identity, role or provider credential is required by this source
 change. Do not mistake catalog availability for live deployment acceptance.
 
+Its catalog-owned `deploymentNameBase: decision-1` changes only the deployment
+resource-name token, not the canonical model name, version or logical API id.
+Azure rejected the original `Microsoft-Decision-1-...` resource name with
+`ContainsReservedWord` during the October 23 rollout. Never silently strip
+publisher names or rename existing deployments: the explicit alias flows through
+Bicep, generation, runtime fallback, preflight and capacity/retirement identity
+matching. The native request's `model` is the resolved deployment name.
+
 Scoped CLI observations on 2026-10-23 at 21:51-21:52 UTC found the exact
 Microsoft/AIServices v1 eastus2 offering (`decision=true`, `chatCompletion=false`,
 US DataZoneStandard), quota `0/60 Count` labeled Requests Per Minute, and

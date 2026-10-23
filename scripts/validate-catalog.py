@@ -24,6 +24,7 @@ from _capacity_evidence import EvidenceError
 from _production_capacity import parse_policy
 from _model_targets import image_editing, image_editing_default, model_target, runtime_enabled
 from _model_routing import routing_configuration
+from _model_naming import deployment_base, deployment_name
 
 HERE = Path(__file__).resolve().parent
 MODELS = HERE.parent / "infra" / "models.json"
@@ -33,8 +34,6 @@ def main() -> int:
     data = json.loads(MODELS.read_text(encoding="utf-8"))
     regions = set(data["regions"].keys())
     sku_short = data["naming"]["skuShort"]
-    # Single source of truth (must match main.bicep + gen-model-catalog.py).
-    subscription_token = data["naming"]["subscriptionToken"]
     errors: list[str] = []
     seen_names: dict[str, str] = {}
     # (model, region, sku). NOT (model, region): a model may legitimately have
@@ -51,6 +50,11 @@ def main() -> int:
     editing_defaults: list[str] = []
     for model in data["catalog"]:
         name = model["name"]
+        try:
+            deployment_base(model)
+        except ValueError as exc:
+            errors.append(f"{name}: {exc}")
+            continue
         try:
             model_target(model)
         except ValueError as exc:
@@ -150,13 +154,14 @@ def main() -> int:
                     f"{name}: duplicate deployment for region '{region}' sku '{sku}'"
                 )
             seen_triples.add(triple)
-            dep_name = f"{name}-{subscription_token}-{region}-{sku_short[sku]}"
-            if dep_name in seen_names:
+            dep_name = deployment_name(data, name, dep)
+            name_key = dep_name.casefold()
+            if name_key in seen_names:
                 errors.append(
                     f"duplicate deployment name '{dep_name}' "
-                    f"({seen_names[dep_name]} and {name})"
+                    f"({seen_names[name_key]} and {name})"
                 )
-            seen_names[dep_name] = name
+            seen_names[name_key] = name
             capacity = int(dep["capacity"])
             max_capacity = int(dep.get("maxCapacity", capacity))
             max_capacity_pool = dep.get("maxCapacityPool")

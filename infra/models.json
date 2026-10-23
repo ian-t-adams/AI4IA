@@ -1675,6 +1675,7 @@
     },
     {
       "name": "Microsoft-Decision-1",
+      "deploymentNameBase": "decision-1",
       "displayName": "Microsoft Decision 1 (Preview)",
       "format": "Microsoft",
       "category": "decision",

@@ -1247,6 +1247,12 @@ DataZone price is unknown. State, instructions and answers remain transient.
 The shared `decision` admission surface rejects unproven token/USD bounds;
 dispatched failures remain cost-unknown in usage summaries. Keep restricted
 execution actors restricted and leave Decision out of chat/agent selectors.
+Decision's explicit `deploymentNameBase` is the Azure-safe resource-name token:
+Azure rejects the canonical `Microsoft-Decision-1` prefix with
+`ContainsReservedWord`. Keep provider/logical identity unchanged. The shared
+`scripts/_model_naming.py` path drives generators, preflight and capacity
+identity; Bicep and the runtime dev transform mirror it. Do not rename any
+existing row or invent a runtime-only alias.
 
 `model-router` may declare a catalog-owned `routing` mode and exact
 format/name/version subset. Bicep sends it as `properties.routing`; the

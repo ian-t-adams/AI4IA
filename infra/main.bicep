@@ -3,7 +3,7 @@
 targetScope = 'subscription'
 
 import { selectedCapacity } from './capacity.bicep'
-import { deploymentTarget, deploymentRouting } from './model-targets.bicep'
+import { deploymentTarget, deploymentRouting, deploymentNameBase } from './model-targets.bicep'
 
 @minLength(3)
 @maxLength(20)
@@ -433,7 +433,7 @@ var regionList = map(items(models.regions), r => {
 // modules and for postprovision outputs. This prevents Content Understanding from
 // reconstructing deployment names independently of the resources ARM creates.
 var modelDeploymentsByRegion = [for r in regionList: flatten(map(deployableCatalog, m => map(filter(m.deployments, d => d.region == r.name), d => {
-  deploymentName: '${m.name}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
+  deploymentName: '${deploymentNameBase(m)}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
   modelName: m.name
   format: m.format
   version: d.version
