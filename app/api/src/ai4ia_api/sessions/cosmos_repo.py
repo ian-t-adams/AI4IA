@@ -79,6 +79,8 @@ class CosmosSessionRepository(CosmosDeletionMixin):
     def _to_doc(model: Session | Message | Document) -> dict[str, Any]:
         doc = model.model_dump(mode="json")
         if isinstance(model, Session):
+            if model.toolsRevision is not None:
+                doc["toolsRevision"] = model.toolsRevision
             if model.freshTurnClaimed:
                 doc["freshTurnClaimed"] = True
             doc["toolConsentState"] = (
@@ -224,7 +226,26 @@ class CosmosSessionRepository(CosmosDeletionMixin):
                 "value": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
         )
-        await self._patch_session_item(user_id, session_id, operations)
+        if len(operations) > 10:
+            # Cosmos permits ten patch operations. Keep a full settings update
+            # atomic, retaining hidden/unknown fields and refusing concurrent edits.
+            from azure.core import MatchConditions
+            from azure.cosmos.exceptions import CosmosAccessConditionFailedError, CosmosResourceNotFoundError
+
+            raw = await self._active_raw(user_id, session_id)
+            body = dict(raw)
+            body.update({operation["path"][1:]: operation["value"] for operation in operations})
+            try:
+                await self._sessions.replace_item(
+                    item=session_id, body=body, etag=require_etag(raw),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+            except CosmosAccessConditionFailedError as exc:
+                raise SessionConflictError(session_id) from exc
+            except CosmosResourceNotFoundError as exc:
+                raise SessionNotFoundError(session_id) from exc
+        else:
+            await self._patch_session_item(user_id, session_id, operations)
         return await self._owned_session(user_id, session_id)
 
     async def set_tool_consent(

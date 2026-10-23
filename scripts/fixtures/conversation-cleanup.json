@@ -7,6 +7,7 @@
     "model": "tiny-fast",
     "systemPrompt": null,
     "agentName": null,
+    "toolsEnabled": true,
     "toolOverrides": {"added": [], "removed": []},
     "toolConsent": null,
     "imagePreferences": {"models": [], "size": null, "quality": null},

@@ -99,6 +99,7 @@ export interface Session {
   model: string | null;
   systemPrompt: string | null;
   agentName: string | null;
+  toolsEnabled?: boolean;
   toolOverrides: { added: string[]; removed: string[] };
   toolConsent?: ToolConsentSummary | null;
   libraryDocumentIds: string[] | null;
@@ -155,6 +156,7 @@ export interface ToolOverrides {
 
 export interface ConversationDraftDefaults {
   agentName: string | null;
+  toolsEnabled?: boolean;
   toolOverrides: ToolOverrides;
   libraryDocumentIds: string[];
 }

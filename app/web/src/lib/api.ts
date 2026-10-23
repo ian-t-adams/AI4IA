@@ -646,6 +646,7 @@ export async function createSession(
     systemPrompt?: string | null;
     agentName?: string | null;
     toolOverrides?: ToolOverrides;
+    toolsEnabled?: boolean;
     libraryDocumentIds?: string[] | null;
     imagePreferences?: ImageGenerationPreferences;
   },
@@ -669,6 +670,7 @@ export async function updateSession(
     systemPrompt?: string | null;
     agentName?: string | null;
     toolOverrides?: ToolOverrides;
+    toolsEnabled?: boolean;
     libraryDocumentIds?: string[] | null;
     imagePreferences?: ImageGenerationPreferences;
   },
@@ -699,7 +701,7 @@ export async function setSessionToolConsent(
 export async function getToolCatalog(
   sessionId?: string | null,
   agentName?: string | null,
-): Promise<{ tools: ToolCatalogItem[]; inheritedTools: string[] }> {
+): Promise<{ tools: ToolCatalogItem[]; inheritedTools: string[]; readOnlyTools?: string[]; requiresTools?: boolean }> {
   const query = new URLSearchParams();
   if (sessionId) query.set("sessionId", sessionId);
   if (agentName) query.set("agentName", agentName);

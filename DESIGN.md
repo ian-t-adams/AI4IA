@@ -101,6 +101,12 @@ Each section owns independent loading, error, empty, partial, saving, and saved
 feedback. Session changes discard stale responses before enabling mutation.
 Unknown tool governance metadata is labelled unknown and unavailable; the client
 never fabricates risk, approval, scope, ownership, or channel defaults.
+Agent & tools owns the durable text-chat Tools on/off switch. Off keeps individual
+selections checked but paused, with no duplicate composer setting. Select all and
+Clear all affect only selectable search results within the existing selection
+bounds; published read-only selections stay intact. Automatic memory remains an
+independent account preference in Context > Memory. Saving settings blocks Send
+until confirmed; stale completions cannot update another conversation or owner.
 
 ### Help
 

@@ -69,6 +69,7 @@ class CreateSessionRequest(BaseModel):
         default=None, max_length=MAX_SESSION_SYSTEM_PROMPT_CHARS
     )
     agentName: str | None = None
+    toolsEnabled: bool = Field(default=True, strict=True)
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
     imagePreferences: ImageGenerationPreferences = Field(
         default_factory=ImageGenerationPreferences
@@ -91,6 +92,7 @@ class UpdateSessionRequest(BaseModel):
         default=None, max_length=MAX_SESSION_SYSTEM_PROMPT_CHARS
     )
     agentName: str | None = None
+    toolsEnabled: bool = Field(default=True, strict=True)
     toolOverrides: ToolOverrides | None = None
     imagePreferences: ImageGenerationPreferences | None = None
     libraryDocumentIds: list[str] | None = Field(
@@ -345,6 +347,7 @@ async def create_session(
         systemPrompt=body.systemPrompt,
         agentName=agent_name,
         agentVersion=agent_version,
+        toolsEnabled=body.toolsEnabled,
         toolOverrides=overrides,
         imagePreferences=_validate_image_preferences(request, body.imagePreferences),
         libraryDocumentIds=document_ids,

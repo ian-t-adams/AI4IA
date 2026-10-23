@@ -320,7 +320,14 @@ def normalize_session_patch_changes(
         raise ValueError("A fresh-turn claim is server-owned and cannot be reset.")
     if {"toolConsent", "toolConsentState", "toolConsentVersion"} & changes.keys():
         raise ValueError("Tool consent must be changed through the consent endpoint.")
+    if "toolsRevision" in changes:
+        raise ValueError("The tools revision is server-owned.")
     normalized = dict(changes)
+    if "toolsEnabled" in normalized:
+        if type(normalized["toolsEnabled"]) is not bool:
+            raise ValueError("toolsEnabled must be a Boolean.")
+        # Even an off/on cycle must not resurrect a held operation.
+        normalized["toolsRevision"] = _new_id()
     if "agentVersion" in normalized:
         raw = normalized["agentVersion"]
         reference = AssetVersionRef.model_validate(raw) if raw is not None else None
@@ -373,6 +380,8 @@ class Session(BaseModel):
     # records remain valid without a migration.
     agentName: str | None = None
     agentVersion: AssetVersionRef | None = None
+    toolsEnabled: bool = Field(default=True, strict=True)
+    toolsRevision: str | None = Field(default=None, exclude=True)
     toolOverrides: ToolOverrides = Field(default_factory=ToolOverrides)
     toolConsent: ToolConsentSummary | None = None
     toolConsentState: ToolConsentState | None = Field(default=None, exclude=True)

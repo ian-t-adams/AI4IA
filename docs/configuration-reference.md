@@ -529,17 +529,25 @@ defaults to `gpt-realtime`. Azure OpenAI's deployment choice and Speech's manage
 model/settings are separate fields. Inline changes are applied only when the next
 Voice Live connection opens.
 
-### Request-only chat restrictions
+### Conversation and request chat restrictions
+
+Session create/PATCH accepts `toolsEnabled`, a strict Boolean defaulting to `true`
+for legacy and new conversations. The owner-scoped **Agent & tools** switch
+persists it without editing tool selections, consent or the independent account
+memory preference. It applies to HTTP/SSE chat, not Voice Live configuration.
+The API intersects it with request reductions and re-reads its value and
+server-owned revision at tool dispatch. Any explicit switch update invalidates
+the prior turn's tool authority; an off/on cycle cannot revive a waiting approval.
 
 `POST /api/chat` accepts strict Boolean reduction controls. They are not
 environment variables, role assignments, or persisted user preferences.
 
-The ordinary-chat composer's **Text only** checkbox sends both `allowTools: false`
-and `allowAutomaticMemory: false` for that message. Unchecked sends omit both
-fields, preserving the defaults. The selection resets after sending or changing
-conversations; approval continuations retain the originating turn's reductions.
-It does not set `requireFreshSession`, clear existing context, revoke consent,
-edit saved preferences, or select a particular member of a model router.
+The composer has no separate per-message text-only setting. API clients can
+still send either reduction independently; `true` cannot override durable tools
+off or disabled automatic memory. Approval continuations retain the originating
+turn's reductions and reject changed conversation settings. The conversation
+switch does not set `requireFreshSession`, clear existing context, revoke consent
+or select a particular member of a model router.
 
 | Request field | Default | Effect |
 |---|---|---|

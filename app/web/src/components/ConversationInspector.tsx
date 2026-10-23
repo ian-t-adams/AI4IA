@@ -146,6 +146,8 @@ export function ConversationInspector({
   draftDefaults,
   onDraftDefaultsChange,
   onSessionUpdated,
+  onSettingsPendingChange,
+  chatBusy = false,
   sessionToolConsent,
   consentVerification,
   onToolConsentUpdated,
@@ -176,6 +178,8 @@ export function ConversationInspector({
   draftDefaults: ConversationDraftDefaults;
   onDraftDefaultsChange: (value: ConversationDraftDefaults) => void;
   onSessionUpdated: (session: Session) => void;
+  onSettingsPendingChange?: (pending: boolean) => void;
+  chatBusy?: boolean;
   sessionToolConsent?: ToolConsentSummary | null;
   consentVerification?: SessionConsentView;
   onToolConsentUpdated?: (session: Session) => void;
@@ -209,6 +213,8 @@ export function ConversationInspector({
   const [snapshot, setSnapshot] = useState<InspectorSnapshot | null>(null);
   const [tools, setTools] = useState<ToolCatalogItem[]>([]);
   const [draftInheritedTools, setDraftInheritedTools] = useState<string[]>([]);
+  const [readOnlyTools, setReadOnlyTools] = useState<string[]>([]);
+  const [draftRequiresTools, setDraftRequiresTools] = useState(false);
   const [memory, setMemory] = useState<MemoryList | null>(null);
   const [library, setLibrary] = useState<LibrarySummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -355,6 +361,8 @@ export function ConversationInspector({
       ) return;
       setTools(value.tools);
       setDraftInheritedTools(value.inheritedTools);
+      setReadOnlyTools(value.readOnlyTools ?? []);
+      setDraftRequiresTools(value.requiresTools ?? false);
       markResourceReady("tools");
     } catch (reason) {
       if (
@@ -451,7 +459,9 @@ export function ConversationInspector({
   useEffect(() => {
     mutationGenerationRef.current += 1;
     setSaving(false);
-  }, [sessionId]);
+    onSettingsPendingChange?.(false);
+    return () => onSettingsPendingChange?.(false);
+  }, [sessionId, onSettingsPendingChange]);
 
   const runSessionMutation = useCallback(
     async (operation: () => Promise<Session>, successMessage: string) => {
@@ -475,6 +485,7 @@ export function ConversationInspector({
         mutationGenerationRef.current,
       );
       setSaving(true);
+      onSettingsPendingChange?.(true);
       setSaved(null);
       try {
         const updated = await operation();
@@ -486,12 +497,16 @@ export function ConversationInspector({
       } catch (reason) {
         if (isCurrent()) setError(api.apiErrorDetail(reason));
       } finally {
-        if (isCurrent()) setSaving(false);
+        if (isCurrent()) {
+          setSaving(false);
+          onSettingsPendingChange?.(false);
+        }
       }
     },
     [
       loadSnapshot,
       onSessionUpdated,
+      onSettingsPendingChange,
       phases.snapshot,
       saving,
       sessionId,
@@ -641,6 +656,39 @@ export function ConversationInspector({
   const selectedModelEntry =
     models.find((model) => model.id === selectedModel) ?? null;
   const modelToolsUnavailable = selectedModelEntry?.supportsTools === false;
+  const toolsEnabled = sessionId
+    ? snapshot?.tools.enabled !== false
+    : draftDefaults.toolsEnabled !== false;
+  const toolsReady = phases.tools === "ready" && (!sessionId || canMutate) && !chatBusy;
+  const selectableTools = toolEntries.filter((tool) =>
+    tool.available && tool.selectable && !readOnlyTools.includes(tool.name),
+  );
+  const requiresTools = sessionId ? snapshot?.tools.requiresTools : draftRequiresTools;
+  function changeToolSelection(names: string[], checked: boolean) {
+    const inheritedTools = sessionId ? snapshot?.tools.inherited ?? [] : draftInheritedTools;
+    const overrides: ToolOverrides = sessionId
+      ? snapshot?.tools.overrides ?? { added: snapshot?.tools.added ?? [], removed: snapshot?.tools.removed ?? [] }
+      : draftDefaults.toolOverrides;
+    const added = new Set(overrides.added);
+    const removed = new Set(overrides.removed);
+    for (const name of names) {
+      if (checked) {
+        removed.delete(name);
+        if (!inheritedTools.includes(name)) added.add(name);
+      } else {
+        added.delete(name);
+        if (inheritedTools.includes(name)) removed.add(name);
+      }
+    }
+    if (added.size > 8 || removed.size > 16) {
+      setError("A conversation supports 8 added and 16 removed tools. Narrow the search or change fewer selections.");
+      return;
+    }
+    const toolOverrides = { added: [...added], removed: [...removed] };
+    setError(null);
+    if (sessionId) void patch({ toolOverrides });
+    else updateDraft({ toolOverrides });
+  }
   // What the currently-selected agent does, regardless of whether it came from
   // a live session snapshot or a not-yet-started conversation's draft default.
   const agentDescription = useMemo(() => {
@@ -882,7 +930,7 @@ export function ConversationInspector({
                   Agent
                   <select
                     value={sessionId ? snapshot?.agent.name ?? "" : draftDefaults.agentName ?? ""}
-                    disabled={sessionId ? !canMutate : false}
+                    disabled={chatBusy || (sessionId ? !canMutate : false)}
                     onChange={(event) => {
                       const agentName = event.target.value || null;
                       if (sessionId) {
@@ -901,9 +949,34 @@ export function ConversationInspector({
                   </select>
                 </label>
                 {agentDescription ? <p className="inspector-note">{agentDescription}</p> : null}
+                <label className="conversation-tools-toggle">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label="Conversation tools"
+                    aria-describedby="conversation-tools-help"
+                    checked={toolsEnabled}
+                    disabled={chatBusy || (sessionId ? !canMutate : false)}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      if (sessionId) void patch({ toolsEnabled: enabled });
+                      else updateDraft({ toolsEnabled: enabled });
+                    }}
+                  />
+                  Tools {toolsEnabled ? "on" : "off"}
+                </label>
+                <p id="conversation-tools-help" className="inspector-note">
+                  For text chat in this conversation. Off pauses all tools and keeps your selections.
+                  Automatic memory is separate in Context &gt; Memory. Voice Live is unchanged.
+                </p>
+                {!toolsEnabled && requiresTools ? (
+                  <p className="inspector-note" role="status">
+                    This agent requires tools. Turn tools on or choose the generic assistant before sending.
+                  </p>
+                ) : null}
                 {tools.some((tool) => tool.source === "WebIQ" && tool.available) ? (
                   <p className="inspector-note">
-                    Web search and browsing are on by default. No saved agent is required.
+                    Web search and browsing are included by default when tools are on.
                   </p>
                 ) : null}
                 <SessionToolConsentControls
@@ -912,7 +985,7 @@ export function ConversationInspector({
                   available={consentView.available}
                   active={consentView.active}
                   status={consentView.status}
-                  canEnable={canMutate}
+                  canEnable={canMutate && toolsEnabled}
                   pending={consentMutation.pending}
                   error={consentMutation.error}
                   onChange={consentMutation.change}
@@ -977,25 +1050,47 @@ export function ConversationInspector({
                     </HelpTooltip>
                   </div>
                 ) : null}
+                {phases.tools === "ready" ? (
+                  <>
+                    <div className="inspector-actions">
+                      <button type="button"
+                        disabled={!toolsReady || !toolsEnabled || modelToolsUnavailable || !selectableTools.length}
+                        onClick={() => changeToolSelection(selectableTools.map((tool) => tool.name), true)}>
+                        Select all
+                      </button>
+                      <button type="button"
+                        disabled={!toolsReady || !toolsEnabled || modelToolsUnavailable || !selectableTools.length}
+                        onClick={() => changeToolSelection(selectableTools.map((tool) => tool.name), false)}>
+                        Clear all
+                      </button>
+                    </div>
+                    <p className="inspector-note">
+                      Applies to selectable tools in this search, not permissions or approvals.
+                      Clearing selections is not the all-tools-off switch.
+                    </p>
+                  </>
+                ) : null}
                 <div className="tool-list">
                   {toolEntries.map((tool, index) => {
                     const inherited = sessionId
                       ? snapshot?.tools.inherited.includes(tool.name) ?? false
                       : draftInheritedTools.includes(tool.name);
-                    const effective = sessionId
-                      ? snapshot?.tools.effective.includes(tool.name) ?? false
+                    const selected = sessionId
+                      ? (snapshot?.tools.selected ?? snapshot?.tools.effective)?.includes(tool.name) ?? false
                       : (
                           inherited ||
                           draftDefaults.toolOverrides.added.includes(tool.name)
                         ) &&
                         !draftDefaults.toolOverrides.removed.includes(tool.name);
+                    const effective = toolsEnabled && selected && tool.available && !modelToolsUnavailable;
                     const added = sessionId
                       ? snapshot?.tools.added.includes(tool.name) ?? false
                       : draftDefaults.toolOverrides.added.includes(tool.name);
                     const removed = sessionId
                       ? snapshot?.tools.removed.includes(tool.name) ?? false
                       : draftDefaults.toolOverrides.removed.includes(tool.name);
-                    const lockedOut = tool.available && !tool.selectable && !inherited;
+                    const readOnly = readOnlyTools.includes(tool.name);
+                    const lockedOut = tool.available && (!tool.selectable || readOnly);
                     const modelLockedOut = modelToolsUnavailable;
                     // Index-based, not name-based: aria-describedby (like all
                     // IDREFS attributes) is a whitespace-separated token list, so
@@ -1027,43 +1122,15 @@ export function ConversationInspector({
                           type="checkbox"
                           id={toolInputId}
                           aria-describedby={describedBy}
-                          checked={effective}
+                          checked={selected}
                           disabled={
-                            (sessionId ? !canMutate : false) ||
+                            !toolsReady || !toolsEnabled ||
                             modelLockedOut ||
                             !tool.available ||
-                            (!tool.selectable && !inherited)
+                            !tool.selectable || readOnly
                           }
                           onChange={(event) => {
-                            const inheritedTools = sessionId
-                              ? snapshot?.tools.inherited ?? []
-                              : draftInheritedTools;
-                            const currentOverrides: ToolOverrides = sessionId
-                              ? {
-                                  added: snapshot?.tools.added ?? [],
-                                  removed: snapshot?.tools.removed ?? [],
-                                }
-                              : draftDefaults.toolOverrides;
-                            const added = new Set(currentOverrides.added);
-                            const removed = new Set(currentOverrides.removed);
-                            if (event.target.checked) {
-                              removed.delete(tool.name);
-                              if (!inheritedTools.includes(tool.name)) added.add(tool.name);
-                            } else if (inheritedTools.includes(tool.name)) {
-                              added.delete(tool.name);
-                              removed.add(tool.name);
-                            } else {
-                              added.delete(tool.name);
-                            }
-                            const toolOverrides = {
-                              added: [...added],
-                              removed: [...removed],
-                            };
-                            if (sessionId) {
-                              void patch({ toolOverrides });
-                            } else {
-                              updateDraft({ toolOverrides });
-                            }
+                            changeToolSelection([tool.name], event.target.checked);
                           }}
                         />
                         <span>
@@ -1079,7 +1146,7 @@ export function ConversationInspector({
                             {inherited ? "inherited · " : ""}
                             {added ? "added · " : ""}
                             {removed ? "removed · " : ""}
-                            {effective ? "effective · " : "inactive · "}
+                            {effective ? "effective · " : selected && !toolsEnabled ? "paused · " : "inactive · "}
                             {tool.source || "source unknown"} · {tool.ownership || "ownership unknown"} ·{" "}
                             {tool.risk ?? "risk unknown"}
                             {tool.requiresApproval === true
@@ -1097,7 +1164,8 @@ export function ConversationInspector({
                           </small>
                           {lockedOut ? (
                             <small id={toolLockedId}>
-                              {tool.detail || "This tool is not available for conversation selection."}
+                              {readOnly ? "Selected by the published source; change it at its source."
+                                : tool.detail || "This tool is not available for conversation selection."}
                             </small>
                           ) : null}
                           {modelLockedOut ? (
