@@ -71,6 +71,9 @@ async function forward(req: NextRequest, path: string[]): Promise<Response> {
     headers,
     redirect: "manual",
   };
+  if (method === "POST" && encodedPath === "decisions/run") {
+    init.signal = req.signal;
+  }
   if (hasBody) {
     init.body = req.body;
     init.duplex = "half";

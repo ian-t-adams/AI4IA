@@ -26,8 +26,8 @@ def test_every_gateway_post_and_stream_uses_the_guarded_transport_seams():
                 and node.func.attr in {"post", "put", "patch", "request", "send", "stream"}
             ):
                 sites.add((method.name, node.func.attr))
-    assert sites == {("_post", "post"), ("_stream_request", "stream")}
-    for name in ("_post", "_stream_request"):
+    assert sites == {("_post", "post"), ("_stream_request", "stream"), ("decide", "stream")}
+    for name in ("_post", "_stream_request", "decide"):
         method = next(method for method in client.body if getattr(method, "name", None) == name)
         assert any(
             isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
@@ -78,7 +78,7 @@ def test_meter_coverage_is_explicit_and_shipping_gateway_has_no_attempt_envelope
     assert set(COVERAGE) == {
         "chat", "embedding", "image", "video", "transcription", "speech",
         "realtime", "compute", "document", "web_search", "mcp", "external_tool", "avatar",
-        "avatar_live",
+        "avatar_live", "decision",
     }
     body = {"messages": [{"role": "user", "content": "text"}]}
     unknown = reservation_bounds(

@@ -371,7 +371,11 @@ class GatewayPolicyTests(unittest.TestCase):
                         self.assertEqual(block.count(generation_only), rows)
                         self.assertNotIn("images/edits", block)
         # Rows without a surface-specific allowlist keep path pass-through.
-        others = [block for block in blocks if block not in sum(by_model.values(), [])]
+        others = [
+            block for block in blocks
+            if block not in sum(by_model.values(), [])
+            and 'new JProperty("path", "providers/microsoft/v1")' not in block
+        ]
         self.assertTrue(others)
         self.assertFalse(any('new JProperty("operations", ' in block for block in others))
 
@@ -3090,6 +3094,7 @@ class SubscriptionCredentialPolicyTests(unittest.TestCase):
             "tracking": ["preserve-on-openai"],
         }
         expected = (
+            ("decision", "false", {}),
             ("anthropic", "false", {}),
             ("mai-image", "false", {}),
             ("mai-chat", "false", {}),

@@ -131,6 +131,49 @@ The chat **Run workflow** tool is deliberately narrower than the workflow
 editor. It advertises only enabled workflows whose resolved steps are safe,
 read-only, non-recursive, and compatible with that execution path.
 
+### Decision playground
+
+Open **Agents & workflows**, then **Decisions** to try Microsoft Decision 1
+(Preview). This is a separate typed-decision capability, not a chat model,
+agent, workflow or explanation generator.
+
+Enter text, or choose **JSON (parsed)** to evaluate a JSON value. Add uniquely
+named questions and their instructions. **Yes/no** returns the probability that
+the condition holds; its optional criteria define both yes and no. **Choice**
+uses named options with descriptions. **Score** uses ordered labels, lowest
+first: a three-level scale is 0 through 2, and its result can be fractional.
+**Load synthetic example** fills an editable demo without making a model call.
+
+Only **Run decision** sends a call. Editing and duplicate submissions are blocked
+while it runs; **Cancel run** stops waiting and cancels the outbound request where
+possible, but already accepted work may still be billed. There is no automatic
+retry. A rate-limit error shows a bounded provider retry delay when supplied,
+but only another explicit Run can retry. Errors never become an empty successful result. Changing a field clears
+the previous result. Leaving the tab discards its transient input and results.
+
+Results show the native typed answer and probability distribution, optional
+reported confidence, reported model, API elapsed time, processing residency and
+reported input/output tokens. Confidence is separate from each outcome's
+probability. Cost remains **Unknown**: the public Global meter does not prove the
+price or billing semantics of this US DataZone deployment. Unknown usage is not
+zero. Only owner-scoped usage metadata is saved, not the input, instructions or
+answers.
+
+These are model judgments, not calibrated guarantees, explanations or permission
+to take action. Wording and option order can change results. Use representative
+labeled examples and human review; do not use this playground as the sole basis
+for consequential decisions about people.
+
+First-version limits: 16,000 input characters; 8 questions; 2,000 instruction
+characters per question; 64-character names starting with a letter, followed by
+letters, digits, dots, underscores or hyphens; 2-12 choice options; 2-10 distinct
+score levels; and 512 characters per criterion. Request and native response are
+each limited to 64 KiB, with a 60-second maximum provider deadline. Parsed JSON
+rejects duplicate keys, nonfinite numbers, null input, more than 16 nested levels
+or 4,096 values. Availability and execution both honor catalog enablement,
+authenticated model policy and processing residency. A US-only deployment is
+unavailable under EU-only policy; it is never silently rerouted.
+
 ### Reviewed shared agents and workflows
 
 When the operator enables publishing, saved builder definitions can be submitted

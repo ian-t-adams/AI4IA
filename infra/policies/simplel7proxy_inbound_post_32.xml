@@ -1,4 +1,9 @@
 <fragment>
+<set-variable name="decisionRequest" value="@{
+			JObject selected = (JObject)context.Variables[&quot;selectedBackends&quot;];
+			JObject first = selected.Properties().FirstOrDefault()?.Value as JObject;
+			return first?.Value&lt;string&gt;(&quot;path&quot;) == &quot;providers/microsoft/v1&quot;;
+		}" />
 <set-variable name="pathDeploymentMatchesModel" value="@{
 			string path = context.Request.MatchedParameters.GetValueOrDefault(&quot;path&quot;, &quot;&quot;);
 			string marker = &quot;deployments/&quot;;
@@ -27,6 +32,9 @@
 			int slash = path.IndexOf('/', markerIndex + marker.Length);
 			if (slash &lt; 0) { return false; }
 			string operation = path.Substring(slash + 1).TrimEnd('/');
+			if (context.Variables.GetValueOrDefault&lt;bool&gt;(&quot;decisionRequest&quot;, false)) {
+				return context.Request.Method == &quot;POST&quot; &amp;&amp; path == &quot;deployments/&quot; + path.Substring(markerIndex + marker.Length, slash - markerIndex - marker.Length) + &quot;/systemone&quot;;
+			}
 			foreach (string candidate in allowed.Split(' ')) {
 				if (string.Equals(candidate, operation, StringComparison.OrdinalIgnoreCase)) { return true; }
 			}
@@ -117,12 +125,14 @@
 			return list;
 		}" />
 <set-variable name="RetryCount" value="@{
+			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return 1; }
 			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return 1; }
 			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?
 				.Value&lt;int>(&quot;retryCount&quot;) ?? 1;
 		}" />
 <set-variable name="RequeueAllowed" value="@{
+			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return false; }
 			if (context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false)) { return false; }
 			return ((JObject)context.Variables[&quot;priorityCfg&quot;])
 				.GetValue(context.Variables.GetValueOrDefault&lt;int>(&quot;RequestPriority&quot;, 3).ToString())?

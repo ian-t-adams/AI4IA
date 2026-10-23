@@ -162,6 +162,21 @@
                     new JProperty(&quot;bufferResponse&quot;, false),
                     new JProperty(&quot;auth&quot;, &quot;CLAUDE_FEDERATED&quot;)
                 ))
+            )),
+
+            new JProperty(&quot;microsoft-decision-1-slurmfactory-eastus2-dz&quot;, new JObject(
+                new JProperty(&quot;EASTUS2&quot;, new JObject(
+                    new JProperty(&quot;url&quot;, &quot;{{foundry-eastus2-services-endpoint}}&quot;),
+                    new JProperty(&quot;path&quot;, &quot;providers/microsoft/v1&quot;),
+                    new JProperty(&quot;operation&quot;, &quot;/systemone&quot;),
+                    new JProperty(&quot;operations&quot;, &quot;systemone&quot;),
+                    new JProperty(&quot;deployment&quot;, &quot;Microsoft-Decision-1-slurmfactory-eastus2-dz&quot;),
+                    new JProperty(&quot;priority&quot;, 1),
+                    new JProperty(&quot;acceptablePriorities&quot;, &quot;1, 2, 3&quot;),
+                    new JProperty(&quot;timeout&quot;, 120),
+                    new JProperty(&quot;bufferResponse&quot;, false),
+                    new JProperty(&quot;auth&quot;, &quot;MI&quot;)
+                ))
             ))
         );
     }" />

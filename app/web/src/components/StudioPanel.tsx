@@ -7,13 +7,15 @@ import { DialogFrame } from "./DialogFrame";
 import type { SurfaceVariant } from "./ModalShell";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 import { McpServerBuilder } from "./McpServerBuilder";
+import { DecisionPlayground } from "./DecisionPlayground";
 
-type Tab = "agents" | "workflows" | "tools";
+type Tab = "agents" | "workflows" | "tools" | "decisions";
 
 const TAB_LABELS: Record<Tab, string> = {
   agents: "Agents",
   workflows: "Workflows",
   tools: "Custom tools",
+  decisions: "Decisions",
 };
 
 export function StudioPanel({
@@ -38,8 +40,8 @@ export function StudioPanel({
 }) {
   const [tab, setTab] = useState<Tab>("agents");
   const tabs: Tab[] = customToolsEnabled
-    ? ["agents", "workflows", "tools"]
-    : ["agents", "workflows"];
+    ? ["agents", "workflows", "tools", "decisions"]
+    : ["agents", "workflows", "decisions"];
   const page = variant === "page";
 
   const selectTab = (nextTab: Tab, focus = false) => {
@@ -170,6 +172,8 @@ export function StudioPanel({
           />
         ) : tab === "tools" ? (
           <McpServerBuilder />
+        ) : tab === "decisions" ? (
+          <DecisionPlayground />
         ) : (
           <WorkflowBuilder agents={agents} runModel={runModel} onRun={onRun} />
         )}

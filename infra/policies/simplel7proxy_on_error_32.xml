@@ -1,5 +1,14 @@
 <fragment>
 <choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false))">
+				<return-response>
+					<set-status code="502" reason="Decision gateway failed" />
+					<set-header name="S7PREQUEUE" exists-action="delete" />
+					<set-body>{"error":{"code":"decision_gateway_failed"}}</set-body>
+				</return-response>
+			</when>
+		</choose>
+<choose>
 			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;claudeFederated&quot;, false))">
 				<return-response>
 					<set-status code="502" reason="Claude gateway unavailable" />

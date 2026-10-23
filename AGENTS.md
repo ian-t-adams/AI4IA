@@ -1235,6 +1235,19 @@ Four rules follow:
 
 ### Add a model
 
+The Studio Decision playground uses the non-conversational `decision` category
+and provider protocol. Its bounded native `state` / named `questions` request
+travels through the existing proxy deployment path to APIM's catalog-owned
+`/providers/microsoft/v1/systemone` on the services endpoint. Keep the exact POST
+allowlist, selected deployment body, Cognitive Services MI audience, no automatic
+API/APIM retry or proxy requeue hint, and byte-clean native response. It is not
+Chat Completions or Copilot's `decide` schema. `decisions.py` validates noul,
+choice and zero-based score evidence; usage is native input/output counts and
+DataZone price is unknown. State, instructions and answers remain transient.
+The shared `decision` admission surface rejects unproven token/USD bounds;
+dispatched failures remain cost-unknown in usage summaries. Keep restricted
+execution actors restricted and leave Decision out of chat/agent selectors.
+
 `model-router` may declare a catalog-owned `routing` mode and exact
 format/name/version subset. Bicep sends it as `properties.routing`; the
 preflight verifies offered members and treats changed or missing routing as

@@ -2101,6 +2101,34 @@
           "deploymentName": "claude-haiku-5-5-slurmfactory-eastus2-dz"
         }
       ]
+    },
+    {
+      "id": "Microsoft-Decision-1",
+      "displayName": "Microsoft Decision 1 (Preview)",
+      "category": "decision",
+      "format": "Microsoft",
+      "api": "decision",
+      "requiredRealtimeProtocol": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "toolCalling": false,
+      "inputModalities": [
+        "text",
+        "json"
+      ],
+      "imageSizes": null,
+      "imageQualities": null,
+      "reasoningEffort": [],
+      "samplingSupported": false,
+      "options": [
+        {
+          "region": "eastus2",
+          "dataZone": "US",
+          "sku": "DataZoneStandard",
+          "modelVersion": "1",
+          "deploymentName": "Microsoft-Decision-1-slurmfactory-eastus2-dz"
+        }
+      ]
     }
   ]
 }

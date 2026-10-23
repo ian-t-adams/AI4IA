@@ -3,7 +3,7 @@
 		     The <retry> exits gracefully to outbound instead of on-error, so anything reaching here
 		     with no unthrottled backend left is that leaked case: return 429 instead of a bare 500. -->
 <choose>
-			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; !(context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Response != null &amp;&amp; context.Response.StatusCode == 200) &amp;&amp; context.Variables.GetValueOrDefault&lt;int>(&quot;unThrottledBackends&quot;, -1) == 0)">
+			<when condition="@(!context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false) &amp;&amp; !context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false) &amp;&amp; !(context.Variables.GetValueOrDefault&lt;bool>(&quot;callCompleted&quot;, false) &amp;&amp; context.Response != null &amp;&amp; context.Response.StatusCode == 200) &amp;&amp; context.Variables.GetValueOrDefault&lt;int>(&quot;unThrottledBackends&quot;, -1) == 0)">
 				<set-status code="429" reason="No Backends Available" />
 				<set-body>@(new JObject { { "statusCode", 429 }, { "statusReason", "No Backends Available" } }.ToString(Newtonsoft.Json.Formatting.None))</set-body>
 				<set-header name="retry-after-ms" exists-action="override">
@@ -29,6 +29,7 @@
 		     decodes it and accounts for native usage. -->
 <choose>
 			<when condition="@{
+				if (context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false)) { return false; }
 				string encoding = context.Response.Headers.GetValueOrDefault(&quot;Content-Encoding&quot;, &quot;&quot;);
 				if (!string.IsNullOrWhiteSpace(encoding)) { return false; }
 				string ct = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;) ?? &quot;&quot;;
@@ -71,6 +72,9 @@
 		</set-header>
 <!-- <include-fragment fragment-id="LogResponseFragment" /> -->
 <choose>
+			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;decisionRequest&quot;, false))">
+				<set-header name="S7PREQUEUE" exists-action="delete" />
+			</when>
 			<when condition="@(context.Variables.GetValueOrDefault&lt;bool>(&quot;noReplay&quot;, false))">
 				<set-header name="S7PREQUEUE" exists-action="delete" />
 				<set-header name="x-ai4ia-attempt-ack" exists-action="override">
