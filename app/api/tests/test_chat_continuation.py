@@ -10,7 +10,7 @@ from ai4ia_api.sessions.chat_continuation import (
     ChatContinuation, ChatContinuationError, ChatContinuationPayload, exact_chat_arguments,
 )
 from ai4ia_api.sessions.memory_repo import InMemorySessionRepository
-from ai4ia_api.sessions.models import Message, MessageRole, Session
+from ai4ia_api.sessions.models import Message, MessageAttachment, MessageRole, Session
 from ai4ia_api.sessions.repository import SessionNotFoundError
 from tests.cosmos_deletion_fake import CosmosState
 from tests.test_tool_approval_gate import (
@@ -362,6 +362,23 @@ def test_old_record_is_refused_without_consuming_grant_or_reconstructing_argumen
         response = resume(client, session, prompt)
         assert response.status_code == 409 and "older approval" in response.text
         assert row.pendingApprovals[0].consumed is False and gateway.calls == 1
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_continuation_retains_artifacts_already_attached_to_the_original_turn():
+    client = _client(_connector())
+    try:
+        session = _bootstrap(client)
+        client.app.state.gateway = _InjectedModelGateway()
+        prompt = _hold(client, session)
+        row = client.app.state.session_repo._messages[session][-1]
+        attachment = MessageAttachment(id="prior-image", prompt="Prior synthetic output")
+        row.attachments.append(attachment)
+        response = resume(client, session, prompt)
+        assert response.status_code == 200 and "[DONE]" in response.text, response.text
+        saved = client.get(f"/api/sessions/{session}/messages").json()[-1]
+        assert saved["attachments"] == [attachment.model_dump(mode="json")]
     finally:
         client.__exit__(None, None, None)
 

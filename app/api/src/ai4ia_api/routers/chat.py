@@ -859,6 +859,9 @@ async def chat(
     repo: SessionRepository = request.app.state.session_repo
     continuation: ChatContinuationController | None = None
     resume_message: Message | None = getattr(request.state, "chat_resume", None)
+    retained_attachments = [
+        item.model_copy(deep=True) for item in resume_message.attachments
+    ] if resume_message is not None else []
     resume_state = resume_message.chatContinuation if resume_message is not None else None
     resume_seed = (
         resume_state.payload.seed if resume_state is not None and resume_state.payload is not None else None
@@ -2363,7 +2366,7 @@ async def chat(
                         content_for_model=content_for_model,
                         user_message_id=user_msg.id,
                         extra_usage=usage_sink,
-                        get_attachments=lambda: [*image_sink, *video_sink, *doc_sink],
+                        get_attachments=lambda: [*retained_attachments, *image_sink, *video_sink, *doc_sink],
                         get_approval_drafts=approval_sink.drafts,
                         stream_tokens=stream_tool_tokens,
                         receipt_draft=receipt_draft,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PendingToolApprovalPrompt } from "../lib/types";
 import { Pill } from "./Pill";
 
@@ -55,7 +55,7 @@ export function ToolApprovalPanel({
     >
       {prompts.map((prompt) => (
         <ToolApprovalCard
-          key={`${prompt.id}:${prompt.expiresAt}`}
+          key={`${prompt.id}:${Date.parse(prompt.expiresAt)}`}
           prompt={prompt}
           onApprove={onApprove}
           onDeny={onDeny}
@@ -84,6 +84,8 @@ function ToolApprovalCard({
   const expiresAt = Date.parse(prompt.expiresAt);
   const continuable = Boolean(prompt.messageId && prompt.operationId);
   const action = prompt.grant ? "Approve and continue" : "Review pending call";
+  const approveRef = useRef<HTMLButtonElement>(null);
+  const restoreReviewFocus = useRef(false);
   const [expired, setExpired] = useState(
     () => !Number.isFinite(expiresAt) || expiresAt <= Date.now(),
   );
@@ -106,6 +108,13 @@ function ToolApprovalCard({
     schedule();
     return () => window.clearTimeout(timer);
   }, [expired, expiresAt]);
+  useEffect(() => {
+    if (busy || !restoreReviewFocus.current) return;
+    restoreReviewFocus.current = false;
+    if (!expired && (document.activeElement === document.body || document.activeElement === approveRef.current)) {
+      approveRef.current?.focus();
+    }
+  }, [busy, expired, prompt.grant]);
   return (
     <div
       role="group"
@@ -228,12 +237,14 @@ function ToolApprovalCard({
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button
           type="button"
+          ref={approveRef}
           disabled={busy || expired || !continuable}
           onClick={() => {
             if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
               setExpired(true);
               return;
             }
+            if (!prompt.grant) restoreReviewFocus.current = document.activeElement === approveRef.current;
             onApprove(prompt);
           }}
           aria-label={`${action} ${prompt.label}`}

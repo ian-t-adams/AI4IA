@@ -38,6 +38,24 @@ function prompt(
 }
 
 describe("ToolApprovalPanel", () => {
+  it.each([false, true])("restores review focus without taking it from another control (%s)", async (moveFocus) => {
+    const user = userEvent.setup();
+    const panel = (grant: string, busy = false) => <>
+      <input aria-label="Another control" />
+      <ToolApprovalPanel prompts={[prompt({ grant })]} onApprove={vi.fn()} onDeny={vi.fn()} busy={busy} />
+    </>;
+    const { rerender } = render(panel(""));
+    const review = screen.getByRole("button", { name: /^Review pending call/ });
+    await user.click(review);
+    rerender(panel("", true));
+    act(() => review.blur());
+    if (moveFocus) await user.click(screen.getByRole("textbox", { name: "Another control" }));
+    rerender(panel("renewed-one-time-grant"));
+    expect(screen.getByRole(moveFocus ? "textbox" : "button", {
+      name: moveFocus ? "Another control" : /^Approve and continue/,
+    })).toHaveFocus();
+  });
+
   it("renders nothing when there is nothing to approve", () => {
     const { container } = render(
       <ToolApprovalPanel prompts={[]} onApprove={vi.fn()} onDeny={vi.fn()} />,
