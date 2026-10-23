@@ -22,7 +22,9 @@ feature posture.
 The **Decisions** tab in Studio is admitted by the runtime-enabled `decision`
 catalog category, eligible residency options and authenticated model policy, not
 a browser flag. The desired inventory adds only Microsoft-Decision-1 version `1`
-in eastus2 `DataZoneStandard`, capacity `1` raw unit. No second region, quota
+in eastus2 `DataZoneStandard`, capacity `5` raw units. The offering's advertised
+one request per 60 seconds per unit makes five units a small interactive
+edit-and-rerun allocation, not a claim about token throughput. No second region, quota
 increase, new identity, role or provider credential is required by this source
 change. Do not mistake catalog availability for live deployment acceptance.
 

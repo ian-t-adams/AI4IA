@@ -102,10 +102,16 @@ async def run_decision(
         raise
     except ModelGatewayError as exc:
         logger.warning("Decision request failed (status=%s).", exc.status_code)
+        delay = execution.retry_after_seconds if exc.status_code == 429 else None
+        rate_detail = (
+            f"Decision provider is rate limited. Wait {delay} seconds before another Run. No automatic retry."
+            if delay is not None else "Decision provider is rate limited. Run again later. No automatic retry."
+        )
         raise HTTPException(
             429 if exc.status_code == 429 else 502,
-            "Decision provider is rate limited. Run again later." if exc.status_code == 429 else
+            rate_detail if exc.status_code == 429 else
             "Decision request failed or returned invalid data. Work may have been billed; no automatic retry.",
+            headers={"Retry-After": str(delay)} if delay is not None else None,
         ) from exc
     finally:
         operation.cancel()

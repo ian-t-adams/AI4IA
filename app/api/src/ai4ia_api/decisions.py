@@ -182,4 +182,5 @@ def validate_answers(raw: Any, questions: list[DecisionQuestion]) -> dict[str, A
 class DecisionExecution:
     dispatched: bool = False
     provider_completed: bool = False
+    retry_after_seconds: int | None = None
     usage: TokenUsage = field(default_factory=lambda: TokenUsage(known=False, complete=False, calls=1))

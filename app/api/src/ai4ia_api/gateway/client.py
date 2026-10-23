@@ -12,6 +12,7 @@ import base64
 import asyncio
 import hashlib
 import json
+import math
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
@@ -29,7 +30,7 @@ from ..model_evidence import CapturedModelCall, begin_model_call
 from ..request_constraints import (
     constrain_tool_parameters, contains_tool_output, fresh_session_required, tools_allowed,
 )
-from ..http_retry import request_with_retry
+from ..http_retry import parse_retry_after, request_with_retry
 from ..hard_quota.coverage import AttemptEnvelope
 from ..hard_quota.dispatch import DispatchLease, admitted_dispatch, current_dispatch_owner
 from ..hard_quota.models import QuotaError, Surface
@@ -594,6 +595,12 @@ class ModelGatewayClient:
                         ) as response:
                             execution.provider_completed = response.status_code == 200
                             if response.status_code != 200:
+                                if response.status_code == 429:
+                                    retry = response.headers.get("retry-after", "").strip()
+                                    if len(retry) <= 128 and (retry.isascii() and retry.isdigit() or "," in retry):
+                                        delay = parse_retry_after(retry)
+                                        if delay is not None and math.isfinite(delay) and 0 <= delay <= 86400:
+                                            execution.retry_after_seconds = math.ceil(delay)
                                 raise ModelGatewayError(
                                     response.status_code, "Decision provider rejected the request.",
                                 )

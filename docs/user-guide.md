@@ -147,7 +147,8 @@ first: a three-level scale is 0 through 2, and its result can be fractional.
 Only **Run decision** sends a call. Editing and duplicate submissions are blocked
 while it runs; **Cancel run** stops waiting and cancels the outbound request where
 possible, but already accepted work may still be billed. There is no automatic
-retry. Errors never become an empty successful result. Changing a field clears
+retry. A rate-limit error shows a bounded provider retry delay when supplied,
+but only another explicit Run can retry. Errors never become an empty successful result. Changing a field clears
 the previous result. Leaving the tab discards its transient input and results.
 
 Results show the native typed answer and probability distribution, optional

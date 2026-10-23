@@ -46,11 +46,12 @@ class NativeTransport:
         self.status = 200
         self.calls = []
         self.raw = None
+        self.headers = {}
 
     def handle(self, request):
         self.calls.append(request)
         return httpx.Response(
-            self.status, headers={"Content-Type": "application/json"},
+            self.status, headers={"Content-Type": "application/json", **self.headers},
             stream=httpx.ByteStream(self.raw if self.raw is not None else json.dumps(self.body).encode()),
         )
 
@@ -156,6 +157,20 @@ def test_upstream_errors_never_retry_or_expose_provider_body(rig, status):
     assert len(native.calls) == len(meter.calls) == 1
     assert not meter.calls[0]["usage"].known
     assert "secret" not in response.text
+
+
+@pytest.mark.parametrize("delay,expected", [("12", "12"), ("NaN", None), ("inf", None), ("999999", None), ("private header", None)])
+def test_bounded_retry_guidance_is_visible_but_never_retried(rig, delay, expected):
+    client, native, _ = rig
+    native.status = 429
+    native.headers["Retry-After"] = delay
+    response = client.post("/api/decisions/run", json=BODY, headers=HEADERS)
+    assert response.status_code == 429 and len(native.calls) == 1
+    assert response.headers.get("retry-after") == expected
+    if expected is not None:
+        assert f"Wait {expected} seconds" in response.json()["detail"]
+    else:
+        assert "Run again later" in response.json()["detail"]
 
 
 def test_missing_usage_stays_unknown_and_extra_provider_text_is_not_returned(rig):
