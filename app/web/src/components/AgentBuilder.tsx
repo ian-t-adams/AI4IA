@@ -36,7 +36,6 @@ import { PublicationControls } from "./PublicationControls";
 import {
   checkRow,
   fieldset,
-  iconBtn,
   inputStyle,
   labelStyle,
   primaryBtn,
@@ -298,33 +297,22 @@ export function AgentBuilder({
             </li>
           )}
           {mine.map((a) => (
-            <li key={a.id} style={{ display: "flex", alignItems: "center" }}>
+            <li key={a.id} className="studio-list-row">
               <button
+                className="studio-list-select"
                 onClick={() => startEdit(a)}
                 disabled={busy}
                 aria-current={editing === a.name ? "true" : undefined}
-                style={{
-                  flex: 1,
-                  textAlign: "left",
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: editing === a.name ? "var(--bg)" : "transparent",
-                  color: "var(--fg)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
               >
                 {a.displayName || a.name}
                 {!a.enabled && <span style={{ color: "var(--fg-muted)" }}> (off)</span>}
               </button>
               <button
+                className="studio-list-delete"
                 onClick={() => remove(a.name)}
                 disabled={busy}
                 aria-label={`Delete ${a.name}`}
                 title="Delete"
-                style={iconBtn}
               >
                 ✕
               </button>

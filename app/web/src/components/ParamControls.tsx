@@ -43,7 +43,7 @@ function Slider({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <label htmlFor={id} style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
+        <label className="param-value-label" htmlFor={id} style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
           {label}: <strong>{value}</strong>
         </label>
         <HelpTooltip label={label} size="sm">
@@ -184,7 +184,7 @@ export function ParamControls({
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <label htmlFor="param-max-tokens" style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
+          <label className="param-value-label" htmlFor="param-max-tokens" style={{ fontSize: "0.8em", color: "var(--fg-muted)" }}>
             Max tokens{" "}
             {model?.maxOutputTokens != null && (
               <span style={{ opacity: 0.7 }}>
