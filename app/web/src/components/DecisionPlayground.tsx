@@ -133,7 +133,7 @@ export function DecisionPlayground() {
       <button type="button" onClick={() => { setAvailabilityError(""); setModels(null); setRefresh((v) => v + 1); }}>Reload availability</button>
     </div> : models === null ? <p role="status">Loading Decision availability...</p>
       : models.length === 0 ? <p role="status">No Decision model is available under the current model and residency policy.</p> : null}
-    <form onSubmit={run}>
+    <form onSubmit={run} aria-label="Decision input">
       <fieldset disabled={busy || !model} className={styles.editor}>
         <legend className={styles.srOnly}>Define a decision</legend>
         <div className={styles.toolbar}>

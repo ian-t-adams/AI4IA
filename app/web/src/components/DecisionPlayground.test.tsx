@@ -60,8 +60,8 @@ describe("Decision playground", () => {
     fetchMock.mockImplementation(async (path) => path === "/api/decisions/options" ? Response.json(options)
       : new Promise<Response>((done) => { resolve = done; }));
     await example();
-    const run = screen.getByRole("button", { name: "Run decision" });
-    fireEvent.click(run); fireEvent.click(run);
+    const form = screen.getByRole("form", { name: "Decision input" });
+    fireEvent.submit(form); fireEvent.submit(form);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(screen.getByLabelText("Content to evaluate")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Running..." })).toBeDisabled();
