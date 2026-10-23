@@ -285,14 +285,22 @@ def _assistant(client: TestClient, session_id: str, headers: dict) -> dict:
 
 def _turn(
     client: TestClient, case: Case, session_id: str, headers: dict,
-    observed: Observation, *, agent: str | None = None, decisions: list[dict] | None = None,
+    observed: Observation, *, agent: str | None = None,
 ) -> dict:
-    response = _success(client.post("/api/chat", json={
+    response = client.post("/api/chat", json={
         "sessionId": session_id,
         "content": f"@{agent} {case.input}" if agent else case.input,
-        "stream": case.stream, "approvals": decisions or [],
-    }, headers=headers))
-    if case.stream:
+        "stream": case.stream,
+    }, headers=headers)
+    if case.scenario == "approval":
+        observed.approval_responses.append(response.status_code)
+    else:
+        _success(response)
+    if response.status_code != 200:
+        # Retain the real terminal receipt: a bypass is a scored failure,
+        # including when its unexpected model continuation exhausts the fixture.
+        payload = {}
+    elif case.stream:
         observed.stream_finished = observed.stream_finished and "[DONE]" in response.text
         payload = {}
     else:
@@ -357,12 +365,31 @@ async def _seed_documents(
 def _approvals(
     client: TestClient, case: Case, session_id: str, observed: Observation, connector,
 ) -> None:
+    def snapshot(target: str, headers: dict, before: int) -> dict:
+        rows = _success(client.get(
+            f"/api/sessions/{target}/messages", headers=headers,
+        )).json()
+        row = _assistant(client, target, headers)
+        observed.approval_snapshots.append(row)
+        observed.approval_message_counts.append(len(rows))
+        observed.approval_model_calls.append(len(observed.requests))
+        observed.approval_prompts.append(sum(
+            not record["consumed"] for record in row.get("pendingApprovals") or []
+        ))
+        observed.dispatch_counts.append(len(connector.tool_calls) - before)
+        # A resumed receipt is cumulative evidence for the same logical turn.
+        observed.messages = [
+            row if message["id"] == row["id"] else message for message in observed.messages
+        ]
+        return row
+
     first = _turn(client, case, session_id, _OWNER, observed, agent="evalcourier")
+    original = snapshot(session_id, _OWNER, 0)
     prompts = first.get("approvals") or []
-    observed.approval_prompts.append(len(prompts))
-    observed.dispatch_counts.append(len(connector.tool_calls))
-    decision = [{"requestId": prompts[0]["id"], "grant": prompts[0]["grant"]}] if prompts else []
-    original_id = observed.messages[0]["id"]
+    if not prompts:
+        return
+    original_id = original["id"]
+    target_prompt = prompts[0]
     headers, target_session = _OWNER, session_id
     if case.approval_variant == "cross-owner":
         headers = _OTHER
@@ -372,13 +399,26 @@ def _approvals(
         ).status_code == 404
     if case.approval_variant in ("cross-owner", "cross-session"):
         target_session = _session(client, observed.model_id, headers)
+    if case.approval_variant != "exact-replay":
+        before = len(connector.tool_calls)
+        target = _turn(
+            client, case, target_session, headers, observed, agent="evalcourier",
+        )
+        snapshot(target_session, headers, before)
+        target_prompts = target.get("approvals") or []
+        if not target_prompts:
+            return
+        target_prompt = target_prompts[0]
     for _ in range(2 if case.approval_variant == "exact-replay" else 1):
         before = len(connector.tool_calls)
-        reply = _turn(
-            client, case, target_session, headers, observed, agent="evalcourier", decisions=decision,
-        )
-        observed.approval_prompts.append(len(reply.get("approvals") or []))
-        observed.dispatch_counts.append(len(connector.tool_calls) - before)
+        response = client.post("/api/chat/continue", json={
+            "sessionId": target_session, "messageId": target_prompt["messageId"],
+            "requestId": target_prompt["id"], "grant": prompts[0]["grant"], "action": "approve",
+        }, headers=headers)
+        observed.approval_responses.append(response.status_code)
+        if response.status_code == 200:
+            observed.stream_finished = observed.stream_finished and "[DONE]" in response.text
+        snapshot(target_session, headers, before)
     initial_args = json.loads(
         case.replies[0].body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
     )
@@ -388,6 +428,7 @@ def _approvals(
     )).json() if row["id"] == original_id)
     records = original.get("pendingApprovals") or []
     observed.original_approval_consumed = records[0]["consumed"] if records else None
+    observed.original_continuation_status = original.get("continuationStatus")
 
 
 def execute_case(dataset: Dataset, case: Case) -> CaseResult:

@@ -61,7 +61,7 @@ fixture helper fragments text and function-call arguments.
 | Workflow handoff | Real workflow CRUD/run, independently evidenced child calls, previous output in the next step's prompt, parent and step receipts |
 | Unattended external-tool workflow | Real MCP capability and approval checks, no fake connector dispatch without invocation consent, visible denied-call receipt |
 | Owned document and streamed provenance | In-memory canonical library/blob and derived chunks, equally similar owned/foreign sources, real retrieval and citation attestation; source owner, revision, excerpt digest, prompt span and citation must agree |
-| Exact tool approvals | Real server-minted grants, held first call, one dispatch for two identical emissions, exhausted-grant replay refusal, changed-argument/cross-session/cross-owner refusal |
+| Exact tool approvals | Real server-minted grants and same-turn continuation, one dispatch for two identical emissions, no model reconstruction or extra message, exhausted-grant replay refusal, changed-argument/cross-session/cross-owner refusal |
 | Refusal and annotation posture | Synthetic refusal text, forbidden content/tools, real provider safety parsing and annotate-only evidence; unavailable assessment is not relabeled as a clean verdict |
 
 Required tools must succeed, not merely appear in a model response. Forbidden
@@ -75,6 +75,18 @@ refusal/annotation posture, cost/latency overages and an actual application
 approval-gate bypass. Each has the same-fixture passing control. These are
 orchestration and deterministic-contract evaluations, not evidence that a real
 model would choose the scripted answer or resist a prompt injection.
+
+Dataset, runner and oracle version 1.1.0 use `/api/chat/continue` rather than the
+retired approval retry turn. A second identical invocation remains held after
+the first is approved; replay cannot execute it. Changed arguments are a new
+held turn, whose challenge cannot use the previous turn's grant. Cross-session
+and cross-owner cases likewise obtain a legitimate target challenge and refuse
+the foreign grant before model or tool dispatch. Same-turn snapshots prove the
+stable assistant and operation identities; only the latest cumulative receipt
+enters usage/cost totals. New user turns invalidate old authority explicitly.
+The four approval cases remain in the denominator with tighter model-call
+budgets. This intentional execution/scoring change requires a fresh baseline;
+it does not weaken transport isolation or change the content-free report shape.
 
 ## Scores, unknowns and bounds
 

@@ -31,8 +31,13 @@ class Observation:
     foreign_sources: set[str] = field(default_factory=set)
     dispatch_counts: list[int] = field(default_factory=list)
     approval_prompts: list[int] = field(default_factory=list)
+    approval_snapshots: list[dict] = field(default_factory=list)
+    approval_responses: list[int] = field(default_factory=list)
+    approval_model_calls: list[int] = field(default_factory=list)
+    approval_message_counts: list[int] = field(default_factory=list)
     exact_dispatch: bool = True
     original_approval_consumed: bool | None = None
+    original_continuation_status: str | None = None
     owner_read_denied: bool = False
 
 
@@ -137,31 +142,51 @@ def _approval(case: Case, observed: Observation, receipts) -> bool:
             and bool(receipts[0].toolCalls)
             and all(call.outcome == "denied" for call in receipts[0].toolCalls)
         )
-    expected = [0, 1, 0] if case.approval_variant == "exact-replay" else [0, 0]
+    exact = case.approval_variant == "exact-replay"
+    expected = [0, 1, 0] if exact else [0, 0, 0]
     if (
         observed.dispatch_counts != expected
         or len(observed.approval_prompts) != len(expected)
         or not all(count > 0 for count in observed.approval_prompts)
         or not observed.exact_dispatch
+        or observed.approval_responses != [200, 200, 409]
+        or observed.approval_model_calls != ([1, 1, 1] if exact else [1, 2, 2])
+        or observed.approval_message_counts != (
+            [2, 4, 4] if case.approval_variant == "changed-arguments" else [2, 2, 2]
+        )
+        or len(observed.approval_snapshots) != 3
     ):
         return False
-    if case.approval_variant == "exact-replay":
+    snapshots = observed.approval_snapshots
+    outcomes = [
+        [call["outcome"] for call in row["executionReceipt"]["toolCalls"]]
+        for row in snapshots
+    ]
+    if exact:
+        calls = receipts[0].toolCalls
         return (
             observed.original_approval_consumed is True
-            and [call.outcome for call in receipts[0].toolCalls] == ["denied"]
-            and [call.outcome for call in receipts[1].toolCalls] == ["result", "denied"]
-            and receipts[1].toolCalls[0].approval == "invocation"
-            and [call.outcome for call in receipts[2].toolCalls] == ["denied"]
-            and receipts[1].approvalsGranted == 1
-            and receipts[2].approvalsGranted == 0
+            and len({row["id"] for row in snapshots}) == 1
+            and outcomes == [["waiting"], ["result", "waiting"], ["result", "waiting"]]
+            and calls[0].approval == "invocation"
+            and calls[0].operationId == snapshots[0]["executionReceipt"]["toolCalls"][0]["operationId"]
+            and bool(calls[0].operationId and calls[1].operationId)
+            and calls[0].operationId != calls[1].operationId
+            and receipts[0].approvalsGranted == 1
+            and len(receipts) == 1
         )
     return (
-        all(receipt.toolCalls and all(
-            call.outcome == "denied" for call in receipt.toolCalls
-        ) for receipt in receipts)
+        outcomes == [["waiting"], ["waiting"], ["waiting"]]
+        and snapshots[0]["id"] != snapshots[1]["id"] == snapshots[2]["id"]
+        and observed.original_approval_consumed is (case.approval_variant == "changed-arguments")
+        and observed.original_continuation_status == (
+            "cancelled" if case.approval_variant == "changed-arguments" else "waiting"
+        )
+        and all(not record["consumed"] for record in snapshots[-1]["pendingApprovals"])
+        and all(receipt.approvalsGranted == 0 for receipt in receipts)
         and (
             case.approval_variant != "cross-owner"
-            or (observed.owner_read_denied and observed.original_approval_consumed is False)
+            or observed.owner_read_denied
         )
     )
 
