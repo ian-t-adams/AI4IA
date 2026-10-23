@@ -23,8 +23,9 @@ function focusableChildren(node: HTMLElement): HTMLElement[] {
 
 /**
  * Traps focus within a modal/drawer/panel while it is open: auto-focuses its
- * first focusable child and restores focus to the previously-focused element
- * (or `openerRef`) on close. Attach the returned ref to the panel's outer
+ * first focusable child only while focus is outside, preserving deliberate
+ * descendant focus. Restores focus to the previously-focused element (or
+ * `openerRef`) on close. Attach the returned ref to the panel's outer
  * container, e.g. `<div ref={modalRef} role="dialog" ...>`.
  *
  * Pair this with `useModalKeyDown` (attached via the same element's
@@ -51,7 +52,10 @@ export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
       openerRef?.current ??
       (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const frame = requestAnimationFrame(() => {
-      focusableChildren(node)[0]?.focus();
+      // A child or user action may choose focus before this deferred frame.
+      if (!node.contains(document.activeElement)) {
+        focusableChildren(node)[0]?.focus();
+      }
     });
 
     return () => {
