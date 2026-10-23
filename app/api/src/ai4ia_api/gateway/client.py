@@ -35,6 +35,7 @@ from ..model_traits import (
     supports_sampling,
 )
 from ..safety import MessageSafety, parse_safety
+from ..usage.native import capture_usage
 from .anthropic import (
     ANTHROPIC_API,
     MAX_TOKENS_STOP,
@@ -328,10 +329,10 @@ def _responses_text(obj: dict[str, Any]) -> str:
 
 def _responses_usage_to_chat(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     """Translate Responses usage -> chat-completions usage keys so the existing
-    ``TokenUsage.parse`` meters Responses turns unchanged. Carries the reasoning
-    token count through for audit (parse ignores unknown keys)."""
+    ``TokenUsage.parse`` meters Responses turns unchanged. Native numeric
+    evidence keeps its original paths separately from this compatibility shape."""
     if not isinstance(usage, dict):
-        return None
+        return capture_usage(usage, api="responses")
     mapped: dict[str, Any] = {
         "prompt_tokens": usage.get("input_tokens"),
         "completion_tokens": usage.get("output_tokens"),
@@ -342,7 +343,7 @@ def _responses_usage_to_chat(usage: dict[str, Any] | None) -> dict[str, Any] | N
         mapped["completion_tokens_details"] = {
             "reasoning_tokens": details["reasoning_tokens"]
         }
-    return mapped
+    return capture_usage(usage, api="responses", mapped=mapped)
 
 
 def _responses_json_to_chat(obj: dict[str, Any]) -> dict[str, Any]:
@@ -607,6 +608,8 @@ class ModelGatewayClient:
                             usage = anthropic_json_to_chat(body).get("usage")
                         elif surface == "embedding" and isinstance(usage, dict):
                             usage = {**usage, "completion_tokens": 0}
+                        elif surface == "chat":
+                            usage = capture_usage(usage, api="chat")
                 admission.report(usage)
                 if evidence is not None:
                     evidence.report_usage(usage, completed=True)
@@ -1431,6 +1434,8 @@ class ModelGatewayClient:
                     err = (data.get("error") or {}).get("message")
                     raise ModelGatewayError(502, err or _REQUEST_FAILED)
                 data = anthropic_json_to_chat(data)
+            elif "usage" in data:
+                data["usage"] = capture_usage(data["usage"], api="chat")
             if evidence is not None:
                 evidence.report_usage(data.get("usage"), completed=True)
             telemetry.usage(data.get("usage"), completed=True)
@@ -1766,7 +1771,8 @@ def parse_sse_line(
     # The final usage chunk (when include_usage is set) has empty ``choices`` and
     # a populated ``usage`` object; surface it so the caller can meter the turn.
     return ChatChunk(
-        delta=delta, raw=payload, usage=obj.get("usage"), safety=parse_safety(obj)
+        delta=delta, raw=payload, usage=capture_usage(obj.get("usage"), api="chat"),
+        safety=parse_safety(obj),
     )
 
 

@@ -494,7 +494,11 @@ class RunController:
     ) -> None:
         def finish(owner: AutomationOwner, now: datetime) -> None:
             effect = owner.effects.get(ticket)
-            identity = digest({"completed": completed, "outcome": outcome, "usage": usage})
+            tokens = TokenUsage.parse(usage)
+            identity = digest({
+                "completed": completed, "outcome": outcome, "usage": usage,
+                **({"nativeUsage": tokens.nativeUsage.model_dump(mode="json")} if tokens.nativeUsage else {}),
+            })
             if effect is None or effect.runId != self.current.runId:
                 raise AutomationError("accounting_changed", "The dispatch receipt has no matching intent.")
             if effect.state != "dispatched":
@@ -504,7 +508,6 @@ class RunController:
             record = effect.usage
             if record is None:
                 raise AutomationError("accounting_changed", "The dispatch lost its price/usage snapshot.")
-            tokens = TokenUsage.parse(usage)
             record.status = "complete" if completed else "cancelled" if outcome == "cancelled" else "error"
             record.providerCompleted = completed
             record.usageKnown = tokens.known
@@ -512,6 +515,7 @@ class RunController:
             record.promptTokens = tokens.prompt if tokens.known else None
             record.completionTokens = tokens.completion if tokens.known else None
             record.totalTokens = tokens.total if tokens.known else None
+            record.nativeUsage = tokens.nativeUsage
             record.billable = completed and tokens.known and tokens.complete
             if record.billable and record.priceInputPer1M is not None and record.priceOutputPer1M is not None:
                 pricing = PricingBook(

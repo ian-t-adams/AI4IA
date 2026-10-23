@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_seri
 from ..catalog import DeploymentOption
 from ..hard_quota.models import MAX_ADMISSION_EVIDENCE, AdmissionEvidence
 from .pricing import CostUnknownReason
+from .native import GatewayUsage, NativeUsageBatch, merge_native_usage
 
 UsageStatus = Literal["complete", "cancelled", "error"]
 
@@ -92,10 +93,24 @@ class TokenUsage(BaseModel):
     # Retain an observed contradiction even if later calls' differences cancel.
     # Reporting completeness is independent of input/output pricing coverage.
     totalMismatch: bool = False
+    nativeUsage: NativeUsageBatch | None = None
     # In-process pricing evidence only. Missing after a durable continuation is
     # unknown, not an assertion that earlier Claude input was uncached.
     cacheRead: int | None = Field(default=None, exclude=True)
     cacheWrite: int | None = Field(default=None, exclude=True)
+
+    @model_serializer(mode="wrap")
+    def preserve_native_history(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        result = handler(self)
+        if self.nativeUsage is None:
+            result.pop("nativeUsage", None)
+        return result
+
+    @model_validator(mode="after")
+    def validate_native_calls(self) -> TokenUsage:
+        if self.nativeUsage is not None and self.nativeUsage.totalCalls != self.calls:
+            raise ValueError("Native usage must describe the same contributing calls.")
+        return self
 
     @classmethod
     def empty(cls) -> "TokenUsage":
@@ -110,20 +125,24 @@ class TokenUsage(BaseModel):
         Fully defensive: malformed numeric fields never raise, so metering can
         never break the chat turn that produced them.
         """
+        native = (
+            NativeUsageBatch(calls=(usage.native,), totalCalls=1)
+            if isinstance(usage, GatewayUsage) else None
+        )
         if not usage or not isinstance(usage, dict):
-            return cls(known=False, complete=False, calls=1)
+            return cls(known=False, complete=False, calls=1, nativeUsage=native)
         prompt = usage.get("prompt_tokens")
         completion = usage.get("completion_tokens")
         total = usage.get("total_tokens")
         if prompt is None and completion is None and total is None:
-            return cls(known=False, complete=False, calls=1)
+            return cls(known=False, complete=False, calls=1, nativeUsage=native)
         try:
             p = int(prompt or 0)
             c = int(completion or 0)
             t = int(total if total is not None else p + c)
         except (TypeError, ValueError, OverflowError):
             # Provider returned non-numeric usage: treat as unknown, never zero.
-            return cls(known=False, complete=False, calls=1)
+            return cls(known=False, complete=False, calls=1, nativeUsage=native)
         cache = usage.get("anthropic_cache")
         read = cache.get("read") if isinstance(cache, dict) else None
         write = cache.get("write") if isinstance(cache, dict) else None
@@ -134,6 +153,7 @@ class TokenUsage(BaseModel):
         return cls(
             prompt=p, completion=c, total=t, known=True, complete=True, calls=1,
             totalMismatch=t != p + c,
+            nativeUsage=native,
             cacheRead=read if valid_cache else None, cacheWrite=write if valid_cache else None,
         )
 
@@ -151,6 +171,9 @@ class TokenUsage(BaseModel):
             complete=self.complete and other.complete and (other.calls == 0 or other.known),
             calls=self.calls + other.calls,
             totalMismatch=self.totalMismatch or other.totalMismatch,
+            nativeUsage=merge_native_usage(
+                self.nativeUsage, self.calls, other.nativeUsage, other.calls,
+            ),
             cacheRead=(
                 other.cacheRead if self.calls == 0 else self.cacheRead if other.calls == 0
                 else self.cacheRead + other.cacheRead
@@ -270,6 +293,7 @@ class UsageRecord(BaseModel):
     promptTokens: int | None = None
     completionTokens: int | None = None
     totalTokens: int | None = None
+    nativeUsage: NativeUsageBatch | None = None
     # Non-token providers report an explicit count and billing dimension instead.
     billableUnits: float | None = None
     billingUnit: str | None = None
@@ -303,6 +327,8 @@ class UsageRecord(BaseModel):
         result = handler(self)
         if result.get("costUnknownReason") is None:
             result.pop("costUnknownReason", None)
+        if self.nativeUsage is None:
+            result.pop("nativeUsage", None)
         return result
 
     @model_validator(mode="before")

@@ -494,6 +494,35 @@ inferred. Existing cache-read/write coverage rules and frozen prices are
 unchanged. Previously stored estimates remain provisional where this discrepancy
 applies; there is no retrospective receipt or ledger rewrite.
 
+`ModelCallEvidence.nativeUsage` retains a bounded numeric allowlist from the
+original Chat Completions or Responses usage object, before compatibility
+adaptation. The API tag identifies the native schema, not a provider's billing
+contract; the call's existing model identity supplies catalog context.
+`semantics: provider_reported` deliberately makes no inclusive/exclusive
+reasoning claim. Counts, cache/modality/prediction details, and reported cost
+ticks/nano-USD keep their native paths. Only exact nonnegative integers up to
+`2**53 - 1` survive; malformed values retain fixed invalid-field markers.
+No arbitrary keys, text, prompts, identifiers, reasoning content or provider
+payloads are captured.
+
+`TokenUsage.nativeUsage` and new ledger rows carry the first eight individual
+observations, with total-call and truncation metadata and null gaps for
+unrecorded calls. They never sum overlapping categories or mixed API schemas.
+Gateway-only typed metadata cannot be supplied through a provider JSON key.
+Streaming replaces the previous usage snapshot, including an explicitly empty
+or malformed final report; ordinary null-usage frames do not erase it.
+Checkpoints and legacy durable workflow serialization preserve the same
+evidence. Receipt budgeting retains the existing 32 KiB escaped cap and
+model-call truncation notes. Optional absent fields stay absent on historical
+reads and frozen-ledger delivery.
+
+The native evidence is not a pricing input: the total-mismatch guard, original
+rates, cost snapshots and Anthropic cache pricing are unchanged. Anthropic
+Messages does not acquire a guessed Chat/Responses schema. A provider-reported
+reasoning count or cost field is not proof that it explains a total difference
+or is the customer's Azure bill. Numeric diagnostics and billing reconciliation
+remain separate.
+
 They are diagnostic evidence, not a complete replay log or a model's private
 reasoning. Historical receipts can retain admitted source text after a source is
 deleted, just as a past answer can. Active-store deletion is therefore not

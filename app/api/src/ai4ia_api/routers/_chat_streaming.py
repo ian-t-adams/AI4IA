@@ -798,7 +798,7 @@ async def _plain_gateway_stream(
             stream = receipt_draft.model_evidence.observe_stream(stream)
         async with aclosing(stream) as chunks:
             async for chunk in chunks:
-                if chunk.usage:
+                if chunk.usage is not None:
                     stream_usage = chunk.usage
                 if chunk.safety is not None:
                     # Prompt verdicts arrive on an early chunk and completion

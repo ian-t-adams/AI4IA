@@ -157,6 +157,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    through aggregation/continuation, even when opposite differences cancel.
    Per-call receipt and ledger pricing share this guard; historical estimates
    and missing per-call evidence are never rewritten on read.
+   Native Chat/Responses usage evidence retains only allowlisted, safe integer
+   fields under their original API paths. Categories may overlap; reported
+   reasoning or cost fields never normalize tokens or establish Azure charges.
+   Invalid values keep fixed field markers, not payloads; absence is not zero.
+   Preserve bounded per-call snapshots and their cap through checkpoints and
+   ledger delivery, never sum categories or accumulate streaming snapshots.
    Price-document versions must survive the actual receipt identifier/redaction
    path unchanged. Keep them compact and public; never weaken credential
    redaction to preserve an overlong, token-shaped version identifier.
