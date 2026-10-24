@@ -137,9 +137,80 @@ def comparable(template: dict) -> str:
     return ROLLOUT._comparable_template(template)
 
 
+def rejected_report(raw: Any, bound: dict) -> dict:
+    """Keep only diagnostic metadata; provider prose and resource values stay private."""
+    def resource_id(value: Any) -> str | None:
+        if not isinstance(value, str) or re.fullmatch(r"/[A-Za-z0-9_./()-]{1,511}", value) is None:
+            return None
+        normalized = value.casefold()
+        root = f"/subscriptions/{bound['subscription']}".casefold()
+        group = f"{root}/resourcegroups/{bound['resourceGroup']}".casefold()
+        if (normalized == group or normalized.startswith(group + "/providers/")
+                or normalized.startswith(root + "/providers/microsoft.resources/deployments/")):
+            return value
+        return None
+
+    def property_path(value: Any) -> str | None:
+        if isinstance(value, str) and re.fullmatch(
+            r"(?:\$\.)?(?:properties|parameters|variables|resources)(?:[./][A-Za-z0-9_.\[\]/-]+){1,16}",
+            value,
+        ) and len(value) <= 128:
+            return value
+        return None
+
+    source = raw if isinstance(raw, dict) else {}
+    diagnostics = source.get("diagnostics")
+    rows = diagnostics if isinstance(diagnostics, list) else []
+    safe_diagnostics = []
+    for item in rows[:16]:
+        item = item if isinstance(item, dict) else {}
+        code = item.get("code")
+        level = item.get("level")
+        target = item.get("target")
+        safe_diagnostics.append({
+            "code": code if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Za-z0-9_.-]{0,95}", code) else "unknown",
+            "level": level if level in ("Info", "Warning", "Error") else "unknown",
+            "target": resource_id(target) or property_path(target),
+            "targetOmitted": target is not None and not (resource_id(target) or property_path(target)),
+        })
+    changes = source.get("changes")
+    changed_rows = changes if isinstance(changes, list) else []
+    safe_changes = []
+    kinds = {"Create", "Modify", "Delete", "Deploy", "Ignore", "NoChange", "Unsupported"}
+    for item in changed_rows[:32]:
+        item = item if isinstance(item, dict) else {}
+        deltas = item.get("delta")
+        deltas = deltas if isinstance(deltas, list) else []
+        paths = [property_path(row.get("path")) for row in deltas[:8] if isinstance(row, dict)]
+        kind = item.get("changeType")
+        safe_changes.append({
+            "resourceId": resource_id(item.get("resourceId")),
+            "changeType": kind if isinstance(kind, str) and kind in kinds else "unknown",
+            "fields": [path for path in paths if path is not None],
+        })
+    report = {
+        "context": {key: bound[key] for key in ("source", "phase", "subscription", "resourceGroup", "template", "parameters")
+                    if isinstance(bound.get(key), str) and len(bound[key]) <= 512},
+        "status": "rejected",
+        "category": ("arm_diagnostics_shape_unknown" if diagnostics is not None and not isinstance(diagnostics, list)
+                     else "arm_diagnostics_present" if diagnostics else "preview_evidence_rejected"),
+        "diagnostics": safe_diagnostics, "diagnosticCount": len(rows) if isinstance(diagnostics, list) else None,
+        "diagnosticsShapeUnknown": diagnostics is not None and not isinstance(diagnostics, list),
+        "changes": safe_changes, "changeCount": len(changed_rows) if isinstance(changes, list) else None,
+        "truncated": len(rows) > 16 or len(changed_rows) > 32,
+        "binding": None, "executionAuthorized": False,
+    }
+    while len(json.dumps(report, indent=2).encode()) > 64 * 1024 and report["changes"]:
+        report["changes"].pop()
+        report["truncated"] = True
+    return report
+
+
 def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
     require(raw.get("status") == "Succeeded" and not raw.get("error"), "ARM preview did not succeed.")
-    require(not raw.get("diagnostics"), "ARM preview reported incomplete diagnostics.")
+    diagnostics = raw.get("diagnostics")
+    require(diagnostics is None or (isinstance(diagnostics, list) and not diagnostics),
+            "ARM preview reported incomplete diagnostics.")
     changes = raw.get("changes")
     if not isinstance(changes, list) or not 0 < len(changes) <= 2048:
         raise PreviewError("ARM preview coverage is missing or oversized.")
@@ -395,7 +466,12 @@ def main() -> int:
             ], limit=8 * 1024 * 1024, timeout=300)
         finally:
             os.unlink(parameter_path)
-        preview = scope_preview(json.loads(raw), bound, params)
+        payload = json.loads(raw)
+        try:
+            preview = scope_preview(payload, bound, params)
+        except (PreviewError, KeyError, TypeError, ValueError, AttributeError):
+            (output / "report.json").write_text(json.dumps(rejected_report(payload, bound), indent=2), encoding="utf-8")
+            raise
         issued = int(time.time())
         token = make_token(bound, preview, issued)
         report = {"context": bound, "preview": preview, "issuedAt": issued,
@@ -414,7 +490,7 @@ def main() -> int:
             file.write(f"authorized={'true' if kind == 'deploy' else 'false'}\n")
         print("Private phase preview retained; no resources changed. Execution requires its separate guarded path.")
         return 0
-    except (PreviewError, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+    except (PreviewError, OSError, KeyError, TypeError, ValueError, AttributeError, subprocess.SubprocessError) as exc:
         print(str(exc) if isinstance(exc, PreviewError) else "Private preview failed with incomplete evidence.", file=sys.stderr)
         return 1
 
