@@ -165,7 +165,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.realtime_canary_dispatch_guard = realtime_canary_dispatch_guard
         if settings.session_deletion_enabled:
             await app.state.session_repo.check_deletion_ready()
-        app.state.session_readiness = SessionStoreReadiness(app.state.session_repo)
+        app.state.session_readiness = SessionStoreReadiness(
+            app.state.session_repo,
+            private_cosmos_endpoint=(settings.cosmos_endpoint or "") if settings.private_cosmos_required else None,
+        )
         # Per-user document library. Feature-flagged + default-OFF:
         # build_document_library returns None unless
         # settings.document_understanding_enabled, so the ``/api/library`` API
@@ -326,7 +329,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # is not configured (dev). Closed in finally.
         app.state.user_directory = UserDirectoryService(
             build_user_directory_repository(settings),
-            enabled=settings.user_directory_enabled,
+            enabled=settings.user_directory_enabled and not settings.private_recovery_candidate,
         )
         # Document ingest pipeline. Built only when document
         # understanding is enabled (else None), so the upload endpoint refuses
@@ -344,7 +347,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # fresh row may still belong to another healthy replica during rolling
         # deploy/scale-out, so the ingestor applies a conservative age lease and
         # preserves the user's raw upload. Best-effort, startup-only.
-        if app.state.document_ingestor is not None:
+        if app.state.document_ingestor is not None and not settings.private_recovery_candidate:
             try:
                 await app.state.document_ingestor.recover_interrupted()
             except Exception:  # noqa: BLE001 - startup sweep must not block boot
@@ -449,7 +452,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.workflow_automation = build_workflow_automation(app.state)
         await check_workflow_automation_ready(app.state)
         app.state.durable_workflows = None
-        if settings.durable_workflows_enabled:
+        if settings.durable_workflows_enabled and not settings.private_recovery_candidate:
             from .workflows.durable import DurableWorkflowService
 
             durable = DurableWorkflowService(
@@ -533,6 +536,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         telemetry=FASTAPI_NATIVE_TELEMETRY,
     )
     register_error_handlers(app)
+    if settings.private_recovery_candidate:
+        from .private_recovery import PrivateRecoveryCandidate
+
+        app.add_middleware(PrivateRecoveryCandidate)
 
     @app.exception_handler(PublicationError)
     async def _publication_refused(_request: Request, exc: PublicationError):

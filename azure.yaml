@@ -22,6 +22,7 @@ services:
       path: Dockerfile
   api:
     project: ./app/api
+    resourceName: ${AZURE_API_APP_NAME}
     language: python
     host: containerapp
     docker:
@@ -61,6 +62,16 @@ hooks:
       posix:
         shell: sh
         run: python3 scripts/derive-json-transport.py --azd-env
+        continueOnError: false
+        interactive: false
+    - windows:
+        shell: pwsh
+        run: python scripts/check-api-private-network.py --azd-env; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        continueOnError: false
+        interactive: false
+      posix:
+        shell: sh
+        run: python3 scripts/check-api-private-network.py --azd-env
         continueOnError: false
         interactive: false
     - windows:

@@ -192,6 +192,9 @@ jobs:
       - name: Lean Azure capability-map contract tests
         run: python -m unittest scripts.tests.test_lean_azure_iac
 
+      - name: Private API migration admission controls
+        run: python -m unittest scripts.tests.test_api_private_network
+
       # `bicep build` exits zero for warnings. This test captures diagnostics and
       # inspects the compiled ARM expressions, so warnings or behavior drift fail CI.
       - name: Bicep clean diagnostics and compiled behavior tests

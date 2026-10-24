@@ -30,6 +30,20 @@ param location string = 'eastus2'
 ])
 param modelCapacityProfile string = 'baseline'
 
+@description('Explicit API-only private Cosmos recovery phase. candidate stages a read-only API without moving web traffic; private requires a verified candidate and drained legacy workers before cutover. legacy retains existing names but never reopens Cosmos public access.')
+@allowed(['legacy', 'candidate', 'activate', 'private'])
+param apiNetworkPhase string = 'legacy'
+
+@description('Reviewed, collision-free standalone RFC1918 address space for the new API-only network.')
+param apiPrivateVnetPrefix string = ''
+param apiPrivateSubnetPrefix string = ''
+param cosmosPrivateEndpointSubnetPrefix string = ''
+
+@description('Run-bound existing candidate digest read by preflight. Preserves staged code during activation/cutover; first candidate provisioning uses only the inert placeholder.')
+param apiPrivateInitialImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+param privateWebImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+param privateProxyImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+
 @description('Enable Anthropic model deployment and API advertisement. Default OFF until Marketplace fulfillment is approved and working for the subscription.')
 param claudeEnabled bool = false
 
@@ -704,6 +718,7 @@ module gateway 'modules/gateway.bicep' = {
   ]
   scope: rg
   params: {
+    proxyImage: apiNetworkPhase == 'legacy' ? 'mcr.microsoft.com/k8se/quickstart:latest' : privateProxyImage
     location: location
     tags: tags
     environmentName: environmentName
@@ -853,6 +868,27 @@ module durabletask 'modules/durabletask.bicep' = if (enableDurableWorkflows) {
   }
 }
 
+// Existing public environment/web/proxy remain untouched. This is not an
+// in-place VNet attachment; ACA network type is immutable after creation.
+module apiPrivateNetwork 'modules/api-private-network.bicep' = if (apiNetworkPhase != 'legacy') {
+  name: 'api-private-network'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    workload: workload
+    environmentName: environmentName
+    logAnalyticsName: monitoring.outputs.logAnalyticsName
+    cosmosAccountId: data.outputs.cosmosId
+    vnetAddressPrefix: apiPrivateVnetPrefix
+    apiSubnetPrefix: apiPrivateSubnetPrefix
+    privateEndpointSubnetPrefix: cosmosPrivateEndpointSubnetPrefix
+  }
+}
+
+var legacyApiUrl = 'https://ca-api-${environmentName}.${platform.outputs.containerEnvDefaultDomain}'
+var servingApiUrl = apiNetworkPhase == 'private' || apiNetworkPhase == 'legacy' ? api.outputs.apiUrl : legacyApiUrl
+
 // --- Backend API (FastAPI) Container App ---
 module api 'modules/api.bicep' = {
   name: 'api'
@@ -869,7 +905,11 @@ module api 'modules/api.bicep' = {
     location: location
     tags: tags
     environmentName: environmentName
-    containerEnvId: platform.outputs.containerEnvId
+    containerEnvId: apiNetworkPhase == 'legacy' ? platform.outputs.containerEnvId : apiPrivateNetwork!.outputs.environmentId
+    appName: apiNetworkPhase == 'legacy' ? 'ca-api-${environmentName}' : 'ca-api-private-${environmentName}'
+    recoveryCandidate: apiNetworkPhase == 'candidate'
+    privateCosmosRequired: apiNetworkPhase != 'legacy'
+    apiImage: apiNetworkPhase == 'legacy' ? 'mcr.microsoft.com/k8se/quickstart:latest' : apiPrivateInitialImage
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     apiIdentityResourceId: apiIdentity.resourceId
     apiIdentityClientId: apiIdentity.clientId
@@ -1035,13 +1075,14 @@ module web 'modules/web.bicep' = {
   name: 'web'
   scope: rg
   params: {
+    webImage: apiNetworkPhase == 'legacy' ? 'mcr.microsoft.com/k8se/quickstart:latest' : privateWebImage
     location: location
     tags: tags
     containerEnvId: platform.outputs.containerEnvId
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsId
     webIdentityResourceId: webIdentity.resourceId
     acrLoginServer: platform.outputs.acrLoginServer
-    apiBaseUrl: api.outputs.apiUrl
+    apiBaseUrl: servingApiUrl
     appEnvironment: appEnvironment
     // Dev user only matters while the api runs the dev auth provider.
     devUser: appEnvironment == 'prod' ? '' : webDevUser
@@ -1063,7 +1104,7 @@ module web 'modules/web.bicep' = {
     // flag that arms them on the API is on (and voice itself is enabled, gated in
     // the web module). Default OFF -> the panel never offers the tools opt-in.
     voiceLiveToolsEnabled: voiceLiveToolsEnabled
-    apiPublicUrl: api.outputs.apiUrl
+    apiPublicUrl: servingApiUrl
     // Document library: surface the same feature flag that drives the
     // API ingest/retrieval path so the browser shows the library UI only when the
     // feature is on. Default OFF -> no control, no change.
@@ -1087,7 +1128,7 @@ module alerts 'modules/alerts.bicep' = if (enableAlerts) {
     workload: workload
     environmentName: environmentName
     alertEmail: alertEmail
-    apiContainerAppId: api.outputs.apiAppId
+    apiContainerAppId: apiNetworkPhase == 'private' ? api.outputs.apiAppId : resourceId(rg.name, 'Microsoft.App/containerApps', 'ca-api-${environmentName}')
     cosmosAccountId: data.outputs.cosmosId
   }
 }
@@ -1159,8 +1200,11 @@ output AZURE_FOUNDRY_PROJECT_ENDPOINT string = enableFoundryToolbox ? foundry[pr
 // and its official MCP source plane are enabled.
 #disable-next-line BCP318
 output AZURE_API_CENTER_NAME string = (enablePrivateToolCatalog && enableOfficialMcp) ? apicenter.outputs.apiCenterName : ''
-output AZURE_API_URL string = api.outputs.apiUrl
+output AZURE_API_URL string = servingApiUrl
+output AZURE_API_TARGET_URL string = api.outputs.apiUrl
 output AZURE_API_APP_NAME string = api.outputs.apiAppName
+output AZURE_API_NETWORK_PHASE string = apiNetworkPhase
+output AZURE_SERVING_API_URL string = servingApiUrl
 output AZURE_WEB_URL string = web.outputs.webUrl
 output AZURE_WEB_APP_NAME string = web.outputs.webAppName
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString

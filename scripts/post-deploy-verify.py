@@ -579,7 +579,11 @@ def resource_group_name(workload: str | None, environment: str) -> str:
 
 
 def app_names(environment: str) -> dict[str, str]:
-    return {svc: f"{APP_NAME_PREFIX[svc]}{environment}" for svc in SERVICES}
+    from _api_private import api_name, phase
+
+    names = {svc: f"{APP_NAME_PREFIX[svc]}{environment}" for svc in SERVICES}
+    names["api"] = api_name(environment, phase(os.environ.get("AI4IA_API_NETWORK_PHASE") or "legacy"))
+    return names
 
 
 def _validate_environment(value: str | None) -> str:

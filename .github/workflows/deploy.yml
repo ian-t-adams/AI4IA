@@ -411,6 +411,10 @@ jobs:
       # the ingress: an APIM key, gateway policy, or model-deployment regression will
       # ship green. See docs/runbooks/deployment.md section 6.
       AI4IA_DEPLOY_VERIFY_CANARY: ${{ vars.AI4IA_DEPLOY_VERIFY_CANARY }}
+      AI4IA_API_NETWORK_PHASE: ${{ vars.AI4IA_API_NETWORK_PHASE }}
+      AI4IA_API_PRIVATE_VNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_VNET_PREFIX }}
+      AI4IA_API_PRIVATE_SUBNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_SUBNET_PREFIX }}
+      AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX: ${{ vars.AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX }}
       # Canonical memory backend selection for the staged mem0 -> Cosmos cutover.
       # main.parameters.json resolves memoryStore from ${AI4IA_MEMORY_STORE=cosmos};
       # CI can't run `azd env set`, so plumb it here or the parameter never sees the
@@ -721,6 +725,9 @@ jobs:
       # record that placeholder as the rollback target. `capture` records
       # exists:false for missing greenfield apps, so this ordering also supports a
       # first stand-up.
+      - name: Validate private API phase and exact target
+        run: python scripts/check-api-private-network.py
+
       - name: Capture pre-provision revisions (rollback target)
         id: capture
         run: |
