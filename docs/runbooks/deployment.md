@@ -2108,6 +2108,10 @@ Recorded API/web module inputs supply only non-secure parameter candidates.
 Their types must match the current compiled module; stable current serving
 configuration and the fully expanded preview must also agree outside the
 approved differences. A historical deployment record alone proves nothing.
+The candidate's always-emitted metrics self-reference must change from the exact
+legacy API resource ID to the exact private API ID. Validate both ends against
+the bound scope before comparing that field; missing, stale or foreign IDs
+refuse. Other metric/resource settings remain unchanged.
 Current secret names and Key Vault references are metadata, not exported values.
 The default-off API mode derives the same-group old/private source and private
 target and fixes the existing API UAMI. ARM resolves literal secrets server-side;
@@ -2179,6 +2183,9 @@ preview and apply. The consumer uses the existing checksum-pinned GitHub CLI and
 shared verification policy against published attestations: exact issuer,
 workflow, repository, main source/signer commit, producer run/attempt/event,
 GitHub-hosted runner, image subject, SLSA and SPDX are required. The SPDX must
+be fetched from the approved image registry with `--bundle-from-oci`, not the
+CLI's default GitHub attestation lookup. Ordinary same-run verification keeps
+its exact local `--bundle` path. The SPDX must
 match the separately supplied producer fingerprint; the consumer never derives
 its expected fingerprint from its own response. No new token permission, trust
 exception, replacement verifier or rebuild is used.

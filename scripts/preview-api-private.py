@@ -409,6 +409,18 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
                         raise PreviewError("Current API configuration evidence is missing.")
                     left = deepcopy(baseline["properties"]["template"])
                     right = deepcopy(template)
+                    metric = "AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID"
+                    old_self, new_self = env_rows(left).get(metric, {}), env_rows(right).get(metric, {})
+                    source_id = baseline.get("id")
+                    if (not isinstance(source_id, str) or source_id.casefold() != legacy_api
+                            or set(old_self) != {"name", "value"} or set(new_self) != {"name", "value"}
+                            or not isinstance(old_self.get("value"), str)
+                            or old_self["value"].casefold() != legacy_api
+                            or not isinstance(new_self.get("value"), str)
+                            or new_self["value"].casefold() != private_api):
+                        errors.append("candidate_metrics_self_id_invalid")
+                    else:
+                        new_self["value"] = old_self["value"]
                     for current in (left, right):
                         rows = env_rows(current)
                         current["containers"][0]["env"] = [

@@ -128,11 +128,12 @@ class PreviewTests(unittest.TestCase):
         bound["packet"] = "candidate"
         prefix = f"/subscriptions/{bound['subscription']}/resourceGroups/{bound['resourceGroup']}/providers/"
         identity = prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/id-api-test"
+        legacy = prefix + "Microsoft.App/containerApps/ca-api-test"
         target = prefix + "Microsoft.App/containerApps/ca-api-private-test"
         image = "example.azurecr.io/ai4ia/api-test@sha256:" + "a" * 64
         params.update(apiPrivateInitialImage={"value": image}, entraTenantId={"value": "tenant"},
                       entraAudience={"value": "audience"})
-        baseline = {"location": "eastus2", "tags": {"azd-service-name": "api"},
+        baseline = {"id": legacy, "location": "eastus2", "tags": {"azd-service-name": "api"},
             "identity": {"type": "UserAssigned", "userAssignedIdentities": {identity: {}}},
             "properties": {"managedEnvironmentId": prefix + "Microsoft.App/managedEnvironments/old",
                 "configuration": {"activeRevisionsMode": "Single", "secrets": [{"name": "model-gateway-api-key"}],
@@ -146,6 +147,9 @@ class PreviewTests(unittest.TestCase):
                             ("AI4IA_ENTRA_TENANT_ID", "tenant"), ("AI4IA_ENTRA_AUDIENCE", "audience"),
                             ("AI4IA_COSMOS_ENDPOINT", "https://cosmos-test.documents.azure.com:443/"),
                             ("OTHER_SETTING", "preserve"),
+                            ("AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID", legacy),
+                            ("AI4IA_METRICS_COSMOS_RESOURCE_ID", prefix + "Microsoft.DocumentDB/databaseAccounts/cosmos-test"),
+                            ("AI4IA_METRICS_SEARCH_RESOURCE_ID", prefix + "Microsoft.Search/searchServices/search-test"),
                         )
                     ],
                 }]}}}
@@ -155,6 +159,7 @@ class PreviewTests(unittest.TestCase):
         props["managedEnvironmentId"] = prefix + "Microsoft.App/managedEnvironments/cae-ai4ia-test-api-private"
         props["template"]["scale"]["maxReplicas"] = 1
         props["template"]["containers"][0]["image"] = image
+        PREVIEW.env_rows(props["template"])["AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID"]["value"] = target
         props["template"]["containers"][0]["env"] += [
             {"name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": "true"},
             {"name": "AI4IA_PRIVATE_COSMOS_REQUIRED", "value": "true"},
@@ -165,6 +170,41 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(result["blockingReasons"], [])
         self.assertIn("properties.configuration.secrets[].value", result["changes"][0]["fields"])
         self.assertNotIn("********", json.dumps(result))
+        metric = "AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID"
+        for side, wrong in (
+            ("source", target), ("source", legacy + "-stale"),
+            ("source", legacy.replace("rg-ai4ia-test", "rg-other")),
+            ("source", legacy.replace(bound["subscription"], "0" * 36)),
+            ("target", legacy), ("target", target + "-other"),
+            ("target", target.replace("rg-ai4ia-test", "rg-other")),
+            ("target", target.replace(bound["subscription"], "0" * 36)),
+            ("source", None), ("target", None), ("target", True),
+        ):
+            bad_source, bad_raw = deepcopy(baseline), deepcopy(raw)
+            bad_template = (bad_source["properties"]["template"] if side == "source"
+                            else bad_raw["changes"][0]["after"]["properties"]["template"])
+            rows = PREVIEW.env_rows(bad_template)
+            if wrong is None:
+                bad_template["containers"][0]["env"].remove(rows[metric])
+            else:
+                rows[metric]["value"] = wrong
+            with self.subTest(side=side, wrong=wrong):
+                self.assertIn("candidate_metrics_self_id_invalid",
+                              PREVIEW.scope_preview(bad_raw, bound, params, bad_source)["blockingReasons"])
+        for name in ("AI4IA_METRICS_COSMOS_RESOURCE_ID", "AI4IA_METRICS_SEARCH_RESOURCE_ID"):
+            changed = deepcopy(raw)
+            PREVIEW.env_rows(changed["changes"][0]["after"]["properties"]["template"])[name]["value"] += "-other"
+            self.assertIn("candidate_configuration_changed",
+                          PREVIEW.scope_preview(changed, bound, params, baseline)["blockingReasons"])
+        stale_source = deepcopy(baseline)
+        stale_source["id"] = legacy + "-other"
+        self.assertIn("candidate_metrics_self_id_invalid",
+                      PREVIEW.scope_preview(raw, bound, params, stale_source)["blockingReasons"])
+        casing_source, casing_raw = deepcopy(baseline), deepcopy(raw)
+        casing_source["id"] = legacy.upper()
+        PREVIEW.env_rows(casing_source["properties"]["template"])[metric]["value"] = legacy.upper()
+        PREVIEW.env_rows(casing_raw["changes"][0]["after"]["properties"]["template"])[metric]["value"] = target.upper()
+        self.assertEqual(PREVIEW.scope_preview(casing_raw, bound, params, casing_source)["blockingReasons"], [])
         changed = deepcopy(raw)
         changed["changes"][0]["after"]["properties"]["template"]["containers"][0]["env"][5]["value"] = "changed"
         self.assertIn("candidate_configuration_changed", PREVIEW.scope_preview(changed, bound, params, baseline)["blockingReasons"])

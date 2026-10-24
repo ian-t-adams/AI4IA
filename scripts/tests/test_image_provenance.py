@@ -341,6 +341,8 @@ class PrivateApiProofTests(unittest.TestCase):
             calls.append(command)
             if command[-1] == "--version":
                 return f"gh version {provenance.GH_VERSION} (test)\n".encode()
+            if "--bundle-from-oci" not in command:
+                raise provenance.ProvenanceError("OCI-only producer has no discoverable GitHub proof")
             predicate = command[command.index("--predicate-type") + 1]
             kind = next(key for key, value in provenance.PREDICATES.items() if value == predicate)
             return json.dumps(proofs[kind]).encode()
@@ -353,6 +355,7 @@ class PrivateApiProofTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         for command in calls[1:]:
             self.assertNotIn("--bundle", command)
+            self.assertIn("--bundle-from-oci", command)
             self.assertIn("--deny-self-hosted-runners", command)
             self.assertEqual(command[command.index("--source-digest") + 1], COMMIT)
             self.assertEqual(command[command.index("--cert-identity") + 1], WORKFLOW_ID)
@@ -363,6 +366,21 @@ class PrivateApiProofTests(unittest.TestCase):
         result = self.consume(env, receipt, proofs)
         self.assertEqual(result["receipt"], receipt)
         self.assertEqual(set(result["statements"]), set(provenance.PREDICATES))
+
+    def test_oci_only_producer_requires_registry_retrieval_without_changing_local_bundles(self):
+        env, receipt, proofs = self.fixture()
+        self.consume(env, receipt, proofs)
+        build_command = provenance.verify_command
+        def missing_selector(*args):
+            return [value for value in build_command(*args) if value != "--bundle-from-oci"]
+        with patch.object(provenance, "verify_command", side_effect=missing_selector):
+            with self.assertRaisesRegex(provenance.ProvenanceError, "OCI-only"):
+                self.consume(env, receipt, proofs)
+        expected = provenance.identity(ENVIRONMENT)
+        local = build_command("gh", IMAGES["api"], Path("local-bundle.json"), "sbom", expected)
+        self.assertIn("--bundle", local)
+        self.assertEqual(local[local.index("--bundle") + 1], "local-bundle.json")
+        self.assertNotIn("--bundle-from-oci", local)
 
     def test_wrong_producer_ref_workflow_digest_or_missing_evidence_refuses(self):
         env, receipt, proofs = self.fixture()

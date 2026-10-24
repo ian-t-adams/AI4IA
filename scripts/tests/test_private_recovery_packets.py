@@ -215,6 +215,11 @@ class RecoveryCompiledTests(unittest.TestCase):
 
     def test_api_compilation_retains_exact_secret_and_resource_boundary(self):
         self.assert_api_boundary(self.modules["api"])
+        variables = self.modules["api"]["variables"]
+        self.assertEqual(variables["apiAppResourceId"],
+                         "[resourceId('Microsoft.App/containerApps', variables('apiAppName'))]")
+        self.assertIn("'name', 'AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID', 'value', variables('apiAppResourceId')",
+                      variables["resourceMetricsEnv"])
 
     def test_compiled_speech_key_keeps_both_feature_gates_and_default_off_inheritance(self):
         variables = self.modules["api"]["variables"]

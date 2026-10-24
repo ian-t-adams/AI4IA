@@ -303,7 +303,7 @@ def run_bounded(command: list[str], *, limit: int, timeout: float) -> bytes:
 def verify_command(executable: str, image: str, bundle: Path | None, kind: str, expected: dict) -> list[str]:
     return [
         executable, "attestation", "verify", f"oci://{image}",
-        *(["--bundle", str(bundle)] if bundle is not None else []), "--repo", expected["repository"],
+        *(["--bundle", str(bundle)] if bundle is not None else ["--bundle-from-oci"]), "--repo", expected["repository"],
         "--cert-identity", expected["workflowIdentity"],
         "--cert-oidc-issuer", ISSUER, "--deny-self-hosted-runners",
         "--source-ref", REF, "--source-digest", expected["sourceCommit"],
