@@ -167,6 +167,64 @@ class PreviewTests(unittest.TestCase):
             self.assertTrue(Path(env["GITHUB_OUTPUT"]).read_text().endswith("authorized=false\n"))
             self.assertTrue(all(not path.exists() for path in observed))
 
+    def test_new_api_is_staged_with_exact_identity_auth_data_and_compute(self):
+        bound, raw, params = fixture()
+        prefix = f"/subscriptions/{bound['subscription']}/resourceGroups/rg-ai4ia-test/providers/"
+        params.update({"entraTenantId": {"value": "tenant"}, "entraAudience": {"value": "audience"},
+                       "apiPrivateInitialImage": {"value": "inert-image"}})
+        row = raw["changes"][-1]
+        row.update(changeType="Create", after={
+            "location": "eastus2", "identity": {"type": "UserAssigned", "userAssignedIdentities": {
+                prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/id-api-test": {},
+            }},
+            "properties": {
+                "managedEnvironmentId": prefix + "Microsoft.App/managedEnvironments/cae-ai4ia-test-api-private",
+                "configuration": {"activeRevisionsMode": "Single",
+                                  "ingress": {"external": True, "targetPort": 8080, "allowInsecure": False}},
+                "template": {"scale": {"minReplicas": 1, "maxReplicas": 1}, "containers": [{
+                    "image": "inert-image", "resources": {"cpu": 0.5, "memory": "1Gi"},
+                    "env": [{"name": name, "value": value} for name, value in {
+                        "AI4IA_PRIVATE_RECOVERY_CANDIDATE": "true", "AI4IA_PRIVATE_COSMOS_REQUIRED": "true",
+                        "AI4IA_COSMOS_ENDPOINT": "https://cosmos-test.documents.azure.com:443/",
+                        "AI4IA_ENV": "prod", "AI4IA_AUTH_PROVIDER": "entra",
+                        "AI4IA_ENTRA_TENANT_ID": "tenant", "AI4IA_ENTRA_AUDIENCE": "audience",
+                    }.items()],
+                }]},
+            },
+        })
+        self.assertEqual(PREVIEW.scope_preview(raw, bound, params)["blockingReasons"], [])
+        for mutation in (
+            lambda after: after["properties"]["template"]["containers"][0]["resources"].update(cpu=1),
+            lambda after: after["properties"]["configuration"]["ingress"].update(allowInsecure=True),
+            lambda after: after["properties"]["template"]["containers"][0]["env"][2].update(value="https://other.documents.azure.com"),
+            lambda after: after["properties"]["template"]["containers"][0]["env"][-1].update(value="other-audience"),
+        ):
+            changed = deepcopy(raw)
+            mutation(changed["changes"][-1]["after"])
+            self.assertTrue(PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+
+    def test_web_cutover_can_only_change_to_the_observed_private_origin(self):
+        bound, raw, params = fixture()
+        bound.update(phase="private", apiOrigin="https://ca-api-private-test.synthetic.azurecontainerapps.io")
+        template = {"scale": {"minReplicas": 1, "maxReplicas": 3}, "containers": [{
+            "name": "web", "image": "same-image", "env": [
+                {"name": "API_BASE_URL", "value": "https://old.test"},
+                {"name": "API_PUBLIC_URL", "value": "https://old.test"},
+                {"name": "OTHER", "value": "unchanged"},
+            ],
+        }]}
+        after = deepcopy(template)
+        for row in after["containers"][0]["env"][:2]:
+            row["value"] = bound["apiOrigin"]
+        raw["changes"].append({
+            "resourceId": f"/subscriptions/{bound['subscription']}/resourceGroups/rg-ai4ia-test/providers/Microsoft.App/containerApps/ca-web-test",
+            "changeType": "Modify", "delta": [{"path": "properties.template.containers"}],
+            "before": {"properties": {"template": template}}, "after": {"properties": {"template": after}},
+        })
+        self.assertEqual(PREVIEW.scope_preview(raw, bound, params)["blockingReasons"], [])
+        after["containers"][0]["env"][0]["value"] = "https://wrong.test"
+        self.assertIn("web_voice_destination_drift", PREVIEW.scope_preview(raw, bound, params)["blockingReasons"])
+
     def test_scalar_renderer_preserves_defaults_and_refuses_unsupported_input(self):
         source = {"parameters": {"key": {"value": "${SECRET=}"}, "flag": {"value": "${FLAG=false}"}}}
         template = {"parameters": {"key": {"type": "securestring"}, "flag": {"type": "bool"},

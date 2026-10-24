@@ -128,6 +128,7 @@ class PrivateAdmissionTests(unittest.TestCase):
                     "AI4IA_PRIVATE_MIGRATION_PENDING": "true",
                     "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]",
                     "AI4IA_PRIVATE_COSMOS_ENDPOINT": "https://cosmos-test.documents.azure.com:443/",
+                    "AI4IA_PRIVATE_API_ORIGIN": "https://ca-api-private-test.synthetic.azurecontainerapps.io",
                 })
                 self.assertEqual(urls, ["https://ca-api-private-test.synthetic.azurecontainerapps.io"])
                 self.assertLessEqual(len(cloud.calls), 24)
@@ -156,6 +157,7 @@ class PrivateAdmissionTests(unittest.TestCase):
             "AI4IA_PRIVATE_MIGRATION_PENDING": "true",
             "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]",
             "AI4IA_PRIVATE_COSMOS_ENDPOINT": "https://cosmos-test.documents.azure.com:443/",
+            "AI4IA_PRIVATE_API_ORIGIN": "https://ca-api-private-test.synthetic.azurecontainerapps.io",
         })
 
     def test_arm_identity_key_case_is_not_a_different_identity(self):

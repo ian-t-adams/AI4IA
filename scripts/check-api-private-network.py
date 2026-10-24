@@ -155,7 +155,7 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
         require(selected == "candidate", "Stage and verify the private candidate before activation/cutover.")
         return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": PLACEHOLDER,
                 "AI4IA_PRIVATE_MIGRATION_PENDING": "true", "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]",
-                "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, **preserved}
+                "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, "AI4IA_PRIVATE_API_ORIGIN": "", **preserved}
     props = candidate["properties"]
     require(props["configuration"].get("activeRevisionsMode") == "Single",
             "Private API must retain Single revision mode.")
@@ -261,7 +261,7 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
     return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": image,
             "AI4IA_PRIVATE_MIGRATION_PENDING": "false" if completed else "true",
             "AI4IA_PRIVATE_EXECUTION_BLOCKERS": json.dumps(blockers, separators=(",", ":")),
-            "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, **preserved}
+            "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, "AI4IA_PRIVATE_API_ORIGIN": origin, **preserved}
 
 
 def main() -> int:

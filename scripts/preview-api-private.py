@@ -116,6 +116,7 @@ def context(env: dict[str, str], template: dict, params: dict) -> dict:
         "vnetPrefix": params["apiPrivateVnetPrefix"]["value"],
         "apiSubnetPrefix": params["apiPrivateSubnetPrefix"]["value"],
         "endpointSubnetPrefix": params["cosmosPrivateEndpointSubnetPrefix"]["value"],
+        "apiOrigin": env.get("AI4IA_PRIVATE_API_ORIGIN", ""),
     }
 
 
@@ -216,6 +217,7 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                 network = props.get("vnetConfiguration", {})
                 if (network.get("infrastructureSubnetId", "").casefold() != vnet + "/subnets/api"
                         or network.get("internal") is not False
+                        or props.get("publicNetworkAccess") != "Enabled"
                         or props.get("workloadProfiles") != [{"name": "Consumption", "workloadProfileType": "Consumption"}]):
                     errors.append("environment_network_drift")
             elif rid == endpoint:
@@ -245,16 +247,35 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                     errors.append("unstaged_api_create")
                 if env.get("AI4IA_PRIVATE_COSMOS_REQUIRED", {}).get("value") != "true":
                     errors.append("missing_private_readiness")
+                cosmos_target = env.get("AI4IA_COSMOS_ENDPOINT", {}).get("value")
+                if not isinstance(cosmos_target, str) or re.fullmatch(
+                    r"https://" + re.escape(binding["cosmosAccount"]) + r"\.documents\.azure\.com(?::443)?/?",
+                    cosmos_target,
+                ) is None:
+                    errors.append("api_cosmos_target_drift")
+                for name, expected in (
+                    ("AI4IA_ENV", "prod"), ("AI4IA_AUTH_PROVIDER", "entra"),
+                    ("AI4IA_ENTRA_TENANT_ID", params["entraTenantId"]["value"]),
+                    ("AI4IA_ENTRA_AUDIENCE", params["entraAudience"]["value"]),
+                ):
+                    if env.get(name, {}).get("value") != expected:
+                        errors.append("api_authentication_drift")
                 if (template.get("scale", {}).get("minReplicas") != 1
                         or template.get("scale", {}).get("maxReplicas") != 1
                         or template["containers"][0].get("image") != params["apiPrivateInitialImage"]["value"]
+                        or template["containers"][0].get("resources", {}).get("cpu") != 0.5
+                        or template["containers"][0].get("resources", {}).get("memory") != "1Gi"
                         or props.get("configuration", {}).get("activeRevisionsMode") != "Single"):
                     errors.append("candidate_image_or_scale_drift")
+                ingress = props.get("configuration", {}).get("ingress", {})
+                if (ingress.get("external") is not True or ingress.get("targetPort") != 8080
+                        or ingress.get("allowInsecure") is not False):
+                    errors.append("api_ingress_drift")
         elif kind == "Modify" and isinstance(before, dict) and isinstance(after, dict):
             paths = set(row["fields"])
             old_tags, new_tags = deepcopy(before.get("tags", {})), deepcopy(after.get("tags", {}))
-            old_tags.pop("SecurityControl", None)
-            tag_change_ok = old_tags == new_tags and "SecurityControl" not in new_tags
+            old_control = old_tags.pop("SecurityControl", None)
+            tag_change_ok = old_control in (None, "Ignore") and old_tags == new_tags and "SecurityControl" not in new_tags
             if paths and paths <= {"tags", "tags.SecurityControl"} and tag_change_ok:
                 continue
             if rid in app_ids and paths and all(path.startswith("properties.template") for path in paths):
@@ -273,6 +294,12 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                     right.get("scale", {}).pop("maxReplicas", None)
                 elif service == "web" and binding["phase"] == "private":
                     allowed = {"API_BASE_URL", "API_PUBLIC_URL"}
+                    before_env, after_env = env_rows(left), env_rows(right)
+                    expected_origin = binding.get("apiOrigin")
+                    if (not expected_origin or after_env.get("API_BASE_URL", {}).get("value") != expected_origin
+                            or (("API_PUBLIC_URL" in before_env or "API_PUBLIC_URL" in after_env)
+                                and after_env.get("API_PUBLIC_URL", {}).get("value") != expected_origin)):
+                        errors.append("web_voice_destination_drift")
                 for template in (left, right):
                     rows = env_rows(template)
                     template["containers"][0]["env"] = [rows[name] for name in sorted(rows) if name not in allowed]
