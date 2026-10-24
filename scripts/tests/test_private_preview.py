@@ -53,6 +53,61 @@ def fixture():
 
 
 class PreviewTests(unittest.TestCase):
+    def test_foundation_context_uses_actual_direct_module_parameter_contract(self):
+        api = json.loads(_compile(ROOT / "infra/modules/api.bicep").stdout)
+        network = json.loads(_compile(ROOT / "infra/modules/api-private-network.bicep").stdout)
+        prefix = f"/subscriptions/{ENV['AZURE_SUBSCRIPTION_ID']}/resourceGroups/rg-ai4ia-test/providers/"
+        defaults = {"string": "", "securestring": "secret-must-not-escape", "bool": False,
+                    "int": 0, "object": {}, "array": []}
+        values = {name: deepcopy(row.get("defaultValue", defaults[row["type"]]))
+                  for name, row in api["parameters"].items()}
+        values.update(environmentName="test", appEnvironment="prod", authProvider="entra",
+                      entraTenantId="tenant", entraAudience="audience", location="eastus2", tags={"owner": "test"},
+                      logAnalyticsWorkspaceId=prefix + "Microsoft.OperationalInsights/workspaces/log-ai4ia-test")
+        deployment = {"properties": {
+            "timestamp": "2026-10-24T00:00:00Z", "templateHash": "12345", "provisioningState": "Succeeded",
+            "parameters": {name: {"type": api["parameters"][name]["type"], "value": value}
+                           for name, value in values.items()},
+        }}
+        app = {
+            "id": prefix + "Microsoft.App/containerApps/ca-api-test", "location": "eastus2",
+            "tags": {"owner": "test"}, "identity": {}, "properties": {
+                "managedEnvironmentId": prefix + "Microsoft.App/managedEnvironments/old",
+                "latestReadyRevisionName": "ca-api-test--ready", "latestRevisionName": "ca-api-test--ready",
+                "configuration": {"secrets": []},
+                "template": {"containers": [{"name": "api",
+                    "image": "example.azurecr.io/ai4ia/api-test@sha256:" + "a" * 64,
+                    "env": [{"name": "AI4IA_COSMOS_ENDPOINT", "value": "https://cosmos-test.documents.azure.com:443/"}],
+                }], "scale": {"minReplicas": 1, "maxReplicas": 3}},
+            },
+        }
+        env = {**ENV, "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40,
+               "AZURE_TENANT_ID": "tenant", "AI4IA_PRIVATE_STEP": "foundation",
+               "AI4IA_PRIVATE_COSMOS_ENDPOINT": "https://cosmos-test.documents.azure.com:443/"}
+        calls = []
+        def read(args):
+            calls.append(args)
+            source = deployment if args[:3] == ["deployment", "group", "show"] else app
+            if args[:3] == ["containerapp", "revision", "show"]:
+                return app["properties"]["template"]
+            return jmespath.search(args[args.index("--query") + 1], source)
+        with patch.object(PREVIEW, "compile_module", side_effect=lambda name: {
+            "api.bicep": api, "api-private-network.bicep": network,
+        }[name]) as compiled:
+            template, params, bound, baseline, expected = PREVIEW.compiled_context(env, read)
+        self.assertEqual(template, network)
+        self.assertEqual(set(params), set(network["parameters"]))
+        self.assertEqual(expected["apiAuthProvider"], {"value": "entra"})
+        self.assertEqual(bound["packet"], "foundation")
+        self.assertIsNone(baseline)
+        self.assertEqual([call.args[0] for call in compiled.call_args_list],
+                         ["api.bicep", "api-private-network.bicep"])
+        self.assertNotIn("secret-must-not-escape", json.dumps((params, bound, expected)))
+        projected = next(args[-1] for args in calls if args[-1].startswith("properties.parameters."))
+        for name, definition in api["parameters"].items():
+            if definition["type"] == "securestring":
+                self.assertNotIn(name + ".value", projected)
+
     def test_foundation_is_exactly_its_six_resources_not_the_root(self):
         bound, raw, params = fixture()
         bound["packet"] = "foundation"

@@ -595,7 +595,7 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
     api_template = compile_module("api.bicep")
     api_meta, api_values = read_record(read, api_template, subscription, group, "api")
     require(api_values.get("environmentName") == environment and api_values.get("appEnvironment") == "prod"
-            and api_values.get("apiAuthProvider") == "entra" and api_values.get("entraTenantId") == env.get("AZURE_TENANT_ID"),
+            and api_values.get("authProvider") == "entra" and api_values.get("entraTenantId") == env.get("AZURE_TENANT_ID"),
             "Existing API inputs do not match the approved production boundary.")
     old_api = app_snapshot(env, api_name(environment, "legacy"), read)
     old_rows = env_rows(old_api["properties"]["template"])
@@ -670,7 +670,8 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
             "tags": baseline["tags"],
             "webImage": baseline["properties"]["template"]["containers"][0]["image"],
         })
-    expected = {name: {"value": api_values[name]} for name in ("appEnvironment", "apiAuthProvider", "entraTenantId", "entraAudience")}
+    expected = {name: {"value": api_values[name]} for name in ("appEnvironment", "entraTenantId", "entraAudience")}
+    expected["apiAuthProvider"] = {"value": api_values["authProvider"]}
     expected.update({
         "location": {"value": old_api["location"]},
         "apiPrivateVnetPrefix": {"value": env["AI4IA_API_PRIVATE_VNET_PREFIX"]},

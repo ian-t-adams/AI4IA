@@ -216,6 +216,21 @@ class RecoveryCompiledTests(unittest.TestCase):
     def test_api_compilation_retains_exact_secret_and_resource_boundary(self):
         self.assert_api_boundary(self.modules["api"])
 
+    def test_compiled_speech_key_keeps_both_feature_gates_and_default_off_inheritance(self):
+        variables = self.modules["api"]["variables"]
+        self.assertEqual(
+            variables["hasSpeechVoiceLiveGatewayKey"],
+            "[and(and(parameters('realtimeEnabled'), parameters('speechVoiceLiveEnabled')), "
+            "or(not(empty(parameters('speechVoiceLiveGatewayApiKey'))), "
+            "contains(variables('inheritedSecretNames'), 'speech-voice-live-gateway-api-key')))]",
+        )
+        self.assertEqual(
+            variables["inheritedSecretNames"],
+            "[if(variables('inheritsSecrets'), map(parameters('recoverySecretDescriptors'), "
+            "lambda('secret', lambdaVariables('secret').name)), createArray())]",
+        )
+        self.assertEqual(variables["inheritsSecrets"], "[not(equals(parameters('recoverySource'), 'none'))]")
+
     def test_boundary_assertions_reject_removed_guards(self):
         for mutate in (
             lambda data: data["variables"].update(inheritsSecrets="[true()]"),
