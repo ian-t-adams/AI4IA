@@ -2073,6 +2073,12 @@ private resources, and Cosmos `publicNetworkAccess` is **Disabled in every
 phase**. Never deploy a public-network restoration or policy exception to work
 around this boundary. The original API without VNet integration cannot reach
 that account. A green source PR does not mean this incident is resolved.
+One explicit migration authorization can cover candidate, drain/activation and
+web cutover **conditionally on the recorded proofs below**; three separate human
+round trips are not required. Phase readiness never supplies permission. There
+is currently no migration authorization, so all writes remain held. Set the
+approved candidate phase/prefixes before the first approved merge/deploy; an
+unset legacy default neither opens Cosmos nor claims restoration.
 
 ### Topology and protected state
 
@@ -2117,7 +2123,14 @@ Do not run the following transitions merely because the source exists:
 
 1. **Candidate approval.** Obtain explicit approval for exact resources/CIDRs,
    incremental what-if and cost. Set `AI4IA_DEPLOY_VERIFY_CANARY=false`: this
-   recovery has no model-call budget. `candidate` creates the private path and
+   recovery has no model-call budget. Nonlegacy token steps still acquire the
+   existing deploy identity's API token: the verifier uses
+   `--skip-canary --decision-options`, requiring one authenticated bounded GET
+   with a nonempty catalog-backed result. A missing token, 403/503, empty or
+   malformed result fails, not skips. This replaces only the model/session
+   canary: exact-image rollout, health, web/proxy and domain checks still run,
+   followed by private network/runtime/phase/worker readback. No role or secret
+   is added. `candidate` creates the private path and
    API, leaving web/voice pointed at the original API. The inert initial image
    has no workers; the existing release pipeline then scans/signs/verifies and
    deploys its exact API digest. No `--all`, mutable-tag or local-rebuild shortcut.
@@ -2125,8 +2138,10 @@ Do not run the following transitions merely because the source exists:
    Actual `/health/ready` resolves the canonical Cosmos account to private VNet
    addresses within the existing deadline, then performs the unchanged
    canonical-store check. Existing deletion/startup prerequisites still fail
-   closed. Check authenticated `/api/decisions/options` as a legitimate current
-   owner without pressing Run. Retain exact signed release and stable serving
+   closed.    The wired options check proves the existing deploy identity's authenticated
+   API access, not a human browser session. Also check authenticated
+   `/api/decisions/options` as a legitimate current owner without pressing Run.
+   Retain exact signed release and stable serving
    revision/image evidence. Anonymous readiness is not that owner acceptance.
 3. **Activation approval.** Explicitly drain/deactivate legacy API revisions
    using the existing approved operator path. Allow in-flight cleanup to finish;
@@ -2141,6 +2156,8 @@ Do not run the following transitions merely because the source exists:
    no voice/model session. Update the existing `AI4IA_UPTIME_API_URL` repository
    variable to the new API FQDN; Pages and uptime share this explicit target, so
    retained old `api` tags cannot silently select the wrong app.
+   After completed cutover, a separately authorized routine release may restore
+   the ordinary model canary configuration; the recovery itself grants no calls.
 
 Candidate code allows only health GETs and authenticated Decision-options GETs;
 it refuses other HTTP routes/methods and all WebSockets. Startup document

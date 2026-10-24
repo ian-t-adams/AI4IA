@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -17,6 +19,11 @@ SPEC = importlib.util.spec_from_file_location("private_network_check", ROOT / "s
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+VERIFY_SPEC = importlib.util.spec_from_file_location("private_postdeploy_test", ROOT / "scripts/post-deploy-verify.py")
+assert VERIFY_SPEC and VERIFY_SPEC.loader
+VERIFIER = importlib.util.module_from_spec(VERIFY_SPEC)
+sys.modules[VERIFY_SPEC.name] = VERIFIER
+VERIFY_SPEC.loader.exec_module(VERIFIER)
 SUB = "11111111-1111-4111-8111-111111111111"
 SCOPE = f"/subscriptions/{SUB}/resourceGroups/rg-ai4ia-test/providers"
 VNET = SCOPE + "/Microsoft.Network/virtualNetworks/vnet-ai4ia-test-api-private"
@@ -200,6 +207,10 @@ class PrivateAdmissionTests(unittest.TestCase):
         self.assertEqual(MODULE.admission(
             {**ENV, "AI4IA_API_NETWORK_PHASE": "private"}, cloud.read, lambda _: True,
         )["AZURE_API_APP_NAME"], "ca-api-private-test")
+        self.assertEqual(MODULE.admission(
+            {**ENV, "AI4IA_API_NETWORK_PHASE": "private", "AI4IA_DEPLOY_VERIFY_CANARY": "true"},
+            cloud.read, lambda _: True,
+        )["AZURE_API_APP_NAME"], "ca-api-private-test")
         for phase in ("activate", "candidate"):
             with self.assertRaisesRegex(ValueError, "undo a completed cutover"):
                 MODULE.admission({**ENV, "AI4IA_API_NETWORK_PHASE": phase}, cloud.read, lambda _: True)
@@ -238,6 +249,47 @@ class PrivateAdmissionTests(unittest.TestCase):
         hooks = (ROOT / "azure.yaml").read_text()
         self.assertIn("resourceName: ${AZURE_API_APP_NAME}", hooks)
         self.assertEqual(hooks.count("scripts/check-api-private-network.py --azd-env"), 2)
+        self.assertIn('recovery+=(--decision-options)', workflow)
+        self.assertIn('--skip-canary "${recovery[@]}"', workflow)
+        self.assertEqual(workflow.count(
+            'if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ] && [ "${AI4IA_API_NETWORK_PHASE:-legacy}" = "legacy" ]; then'
+        ), 2)
+
+
+class NonbillableOptionsTests(unittest.TestCase):
+    def test_real_postdeploy_canary_branch_requires_auth_and_never_calls_a_model(self):
+        args = VERIFIER.build_parser().parse_args([
+            "verify", "--state", "unused.json", "--skip-canary", "--decision-options",
+        ])
+        catalog = json.loads((ROOT / "infra/models.json").read_text())
+        model_id = next(row["name"] for row in catalog["catalog"] if row["category"] == "decision")
+        payload = {"models": [{"id": model_id, "displayName": "Decision", "residencies": ["US"]}]}
+        with patch.dict(os.environ, {**ENV, args.token_env: "synthetic-token"}), \
+             patch.object(VERIFIER, "emit"), \
+             patch.object(VERIFIER, "run_canary", side_effect=AssertionError("No model/session work allowed")), \
+             patch.object(VERIFIER, "http_request") as http:
+            http.return_value = VERIFIER.HttpOutcome(status=200, body=json.dumps(payload).encode())
+            self.assertEqual(VERIFIER._canary_failures(args, "https://candidate.test"), [])
+            self.assertEqual(http.call_args.args, ("GET", "https://candidate.test/api/decisions/options"))
+            self.assertEqual(http.call_args.kwargs["headers"], {"Authorization": "Bearer synthetic-token"})
+            self.assertEqual(http.call_args.kwargs["body_limit"], 8192)
+            for status, document in ((503, payload), (403, payload), (401, payload), (200, {"models": []}),
+                                     (200, {"models": [{"id": "unknown"}]}), (200, {"notModels": []})):
+                with self.subTest(status=status, document=document):
+                    http.return_value = VERIFIER.HttpOutcome(status=status, body=json.dumps(document).encode())
+                    self.assertTrue(VERIFIER._canary_failures(args, "https://candidate.test"))
+            http.reset_mock()
+            os.environ[args.token_env] = ""
+            self.assertTrue(VERIFIER._canary_failures(args, "https://candidate.test"))
+            http.assert_not_called()
+            args.skip_canary = False
+            self.assertTrue(VERIFIER._canary_failures(args, "https://candidate.test"))
+            http.assert_not_called()
+            args.skip_canary = True
+            os.environ[args.token_env] = "synthetic-token"
+            os.environ["AI4IA_API_NETWORK_PHASE"] = "legacy"
+            self.assertTrue(VERIFIER._canary_failures(args, "https://candidate.test"))
+            http.assert_not_called()
 
 
 if __name__ == "__main__":

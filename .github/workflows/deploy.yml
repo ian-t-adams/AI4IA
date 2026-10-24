@@ -1134,7 +1134,7 @@ jobs:
         id: canary_preflight
         run: |
           set -euo pipefail
-          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ] && [ "${AI4IA_API_NETWORK_PHASE:-legacy}" = "legacy" ]; then
             echo "::warning::AI4IA_DEPLOY_VERIFY_CANARY=false, so this deploy will not be proven end to end. The rollout, health, web, proxy and custom-domain assertions still run, but nothing will exercise SimpleL7Proxy -> APIM -> Foundry."
             exit 0
           fi
@@ -1225,7 +1225,7 @@ jobs:
         id: canary_token
         run: |
           set -euo pipefail
-          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ] && [ "${AI4IA_API_NETWORK_PHASE:-legacy}" = "legacy" ]; then
             echo "Canary disabled; no token needed."
             exit 0
           fi
@@ -1286,12 +1286,19 @@ jobs:
           # read as "the deploy did not replace the container" and rolled back a
           # healthy release. See scripts/post-deploy-verify.py.
           if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+            recovery=()
+            if [ "${AI4IA_API_NETWORK_PHASE:-legacy}" != "legacy" ]; then
+              recovery+=(--decision-options)
+            fi
             python scripts/post-deploy-verify.py verify \
               --state "${RUNNER_TEMP}/ai4ia-deploy-state.json" \
               --expect-image "web=${WEB_IMAGE}" \
               --expect-image "api=${API_IMAGE}" \
               --expect-image "proxy=${PROXY_IMAGE}" \
-              --skip-canary
+              --skip-canary "${recovery[@]}"
+            if [ "${AI4IA_API_NETWORK_PHASE:-legacy}" != "legacy" ]; then
+              python scripts/check-api-private-network.py
+            fi
             exit 0
           fi
           python scripts/post-deploy-verify.py verify \

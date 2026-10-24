@@ -93,7 +93,7 @@ def admission(env, read=cli, ready=prove_ready):
     if selected == "legacy":
         require(candidate is None, "Private API exists; refuse an implicit return to the legacy target.")
         return {"AZURE_API_APP_NAME": target}
-    require(env.get("AI4IA_DEPLOY_VERIFY_CANARY") == "false",
+    require(selected == "private" or env.get("AI4IA_DEPLOY_VERIFY_CANARY") == "false",
             "Private recovery needs explicit no-model-call deployment acceptance (canary=false).")
     expected_vnet = f"/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.Network/virtualNetworks/vnet-{workload}-{environment}-api-private"
     networks = read(["network", "vnet", "list", "--subscription", subscription, "--query",
@@ -146,6 +146,9 @@ def admission(env, read=cli, ready=prove_ready):
     require(web_values.get("API_BASE_URL") in allowed_origins
             and web_values.get("API_PUBLIC_URL", web_values.get("API_BASE_URL")) == web_values.get("API_BASE_URL"),
             "Web/voice source target is unknown or this phase would undo a completed cutover.")
+    if selected == "private" and web_values.get("API_BASE_URL") == legacy_origin:
+        require(env.get("AI4IA_DEPLOY_VERIFY_CANARY") == "false",
+                "Initial private cutover requires nonbillable acceptance, not a model canary.")
     if candidate is None:
         require(selected == "candidate", "Stage and verify the private candidate before activation/cutover.")
         return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": PLACEHOLDER, **preserved}
