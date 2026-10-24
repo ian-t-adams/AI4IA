@@ -70,6 +70,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
+from _api_private import PHASES, api_name, phase
 from _image_refs import SERVICES, ImageInputError as VerifyInputError, parse_expected_images
 from _canary_contract import (
     CANARY_PROMPT as CANARY_PROMPT, CANARY_TITLE as CANARY_TITLE,
@@ -579,8 +580,6 @@ def resource_group_name(workload: str | None, environment: str) -> str:
 
 
 def app_names(environment: str) -> dict[str, str]:
-    from _api_private import api_name, phase
-
     names = {svc: f"{APP_NAME_PREFIX[svc]}{environment}" for svc in SERVICES}
     names["api"] = api_name(environment, phase(os.environ.get("AI4IA_API_NETWORK_PHASE") or "legacy"))
     return names
@@ -2005,8 +2004,6 @@ def _canary_failures(
     args: argparse.Namespace, api_base: str | None, deadline: Deadline | None = None
 ) -> list[str]:
     if getattr(args, "decision_options", False):
-        from _api_private import PHASES
-
         if os.environ.get("AI4IA_API_NETWORK_PHASE") not in PHASES[1:]:
             return ["private recovery: authenticated options requires an explicit private phase"]
         if not args.skip_canary:

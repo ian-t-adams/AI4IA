@@ -13,17 +13,18 @@ from unittest.mock import patch
 from scripts._api_private import api_name, validate_prefixes
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
 
 SPEC = importlib.util.spec_from_file_location("private_network_check", ROOT / "scripts/check-api-private-network.py")
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+with patch("sys.path", [str(ROOT / "scripts"), *sys.path]):
+    SPEC.loader.exec_module(MODULE)
 VERIFY_SPEC = importlib.util.spec_from_file_location("private_postdeploy_test", ROOT / "scripts/post-deploy-verify.py")
 assert VERIFY_SPEC and VERIFY_SPEC.loader
 VERIFIER = importlib.util.module_from_spec(VERIFY_SPEC)
 sys.modules[VERIFY_SPEC.name] = VERIFIER
-VERIFY_SPEC.loader.exec_module(VERIFIER)
+with patch("sys.path", [str(ROOT / "scripts"), *sys.path]):
+    VERIFY_SPEC.loader.exec_module(VERIFIER)
 SUB = "11111111-1111-4111-8111-111111111111"
 SCOPE = f"/subscriptions/{SUB}/resourceGroups/rg-ai4ia-test/providers"
 VNET = SCOPE + "/Microsoft.Network/virtualNetworks/vnet-ai4ia-test-api-private"
