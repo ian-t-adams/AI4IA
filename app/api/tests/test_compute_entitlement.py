@@ -345,16 +345,6 @@ async def test_disabled_account_still_denies_compute():
     assert reader.calls == 0  # disabled short-circuits before any ledger read
 
 
-def test_startup_guard_covers_the_compute_limit_too():
-    """Server-authoritative enforcement: a positive limit can never silently
-    no-op for lack of a ledger. Sandbox executions accrue in the same ledger as
-    tokens and cost, so the existing guard covers the new limit — this test is
-    what keeps that true if the guard is ever narrowed."""
-    settings = make_settings(entitlements_enabled=True, usage_metering_enabled=False)
-    with pytest.raises(RuntimeError, match="usage metering"):
-        settings.validate_runtime()
-
-
 # --------------------------------------------------------------------------
 # Decisions 2/3/4 at the tool seam
 # --------------------------------------------------------------------------

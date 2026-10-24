@@ -22,7 +22,6 @@ from ai4ia_api.citations import (
     attest_message,
     content_digest,
     parse_citation_tokens,
-    unverified_count,
     verify_citations,
 )
 from ai4ia_api.library.blob_store import InMemoryBlobStore
@@ -208,8 +207,6 @@ def test_real_citation_verifies_and_the_same_answer_with_a_fake_id_does_not():
     assert real[0].filename == "q3.pdf"
     assert [c.status for c in fake] == [CitationStatus.unverified]
     assert fake[0].documentId is None
-    assert unverified_count(real) == 0
-    assert unverified_count(fake) == 1
 
 
 def test_repeated_citation_of_one_span_is_counted_once_with_occurrences():

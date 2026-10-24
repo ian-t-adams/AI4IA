@@ -1080,12 +1080,3 @@ def _truncate_for_payload(text: str, limit: int = _MAX_STEP_TEXT_BYTES) -> str:
         else:
             high = middle - 1
     return text[:low] + _TRUNCATION_MARKER
-
-
-def _loads(raw: str) -> Any:
-    import json
-
-    try:
-        return json.loads(raw)
-    except (ValueError, TypeError):
-        return None

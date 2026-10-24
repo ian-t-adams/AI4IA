@@ -428,8 +428,7 @@ def test_purge_chunks_drops_the_count_but_not_the_document(client):
     assert client.get(f"/api/library/documents/{doc.id}").status_code == 200
 
 
-def test_reindex_all_reports_per_document_outcomes(client):
-    """One unrebuildable document must not strand the rest of the sweep."""
+def test_reindex_all_skips_documents_that_are_not_ready(client):
     owner = _uid(client)
     _seed(client, owner)  # stored, not ready -> skipped
 

@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Protocol
@@ -303,10 +303,3 @@ def attest_message(message: AttestableMessage) -> AttestableMessage:
     citations = verify_citations(message.content, sources)
     message.citations = citations or None
     return message
-
-
-def unverified_count(citations: Iterable[MessageCitation] | None) -> int:
-    """How many distinct citations named a span this turn never retrieved."""
-    if not citations:
-        return 0
-    return sum(1 for c in citations if c.status is CitationStatus.unverified)
