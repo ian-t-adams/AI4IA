@@ -63,8 +63,14 @@ def deployment_operation(env: Mapping[str, str], *, pending: bool, blocked: bool
         raise ValueError("Configure the reviewed private migration phase before releasing.")
     operation = env.get("AI4IA_RELEASE_OPERATION") or "auto"
     event = env.get("GITHUB_EVENT_NAME")
-    if event not in ("push", "workflow_dispatch") or operation not in ("auto", "preview", "deploy"):
+    if event not in ("push", "workflow_dispatch") or operation not in ("auto", "preview", "deploy", "image"):
         raise ValueError("Unknown release operation or event.")
+    if operation == "image":
+        if (event != "workflow_dispatch" or selected != "candidate" or blocked
+                or env.get("AI4IA_RELEASE_PROVISION") != "false"
+                or env.get("AI4IA_PRIVATE_PREVIEW_BINDING") or env.get("AI4IA_PRIVATE_IMAGE_RECEIPT")):
+            raise ValueError("API image preparation requires an explicit registry-only candidate operation.")
+        return "image"
     if operation == "preview":
         return "preview"
     if operation == "deploy":

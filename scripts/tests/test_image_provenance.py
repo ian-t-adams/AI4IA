@@ -8,6 +8,7 @@ remain synthetic: these tests establish local policy, not cryptographic proof.
 from __future__ import annotations
 
 import base64
+import argparse
 import copy
 import hashlib
 import io
@@ -49,6 +50,7 @@ IMAGES = {
     for service, character in (("web", "a"), ("api", "b"), ("proxy", "c"))
 }
 ENVIRONMENT = {
+    "AI4IA_RELEASE_KIND": "ordinary",
     "GITHUB_REPOSITORY": REPOSITORY,
     "GITHUB_SHA": COMMIT,
     "GITHUB_REF": "refs/heads/main",
@@ -316,8 +318,126 @@ def tool_stub(directory: Path, tool: str, implementation: Path) -> None:
 
 
 @unittest.skipIf(BASH is None, "bash is unavailable on this machine")
+class PrivateApiProofTests(unittest.TestCase):
+    def fixture(self):
+        env = {**ENVIRONMENT, "GITHUB_RUN_ID": "987654321",
+               "GITHUB_EVENT_NAME": "workflow_dispatch", "AI4IA_RELEASE_KIND": "preview"}
+        document = spdx(IMAGES["api"])
+        receipt = {
+            "schemaVersion": 1, "operation": "private-api-image",
+            "repository": REPOSITORY, "sourceCommit": COMMIT,
+            "runId": ENVIRONMENT["GITHUB_RUN_ID"], "runAttempt": "1", "image": IMAGES["api"],
+            "sbomCanonicalSha256": hashlib.sha256(provenance.encode(document)).hexdigest(),
+        }
+        proofs = {kind: verified(IMAGES["api"], kind, document) for kind in provenance.PREDICATES}
+        for rows in proofs.values():
+            rows[0]["verificationResult"]["signature"]["certificate"]["buildTrigger"] = "workflow_dispatch"
+        return env, receipt, proofs
+
+    def consume(self, env, receipt, proofs):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[-1] == "--version":
+                return f"gh version {provenance.GH_VERSION} (test)\n".encode()
+            if "--bundle-from-oci" not in command:
+                raise provenance.ProvenanceError("OCI-only producer has no discoverable GitHub proof")
+            predicate = command[command.index("--predicate-type") + 1]
+            kind = next(key for key, value in provenance.PREDICATES.items() if value == predicate)
+            return json.dumps(proofs[kind]).encode()
+
+        with patch.object(provenance.shutil, "which", return_value="gh"), \
+                patch.object(provenance, "run_bounded", side_effect=run), \
+                patch.object(provenance, "validate_verification", wraps=provenance.validate_verification) as shared:
+            result = provenance.consume_private_api(receipt, env)
+            self.assertEqual(shared.call_count, 2)
+        self.assertEqual(len(calls), 3)
+        for command in calls[1:]:
+            self.assertNotIn("--bundle", command)
+            self.assertIn("--bundle-from-oci", command)
+            self.assertIn("--deny-self-hosted-runners", command)
+            self.assertEqual(command[command.index("--source-digest") + 1], COMMIT)
+            self.assertEqual(command[command.index("--cert-identity") + 1], WORKFLOW_ID)
+        return result
+
+    def test_cross_run_uses_shared_identity_and_predicate_verification(self):
+        env, receipt, proofs = self.fixture()
+        result = self.consume(env, receipt, proofs)
+        self.assertEqual(result["receipt"], receipt)
+        self.assertEqual(set(result["statements"]), set(provenance.PREDICATES))
+
+    def test_oci_only_producer_requires_registry_retrieval_without_changing_local_bundles(self):
+        env, receipt, proofs = self.fixture()
+        self.consume(env, receipt, proofs)
+        build_command = provenance.verify_command
+        def missing_selector(*args):
+            return [value for value in build_command(*args) if value != "--bundle-from-oci"]
+        with patch.object(provenance, "verify_command", side_effect=missing_selector):
+            with self.assertRaisesRegex(provenance.ProvenanceError, "OCI-only"):
+                self.consume(env, receipt, proofs)
+        expected = provenance.identity(ENVIRONMENT)
+        local = build_command("gh", IMAGES["api"], Path("local-bundle.json"), "sbom", expected)
+        self.assertIn("--bundle", local)
+        self.assertEqual(local[local.index("--bundle") + 1], "local-bundle.json")
+        self.assertNotIn("--bundle-from-oci", local)
+
+    def test_wrong_producer_ref_workflow_digest_or_missing_evidence_refuses(self):
+        env, receipt, proofs = self.fixture()
+        self.consume(env, receipt, proofs)
+        for field, value in (
+            ("runInvocationURI", INVOCATION.replace("/attempts/1", "/attempts/2")),
+            ("sourceRepositoryRef", "refs/heads/other"),
+            ("sourceRepositoryDigest", "f" * 40),
+            ("sourceRepositoryURI", "https://github.com/other/repo"),
+            ("buildConfigURI", WORKFLOW_ID.replace("deploy.yml", "other.yml")),
+            ("buildTrigger", "push"), ("runnerEnvironment", "self-hosted"),
+        ):
+            altered = copy.deepcopy(proofs)
+            altered["sbom"][0]["verificationResult"]["signature"]["certificate"][field] = value
+            with self.subTest(field=field), self.assertRaises(provenance.ProvenanceError):
+                self.consume(env, receipt, altered)
+        for rows in ([], proofs["sbom"] * 2, [{"verificationResult": {"signature": None}}]):
+            with self.assertRaises(provenance.ProvenanceError):
+                self.consume(env, receipt, {**proofs, "sbom": rows})
+        for update in (
+            {"image": IMAGES["api"].replace("b" * 64, "d" * 64)},
+            {"sbomCanonicalSha256": "e" * 64}, {"sourceCommit": "f" * 40},
+            {"runId": env["GITHUB_RUN_ID"]}, {"schemaVersion": True},
+        ):
+            with self.subTest(update=update), self.assertRaises(provenance.ProvenanceError):
+                self.consume(env, {**receipt, **update}, proofs)
+        with self.assertRaises(provenance.ProvenanceError):
+            self.consume({**env, "GITHUB_EVENT_NAME": "push"}, receipt, proofs)
+
+    def test_inventory_fingerprint_is_not_derived_from_consumer_response(self):
+        env, receipt, proofs = self.fixture()
+        self.consume(env, receipt, proofs)
+        proofs["sbom"][0]["verificationResult"]["statement"]["predicate"]["packages"][-1]["versionInfo"] = "changed"
+        with self.assertRaises(provenance.ProvenanceError):
+            self.consume(env, receipt, proofs)
+
+    def test_api_only_is_explicit_and_cannot_narrow_an_ordinary_release(self):
+        args = argparse.Namespace(expect_image=[f"api={IMAGES['api']}"], private_api=False)
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.subjects(args, ENVIRONMENT)
+        args.private_api = True
+        env = {**ENVIRONMENT, "AI4IA_RELEASE_KIND": "image",
+               "AI4IA_API_NETWORK_PHASE": "candidate", "GITHUB_EVENT_NAME": "workflow_dispatch"}
+        manifest = provenance.subjects(args, env)
+        self.assertIs(manifest["privateApiImage"], True)
+        self.assertEqual(manifest["images"], {"api": IMAGES["api"]})
+        for update in ({"AI4IA_RELEASE_KIND": "ordinary"}, {"GITHUB_EVENT_NAME": "push"},
+                       {"AI4IA_API_NETWORK_PHASE": "private"}):
+            with self.assertRaises(provenance.ProvenanceError):
+                provenance.subjects(args, {**env, **update})
+        args.expect_image.extend([f"web={IMAGES['web']}", f"proxy={IMAGES['proxy']}"])
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.subjects(args, env)
+
+
 class ReleaseGateBehaviorTests(unittest.TestCase):
-    def flow(self, *, change=None, overrides=None, missing_bundle="", after_verify=""):
+    def flow(self, *, change=None, overrides=None, missing_bundle="", after_verify="", private_api=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixture = {
@@ -326,10 +446,16 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
                 } for service, image in IMAGES.items()
             }
             documents = {service: spdx(image) for service, image in IMAGES.items()}
+            if private_api:
+                for row in fixture["api"].values():
+                    row[0]["verificationResult"]["signature"]["certificate"]["buildTrigger"] = "workflow_dispatch"
             if change:
                 change(fixture, documents)
             (root / "images.json").write_text(json.dumps(IMAGES), encoding="utf-8")
             env = {**os.environ, **ENVIRONMENT}
+            if private_api:
+                env.update(AI4IA_RELEASE_KIND="image", AI4IA_API_NETWORK_PHASE="candidate",
+                           GITHUB_EVENT_NAME="workflow_dispatch")
             env.update(
                 RUNNER_TEMP=root.as_posix(), FAKE_ROOT=str(root),
                 GITHUB_OUTPUT=str(root / "outputs"), GITHUB_STEP_SUMMARY=str(root / "summary"),
@@ -365,9 +491,13 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
             # MSYS prepends its own tools at shell startup; prepend the stubs
             # afterwards so an installed curl/gh/azd cannot escape the fixture.
             run = f'export PATH="$(cd {shlex.quote(bin_dir.as_posix())} && pwd):$PATH"\n'
-            run += "\n".join(_step(name)["run"] for name in (PREPARE, GENERATE, VERIFY))
-            run += '\nIMAGE_PROOF_SHA256="$(sed -n \'s/^proof_sha256=//p\' "$GITHUB_OUTPUT")"\n'
-            run += after_verify + "\n" + _step(DEPLOY_STEP)["run"]
+            if private_api:
+                run += "set -euo pipefail\n"
+                run += "\n".join("(\n" + _step(name)["run"] + "\n)" for name in (PREPARE, GENERATE, VERIFY))
+            else:
+                run += "\n".join(_step(name)["run"] for name in (PREPARE, GENERATE, VERIFY))
+                run += '\nIMAGE_PROOF_SHA256="$(sed -n \'s/^proof_sha256=//p\' "$GITHUB_OUTPUT")"\n'
+                run += after_verify + "\n" + _step(DEPLOY_STEP)["run"]
             script = root / "release.sh"
             script.write_text(run, encoding="utf-8", newline="\n")
             result = subprocess.run([BASH, str(script)], cwd=ROOT, env=env,
@@ -402,6 +532,27 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
         self.assertEqual(proof["images"], IMAGES)
         self.assertEqual(set(proof["files"]), set(provenance.evidence_names()))
         self.assertRegex(outputs["proof_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_explicit_api_producer_runs_actual_step_bodies_without_other_images_or_deploy(self):
+        result, calls, outputs, proof = self.flow(private_api=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        scans = [call for call in calls if call["tool"] == "trivy"]
+        verifications = [call for call in calls if call["tool"] == "gh" and call["args"][0] == "attestation"]
+        self.assertEqual(len(scans), 1)
+        self.assertEqual(len(verifications), 2)
+        self.assertFalse(any(call["tool"] == "azd" for call in calls))
+        self.assertIs(proof["privateApiImage"], True)
+        self.assertEqual(proof["images"], {"api": IMAGES["api"]})
+        self.assertEqual(set(proof["files"]), set(provenance.evidence_names(("api",))))
+        receipt = json.loads(outputs["private_api_receipt"])
+        self.assertEqual(receipt["image"], IMAGES["api"])
+        self.assertEqual(receipt["runId"], ENVIRONMENT["GITHUB_RUN_ID"])
+        self.assertEqual(receipt["sbomCanonicalSha256"],
+                         hashlib.sha256(provenance.encode(spdx(IMAGES["api"]))).hexdigest())
+        result, calls, outputs, proof = self.flow(private_api=True, missing_bundle="API_SBOM_BUNDLE")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("private_api_receipt", outputs)
+        self.assertIsNone(proof)
 
     def test_each_subject_and_predicate_mismatch_denies_before_any_deploy(self):
         for kind in ("provenance", "sbom"):
@@ -701,7 +852,10 @@ class ImageAttestationWorkflowTests(unittest.TestCase):
                 else:
                     self.assertNotIn("sbom-path", inputs)
                 self.assertFalse(set(inputs) & {"subject-path", "subject-checksums", "predicate", "predicate-path"})
-                self.assertEqual(step["if"], "${{ steps.execution.outputs.allowed == 'true' }}")
+                gate = "steps.execution.outputs.allowed == 'true'"
+                if service == "api":
+                    gate += " || steps.image_execution.outputs.allowed == 'true'"
+                self.assertEqual(step["if"], "${{ " + gate + " }}")
                 self.assertNotIn("continue-on-error", step)
                 self.assertLess(_step_index(GENERATE), _step_index(step["name"]))
                 self.assertLess(_step_index(step["name"]), _step_index(VERIFY))
@@ -718,13 +872,16 @@ class ImageAttestationWorkflowTests(unittest.TestCase):
         for name in (PREPARE, GENERATE, VERIFY, DEPLOY_STEP):
             step = _step(name)
             self.assertNotIn("continue-on-error", step)
-            self.assertEqual(step["if"], "${{ steps.execution.outputs.allowed == 'true' }}")
+            gate = "steps.execution.outputs.allowed == 'true'"
+            if name != DEPLOY_STEP:
+                gate += " || steps.image_execution.outputs.allowed == 'true'"
+            self.assertEqual(step["if"], "${{ " + gate + " }}")
             self.assertTrue(step["run"].startswith("set -euo pipefail\n"))
         deploy = _step(DEPLOY_STEP)["run"]
         self.assertLess(deploy.index("verify-image-provenance.py authorize"), deploy.index("azd deploy "))
         artifact = _step("Retain production image evidence")
         self.assertEqual(artifact["if"],
-                         "${{ steps.execution.outputs.allowed == 'true' && (always() && steps.subjects.outcome == 'success') }}")
+                         "${{ (steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true') && (always() && steps.subjects.outcome == 'success') }}")
         self.assertEqual(artifact["with"]["retention-days"], 30)
         self.assertEqual(artifact["with"]["if-no-files-found"], "error")
         self.assertEqual(artifact["with"]["path"], "${{ runner.temp }}/ai4ia-image-evidence/")

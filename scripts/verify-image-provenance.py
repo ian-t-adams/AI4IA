@@ -137,13 +137,14 @@ def identity(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def release_images(values: Sequence[str], environment: str) -> dict[str, str]:
+def release_images(values: Sequence[str], environment: str, *, private_api: bool = False) -> dict[str, str]:
     try:
         images = parse_expected_images(values)
     except ImageInputError as exc:
         raise ProvenanceError("invalid image arguments") from exc
     require(
-        len(values) == len(SERVICES) and set(images) == set(SERVICES)
+        len(values) == (1 if private_api else len(SERVICES))
+        and set(images) == ({"api"} if private_api else set(SERVICES))
         and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,60}", environment)),
         "exactly one image per release service and a valid environment are required",
     )
@@ -166,11 +167,20 @@ def release_images(values: Sequence[str], environment: str) -> dict[str, str]:
 
 
 def subjects(args: argparse.Namespace, env: Mapping[str, str]) -> dict:
-    return {
+    private_api = getattr(args, "private_api", False)
+    if private_api:
+        require(env.get("AI4IA_RELEASE_KIND") == "image"
+                and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                and env.get("AI4IA_API_NETWORK_PHASE") == "candidate",
+                "API-only image preparation requires its explicit candidate operation")
+    result = {
         "schemaVersion": 1,
         "identity": identity(env),
-        "images": release_images(args.expect_image, env.get("AZURE_ENV_NAME", "")),
+        "images": release_images(args.expect_image, env.get("AZURE_ENV_NAME", ""), private_api=private_api),
     }
+    if private_api:
+        result["privateApiImage"] = True
+    return result
 
 
 def bound_subjects(args: argparse.Namespace, env: Mapping[str, str]) -> dict:
@@ -290,10 +300,10 @@ def run_bounded(command: list[str], *, limit: int, timeout: float) -> bytes:
     return bytes(data)
 
 
-def verify_command(executable: str, image: str, bundle: Path, kind: str, expected: dict) -> list[str]:
+def verify_command(executable: str, image: str, bundle: Path | None, kind: str, expected: dict) -> list[str]:
     return [
         executable, "attestation", "verify", f"oci://{image}",
-        "--bundle", str(bundle), "--repo", expected["repository"],
+        *(["--bundle", str(bundle)] if bundle is not None else ["--bundle-from-oci"]), "--repo", expected["repository"],
         "--cert-identity", expected["workflowIdentity"],
         "--cert-oidc-issuer", ISSUER, "--deny-self-hosted-runners",
         "--source-ref", REF, "--source-digest", expected["sourceCommit"],
@@ -374,18 +384,84 @@ def validate_verification(value: object, image: str, kind: str, expected: dict, 
     )
 
 
-def evidence_names() -> list[str]:
+def evidence_names(services: Sequence[str] = SERVICES) -> list[str]:
     return ["subjects.json", *[
-        name for service in SERVICES for name in (
+        name for service in services for name in (
             f"{service}.spdx.json",
             *[f"{service}.{kind}.{suffix}.json" for kind in PREDICATES for suffix in ("sigstore", "verification")],
         )
     ]]
 
 
-def file_hashes(directory: Path) -> dict[str, str]:
+def file_hashes(directory: Path, services: Sequence[str] = SERVICES) -> dict[str, str]:
     return {name: hashlib.sha256(read_bytes(directory / name, MAX_VERIFY_BYTES)).hexdigest()
-            for name in evidence_names()}
+            for name in evidence_names(services)}
+
+
+def consume_private_api(receipt: dict, env: Mapping[str, str]) -> dict:
+    """Verify published evidence against an explicitly reviewed producer receipt."""
+    current = identity(env)
+    require(env.get("AI4IA_RELEASE_KIND") in ("preview", "deploy")
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
+            "cross-run API consumption requires an explicit private preview/deploy")
+    require(set(receipt) == {"schemaVersion", "operation", "repository", "sourceCommit",
+                            "runId", "runAttempt", "image", "sbomCanonicalSha256"}
+            and type(receipt["schemaVersion"]) is int and receipt["schemaVersion"] == 1
+            and receipt["operation"] == "private-api-image"
+            and receipt["repository"] == current["repository"]
+            and receipt["sourceCommit"] == current["sourceCommit"]
+            and isinstance(receipt["runId"], str) and re.fullmatch(r"[1-9][0-9]{0,19}", receipt["runId"]) is not None
+            and receipt["runId"] != env["GITHUB_RUN_ID"]
+            and isinstance(receipt["runAttempt"], str) and re.fullmatch(r"[1-9][0-9]{0,5}", receipt["runAttempt"]) is not None
+            and isinstance(receipt["sbomCanonicalSha256"], str) and HEX256.fullmatch(receipt["sbomCanonicalSha256"]) is not None,
+            "invalid or changed API image producer receipt")
+    image = release_images([f"api={receipt['image']}"], env.get("AZURE_ENV_NAME", ""), private_api=True)["api"]
+    expected = {
+        **current, "event": "workflow_dispatch",
+        "runInvocation": f"https://github.com/{current['repository']}/actions/runs/"
+                         f"{receipt['runId']}/attempts/{receipt['runAttempt']}",
+    }
+    require(bool(env.get("GH_TOKEN")), "authenticated attestation verification is required")
+    executable = shutil.which("gh")
+    if executable is None:
+        raise ProvenanceError("pinned GitHub CLI is unavailable")
+    version = run_bounded([executable, "--version"], limit=4096, timeout=10)
+    require(version.startswith(f"gh version {GH_VERSION} ".encode()), "unexpected GitHub CLI version")
+    selected = {}
+    for kind in PREDICATES:
+        raw = run_bounded(verify_command(executable, image, None, kind, expected),
+                          limit=MAX_VERIFY_BYTES, timeout=VERIFY_TIMEOUT)
+        rows = strict_json(raw)
+        if not isinstance(rows, list) or not 0 < len(rows) <= 32:
+            raise ProvenanceError("published proof inventory is unavailable")
+        matches = []
+        for row in rows:
+            require(isinstance(row, dict) and isinstance(row.get("verificationResult"), dict),
+                    "invalid published verification result")
+            signature = row["verificationResult"].get("signature")
+            require(isinstance(signature, dict) and isinstance(signature.get("certificate"), dict),
+                    "missing published verified certificate")
+            if signature["certificate"].get("runInvocationURI") == expected["runInvocation"]:
+                matches.append(row)
+        require(len(matches) == 1, "exact producer attestation is missing or ambiguous")
+        selected[kind] = matches
+    sbom = selected["sbom"][0]["verificationResult"].get("statement", {}).get("predicate")
+    require(isinstance(sbom, dict), "published SPDX is missing")
+    validate_sbom(sbom, image)
+    # This expected fingerprint is emitted from the producer's generated file
+    # AFTER its existing local-file/signature parity check. Never infer it from
+    # the consumer response, or the inventory comparison would be tautological.
+    require(hashlib.sha256(encode(sbom)).hexdigest() == receipt["sbomCanonicalSha256"],
+            "published SPDX differs from the reviewed producer inventory")
+    for kind, value in selected.items():
+        validate_verification(value, image, kind, expected, sbom)
+    return {
+        "receipt": receipt,
+        "statements": {
+            kind: hashlib.sha256(encode(value[0]["verificationResult"]["statement"])).hexdigest()
+            for kind, value in selected.items()
+        },
+    }
 
 
 def github_output(env: Mapping[str, str], values: dict[str, str]) -> None:
@@ -408,12 +484,13 @@ def execute(args: argparse.Namespace, env: Mapping[str, str]) -> None:
         github_output(env, outputs)
         return
     manifest = bound_subjects(args, env)
+    services = ("api",) if manifest.get("privateApiImage") is True else SERVICES
     if args.command == "authorize":
         data = read_bytes(directory / "verified-images.json", MAX_METADATA_BYTES)
         require(bool(HEX256.fullmatch(args.proof_sha256 or ""))
                 and hashlib.sha256(data).hexdigest() == args.proof_sha256,
                 "missing or changed verification proof")
-        require(strict_json(data) == {**manifest, "status": "verified", "files": file_hashes(directory)},
+        require(strict_json(data) == {**manifest, "status": "verified", "files": file_hashes(directory, services)},
                 "image outputs or retained evidence changed after verification")
         return
     documents = sboms(directory, manifest["images"])
@@ -424,7 +501,7 @@ def execute(args: argparse.Namespace, env: Mapping[str, str]) -> None:
     require(executable is not None, "pinned GitHub CLI is unavailable")
     version = run_bounded([executable, "--version"], limit=4096, timeout=10)
     require(version.startswith(f"gh version {GH_VERSION} ".encode()), "unexpected GitHub CLI version")
-    for service in SERVICES:
+    for service in services:
         for kind in PREDICATES:
             bundle_source = env.get(f"{service.upper()}_{kind.upper()}_BUNDLE", "")
             require(bool(bundle_source), "missing current-run attestation bundle")
@@ -446,9 +523,20 @@ def execute(args: argparse.Namespace, env: Mapping[str, str]) -> None:
             except ProvenanceError as exc:
                 raise ProvenanceError(f"{service}/{kind}: {exc}") from exc
             write_new(directory / f"{service}.{kind}.verification.json", output)
-    proof = encode({**manifest, "status": "verified", "files": file_hashes(directory)})
+    proof = encode({**manifest, "status": "verified", "files": file_hashes(directory, services)})
     require(len(proof) <= MAX_METADATA_BYTES, "verification proof exceeds bounds")
     write_new(directory / "verified-images.json", proof)
+    if manifest.get("privateApiImage") is True:
+        receipt = {
+            "schemaVersion": 1, "operation": "private-api-image",
+            "repository": manifest["identity"]["repository"],
+            "sourceCommit": manifest["identity"]["sourceCommit"],
+            "runId": env["GITHUB_RUN_ID"], "runAttempt": env["GITHUB_RUN_ATTEMPT"],
+            "image": manifest["images"]["api"],
+            "sbomCanonicalSha256": hashlib.sha256(encode(documents["api"])).hexdigest(),
+        }
+        write_new(directory / "private-api-image.json", encode(receipt))
+        github_output(env, {"private_api_receipt": encode(receipt).decode().strip()})
     require(bool(env.get("GITHUB_STEP_SUMMARY")), "missing GitHub step summary file")
     with Path(env["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
         stream.write(
@@ -470,6 +558,7 @@ def main() -> int:
     parser.add_argument("--expect-image", action="append", required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--proof-sha256")
+    parser.add_argument("--private-api", action="store_true")
     args = parser.parse_args()
     try:
         execute(args, os.environ)

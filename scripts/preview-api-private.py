@@ -18,6 +18,9 @@ import time
 from typing import Any
 
 from _api_private import api_name, from_environment
+from _private_recovery_packets import (
+    MODULES, PacketError, api_overrides, configuration_intent, consumption_headroom, read_record, record_parameters,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(?:=([^}]*))?\}")
@@ -25,8 +28,8 @@ BINDING = re.compile(r"([0-9]{10}):([0-9a-f]{64})")
 MAX_AGE = 1800
 
 
-def load_rollout():
-    spec = importlib.util.spec_from_file_location("private_preview_rollout", ROOT / "scripts/post-deploy-verify.py")
+def load_sibling(name: str):
+    spec = importlib.util.spec_from_file_location("private_preview_" + name, ROOT / "scripts" / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -34,7 +37,9 @@ def load_rollout():
     return module
 
 
-ROLLOUT = load_rollout()
+ROLLOUT = load_sibling("post-deploy-verify")
+PROVENANCE = load_sibling("verify-image-provenance")
+ADMISSION = load_sibling("check-api-private-network")
 
 
 class PreviewError(ValueError):
@@ -137,6 +142,32 @@ def comparable(template: dict) -> str:
     return ROLLOUT._comparable_template(template)
 
 
+def created_fields(resource: dict) -> list[str]:
+    """Report complete structural field names, never property or dynamic-map values."""
+    fields = set()
+    remaining = 4096
+    def visit(value, path="", depth=0):
+        nonlocal remaining
+        remaining -= 1
+        require(remaining >= 0 and depth <= 16, "Created resource field coverage exceeds its bound.")
+        if path:
+            fields.add(path)
+        if path in ("tags", "identity.userAssignedIdentities"):
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                require(isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,96}", key) is not None,
+                        "Created resource field name is unknown.")
+                visit(child, f"{path}.{key}" if path else key, depth + 1)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, path + "[]", depth + 1)
+    visit(resource)
+    require(len(fields) <= 512 and all(len(path) <= 256 for path in fields),
+            "Created resource field coverage exceeds its bound.")
+    return sorted(fields)
+
+
 def rejected_report(raw: Any, bound: dict) -> dict:
     """Keep only diagnostic metadata; provider prose and resource values stay private."""
     def resource_id(value: Any) -> str | None:
@@ -206,7 +237,7 @@ def rejected_report(raw: Any, bound: dict) -> dict:
     return report
 
 
-def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
+def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None = None) -> dict:
     require(raw.get("status") == "Succeeded" and not raw.get("error"), "ARM preview did not succeed.")
     diagnostics = raw.get("diagnostics")
     require(diagnostics is None or (isinstance(diagnostics, list) and not diagnostics),
@@ -228,6 +259,18 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                endpoint, endpoint + "/privatednszonegroups/default"}
     app_ids = {private_api: "api", prefix + f"microsoft.app/containerapps/ca-web-{binding['environment']}": "web",
                prefix + f"microsoft.app/containerapps/ca-proxy-{binding['environment']}": "proxy"}
+    packet = binding.get("packet")
+    required = creates
+    permitted = None
+    if packet is not None:
+        require(packet in MODULES, "Unknown scoped recovery packet.")
+        permitted = {
+            "foundation": creates - {private_api}, "candidate": {private_api},
+            "activate": {private_api},
+            "cutover": {prefix + f"microsoft.app/containerapps/ca-web-{binding['environment']}"},
+        }[packet]
+        required = permitted
+        creates = permitted if packet in ("foundation", "candidate") else set()
     report = []
     seen = set()
     errors = []
@@ -242,7 +285,12 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
         require(kind in ("Create", "Modify", "Delete", "Deploy", "Ignore", "NoChange", "Unsupported"),
                 "Unknown ARM change type.")
         require(not change.get("unsupportedReason"), "ARM preview contains unsupported coverage.")
+        if packet in ("candidate", "activate", "cutover") and rid in required:
+            after_resource = change.get("after")
+            if isinstance(after_resource, dict) and "configuration" in after_resource.get("properties", {}):
+                configuration_intent(after_resource["properties"]["configuration"])
         if kind in ("Ignore", "NoChange"):
+            require(not (kind == "Ignore" and rid in required), "Required resource coverage was ignored.")
             continue
         if not rid.startswith(prefix) and rid != prefix.split("/providers/")[0]:
             errors.append("change_outside_workload")
@@ -257,16 +305,24 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                     "Unsupported ARM property path shape.")
             row["fields"].append(path)
         report.append(row)
+        if permitted is not None and rid not in permitted:
+            errors.append("change_outside_packet")
+            continue
         if kind == "Create":
             if rid not in creates or not isinstance(after, dict):
                 errors.append("unapproved_create")
                 continue
+            row["fields"] = created_fields(after)
             if "SecurityControl" in after.get("tags", {}):
                 errors.append("security_exemption_tag")
             if after.get("location") not in (None, binding["location"], "global"):
                 errors.append("unapproved_region")
             props = after.get("properties", {})
             if rid == vnet:
+                if (props.get("virtualNetworkPeerings") not in (None, [])
+                        or (props.get("enableDdosProtection") is not None and props.get("enableDdosProtection") is not False)
+                        or props.get("ddosProtectionPlan") is not None):
+                    errors.append("unapproved_network_addition")
                 expected = [params["apiPrivateVnetPrefix"]["value"]]
                 if props.get("addressSpace", {}).get("addressPrefixes") != expected:
                     errors.append("vnet_address_drift")
@@ -278,6 +334,10 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                         or props.get("dhcpOptions", {}).get("dnsServers") != []):
                     errors.append("subnet_or_dns_drift")
                 if isinstance(subnets, list):
+                    if any(subnet.get("properties", {}).get(key) not in (None, [])
+                           for subnet in subnets for key in
+                           ("natGateway", "networkSecurityGroup", "routeTable", "serviceEndpoints", "serviceEndpointPolicies")):
+                        errors.append("unapproved_subnet_attachment")
                     api_subnet = next((row for row in subnets if row.get("name") == "api"), {})
                     pe_subnet = next((row for row in subnets if row.get("name") == "cosmos"), {})
                     delegates = api_subnet.get("properties", {}).get("delegations", [])
@@ -333,6 +393,8 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                         errors.append("api_authentication_drift")
                 if (template.get("scale", {}).get("minReplicas") != 1
                         or template.get("scale", {}).get("maxReplicas") != 1
+                        or type(template.get("scale", {}).get("minReplicas")) is not int
+                        or type(template.get("scale", {}).get("maxReplicas")) is not int
                         or template["containers"][0].get("image") != params["apiPrivateInitialImage"]["value"]
                         or template["containers"][0].get("resources", {}).get("cpu") != 0.5
                         or template["containers"][0].get("resources", {}).get("memory") != "1Gi"
@@ -342,14 +404,73 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                 if (ingress.get("external") is not True or ingress.get("targetPort") != 8080
                         or ingress.get("allowInsecure") is not False):
                     errors.append("api_ingress_drift")
+                if packet == "candidate":
+                    if not isinstance(baseline, dict):
+                        raise PreviewError("Current API configuration evidence is missing.")
+                    left = deepcopy(baseline["properties"]["template"])
+                    right = deepcopy(template)
+                    metric = "AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID"
+                    old_self, new_self = env_rows(left).get(metric, {}), env_rows(right).get(metric, {})
+                    source_id = baseline.get("id")
+                    if (not isinstance(source_id, str) or source_id.casefold() != legacy_api
+                            or set(old_self) != {"name", "value"} or set(new_self) != {"name", "value"}
+                            or not isinstance(old_self.get("value"), str)
+                            or old_self["value"].casefold() != legacy_api
+                            or not isinstance(new_self.get("value"), str)
+                            or new_self["value"].casefold() != private_api):
+                        errors.append("candidate_metrics_self_id_invalid")
+                    else:
+                        new_self["value"] = old_self["value"]
+                    for current in (left, right):
+                        rows = env_rows(current)
+                        current["containers"][0]["env"] = [
+                            rows[name] for name in sorted(rows)
+                            if name not in ("AI4IA_PRIVATE_RECOVERY_CANDIDATE", "AI4IA_PRIVATE_COSMOS_REQUIRED")
+                        ]
+                        current["containers"][0].pop("image", None)
+                        current.get("scale", {}).pop("maxReplicas", None)
+                    if comparable(left) != comparable(right):
+                        errors.append("candidate_configuration_changed")
+                    if digest(configuration_intent(baseline["properties"]["configuration"])) != digest(
+                        configuration_intent(props.get("configuration", {}))
+                    ):
+                        errors.append("candidate_ingress_registry_or_secret_references_changed")
+                    tags = deepcopy(baseline.get("tags", {}))
+                    if tags.get("SecurityControl") == "Ignore":
+                        tags.pop("SecurityControl")
+                    tags["azd-service-name"] = "api-private-candidate"
+                    if tags != after.get("tags"):
+                        errors.append("candidate_tags_changed")
         elif kind == "Modify" and isinstance(before, dict) and isinstance(after, dict):
+            if packet in ("candidate", "activate", "cutover"):
+                if not isinstance(baseline, dict):
+                    raise PreviewError("Current application snapshot is missing.")
+                current_props = baseline["properties"]
+                before_props, after_props = before.get("properties", {}), after.get("properties", {})
+                if comparable(before_props.get("template", {})) != comparable(current_props["template"]):
+                    errors.append("preview_before_differs_from_current_configuration")
+                for resource, props in ((before, before_props), (after, after_props)):
+                    if digest(configuration_intent(props.get("configuration", {}))) != digest(
+                        configuration_intent(current_props["configuration"])
+                    ):
+                        errors.append("protected_application_configuration_changed")
+                    observed_identity = resource.get("identity", {})
+                    current_identity = baseline["identity"]
+                    if (observed_identity.get("type") != current_identity.get("type")
+                            or {key.casefold() for key in observed_identity.get("userAssignedIdentities", {})}
+                            != {key.casefold() for key in current_identity.get("userAssignedIdentities", {})}
+                            or props.get("managedEnvironmentId", props.get("environmentId", "")).casefold()
+                            != current_props.get("managedEnvironmentId", "").casefold()
+                            or resource.get("location") != baseline.get("location")):
+                        errors.append("protected_application_resource_changed")
             paths = set(row["fields"])
             old_tags, new_tags = deepcopy(before.get("tags", {})), deepcopy(after.get("tags", {}))
             old_control = old_tags.pop("SecurityControl", None)
             tag_change_ok = old_control in (None, "Ignore") and old_tags == new_tags and "SecurityControl" not in new_tags
             if paths and paths <= {"tags", "tags.SecurityControl"} and tag_change_ok:
                 continue
-            if rid in app_ids and paths and all(path.startswith("properties.template") for path in paths):
+            template_paths = paths - {"tags", "tags.SecurityControl"} if tag_change_ok else paths
+            if rid in app_ids and template_paths and all(path.startswith("properties.template") for path in template_paths):
                 left = deepcopy(before.get("properties", {}).get("template", {}))
                 right = deepcopy(after.get("properties", {}).get("template", {}))
                 service = app_ids[rid]
@@ -386,7 +507,8 @@ def scope_preview(raw: dict, binding: dict, params: dict) -> dict:
                 errors.append("unapproved_modify")
         else:
             errors.append("unreviewable_or_destructive_change")
-    require(creates <= seen, "ARM preview omitted required private resources.")
+    require(required <= seen, "ARM preview omitted required private resources.")
+    require(len(json.dumps(report).encode()) <= 64 * 1024, "Full scoped field report exceeds its bound.")
     return {"changes": sorted(report, key=lambda row: row["resourceId"]),
             "blockingReasons": sorted(set(errors)),
             "rawChangeDigest": digest(sorted(changes, key=lambda row: row["resourceId"].casefold()))}
@@ -407,27 +529,201 @@ def verify_token(token: str, binding: dict, preview: dict, now: int) -> None:
 
 
 def run(command: list[str], *, limit: int, timeout: int) -> bytes:
-    result = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
-    require(result.returncode == 0, "Preview command failed; no resource execution is authorized.")
-    require(len(result.stdout) <= limit, "Preview output exceeds its bound.")
-    return result.stdout
+    try:
+        return PROVENANCE.run_bounded(command, limit=limit, timeout=timeout)
+    except PROVENANCE.ProvenanceError as exc:
+        raise PreviewError("Bounded command failed; no further resource execution is authorized.") from exc
 
 
-def compiled_context(env: dict[str, str]) -> tuple[dict, dict, dict]:
-    run([sys.executable, str(ROOT / "scripts/validate-feature-prereqs.py"), "--require-deployment-attestation"],
-        limit=256 * 1024, timeout=60)
-    raw = run(["bicep", "build", str(ROOT / "infra/main.bicep"), "--stdout"], limit=8 * 1024 * 1024, timeout=120)
-    template = json.loads(raw)
-    params = resolve_parameters(json.loads((ROOT / "infra/main.parameters.json").read_text()), template, env)
-    return template, params, context(env, template, params)
+def cloud_read(args: list[str]) -> Any:
+    return json.loads(run(["az", *args, "-o", "json"], limit=8 * 1024 * 1024, timeout=60))
+
+
+def compile_module(name: str) -> dict:
+    require(name in set(MODULES.values()), "Unexpected recovery module.")
+    raw = run(["bicep", "build", str(ROOT / "infra/modules" / name), "--stdout"],
+              limit=8 * 1024 * 1024, timeout=120)
+    return json.loads(raw)
+
+
+APP_SNAPSHOT = (
+    "{id:id,location:location,tags:tags,identity:identity,etag:etag,systemData:systemData,"
+    "properties:{managedEnvironmentId:properties.managedEnvironmentId,"
+    "latestRevisionName:properties.latestRevisionName,latestReadyRevisionName:properties.latestReadyRevisionName,"
+    "configuration:merge(properties.configuration,{secrets:properties.configuration.secrets[]."
+    "{name:name,keyVaultUrl:keyVaultUrl,identity:identity}}),template:properties.template}}"
+)
+
+
+def app_snapshot(env: dict[str, str], name: str, read=cloud_read) -> dict:
+    environment = env["AZURE_ENV_NAME"]
+    require(name in (api_name(environment, "legacy"), api_name(environment, "private"), f"ca-web-{environment}"),
+            "Application snapshot is outside the recovery scope.")
+    group = f"rg-{env.get('AI4IA_WORKLOAD') or 'ai4ia'}-{env['AZURE_ENV_NAME']}"
+    args = ["containerapp", "show", "--subscription", env["AZURE_SUBSCRIPTION_ID"],
+            "-g", group, "-n", name, "--query", APP_SNAPSHOT]
+    app = read(args)
+    require(isinstance(app, dict) and app.get("id", "").casefold() == (
+        f"/subscriptions/{env['AZURE_SUBSCRIPTION_ID']}/resourceGroups/{group}"
+        f"/providers/Microsoft.App/containerApps/{name}"
+    ).casefold(), "Exact current application metadata is unavailable.")
+    props = app["properties"]
+    revision = props.get("latestReadyRevisionName")
+    require(bool(revision) and revision == props.get("latestRevisionName"),
+            "Current application has an unsettled template.")
+    detail = read(["containerapp", "revision", "show", "--subscription", env["AZURE_SUBSCRIPTION_ID"],
+                   "-g", group, "-n", name, "--revision", revision, "--query", "properties.template"])
+    require(comparable(detail) == comparable(props["template"]) and read(args) == app,
+            "Current application changed during snapshot.")
+    service = "web" if name == f"ca-web-{environment}" else "api"
+    containers = props["template"].get("containers", [])
+    require(len(containers) == 1 and isinstance(containers[0].get("image"), str)
+            and re.fullmatch(r"[a-z0-9]+\.azurecr\.io/ai4ia/" + service + "-" + re.escape(environment)
+                             + r"@sha256:[0-9a-f]{64}", containers[0]["image"]) is not None,
+            "Current application image is not an exact retained service digest.")
+    return app
+
+
+def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, dict, dict | None, dict]:
+    require(env.get("GITHUB_REF") == "refs/heads/main"
+            and re.fullmatch(r"[0-9a-f]{40}", env.get("GITHUB_SHA", "")) is not None,
+            "Scoped recovery requires a known trusted main commit.")
+    phase = from_environment(env)
+    packet = env.get("AI4IA_PRIVATE_STEP") or {"candidate": "foundation", "activate": "activate", "private": "cutover"}.get(phase)
+    if not isinstance(packet, str):
+        raise PreviewError("Recovery packet does not match the selected phase.")
+    require(packet in MODULES and ((phase == "candidate" and packet in ("foundation", "candidate"))
+                                  or (phase == "activate" and packet == "activate")
+                                  or (phase == "private" and packet == "cutover")),
+            "Recovery packet does not match the selected phase.")
+    environment, subscription = env["AZURE_ENV_NAME"], env["AZURE_SUBSCRIPTION_ID"]
+    workload = env.get("AI4IA_WORKLOAD") or "ai4ia"
+    api_name(environment, phase)
+    require(re.fullmatch(r"[0-9a-fA-F-]{36}", subscription) is not None
+            and re.fullmatch(r"[a-z][a-z0-9-]{2,19}", workload) is not None,
+            "Scoped recovery subscription/workload is invalid.")
+    group = f"rg-{workload}-{environment}"
+    root = f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
+    api_template = compile_module("api.bicep")
+    api_meta, api_values = read_record(read, api_template, subscription, group, "api")
+    require(api_values.get("environmentName") == environment and api_values.get("appEnvironment") == "prod"
+            and api_values.get("authProvider") == "entra" and api_values.get("entraTenantId") == env.get("AZURE_TENANT_ID"),
+            "Existing API inputs do not match the approved production boundary.")
+    old_api = app_snapshot(env, api_name(environment, "legacy"), read)
+    old_rows = env_rows(old_api["properties"]["template"])
+    require(old_rows.get("AI4IA_COSMOS_ENDPOINT", {}).get("value") == env.get("AI4IA_PRIVATE_COSMOS_ENDPOINT"),
+            "Canonical source account changed.")
+    require(old_api["location"] == api_values["location"], "Current API location differs from recorded inputs.")
+    template = api_template if packet in ("candidate", "activate") else compile_module(MODULES[packet])
+    baseline = None
+    proof = None
+    quota = None
+    metadata = api_meta
+    if packet == "foundation":
+        log_id = root + f"Microsoft.OperationalInsights/workspaces/log-{workload}-{environment}"
+        require(api_values["logAnalyticsWorkspaceId"].casefold() == log_id.casefold(),
+                "Existing Log Analytics reference is outside the approved scope.")
+        cosmos = re.fullmatch(r"https://([a-z0-9-]+)\.documents\.azure\.com(?::443)?/?",
+                              env.get("AI4IA_PRIVATE_COSMOS_ENDPOINT", ""))
+        if cosmos is None:
+            raise PreviewError("Canonical Cosmos identity is unknown.")
+        values = {
+            "location": old_api["location"], "tags": deepcopy(api_values["tags"]),
+            "workload": workload, "environmentName": environment,
+            "logAnalyticsName": f"log-{workload}-{environment}",
+            "cosmosAccountId": root + "Microsoft.DocumentDB/databaseAccounts/" + cosmos[1],
+            "vnetAddressPrefix": env["AI4IA_API_PRIVATE_VNET_PREFIX"],
+            "apiSubnetPrefix": env["AI4IA_API_PRIVATE_SUBNET_PREFIX"],
+            "privateEndpointSubnetPrefix": env["AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX"],
+        }
+        if "SecurityControl" in values["tags"]:
+            require(values["tags"].pop("SecurityControl") == "Ignore", "Unreviewed security tag.")
+        params = {key: {"value": value} for key, value in values.items()}
+    elif packet in ("candidate", "activate"):
+        receipt = json.loads(env.get("AI4IA_PRIVATE_IMAGE_RECEIPT", "null"))
+        require(isinstance(receipt, dict), "The reviewed prepared API image receipt is required.")
+        image = receipt.get("image", "")
+        require(isinstance(image, str) and re.fullmatch(r"[a-z0-9]+\.azurecr\.io/ai4ia/api-[a-z0-9-]+@sha256:[0-9a-f]{64}", image) is not None,
+                "Prepared API image reference is invalid.")
+        baseline = old_api if packet == "candidate" else app_snapshot(env, api_name(environment, "private"), read)
+        if packet == "activate":
+            require(baseline["properties"]["template"]["containers"][0]["image"] == image,
+                    "Activation cannot substitute or rebuild the candidate image.")
+        overrides = api_overrides(
+            phase=packet, subscription=subscription, group=group, workload=workload, environment=environment,
+            source=baseline, image=image,
+        )
+        registry = image.split(".", 1)[0]
+        run(["az", "acr", "login", "--subscription", subscription, "--name", registry], limit=4096, timeout=60)
+        proof = PROVENANCE.consume_private_api(receipt, env)
+        params = record_parameters(template, metadata, api_values, overrides)
+        network = read(["containerapp", "env", "show", "--subscription", subscription, "-g", group,
+                        "-n", f"cae-{workload}-{environment}-api-private",
+                        "--query", "{id:id,properties:{provisioningState:properties.provisioningState,"
+                        "vnetConfiguration:properties.vnetConfiguration,workloadProfiles:properties.workloadProfiles}}"])
+        require(network.get("id", "").casefold() == overrides["containerEnvId"].casefold()
+                and network["properties"].get("provisioningState") == "Succeeded"
+                and network["properties"].get("vnetConfiguration", {}).get("infrastructureSubnetId", "").casefold()
+                == (root + f"Microsoft.Network/virtualNetworks/vnet-{workload}-{environment}-api-private/subnets/api").casefold(),
+                "The exact private foundation is not ready.")
+        quota = consumption_headroom(read([
+            "containerapp", "env", "list-usages", "--subscription", subscription, "-g", group,
+            "-n", f"cae-{workload}-{environment}-api-private",
+        ]), 0.5 if packet == "candidate" else 1.5)
+    else:
+        metadata, values = read_record(read, template, subscription, group, "web")
+        baseline = app_snapshot(env, f"ca-web-{environment}", read)
+        origin = env.get("AI4IA_PRIVATE_API_ORIGIN", "")
+        require(re.fullmatch(r"https://ca-api-private-" + re.escape(environment)
+                             + r"\.[a-z0-9.-]+\.azurecontainerapps\.io", origin) is not None,
+                "Verified private API origin is unavailable.")
+        params = record_parameters(template, metadata, values, {
+            "recoveryCutover": True, "apiBaseUrl": origin,
+            "tags": baseline["tags"],
+            "webImage": baseline["properties"]["template"]["containers"][0]["image"],
+        })
+    expected = {name: {"value": api_values[name]} for name in ("appEnvironment", "entraTenantId", "entraAudience")}
+    expected["apiAuthProvider"] = {"value": api_values["authProvider"]}
+    expected.update({
+        "location": {"value": old_api["location"]},
+        "apiPrivateVnetPrefix": {"value": env["AI4IA_API_PRIVATE_VNET_PREFIX"]},
+        "apiPrivateSubnetPrefix": {"value": env["AI4IA_API_PRIVATE_SUBNET_PREFIX"]},
+        "cosmosPrivateEndpointSubnetPrefix": {"value": env["AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX"]},
+        "apiPrivateInitialImage": {"value": params.get("apiImage", {}).get("value")},
+    })
+    bound = context(env, template, expected)
+    source_app = baseline or old_api
+    source_template = source_app["properties"]["template"]
+    bound.update(parameters=digest(params), packet=packet, recordedInputs=digest(metadata),
+                 currentConfiguration=digest(baseline or old_api), imageProof=digest(proof) if proof else None,
+                 privateCoreQuota=quota, sourceApplication={
+                     "id": source_app["id"], "revision": source_app["properties"]["latestReadyRevisionName"],
+                     "image": source_template["containers"][0]["image"],
+                     "minReplicas": source_template.get("scale", {}).get("minReplicas"),
+                     "maxReplicas": source_template.get("scale", {}).get("maxReplicas"),
+                     "evidence": "configuration_reference_not_runtime_acceptance",
+                 })
+    return template, params, bound, baseline, expected
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "verify-binding"))
+    parser.add_argument("command", choices=("prepare", "verify-binding", "apply", "cleanup"))
     args = parser.parse_args()
     env = dict(os.environ)
+    packet_dir = None
+    retain_packet = False
     try:
+        if args.command == "cleanup":
+            directory = Path(env["AI4IA_PRIVATE_PACKET_DIR"])
+            require(directory.is_absolute() and not directory.is_symlink()
+                    and directory.resolve().is_relative_to(Path(env["RUNNER_TEMP"]).resolve())
+                    and directory.name.startswith(f"ai4ia-private-packet-{env['GITHUB_RUN_ID']}-"),
+                    "Cleanup target is not this run's private packet.")
+            (directory / "parameters.json").unlink(missing_ok=True)
+            (directory / "template.json").unlink(missing_ok=True)
+            directory.rmdir()
+            return 0
         if args.command == "prepare":
             with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
                 file.write("authorized=false\n")
@@ -436,41 +732,80 @@ def main() -> int:
         kind = env.get("AI4IA_RELEASE_KIND")
         if args.command == "verify-binding" and kind == "ordinary":
             require(env.get("GITHUB_REF") == "refs/heads/main", "Ordinary release requires trusted main.")
-            spec = importlib.util.spec_from_file_location("private_hook_admission", ROOT / "scripts/check-api-private-network.py")
-            assert spec and spec.loader
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            current = module.admission(env)
+            current = ADMISSION.admission(env)
             require(current["AI4IA_PRIVATE_MIGRATION_PENDING"] == "false", "Ordinary release is not yet available.")
             return 0
-        template, params, bound = compiled_context(env)
         if args.command == "verify-binding":
+            raise PreviewError("A scoped migration packet cannot authorize root azd provisioning; use exact packet apply.")
+        template, params, bound, baseline, expected = compiled_context(env)
+        if args.command == "apply":
             proof = json.loads(Path(env["AI4IA_PRIVATE_PREVIEW_PROOF"]).read_text())
             require(proof["context"] == bound, "Deployment inputs changed after reviewed preview.")
             verify_token(env.get("AI4IA_PRIVATE_PREVIEW_BINDING", ""), bound, proof["preview"], int(time.time()))
+            if args.command == "apply":
+                require(kind == "deploy" and env.get("AI4IA_RELEASE_PROVISION") == "true",
+                        "Only the explicit reviewed scoped deployment may apply.")
+                packet_dir = Path(env["AI4IA_PRIVATE_PACKET_DIR"]).resolve()
+                require(packet_dir.is_relative_to(Path(env["RUNNER_TEMP"]).resolve()),
+                        "Private packet is outside the current runner.")
+                saved_template = json.loads((packet_dir / "template.json").read_text())
+                saved_params = json.loads((packet_dir / "parameters.json").read_text())["parameters"]
+                require(digest(saved_template) == bound["template"] and digest(saved_params) == bound["parameters"],
+                        "Frozen packet changed after preview.")
+                ADMISSION.admission(env)
+                main = json.loads(run(["gh", "api", f"repos/{env['GITHUB_REPOSITORY']}/git/ref/heads/main"],
+                                      limit=32 * 1024, timeout=30))
+                require(main.get("object", {}).get("sha") == env["GITHUB_SHA"], "Main changed before scoped apply.")
+                name = f"ai4ia-private-{bound['packet']}-{env['AI4IA_PRIVATE_PREVIEW_BINDING'].split(':')[1][:16]}"
+                existing = subprocess.run([
+                    "az", "deployment", "group", "show", "--subscription", bound["subscription"],
+                    "-g", bound["resourceGroup"], "-n", name, "--query", "properties.provisioningState", "-o", "json",
+                ], capture_output=True, timeout=60, check=False)
+                require(existing.returncode != 0 and len(existing.stderr) <= 16 * 1024
+                        and re.search(rb"(?m)^\s*(?:ERROR:\s*)?\(DeploymentNotFound\)", existing.stderr) is not None,
+                        "Deployment claim already exists or its absence is unproven; never replay.")
+                verify_token(env["AI4IA_PRIVATE_PREVIEW_BINDING"], bound, proof["preview"], int(time.time()))
+                run([
+                    "az", "deployment", "group", "create", "--subscription", bound["subscription"],
+                    "-g", bound["resourceGroup"], "-n", name, "--mode", "Incremental",
+                    "--template-file", str(packet_dir / "template.json"),
+                    "--parameters", "@" + str(packet_dir / "parameters.json"), "-o", "none",
+                ], limit=4096, timeout=1800)
+                (Path(env["RUNNER_TEMP"]) / "ai4ia-private-preview" / "execution.json").write_text(
+                    json.dumps({"context": bound, "deploymentName": name, "resourceDeployment": "Succeeded",
+                                "runtimeAcceptance": "not_yet_observed", "modelCalls": 0}, indent=2), encoding="utf-8",
+                )
+                print("Exact scoped packet applied once. Runtime acceptance remains a separate gate.")
             return 0
         require(kind in ("preview", "deploy"), "Explicit preview/deploy operation required.")
         output = Path(env["RUNNER_TEMP"]) / "ai4ia-private-preview"
         output.mkdir(exist_ok=True)
-        descriptor, parameter_path = tempfile.mkstemp(prefix="ai4ia-preview-", suffix=".json", dir=env["RUNNER_TEMP"])
+        packet_dir = Path(tempfile.mkdtemp(prefix=f"ai4ia-private-packet-{env['GITHUB_RUN_ID']}-", dir=env["RUNNER_TEMP"]))
+        descriptor = os.open(packet_dir / "parameters.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        parameter_path = str(packet_dir / "parameters.json")
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as file:
                 json.dump({"parameters": params}, file)
-            template_path = output / "template.json"
+            template_path = packet_dir / "template.json"
             template_path.write_text(json.dumps(template), encoding="utf-8")
             raw = run([
-                "az", "deployment", "sub", "what-if", "--subscription", bound["subscription"],
-                "--location", bound["location"], "--name", "ai4ia-private-preview",
+                "az", "deployment", "group", "what-if", "--subscription", bound["subscription"],
+                "-g", bound["resourceGroup"], "--name", "ai4ia-private-preview",
                 "--template-file", str(template_path), "--parameters", "@" + parameter_path,
                 "--validation-level", "Provider", "--no-pretty-print", "--no-prompt", "true", "-o", "json",
             ], limit=8 * 1024 * 1024, timeout=300)
-        finally:
+        except BaseException:
+            os.unlink(parameter_path)
+            raise
+        if kind != "deploy":
             os.unlink(parameter_path)
         payload = json.loads(raw)
         try:
-            preview = scope_preview(payload, bound, params)
+            preview = scope_preview(payload, bound, expected, baseline)
         except (PreviewError, KeyError, TypeError, ValueError, AttributeError):
             (output / "report.json").write_text(json.dumps(rejected_report(payload, bound), indent=2), encoding="utf-8")
+            if Path(parameter_path).exists():
+                os.unlink(parameter_path)
             raise
         issued = int(time.time())
         token = make_token(bound, preview, issued)
@@ -486,13 +821,18 @@ def main() -> int:
             proof.write_text(json.dumps({"context": bound, "preview": preview}), encoding="utf-8")
             with Path(env["GITHUB_ENV"]).open("a", encoding="utf-8") as file:
                 file.write(f"AI4IA_PRIVATE_PREVIEW_PROOF={proof}\n")
+                file.write(f"AI4IA_PRIVATE_PACKET_DIR={packet_dir}\n")
+            retain_packet = True
         with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
             file.write(f"authorized={'true' if kind == 'deploy' else 'false'}\n")
         print("Private phase preview retained; no resources changed. Execution requires its separate guarded path.")
         return 0
-    except (PreviewError, OSError, KeyError, TypeError, ValueError, AttributeError, subprocess.SubprocessError) as exc:
+    except (PreviewError, PacketError, OSError, KeyError, TypeError, ValueError, AttributeError, subprocess.SubprocessError) as exc:
         print(str(exc) if isinstance(exc, PreviewError) else "Private preview failed with incomplete evidence.", file=sys.stderr)
         return 1
+    finally:
+        if packet_dir is not None and not retain_packet:
+            (packet_dir / "parameters.json").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

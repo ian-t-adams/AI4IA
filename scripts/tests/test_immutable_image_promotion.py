@@ -228,6 +228,7 @@ class BuildAndPushStepTests(unittest.TestCase):
                 GITHUB_SHA="1234567890abcdef1234567890abcdef12345678",
                 AZURE_ENV_NAME=env_name,
                 AI4IA_WORKLOAD="ai4ia",
+                AI4IA_RELEASE_KIND="ordinary",
             )
             assert BASH is not None
             result = subprocess.run(

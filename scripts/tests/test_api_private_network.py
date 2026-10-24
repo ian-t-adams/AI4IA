@@ -141,6 +141,18 @@ class PrivateAdmissionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 MODULE.admission({**ENV, "AI4IA_API_NETWORK_PHASE": phase}, cloud.read)
 
+    def test_foundation_admission_rechecks_cosmos_before_candidate_exists(self):
+        cloud = Cloud()
+        cloud.apps["ca-api-private-test"] = None
+        self.assertEqual(MODULE.admission(ENV, cloud.read)["AI4IA_PRIVATE_MIGRATION_PENDING"], "true")
+        for patch_value in ({"publicNetworkAccess": "Enabled"}, {"publicNetworkAccess": None},
+                            {"disableLocalAuth": False}):
+            original = copy.deepcopy(cloud.cosmos)
+            cloud.cosmos.update(patch_value)
+            with self.assertRaisesRegex(ValueError, "private and Entra-only"):
+                MODULE.admission(ENV, cloud.read)
+            cloud.cosmos = original
+
     def test_injected_image_and_app_values_never_override_live_binding(self):
         env = {
             **ENV, "AZURE_API_APP_NAME": "wrong-app",

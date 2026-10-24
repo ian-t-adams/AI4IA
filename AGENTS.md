@@ -728,13 +728,29 @@ approved transition; never add a model call, public restore or automatic drain.
 See `docs/runbooks/deployment.md#api-only-private-cosmos-recovery`.
 Pending migration pushes are terminal previews on trusted main, not resource
 deployment. Every later mutation/canary/rollback step needs the separate
-execution gate. An explicit migration deploy requires a fresh reviewed binding
-over source, phase, parameters and full ARM resource delta; final preprovision
-rechecks it. Never upload raw parameters/what-if bodies, add an exemption tag,
+execution gate. Migration previews/applies use direct RG modules, not the
+short-circuited full root: six-resource foundation, candidate API, activation,
+then web cutover. Each apply uses its exact compiled/frozen packet after fresh
+source/phase/current-config/parameter/delta binding and strict admission.
+API/web modes preserve existing certificate/diagnostic resources; activation
+keeps the existing discovery tag and changes only staging/max replicas.
+Historical non-secure module inputs require actual current-config parity.
+Default-off same-group API secret inheritance uses server-side listSecrets and
+declared metadata; preserve Key Vault references, never export values.
+Unprotected/unknown secret representations and incomplete resource coverage
+refuse. Never upload raw parameters/what-if bodies, add an exemption tag,
 relax branch/OIDC trust, or turn a preview return code into deployment authority.
 Ordinary auto releases resume only on observed completed private cutover.
-Keep `preview-api-private.py`'s scalar renderer bounded to the actual parameter
-contract, and keep its Bicep pin aligned with infra validation.
+Keep the private packet's Bicep pin aligned with infra validation.
+The explicit registry-only API-image operation builds once, retaining the existing
+same-run SLSA/SPDX/local-inventory checks. Cross-run consumption reuses that exact
+verification policy and pins repository/main SHA/producer run+attempt/event,
+immutable API digest and the producer's original canonical SPDX fingerprint.
+Never derive the expected fingerprint from the consumer response, rebuild at
+apply, or use API-only as a fallback for missing ordinary web/proxy evidence.
+Ordinary three-service same-run verification and job permissions stay unchanged.
+An existing/unknown binding-derived deployment claim refuses replay; this and
+workflow serialization are not a distributed ARM create-only fence.
 
 `infra-validate` runs:
 

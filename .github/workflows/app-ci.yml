@@ -136,8 +136,8 @@ jobs:
       - name: Private API preflight source checks
         working-directory: .
         run: |
-          ruff check --config app/api/pyproject.toml scripts/_api_private.py scripts/check-api-private-network.py scripts/preview-api-private.py scripts/tests/test_api_private_network.py scripts/tests/test_private_preview.py
-          pyright --pythonversion 3.12 --level error scripts/_api_private.py scripts/check-api-private-network.py scripts/preview-api-private.py
+          ruff check --config app/api/pyproject.toml scripts/_api_private.py scripts/_private_recovery_packets.py scripts/check-api-private-network.py scripts/preview-api-private.py scripts/tests/test_api_private_network.py scripts/tests/test_private_preview.py scripts/tests/test_private_recovery_packets.py
+          pyright --pythonversion 3.12 --level error scripts/_api_private.py scripts/_private_recovery_packets.py scripts/check-api-private-network.py scripts/preview-api-private.py
       - name: Test (pytest)
         run: pytest -q
       - name: Offline behavioral evaluations

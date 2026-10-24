@@ -51,6 +51,10 @@ on:
       - "scripts/http_contract.py"
       - "scripts/verify-image-provenance.py"
       - "scripts/_image_refs.py"
+      - "scripts/_api_private.py"
+      - "scripts/_private_recovery_packets.py"
+      - "scripts/check-api-private-network.py"
+      - "scripts/preview-api-private.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
       - "scripts/check-claude-binding.py"
@@ -75,10 +79,19 @@ on:
       operation:
         description: "auto preserves completed releases; pending migration is preview-only"
         type: choice
-        options: [auto, preview, deploy]
+        options: [auto, preview, deploy, image]
         default: auto
       preview_binding:
         description: "Exact fresh binding from the reviewed private-phase preview; required for deploy"
+        type: string
+        default: ""
+      private_step:
+        description: "One reviewed direct-module recovery packet (no automatic phase advancement)"
+        type: choice
+        options: [foundation, candidate, activate, cutover]
+        default: foundation
+      api_image_receipt:
+        description: "Exact registry-only API producer receipt, including original SPDX fingerprint"
         type: string
         default: ""
       provision:
@@ -424,6 +437,8 @@ jobs:
       AI4IA_RELEASE_OPERATION: ${{ inputs.operation }}
       AI4IA_RELEASE_PROVISION: ${{ inputs.provision }}
       AI4IA_PRIVATE_PREVIEW_BINDING: ${{ inputs.preview_binding }}
+      AI4IA_PRIVATE_STEP: ${{ inputs.private_step }}
+      AI4IA_PRIVATE_IMAGE_RECEIPT: ${{ inputs.api_image_receipt }}
       AI4IA_API_PRIVATE_VNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_VNET_PREFIX }}
       AI4IA_API_PRIVATE_SUBNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_SUBNET_PREFIX }}
       AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX: ${{ vars.AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX }}
@@ -618,7 +633,7 @@ jobs:
         run: python scripts/check-api-private-network.py --release-mode
 
       - name: Resolve deploy principal ID for Foundry and API Center data-plane setup
-        if: ${{ steps.release_mode.outputs.operation != 'ordinary' || github.event_name != 'workflow_dispatch' || inputs.provision }}
+        if: ${{ steps.release_mode.outputs.operation == 'ordinary' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -665,9 +680,10 @@ jobs:
 
       - name: Preview the full private phase without changing resources
         id: private_preview
-        if: ${{ steps.release_mode.outputs.operation != 'ordinary' }}
+        if: ${{ steps.release_mode.outputs.operation == 'preview' || steps.release_mode.outputs.operation == 'deploy' }}
         env:
           AI4IA_RELEASE_KIND: ${{ steps.release_mode.outputs.operation }}
+          GH_TOKEN: ${{ github.token }}
         run: python scripts/preview-api-private.py prepare
 
       - name: Retain sanitized private preview
@@ -679,9 +695,37 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Apply the exact reviewed private packet
+        id: private_apply
+        if: ${{ steps.release_mode.outputs.operation == 'deploy' && steps.private_preview.outputs.authorized == 'true' }}
+        env:
+          AI4IA_RELEASE_KIND: deploy
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/preview-api-private.py apply
+
+      - name: Remove ephemeral private parameters
+        if: ${{ always() && env.AI4IA_PRIVATE_PACKET_DIR != '' }}
+        run: python scripts/preview-api-private.py cleanup
+
+      - name: Retain scoped execution receipt
+        if: ${{ always() && steps.private_apply.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: private-execution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ai4ia-private-preview/execution.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Admit registry-only API image preparation
+        id: image_execution
+        if: ${{ steps.release_mode.outputs.operation == 'image' }}
+        run: |
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+          echo "AI4IA_RELEASE_KIND=image" >> "$GITHUB_ENV"
+
       - name: Admit only the separately selected deployment operation
         id: execution
-        if: ${{ steps.release_mode.outputs.operation == 'ordinary' || (steps.release_mode.outputs.operation == 'deploy' && steps.private_preview.outputs.authorized == 'true') }}
+        if: ${{ steps.release_mode.outputs.operation == 'ordinary' }}
         env:
           RELEASE_KIND: ${{ steps.release_mode.outputs.operation }}
         run: |
@@ -971,7 +1015,7 @@ jobs:
       # so a local `azd deploy` and this workflow keep writing to the same ACR
       # repositories instead of forking into two parallel sets.
       - name: Build and push service images, recording their digests
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: images
         timeout-minutes: 45
         run: |
@@ -1008,6 +1052,9 @@ jobs:
           # and docker-build.yml's PR-time builds.
           for entry in "web:app/web" "api:app/api" "proxy:proxy"; do
             service="${entry%%:*}"
+            if [ "$AI4IA_RELEASE_KIND" = image ] && [ "$service" != api ]; then
+              continue
+            fi
             context="${entry#*:}"
             ref="${registry}/ai4ia/${service}-${env_slug}"
             echo "::group::build ${service} (${context})"
@@ -1047,7 +1094,7 @@ jobs:
           done
 
       - name: Bind production image subjects
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: subjects
         env:
           WEB_IMAGE: ${{ steps.images.outputs.web_image }}
@@ -1055,6 +1102,11 @@ jobs:
           PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
         run: |
           set -euo pipefail
+          if [ "$AI4IA_RELEASE_KIND" = image ]; then
+            python scripts/verify-image-provenance.py prepare --private-api \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
           python scripts/verify-image-provenance.py prepare \
             --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
             --expect-image "web=${WEB_IMAGE}" \
@@ -1062,7 +1114,7 @@ jobs:
             --expect-image "proxy=${PROXY_IMAGE}"
 
       - name: Generate production SPDX SBOMs
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         timeout-minutes: 35
         env:
           WEB_IMAGE: ${{ steps.images.outputs.web_image }}
@@ -1073,11 +1125,19 @@ jobs:
           # Scan registry bytes, not a tag, workspace, PR artifact or local image ID.
           for pair in "web:$WEB_IMAGE" "api:$API_IMAGE" "proxy:$PROXY_IMAGE"; do
             service="${pair%%:*}"
+            if [ "$AI4IA_RELEASE_KIND" = image ] && [ "$service" != api ]; then
+              continue
+            fi
             image="${pair#*:}"
             trivy image --image-src remote --format spdx-json --list-all-pkgs \
               --timeout 10m --output "${RUNNER_TEMP}/ai4ia-image-evidence/${service}.spdx.json" \
               "$image"
           done
+          if [ "$AI4IA_RELEASE_KIND" = image ]; then
+            python scripts/verify-image-provenance.py sboms --private-api \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
           python scripts/verify-image-provenance.py sboms \
             --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
             --expect-image "web=${WEB_IMAGE}" \
@@ -1112,7 +1172,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest api build provenance
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: api_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1123,7 +1183,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest api SPDX SBOM
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: api_sbom
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1159,7 +1219,7 @@ jobs:
           create-storage-record: false
 
       - name: Verify production image attestations
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: image_proofs
         timeout-minutes: 15
         env:
@@ -1175,6 +1235,11 @@ jobs:
           PROXY_SBOM_BUNDLE: ${{ steps.proxy_sbom.outputs.bundle-path }}
         run: |
           set -euo pipefail
+          if [ "$AI4IA_RELEASE_KIND" = image ]; then
+            python scripts/verify-image-provenance.py verify --private-api \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
           python scripts/verify-image-provenance.py verify \
             --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
             --expect-image "web=${WEB_IMAGE}" \
@@ -1182,7 +1247,7 @@ jobs:
             --expect-image "proxy=${PROXY_IMAGE}"
 
       - name: Retain production image evidence
-        if: ${{ steps.execution.outputs.allowed == 'true' && (always() && steps.subjects.outcome == 'success') }}
+        if: ${{ (steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true') && (always() && steps.subjects.outcome == 'success') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: production-image-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
