@@ -1081,11 +1081,19 @@ class ModelPreflightLifecycleWiringTests(unittest.TestCase):
             2,
             "Windows and POSIX azd provisions must both check model availability/quota",
         )
-        # preprovision is a list: every entry carries a windows and a posix hook.
-        self.assertEqual(len(re.findall(r"(?m)^    - windows:$", preprovision)), 2)
-        self.assertEqual(len(re.findall(r"(?m)^      posix:$", preprovision)), 2)
+        # Each ordered entry runs on both OSes before azd resolves parameters.
+        entries = re.split(r"(?m)^    - windows:$", preprovision)[1:]
+        self.assertEqual(len(entries), 3)
+        for entry, script in zip(entries, (
+            "scripts/derive-json-transport.py",
+            "scripts/check-api-private-network.py",
+            "scripts/check-model-availability.py",
+        ), strict=True):
+            self.assertEqual(entry.count(script), 2)
+            self.assertEqual(len(re.findall(r"(?m)^      posix:$", entry)), 1)
+            self.assertEqual(entry.count("continueOnError: false"), 2)
         self.assertNotIn("--skip-quota", preprovision)
-        self.assertEqual(preprovision.count("continueOnError: false"), 4)
+        self.assertEqual(preprovision.count("continueOnError: false"), 6)
 
     def test_preflight_script_changes_trigger_the_provisioning_workflow(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(

@@ -135,6 +135,21 @@ class PrivateAdmissionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 MODULE.admission({**ENV, "AI4IA_API_NETWORK_PHASE": phase}, cloud.read)
 
+    def test_injected_image_and_app_values_never_override_live_binding(self):
+        env = {
+            **ENV, "AZURE_API_APP_NAME": "wrong-app",
+            "AI4IA_API_PRIVATE_INITIAL_IMAGE": "attacker.test/api:latest",
+            "AI4IA_PRIVATE_WEB_IMAGE": "attacker.test/web:latest",
+            "AI4IA_PRIVATE_PROXY_IMAGE": "attacker.test/proxy:latest",
+        }
+        result = MODULE.admission(env, Cloud().read, lambda _: True)
+        self.assertEqual(result, {
+            "AZURE_API_APP_NAME": "ca-api-private-test",
+            "AI4IA_API_PRIVATE_INITIAL_IMAGE": image("api"),
+            "AI4IA_PRIVATE_WEB_IMAGE": image("web"),
+            "AI4IA_PRIVATE_PROXY_IMAGE": image("proxy"),
+        })
+
     def test_staging_and_live_worker_guards_are_load_bearing(self):
         cloud = Cloud()
         with self.assertRaisesRegex(ValueError, "Activate and verify"):
