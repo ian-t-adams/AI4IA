@@ -44,9 +44,9 @@ function count(value: unknown): value is number {
 function text(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128;
 }
-async function payload(response: Response): Promise<unknown> {
+async function payload(response: Response, failureDetail?: string): Promise<unknown> {
   if (!response.ok) {
-    let detail = "Decision request failed. No automatic retry.";
+    let detail = failureDetail ?? "Decision request failed. No automatic retry.";
     const raw: unknown = await response.json().catch(() => null);
     if (object(raw) && typeof raw.detail === "string") detail = raw.detail;
     throw new ApiError(response.status, detail);
@@ -55,12 +55,39 @@ async function payload(response: Response): Promise<unknown> {
 }
 
 export async function decisionModels(signal: AbortSignal): Promise<DecisionModel[]> {
-  const raw = await payload(await apiFetch("/api/decisions/options", { signal, cache: "no-store" }));
-  if (!object(raw) || !Array.isArray(raw.models) || !raw.models.every(
-    (m) => object(m) && text(m.id) && text(m.displayName)
-      && Array.isArray(m.residencies) && m.residencies.every(text),
-  )) throw new Error("Decision availability is invalid. Reload availability.");
-  return raw.models;
+  signal.throwIfAborted();
+  const controller = new AbortController();
+  const cancel = () => controller.abort(signal.reason);
+  signal.addEventListener("abort", cancel, { once: true });
+  const timeout = setTimeout(() => controller.abort(new Error(
+    "Decision availability timed out. The API or sign-in service may be unavailable. Reload availability to try again.",
+  )), 20_000);
+  // MSAL acquisition and response-body reads are part of this one loading
+  // deadline too. An ignored abort must not leave the view pending forever.
+  let rejectOnAbort: () => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = () => reject(controller.signal.reason);
+    controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+  });
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await apiFetch("/api/decisions/options", { signal: controller.signal, cache: "no-store" });
+        const raw = await payload(response,
+          `Decision availability failed (HTTP ${response.status}). Reload availability to try again.`);
+        if (!object(raw) || !Array.isArray(raw.models) || !raw.models.every(
+          (m) => object(m) && text(m.id) && text(m.displayName)
+            && Array.isArray(m.residencies) && m.residencies.every(text),
+        )) throw new Error("Decision availability is invalid. Reload availability.");
+        return raw.models;
+      })(),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener("abort", cancel);
+    controller.signal.removeEventListener("abort", rejectOnAbort);
+  }
 }
 
 export function validateDecisionResult(raw: unknown, request: DecisionRequest): DecisionResult {

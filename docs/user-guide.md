@@ -144,6 +144,12 @@ uses named options with descriptions. **Score** uses ordered labels, lowest
 first: a three-level scale is 0 through 2, and its result can be fractional.
 **Load synthetic example** fills an editable demo without making a model call.
 
+Availability loading waits at most 20 seconds, including sign-in token
+acquisition and the API response. If either service stalls, an explicit error
+and **Reload availability** replace the loading message; nothing is retried
+automatically. An unavailable API is not an empty model catalog. Reloading
+availability does not send a model call or discard your question/input drafts.
+
 Only **Run decision** sends a call. Editing and duplicate submissions are blocked
 while it runs; **Cancel run** stops waiting and cancels the outbound request where
 possible, but already accepted work may still be billed. There is no automatic

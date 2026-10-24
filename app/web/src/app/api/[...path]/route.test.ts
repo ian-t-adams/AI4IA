@@ -21,6 +21,23 @@ afterEach(() => {
 });
 
 describe("same-origin API proxy", () => {
+  it.each(["decisions/options", "models"])("forwards cancelled availability reads only on Decision (%s)", async (path) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { GET } = await loadRoute();
+    const controller = new AbortController();
+    const request = new NextRequest(`https://app.example.test/api/${path}`, { signal: controller.signal });
+    await GET(request, context(path.split("/")));
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    if (path === "decisions/options") {
+      expect(init.signal).toBe(request.signal);
+      controller.abort();
+      expect(init.signal?.aborted).toBe(true);
+    } else {
+      expect(init.signal).toBeUndefined();
+    }
+  });
+
   it.each(["decisions/run", "chat"])("scopes disconnect propagation to Decision (%s)", async (path) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
     vi.stubGlobal("fetch", fetchMock);
