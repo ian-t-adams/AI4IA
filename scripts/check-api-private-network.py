@@ -115,7 +115,13 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
                        "--revision", legacy_revision, "--query", REVISION_QUERY])
     old_values = {row["name"]: row.get("value") for row in old_detail["properties"]["template"]["containers"][0]["env"]}
     old_cosmos = old_values.get("AI4IA_COSMOS_ENDPOINT")
-    require(isinstance(old_cosmos, str) and bool(old_cosmos), "Legacy canonical Cosmos target is unknown.")
+    if not isinstance(old_cosmos, str) or not old_cosmos:
+        raise AdmissionError("Legacy canonical Cosmos target is unknown.")
+    host = urlsplit(old_cosmos).hostname or ""
+    require(re.fullmatch(r"[a-z0-9-]+\.documents\.azure\.com", host) is not None, "Canonical Cosmos endpoint unknown.")
+    cosmos = read(["cosmosdb", "show", *scope, "-n", host.split(".")[0]])
+    require(cosmos.get("publicNetworkAccess") == "Disabled" and cosmos.get("disableLocalAuth") is True,
+            "Cosmos must remain private and Entra-only before any recovery step.")
     require(read(legacy_query) == legacy, "Legacy API configuration changed during admission.")
     preserved = {}
     web_values = {}
@@ -229,9 +235,6 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
     require(subnet.casefold() == (expected_vnet + "/subnets/api").casefold(), "Candidate is not in the exact private VNet.")
     host = urlsplit(values.get("AI4IA_COSMOS_ENDPOINT", "")).hostname or ""
     require(re.fullmatch(r"[a-z0-9-]+\.documents\.azure\.com", host) is not None, "Candidate Cosmos endpoint unknown.")
-    cosmos = read(["cosmosdb", "show", *scope, "-n", host.split(".")[0]])
-    require(cosmos.get("publicNetworkAccess") == "Disabled" and cosmos.get("disableLocalAuth") is True,
-            "Cosmos must remain private and Entra-only.")
     endpoint = read(["network", "private-endpoint", "show", *scope, "-n", f"pe-{workload}-{environment}-api-private-cosmos"])
     connections = endpoint["privateLinkServiceConnections"]
     require(len(connections) == 1 and connections[0]["privateLinkServiceId"].casefold() == cosmos["id"].casefold()

@@ -2089,15 +2089,38 @@ unconfigured or malformed phase/state fails before execution; it does not
 default to deploying the original API.
 
 The existing workflow retains its main-only admission, identity and job grants.
-It resolves current target/images first, then uses the runner's existing secure
-configuration for a full subscription-scope ARM **Provider** what-if. The
-preview renderer supports only this repository's whole-token scalar parameter
-shape and omitted ARM defaults, with the pinned azd Boolean/integer semantics;
-unsupported substitutions and unsafe unescaped strings refuse. The temporary
-parameter file stays in the runner, is removed after the call and is never
-uploaded. Only sanitized resource/field changes, scope, hashes and a binding
-are retained. The pinned azd preview UX drops resource IDs and nested array
-deltas, so it is not used as a complete machine-admission report.
+It resolves current targets first, then previews one direct resource-group
+module with ARM **Provider** validation. The full-root migration preview is
+retired: its nested API/web modules were short-circuited and its unrelated
+APIM/model reconciliation exceeded the approved write-set. Do not suppress those
+diagnostics or broaden the migration allowlist. Ordinary post-migration root
+deployment remains a separate path.
+
+The finite `private_step` input selects `foundation`, `candidate`, `activate` or
+`cutover`. Foundation uses `api-private-network.bicep` directly (six resources).
+Candidate/activation use the shipping `api.bicep`; cutover uses `web.bicep`.
+Scoped app modes do not redeploy diagnostic settings or the web certificate.
+API activation preserves its existing discovery tag: only its staging flag and
+maximum replicas change. The normal root remains responsible for later
+diagnostic/alert/discovery reconciliation.
+
+Recorded API/web module inputs supply only non-secure parameter candidates.
+Their types must match the current compiled module; stable current serving
+configuration and the fully expanded preview must also agree outside the
+approved differences. A historical deployment record alone proves nothing.
+Current secret names and Key Vault references are metadata, not exported values.
+The default-off API mode derives the same-group old/private source and private
+target and fixes the existing API UAMI. ARM resolves literal secrets server-side;
+Key Vault references remain unchanged references. No CLI `listSecrets`, secret
+output, arbitrary source ID, new key or role is introduced. An unprotected or
+unrecognized provider secret-value representation fails closed. Offline compile
+controls are not live provider masking or resource-coverage evidence.
+
+Parameter files stay private in the ephemeral runner and are never uploaded.
+Preview-only files are removed immediately. An authorized apply retains the exact
+compiled template/parameters until the single scoped operation, then removes the
+private parameters even on failure. Only sanitized resource/field changes,
+scope, hashes and a binding are retained.
 
 Preview cannot run provider registration, hostname mutation, provisioning,
 image pushes, attestations, deployment, model/options canaries or rollback.
@@ -2111,18 +2134,24 @@ Unknown diagnostic shapes remain failures; a rejected report has no binding,
 `executionAuthorized=false`, and a nonzero command outcome.
 
 For an approved phase, first run the existing workflow on main with
-`operation=preview` (the initial pending push does this automatically). Review
+`operation=preview` and the exact `private_step` (the initial pending push previews
+foundation only). Review
 the `private-preview-<run>-<attempt>` report and its exact source, phase, CIDRs,
 resource deltas and current execution blockers. Then dispatch:
 
 ```powershell
-gh workflow run deploy.yml --ref main -f operation=deploy -f provision=true -f preview_binding="<binding from the reviewed report>"
+gh workflow run deploy.yml --ref main -f operation=deploy -f provision=true -f private_step=foundation -f preview_binding="<binding from the reviewed foundation report>"
 ```
 
 That dispatch runs a **fresh** what-if and requires the same source, phase,
 resolved parameters and resource delta within 30 minutes. Changed/expired
-bindings fail. The final azd preprovision hook rechecks source/parameters and
-expiry after image/target derivation, before ARM can apply them. This binding is
+bindings fail. Scoped apply rechecks current main, source/parameters, current
+configuration, expiry and strict worker/identity/readiness admission, then applies
+the exact saved files with `az deployment group create`, never the root or azd
+provision. A binding-derived deployment name refuses an observed earlier claim
+or an uncertain absence read. Existing workflow serialization and the sole
+operator lane are required; this is not a distributed create-only ARM fence.
+An uncertain write is never automatically replayed. This binding is
 an anti-drift receipt, not a grant: the operator must still have the documented
 conditional migration approval. A preview may describe a blocked transition;
 execution still requires the current strict worker/identity/readiness checks.
@@ -2133,6 +2162,31 @@ preserves ordinary releases and their existing verification. Missing or
 contradictory completion evidence cannot enable them. During migration provider
 checks remain read-only and custom-domain registration is refused. No
 `SecurityControl=Ignore` exemption tag is introduced.
+
+### Build once before the candidate
+
+After source/mechanism approval, the explicit `operation=image`, `provision=false`
+candidate-phase operation builds only the API. It pushes to the existing ACR,
+generates SPDX and runs the existing signed SLSA/SPDX and local-generated-file
+parity checks. No resource provisioning, worker/traffic change, model call or
+ordinary application deployment can run in this lane. Missing web/proxy evidence
+never selects this mode implicitly.
+
+The producer retains `private-api-image.json` with the exact repository/main
+commit, run/attempt, API digest and canonical fingerprint of its original
+generated SPDX. Supply this unchanged JSON as `api_image_receipt` for candidate
+preview and apply. The consumer uses the existing checksum-pinned GitHub CLI and
+shared verification policy against published attestations: exact issuer,
+workflow, repository, main source/signer commit, producer run/attempt/event,
+GitHub-hosted runner, image subject, SLSA and SPDX are required. The SPDX must
+match the separately supplied producer fingerprint; the consumer never derives
+its expected fingerprint from its own response. No new token permission, trust
+exception, replacement verifier or rebuild is used.
+
+An apply does not build another image. A new head, substituted digest, missing
+predicate, different producer or changed original inventory refuses. Ordinary
+three-service production verification remains same-run and complete. Keep the
+image receipt and both preview/execution artifacts with the operator's review.
 
 ### Topology and protected state
 
@@ -2150,7 +2204,7 @@ customer-data migration or new Cosmos grant.
 | New API environment/app | External Consumption environment; same API UAMI, configuration/secret references and signed ACR image. Candidate 0.5 vCPU / 1 GiB, min1/max1; active min1/max3 |
 | Cosmos | Existing account stays Entra-only and public-network Disabled; one approved `Sql` PE, `privatelink.documents.azure.com` zone, VNet link and zone group |
 | Existing web/proxy/APIM | Same environment, public domains, authentication and gateway path. Preserve actual web/proxy serving image digests during infrastructure reconciliation |
-| Final traffic selection | Web `API_BASE_URL` and direct voice `API_PUBLIC_URL` move together to the new API FQDN; API alert target follows only in `private` |
+| Final traffic selection | Only web `API_BASE_URL` and direct voice `API_PUBLIC_URL` move together to the new API FQDN; no alert resource is reconciled by the scoped migration |
 | Retained legacy API | Explicitly drain/deactivate only at the separately approved activation boundary; no deletion, resource replacement or parallel worker processing |
 
 The October 24 proposed source environment is
@@ -2177,17 +2231,19 @@ Do not run the following transitions merely because the source exists:
 
 1. **Candidate approval.** Obtain explicit approval for exact resources/CIDRs,
    incremental what-if and cost. Set `AI4IA_DEPLOY_VERIFY_CANARY=false`: this
-   recovery has no model-call budget. Nonlegacy token steps still acquire the
-   existing deploy identity's API token: the verifier uses
+   recovery has no model-call budget. The separate acceptance check uses the
+   existing deploy identity's API token with
    `--skip-canary --decision-options`, requiring one authenticated bounded GET
    with a nonempty catalog-backed result. A missing token, 403/503, empty or
    malformed result fails, not skips. This replaces only the model/session
    canary: exact-image rollout, health, web/proxy and domain checks still run,
    followed by private network/runtime/phase/worker readback. No role or secret
-   is added. `candidate` creates the private path and
-   API, leaving web/voice pointed at the original API. The inert initial image
-   has no workers; the existing release pipeline then scans/signs/verifies and
-   deploys its exact API digest. No `--all`, mutable-tag or local-rebuild shortcut.
+   is added. Within `candidate`, separately preview/review/apply the six-resource
+   foundation. Then observe that environment's own Consumption quota; the old
+   environment's headroom cannot stand in for it. Prepare the current signed API
+   image, then preview/review/apply the single API resource with that exact digest.
+   Web/voice stay on the original API. No old production image, functional
+   placeholder, `--all`, mutable-tag or local-rebuild shortcut is accepted.
 2. **Candidate proof.** Check approved Sql PE, DNS zone group and VNet link.
    Actual `/health/ready` resolves the canonical Cosmos account to private VNet
    addresses within the existing deadline, then performs the unchanged
@@ -2220,7 +2276,8 @@ automation/deletion layout validation remain read-only; readiness is not
 disabled. An options GET does not execute a model or gain broader permissions.
 The active stage and candidate may both answer readiness, so the preflight
 separately reads the actual candidate-mode flag before allowing final cutover.
-An inert placeholder can resume its initial stage but never satisfy acceptance.
+The scoped creation path requires the prepared current-source immutable image;
+a retained inert placeholder is never functional acceptance.
 
 `check-api-private-network.py` performs scoped metadata reads only. Its normal
 CLI writes no cloud state; the explicit `--azd-env` preprovision hook stores only
@@ -2241,8 +2298,8 @@ unrelated changes in a what-if. Those are retained release-gate evidence before
 each approved transition, not a Boolean claiming acceptance. Use incremental
 ARM deployment only; stop on any resource deletion/recreation, role/auth/data
 change, unexpected VNet peer/subnet, or web/proxy environment move.
-The hosted postprovision data-plane hooks still target public App
-Configuration/Foundry; no runner needs private Cosmos access. Actual Cosmos
+Scoped migration does not run the ordinary root's postprovision data-plane hooks.
+No runner needs private Cosmos access. Actual Cosmos
 acceptance runs through the new API, not a hosted runner or a developer's DNS.
 
 ### Cost, rollback and retained incident boundary
@@ -2257,7 +2314,10 @@ after its explicit deactivation; retained web/proxy/environment costs continue.
 This is neither a cost cap nor an invoice. There is no Dedicated profile fee,
 NAT, private resolver or extra service private endpoint in this design.
 
-Capture before provisioning as usual. A failed candidate leaves the original
+The scoped report binds the before-application revision/image/scale as a
+configuration reference, not a claim that the broken legacy API is healthy.
+Keep it with the operator's pre-step runtime evidence. Ordinary capture and
+automatic rollback steps do not run in the scoped lane. A failed candidate leaves the original
 outage and retained candidate resources for diagnosis; never delete data or reopen
 Cosmos to make it green. After activation, recover to a previously proved
 compatible revision in the **private** environment, keeping legacy workers

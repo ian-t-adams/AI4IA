@@ -83,7 +83,7 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         def container(module: str) -> dict:
             resources = self.template["resources"][module]["properties"]["template"]["resources"]
             rows = resources.values() if isinstance(resources, dict) else resources
-            apps = [row for row in rows if row["type"] == "Microsoft.App/containerApps"]
+            apps = [row for row in rows if row["type"] == "Microsoft.App/containerApps" and not row.get("existing")]
             self.assertEqual(len(apps), 1)
             containers = apps[0]["properties"]["template"]["containers"]
             self.assertEqual(len(containers), 1)

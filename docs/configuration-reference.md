@@ -652,8 +652,12 @@ always Disabled; `legacy` is a source default, **not a working public fallback**
 Migration execution, network cost and each worker/traffic transition require
 separate operator approval. See [the recovery procedure](runbooks/deployment.md#api-only-private-cosmos-recovery).
 One approval may conditionally cover those phases. Pending migration pushes run
-only the full-phase preview; the existing main-only workflow's `operation=deploy`
-requires a fresh `preview_binding` from the reviewed report. Default `auto`
+only the direct-module preview; the existing main-only workflow's `operation=deploy`
+requires the exact `private_step` and a fresh `preview_binding` from the reviewed
+packet. `operation=image` with `provision=false` is the explicit registry-only
+API producer. Its unchanged `api_image_receipt` is required for candidate
+preview/apply and activation; no rebuild or missing-evidence fallback is allowed.
+These are workflow inputs, not new azd variables or activation grants. Default `auto`
 returns to normal releases only after observed completed private cutover.
 
 | Variable | Default | Contract |
@@ -662,7 +666,7 @@ returns to normal releases only after observed completed private cutover.
 | `AI4IA_API_PRIVATE_VNET_PREFIX` | Empty | Explicit reviewed standalone RFC1918 /24 or /25; no peering or custom DNS. |
 | `AI4IA_API_PRIVATE_SUBNET_PREFIX` | Empty | Contained /26, delegated to Microsoft.App/environments. |
 | `AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX` | Empty | Contained, disjoint /27 for the single Cosmos Sql endpoint. |
-| `AI4IA_API_PRIVATE_INITIAL_IMAGE` | Inert quickstart placeholder | Preflight-derived candidate serving digest for later reconciles; never hand-author a promotion image. |
+| `AI4IA_API_PRIVATE_INITIAL_IMAGE` | Inert quickstart placeholder | Legacy root/preflight transport only. Scoped candidate creation instead requires the verified build-once producer receipt; no functional placeholder. Never hand-author a promotion image. |
 | `AI4IA_PRIVATE_WEB_IMAGE` / `AI4IA_PRIVATE_PROXY_IMAGE` | Inert quickstart placeholder | Preflight-derived existing serving digests prevent infrastructure reconciliation replacing web/proxy code. |
 
 The API's server-owned `AI4IA_PRIVATE_RECOVERY_CANDIDATE` blocks application

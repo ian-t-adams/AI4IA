@@ -9,8 +9,10 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import jmespath
 
 from scripts._api_private import deployment_operation
 from scripts.tests._loader import load_script
@@ -51,6 +53,155 @@ def fixture():
 
 
 class PreviewTests(unittest.TestCase):
+    def test_foundation_is_exactly_its_six_resources_not_the_root(self):
+        bound, raw, params = fixture()
+        bound["packet"] = "foundation"
+        raw["changes"].pop()
+        self.assertEqual(PREVIEW.scope_preview(raw, bound, params)["blockingReasons"], [])
+        extra = {"resourceId": raw["changes"][0]["resourceId"].split("/providers/")[0]
+                 + "/providers/Microsoft.ApiManagement/service/unrelated",
+                 "changeType": "Modify", "before": {"tags": {"SecurityControl": "Ignore"}},
+                 "after": {"tags": {}}, "delta": [{"path": "tags.SecurityControl"}]}
+        self.assertIn("change_outside_packet",
+                      PREVIEW.scope_preview({**raw, "changes": [*raw["changes"], extra]}, bound, params)["blockingReasons"])
+        raw["changes"][0]["changeType"] = "Ignore"
+        with self.assertRaises(PREVIEW.PreviewError):
+            PREVIEW.scope_preview(raw, bound, params)
+
+    def test_candidate_create_preserves_current_app_and_rejects_unprotected_values(self):
+        bound, _, params = fixture()
+        bound["packet"] = "candidate"
+        prefix = f"/subscriptions/{bound['subscription']}/resourceGroups/{bound['resourceGroup']}/providers/"
+        identity = prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/id-api-test"
+        target = prefix + "Microsoft.App/containerApps/ca-api-private-test"
+        image = "example.azurecr.io/ai4ia/api-test@sha256:" + "a" * 64
+        params.update(apiPrivateInitialImage={"value": image}, entraTenantId={"value": "tenant"},
+                      entraAudience={"value": "audience"})
+        baseline = {"location": "eastus2", "tags": {"azd-service-name": "api"},
+            "identity": {"type": "UserAssigned", "userAssignedIdentities": {identity: {}}},
+            "properties": {"managedEnvironmentId": prefix + "Microsoft.App/managedEnvironments/old",
+                "configuration": {"activeRevisionsMode": "Single", "secrets": [{"name": "model-gateway-api-key"}],
+                    "ingress": {"external": True, "targetPort": 8080, "transport": "auto", "allowInsecure": False},
+                    "registries": [{"server": "example.azurecr.io", "identity": identity}]},
+                "template": {"scale": {"minReplicas": 1, "maxReplicas": 3}, "containers": [{
+                    "name": "api", "image": image.replace("a" * 64, "b" * 64),
+                    "resources": {"cpu": 0.5, "memory": "1Gi"}, "env": [
+                        {"name": key, "value": value} for key, value in (
+                            ("AI4IA_ENV", "prod"), ("AI4IA_AUTH_PROVIDER", "entra"),
+                            ("AI4IA_ENTRA_TENANT_ID", "tenant"), ("AI4IA_ENTRA_AUDIENCE", "audience"),
+                            ("AI4IA_COSMOS_ENDPOINT", "https://cosmos-test.documents.azure.com:443/"),
+                            ("OTHER_SETTING", "preserve"),
+                        )
+                    ],
+                }]}}}
+        after = deepcopy(baseline)
+        after["tags"]["azd-service-name"] = "api-private-candidate"
+        props = after["properties"]
+        props["managedEnvironmentId"] = prefix + "Microsoft.App/managedEnvironments/cae-ai4ia-test-api-private"
+        props["template"]["scale"]["maxReplicas"] = 1
+        props["template"]["containers"][0]["image"] = image
+        props["template"]["containers"][0]["env"] += [
+            {"name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": "true"},
+            {"name": "AI4IA_PRIVATE_COSMOS_REQUIRED", "value": "true"},
+        ]
+        props["configuration"]["secrets"][0]["value"] = "********"
+        raw = {"status": "Succeeded", "changes": [{"resourceId": target, "changeType": "Create", "after": after}]}
+        result = PREVIEW.scope_preview(raw, bound, params, baseline)
+        self.assertEqual(result["blockingReasons"], [])
+        self.assertIn("properties.configuration.secrets[].value", result["changes"][0]["fields"])
+        self.assertNotIn("********", json.dumps(result))
+        changed = deepcopy(raw)
+        changed["changes"][0]["after"]["properties"]["template"]["containers"][0]["env"][5]["value"] = "changed"
+        self.assertIn("candidate_configuration_changed", PREVIEW.scope_preview(changed, bound, params, baseline)["blockingReasons"])
+        changed = deepcopy(raw)
+        changed["changes"][0]["after"]["properties"]["configuration"]["secrets"][0]["value"] = "unprotected-private-value"
+        with self.assertRaises(ValueError) as caught:
+            PREVIEW.scope_preview(changed, bound, params, baseline)
+        self.assertNotIn("unprotected-private-value", str(caught.exception))
+
+    def test_actual_cli_projection_excludes_values_and_keeps_reference_metadata(self):
+        app = {
+            "id": "synthetic", "properties": {
+                "configuration": {"activeRevisionsMode": "Single", "secrets": [
+                    {"name": "model-gateway-api-key", "value": "must-not-escape"},
+                    {"name": "webiq-api-key", "value": "must-not-escape-either",
+                     "keyVaultUrl": "https://example.vault.azure.net/secrets/webiq", "identity": "same-identity"},
+                ]}, "template": {"containers": [{"name": "api", "env": [
+                    {"name": "KEY", "secretRef": "model-gateway-api-key"},
+                ]}]},
+            },
+        }
+        projected = jmespath.search(PREVIEW.APP_SNAPSHOT, app)
+        self.assertNotIn("must-not-escape", json.dumps(projected))
+        self.assertEqual(projected["properties"]["configuration"]["secrets"][1], {
+            "name": "webiq-api-key", "keyVaultUrl": "https://example.vault.azure.net/secrets/webiq",
+            "identity": "same-identity",
+        })
+        self.assertEqual(projected["properties"]["template"], app["properties"]["template"])
+
+    def test_scoped_binding_cannot_authorize_root_provisioning(self):
+        env = {**ENV, "AI4IA_RELEASE_KIND": "deploy", "AI4IA_PRIVATE_PREVIEW_BINDING": "previously-reviewed"}
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "verify-binding"]), \
+             patch.object(PREVIEW, "compiled_context", side_effect=AssertionError("root cannot consume a packet")), \
+             patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(PREVIEW.main(), 1)
+
+    def test_exact_frozen_packet_applies_once_and_refuses_claim_drift(self):
+        for fault in ("none", "parameters", "main", "claimed", "unknown-claim", "admission"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                packet = root / "ai4ia-private-packet-123-test"
+                packet.mkdir()
+                output = root / "ai4ia-private-preview"
+                output.mkdir()
+                template = {"resources": []}
+                parameters = {"privateSetting": {"value": "private-value-never-publish"}}
+                bound, raw, expected = fixture()
+                bound.update(packet="foundation", template=PREVIEW.digest(template),
+                             parameters=PREVIEW.digest(parameters))
+                preview = PREVIEW.scope_preview(raw, bound, expected)
+                token = PREVIEW.make_token(bound, preview, int(PREVIEW.time.time()))
+                proof = output / "proof.json"
+                proof.write_text(json.dumps({"context": bound, "preview": preview}))
+                (packet / "template.json").write_text(json.dumps(template))
+                (packet / "parameters.json").write_text(json.dumps({"parameters": parameters}))
+                if fault == "parameters":
+                    (packet / "parameters.json").write_text('{"parameters":{}}')
+                env = {**ENV, "RUNNER_TEMP": directory, "GITHUB_RUN_ID": "123", "GITHUB_SHA": bound["source"],
+                       "GITHUB_REPOSITORY": "ian-t-adams/AI4IA", "AI4IA_RELEASE_KIND": "deploy",
+                       "AI4IA_RELEASE_PROVISION": "true", "AI4IA_PRIVATE_PREVIEW_BINDING": token,
+                       "AI4IA_PRIVATE_PACKET_DIR": str(packet), "AI4IA_PRIVATE_PREVIEW_PROOF": str(proof)}
+                writes = []
+                def command(args, **kwargs):
+                    if args[0] == "gh":
+                        return json.dumps({"object": {"sha": "f" * 40 if fault == "main" else bound["source"]}}).encode()
+                    self.assertEqual(args[:4], ["az", "deployment", "group", "create"])
+                    self.assertEqual(args[args.index("--template-file") + 1], str(packet / "template.json"))
+                    self.assertEqual(args[args.index("--parameters") + 1], "@" + str(packet / "parameters.json"))
+                    self.assertEqual(json.loads((packet / "parameters.json").read_text())["parameters"], parameters)
+                    self.assertNotIn("sub", args)
+                    self.assertNotIn("azd", args)
+                    writes.append(args)
+                    return b""
+                claim = SimpleNamespace(returncode=0 if fault == "claimed" else 1, stdout=b"",
+                    stderr=b"sensitive-provider-message" if fault == "unknown-claim" else b"ERROR: (DeploymentNotFound) absent")
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "apply"]), \
+                     patch.object(PREVIEW, "compiled_context", return_value=(template, parameters, bound, None, expected)), \
+                     patch.object(PREVIEW, "run", side_effect=command), \
+                     patch.object(PREVIEW.subprocess, "run", return_value=claim), \
+                     patch.object(PREVIEW.ADMISSION, "admission",
+                                  side_effect=ValueError("blocked") if fault == "admission" else None), \
+                     redirect_stdout(stdout), patch.object(sys, "stderr", stderr):
+                    self.assertEqual(PREVIEW.main(), 0 if fault == "none" else 1)
+                self.assertEqual(len(writes), 1 if fault == "none" else 0)
+                evidence = (output / "execution.json").read_text() if (output / "execution.json").exists() else ""
+                self.assertNotIn("private-value-never-publish", evidence + stdout.getvalue() + stderr.getvalue())
+                self.assertNotIn("sensitive-provider-message", stderr.getvalue())
+                if fault == "none":
+                    self.assertEqual(json.loads(evidence)["runtimeAcceptance"], "not_yet_observed")
+                self.assertFalse((packet / "parameters.json").exists())
+
     def test_binding_is_same_head_phase_scope_inputs_delta_and_fresh(self):
         bound, raw, params = fixture()
         result = PREVIEW.scope_preview(raw, bound, params)
@@ -129,11 +280,11 @@ class PreviewTests(unittest.TestCase):
         bound, raw, params = fixture()
         params["secret"] = {"value": "synthetic-private-key-never-publish"}
         with tempfile.TemporaryDirectory() as directory:
-            env = {**ENV, "RUNNER_TEMP": directory, "AI4IA_RELEASE_KIND": "preview",
+            env = {**ENV, "GITHUB_RUN_ID": "123", "RUNNER_TEMP": directory, "AI4IA_RELEASE_KIND": "preview",
                    "GITHUB_OUTPUT": str(Path(directory) / "outputs"), "GITHUB_ENV": str(Path(directory) / "env")}
             observed = []
             def command(args, **kwargs):
-                self.assertEqual(args[:4], ["az", "deployment", "sub", "what-if"])
+                self.assertEqual(args[:4], ["az", "deployment", "group", "what-if"])
                 self.assertIn("Provider", args)
                 parameters = Path(args[args.index("--parameters") + 1][1:])
                 self.assertIn(params["secret"]["value"], parameters.read_text())
@@ -141,7 +292,7 @@ class PreviewTests(unittest.TestCase):
                 return json.dumps(raw).encode()
             console = io.StringIO()
             with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "prepare"]), \
-                 patch.object(PREVIEW, "compiled_context", return_value=({}, params, bound)), \
+                 patch.object(PREVIEW, "compiled_context", return_value=({}, params, bound, None, params)), \
                  patch.object(PREVIEW, "run", side_effect=command), redirect_stdout(console):
                 self.assertEqual(PREVIEW.main(), 0)
             self.assertEqual(len(observed), 1)
@@ -154,14 +305,21 @@ class PreviewTests(unittest.TestCase):
             env["AI4IA_RELEASE_KIND"] = "deploy"
             env["AI4IA_PRIVATE_PREVIEW_BINDING"] = json.loads(report)["binding"]
             with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "prepare"]), \
-                 patch.object(PREVIEW, "compiled_context", return_value=({}, params, bound)), \
+                 patch.object(PREVIEW, "compiled_context", return_value=({}, params, bound, None, params)), \
                  patch.object(PREVIEW, "run", side_effect=command), redirect_stdout(console):
                 self.assertEqual(PREVIEW.main(), 0)
             self.assertTrue(Path(env["GITHUB_OUTPUT"]).read_text().endswith("authorized=true\n"))
             self.assertTrue((Path(directory) / "ai4ia-private-preview/proof.json").exists())
+            self.assertTrue(observed[-1].exists())
+            retained = dict(line.split("=", 1) for line in Path(env["GITHUB_ENV"]).read_text().splitlines())
+            with patch.dict(os.environ, {**env, **retained}, clear=True), \
+                 patch.object(sys, "argv", ["preview", "cleanup"]), \
+                 patch.object(PREVIEW, "run", side_effect=AssertionError("cleanup must stay offline")):
+                self.assertEqual(PREVIEW.main(), 0)
+            self.assertFalse(observed[-1].exists())
             changed = {**bound, "parameters": "d" * 64}
             with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "prepare"]), \
-                 patch.object(PREVIEW, "compiled_context", return_value=({}, params, changed)), \
+                 patch.object(PREVIEW, "compiled_context", return_value=({}, params, changed, None, params)), \
                  patch.object(PREVIEW, "run", side_effect=command), redirect_stdout(console):
                 self.assertEqual(PREVIEW.main(), 1)
             self.assertTrue(Path(env["GITHUB_OUTPUT"]).read_text().endswith("authorized=false\n"))
@@ -259,13 +417,13 @@ class PreviewTests(unittest.TestCase):
         raw["diagnostics"] = diagnostics
         for kind in ("preview", "deploy"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
-                env = {**ENV, "RUNNER_TEMP": directory, "AI4IA_RELEASE_KIND": kind,
+                env = {**ENV, "GITHUB_RUN_ID": "123", "RUNNER_TEMP": directory, "AI4IA_RELEASE_KIND": kind,
                        "AI4IA_PRIVATE_PREVIEW_BINDING": old_binding,
                        "GITHUB_OUTPUT": str(Path(directory) / "outputs"),
                        "GITHUB_ENV": str(Path(directory) / "env")}
                 stdout, stderr = io.StringIO(), io.StringIO()
                 with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "prepare"]), \
-                     patch.object(PREVIEW, "compiled_context", return_value=({}, params, bound)), \
+                     patch.object(PREVIEW, "compiled_context", return_value=({}, params, bound, None, params)), \
                      patch.object(PREVIEW, "run", return_value=json.dumps(raw).encode()), \
                      patch.object(PREVIEW, "scope_preview", wraps=PREVIEW.scope_preview) as scope, \
                      redirect_stdout(stdout), patch.object(sys, "stderr", stderr):
@@ -289,7 +447,7 @@ class PreviewTests(unittest.TestCase):
                 self.assertNotIn("after", text)
                 self.assertEqual(Path(env["GITHUB_OUTPUT"]).read_text(), "authorized=false\n")
                 self.assertFalse((path.parent / "proof.json").exists())
-                self.assertEqual(list(Path(directory).glob("ai4ia-preview-*.json")), [])
+                self.assertEqual(list(Path(directory).glob("ai4ia-private-packet-*/parameters.json")), [])
 
     def test_unknown_diagnostic_shape_is_rejected_and_report_is_bounded(self):
         bound, raw, params = fixture()

@@ -1057,6 +1057,12 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
 class PrivatePreviewWorkflowTests(unittest.TestCase):
     """Drive the actual operation and workflow gate expressions, without Azure."""
 
+    IMAGE_ONLY_STEPS = {
+        "Build and push service images, recording their digests", "Bind production image subjects",
+        "Generate production SPDX SBOMs", "Attest api build provenance", "Attest api SPDX SBOM",
+        "Verify production image attestations", "Retain production image evidence",
+    }
+
     @staticmethod
     def expression(text: str, values: dict[str, str]) -> bool:
         source = text.removeprefix("${{").removesuffix("}}").strip()
@@ -1080,6 +1086,12 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
     def guarded(step: dict) -> None:
         expression = step.get("if", "").removeprefix("${{").removesuffix("}}").strip()
         gate = "steps.execution.outputs.allowed == 'true'"
+        if step.get("name") in PrivatePreviewWorkflowTests.IMAGE_ONLY_STEPS:
+            alternative = gate + " || steps.image_execution.outputs.allowed == 'true'"
+            expected = (f"({alternative}) && (always() && steps.subjects.outcome == 'success')"
+                        if step["name"] == "Retain production image evidence" else alternative)
+            assert expression == expected, step.get("name")
+            return
         assert expression.startswith(gate), step.get("name")
         tail = expression[len(gate):].strip()
         if not tail:
@@ -1131,10 +1143,39 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
             "steps.release_mode.outputs.operation": "deploy",
             "steps.private_preview.outputs.authorized": "false",
         }))
-        self.assertTrue(self.expression(authority, {
+        self.assertFalse(self.expression(authority, {
             "steps.release_mode.outputs.operation": "deploy",
             "steps.private_preview.outputs.authorized": "true",
         }))
+        apply = next(step for step in steps if step.get("id") == "private_apply")
+        for operation, claimed, expected in (("preview", "true", False), ("deploy", "false", False),
+                                             ("deploy", "true", True), ("image", "true", False)):
+            self.assertEqual(self.expression(apply["if"], {
+                "steps.release_mode.outputs.operation": operation,
+                "steps.private_preview.outputs.authorized": claimed,
+            }), expected)
+
+    def test_image_operation_has_only_the_narrow_registry_lane(self):
+        from scripts._api_private import deployment_operation
+        env = {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+               "AI4IA_API_NETWORK_PHASE": "candidate", "AI4IA_RELEASE_OPERATION": "image",
+               "AI4IA_RELEASE_PROVISION": "false"}
+        self.assertEqual(deployment_operation(env, pending=True, blocked=False), "image")
+        for update in ({"GITHUB_EVENT_NAME": "push"}, {"AI4IA_RELEASE_PROVISION": "true"},
+                       {"AI4IA_PRIVATE_PREVIEW_BINDING": "held"}, {"AI4IA_API_NETWORK_PHASE": "private"},
+                       {"AI4IA_PRIVATE_IMAGE_RECEIPT": "{}"}):
+            with self.assertRaises(ValueError):
+                deployment_operation({**env, **update}, pending=True, blocked=False)
+        steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+        authority = next(step for step in steps if step.get("id") == "image_execution")["if"]
+        for mode in ("ordinary", "preview", "deploy", "image"):
+            self.assertEqual(self.expression(authority, {"steps.release_mode.outputs.operation": mode}), mode == "image")
+        for step in steps:
+            if "steps.image_execution.outputs.allowed" in step.get("if", ""):
+                self.assertIn(step["name"], self.IMAGE_ONLY_STEPS)
+                self.guarded(step)
+        self.assertEqual(sum("steps.image_execution.outputs.allowed" in step.get("if", "") for step in steps),
+                         len(self.IMAGE_ONLY_STEPS))
 
     def test_each_removed_or_escaped_write_guard_is_detected(self):
         steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
