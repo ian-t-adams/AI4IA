@@ -2104,6 +2104,11 @@ image pushes, attestations, deployment, model/options canaries or rollback.
 Each later step requires the separate execution gate, and a successful preview
 never opens it. Unreviewable, destructive, out-of-scope or incomplete ARM
 changes refuse; no permission or public-network fallback exists.
+Rejected previews still retain a bounded report with diagnostic code/level and
+validated resource IDs/property paths. Messages, expressions, additional-info
+values, before/after payloads and parameters are never copied into that report.
+Unknown diagnostic shapes remain failures; a rejected report has no binding,
+`executionAuthorized=false`, and a nonzero command outcome.
 
 For an approved phase, first run the existing workflow on main with
 `operation=preview` (the initial pending push does this automatically). Review

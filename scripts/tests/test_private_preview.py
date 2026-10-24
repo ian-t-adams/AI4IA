@@ -239,6 +239,76 @@ class PreviewTests(unittest.TestCase):
                 **template["parameters"], "newRequired": {"type": "string"},
             }}, {})
 
+    def test_diagnostic_rejection_retains_only_safe_metadata_and_no_authority(self):
+        bound, raw, params = fixture()
+        secret = "sk_test_never_publish_this_private_value"
+        params["secret"] = {"value": secret}
+        raw["changes"][0].update(before={"private": secret}, after={"expression": secret},
+                                 delta=[{"path": "properties.example", "before": secret, "after": secret}])
+        valid = PREVIEW.scope_preview(raw, bound, params)
+        old_binding = PREVIEW.make_token(bound, valid, int(PREVIEW.time.time()))
+        diagnostics = [
+            {"code": "WhatIfExampleDiagnostic", "level": "Warning",
+             "target": raw["changes"][0]["resourceId"], "message": secret,
+             "additionalInfo": [{"type": "Secret", "info": {"value": secret}}]},
+            {"level": "Info", "target": "properties.template.containers[0].env",
+             "message": f"unresolved expression {secret}"},
+            {"code": secret, "level": {"unsafe": secret}, "target": "https://invalid.test/" + secret,
+             "message": secret, "expression": secret},
+        ]
+        raw["diagnostics"] = diagnostics
+        for kind in ("preview", "deploy"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                env = {**ENV, "RUNNER_TEMP": directory, "AI4IA_RELEASE_KIND": kind,
+                       "AI4IA_PRIVATE_PREVIEW_BINDING": old_binding,
+                       "GITHUB_OUTPUT": str(Path(directory) / "outputs"),
+                       "GITHUB_ENV": str(Path(directory) / "env")}
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "prepare"]), \
+                     patch.object(PREVIEW, "compiled_context", return_value=({}, params, bound)), \
+                     patch.object(PREVIEW, "run", return_value=json.dumps(raw).encode()), \
+                     patch.object(PREVIEW, "scope_preview", wraps=PREVIEW.scope_preview) as scope, \
+                     redirect_stdout(stdout), patch.object(sys, "stderr", stderr):
+                    self.assertEqual(PREVIEW.main(), 1)
+                self.assertEqual(scope.call_args.args[0]["diagnostics"], diagnostics)
+                path = Path(directory) / "ai4ia-private-preview/report.json"
+                text = path.read_text()
+                report = json.loads(text)
+                self.assertEqual(report["status"], "rejected")
+                self.assertEqual(report["diagnostics"][0]["code"], "WhatIfExampleDiagnostic")
+                self.assertEqual(report["diagnostics"][0]["level"], "Warning")
+                self.assertEqual(report["diagnostics"][0]["target"], raw["changes"][0]["resourceId"])
+                self.assertEqual(report["diagnostics"][1]["code"], "unknown")
+                self.assertEqual(report["diagnostics"][2]["level"], "unknown")
+                self.assertIsNone(report["diagnostics"][2]["target"])
+                self.assertIsNone(report["binding"])
+                self.assertFalse(report["executionAuthorized"])
+                self.assertNotIn(secret, text + stdout.getvalue() + stderr.getvalue())
+                self.assertNotIn("additionalInfo", text)
+                self.assertNotIn("before", text)
+                self.assertNotIn("after", text)
+                self.assertEqual(Path(env["GITHUB_OUTPUT"]).read_text(), "authorized=false\n")
+                self.assertFalse((path.parent / "proof.json").exists())
+                self.assertEqual(list(Path(directory).glob("ai4ia-preview-*.json")), [])
+
+    def test_unknown_diagnostic_shape_is_rejected_and_report_is_bounded(self):
+        bound, raw, params = fixture()
+        for shape in ({}, False, 0, "unknown"):
+            raw["diagnostics"] = shape
+            with self.assertRaises(PREVIEW.PreviewError):
+                PREVIEW.scope_preview(raw, bound, params)
+            report = PREVIEW.rejected_report(raw, bound)
+            self.assertTrue(report["diagnosticsShapeUnknown"])
+            self.assertEqual(report["category"], "arm_diagnostics_shape_unknown")
+            self.assertIsNone(report["binding"])
+        raw["diagnostics"] = [{"level": "Warning", "code": "Example", "message": "never copy"}] * 100
+        raw["changes"] *= 100
+        report = PREVIEW.rejected_report(raw, bound)
+        self.assertTrue(report["truncated"])
+        self.assertLessEqual(len(report["diagnostics"]), 16)
+        self.assertLessEqual(len(report["changes"]), 32)
+        self.assertLessEqual(len(json.dumps(report, indent=2).encode()), 64 * 1024)
+
     def test_current_compiled_parameter_contract_is_covered(self):
         compiled = _compile()
         self.assertEqual(compiled.returncode, 0, compiled.stderr)
