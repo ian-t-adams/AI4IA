@@ -415,6 +415,11 @@ jobs:
       AI4IA_API_PRIVATE_VNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_VNET_PREFIX }}
       AI4IA_API_PRIVATE_SUBNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_SUBNET_PREFIX }}
       AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX: ${{ vars.AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX }}
+      # Reserved derived values, never operator-selected image overrides.
+      # The private preflight fills these before any nonlegacy provisioning.
+      AI4IA_API_PRIVATE_INITIAL_IMAGE: ''
+      AI4IA_PRIVATE_WEB_IMAGE: ''
+      AI4IA_PRIVATE_PROXY_IMAGE: ''
       # Canonical memory backend selection for the staged mem0 -> Cosmos cutover.
       # main.parameters.json resolves memoryStore from ${AI4IA_MEMORY_STORE=cosmos};
       # CI can't run `azd env set`, so plumb it here or the parameter never sees the

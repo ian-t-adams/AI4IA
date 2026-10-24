@@ -254,6 +254,9 @@ class PrivateAdmissionTests(unittest.TestCase):
         self.assertEqual(workflow.count(
             'if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ] && [ "${AI4IA_API_NETWORK_PHASE:-legacy}" = "legacy" ]; then'
         ), 2)
+        for name in ("AI4IA_API_PRIVATE_INITIAL_IMAGE", "AI4IA_PRIVATE_WEB_IMAGE", "AI4IA_PRIVATE_PROXY_IMAGE"):
+            self.assertIn(f"      {name}: ''", workflow)
+            self.assertNotIn(f"vars.{name}", workflow)
 
 
 class NonbillableOptionsTests(unittest.TestCase):
