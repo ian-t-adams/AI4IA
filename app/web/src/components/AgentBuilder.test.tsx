@@ -122,6 +122,7 @@ describe("AgentBuilder", () => {
     expect(screen.queryByText(/Your saved agents will appear here/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText(/Your saved agents will appear here/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
   it("creates from name and instructions, then renames without changing its ID or tools", async () => {
     const user = userEvent.setup();

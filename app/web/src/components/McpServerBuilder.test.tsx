@@ -65,6 +65,7 @@ describe("McpServerBuilder", () => {
     expect(screen.queryByText(/Connect an existing server to make/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText(/Connect an existing server to make/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
   it("validates the endpoint and credentials, retains a failed draft, and connects only on explicit save", async () => {
     const user = userEvent.setup();

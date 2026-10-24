@@ -278,7 +278,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
         <h3 className="studio-list-heading">Your connections</h3>
         <ul className="studio-list-scroll">
           {loading && <li role="status">Loading your connections...</li>}
-          {listUnavailable && <li role="status">Your connections could not be loaded. <button onClick={refreshMine} style={secondaryBtn}>Retry</button></li>}
+          {listUnavailable && <li role="status">Your connections could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
           {!loading && !listUnavailable && mine.length === 0 && (
             <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
               Connect an existing server to make its tools available here.

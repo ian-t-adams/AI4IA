@@ -847,7 +847,7 @@ export function WorkflowBuilder({
         <h3 className="studio-list-heading">Your workflows</h3>
         <ul className="studio-list-scroll">
           {loading && <li role="status">Loading your workflows...</li>}
-          {listUnavailable && <li role="status">Your workflows could not be loaded. <button onClick={refreshMine} style={secondaryBtn}>Retry</button></li>}
+          {listUnavailable && <li role="status">Your workflows could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
           {!loading && !listUnavailable && mine.length === 0 && (
             <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
               Save your first workflow to reuse its steps here.

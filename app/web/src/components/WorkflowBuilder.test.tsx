@@ -155,6 +155,7 @@ describe("WorkflowBuilder", () => {
     expect(screen.queryByText(/Save your first workflow/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText(/Save your first workflow/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
   it("creates ordered steps, reorders their actual instructions and preserves the saved ID on rename", async () => {
     const user = userEvent.setup();

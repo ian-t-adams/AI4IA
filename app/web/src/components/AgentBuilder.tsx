@@ -314,7 +314,7 @@ export function AgentBuilder({
         <h3 className="studio-list-heading">Your agents</h3>
         <ul className="studio-list-scroll">
           {loading && <li role="status">Loading your agents...</li>}
-          {listUnavailable && <li role="status">Your agents could not be loaded. <button onClick={refreshMine} style={secondaryBtn}>Retry</button></li>}
+          {listUnavailable && <li role="status">Your agents could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
           {!loading && !listUnavailable && mine.length === 0 && (
             <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
               Your saved agents will appear here. Create your first one in the editor.
