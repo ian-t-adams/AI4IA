@@ -16,6 +16,7 @@ import {
   MAX_RUN_INPUT_LEN,
   MAX_STEPS,
   nameError,
+  suggestedStudioName,
 } from "@/lib/studio";
 import { HelpTooltip } from "./HelpTooltip";
 import { TOOL_LABELS } from "@/lib/toolHelp";
@@ -34,6 +35,7 @@ import {
 import { checkRow, ghostBtn, inputStyle, labelStyle, primaryBtn, secondaryBtn } from "./builderStyles";
 import { WORKFLOW_TEMPLATES, templateById } from "../lib/workflowTemplates";
 import { PublicationControls } from "./PublicationControls";
+import { useStudioDraft } from "./useStudioDraft";
 
 // Client-only stable key so React can track step rows across reorder/remove
 // without the instruction/agent values "travelling" to the wrong row.
@@ -151,10 +153,19 @@ export function WorkflowBuilder({
   const [form, setForm] = useState<WorkflowForm>(() => blankForm(firstAgentName));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [listUnavailable, setListUnavailable] = useState(false);
   const [tab, setTab] = useState<"build" | "run">("build");
 
   const [runInput, setRunInput] = useState("");
   const [running, setRunning] = useState(false);
+  const dirty = savedWorkflow ? workflowDirty(form, savedWorkflow) : Boolean(
+    form.name || form.displayName || form.description || !form.enabled || form.steps.length !== 1 ||
+    form.steps.some((s) => s.instruction || s.extraTools.length || s.agent !== firstAgentName),
+  );
+  const confirmDiscard = useStudioDraft(dirty || Boolean(runInput), busy || running);
+  const newName = form.name || suggestedStudioName(form.displayName, mine.map((w) => w.name), "workflow");
   // Server-reported: whether this deployment can honour a durable run at all.
   // The control is hidden (not merely disabled) when it cannot, so the UI never
   // offers an option whose only possible outcome is a 422.
@@ -235,11 +246,15 @@ export function WorkflowBuilder({
   const refreshMine = useCallback(async () => {
     try {
       const listed = await api.listWorkflows();
+      setListUnavailable(false);
       setMine(listed.workflows);
       setDurableAvailable(listed.durableAvailable);
       setToolAutoApproveAvailable(listed.toolAutoApproveAvailable === true);
     } catch (e) {
+      setListUnavailable(true);
       setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -300,6 +315,8 @@ export function WorkflowBuilder({
     setSavedWorkflow(null);
     setForm(blankForm(firstAgentName));
     setError(null);
+    setNotice(null);
+    setRunInput("");
     setRunState({ phase: "idle" });
     setTab("build");
   }, [firstAgentName]);
@@ -329,6 +346,8 @@ export function WorkflowBuilder({
       })),
     });
     setError(null);
+    setNotice(null);
+    setRunInput("");
     setRunState({ phase: "idle" });
     setTab("build");
   }, []);
@@ -341,6 +360,8 @@ export function WorkflowBuilder({
     setSavedWorkflow(w);
     setForm(formFrom(w));
     setError(null);
+    setNotice(null);
+    setRunInput("");
     setRunState({ phase: "idle" });
   }, []);
 
@@ -417,8 +438,13 @@ export function WorkflowBuilder({
   // whether it is dirty.
   const submit = useCallback(async (): Promise<Workflow | null> => {
     setError(null);
+    setNotice(null);
     if (!editing) {
-      const ne = nameError(form.name);
+      if (!form.displayName.trim()) {
+        setError("Workflow name is required.");
+        return null;
+      }
+      const ne = nameError(newName);
       if (ne) {
         setError(ne);
         return null;
@@ -451,11 +477,12 @@ export function WorkflowBuilder({
     try {
       const saved = editing
         ? await api.updateWorkflow(editing, { ...body, expectedRevision: savedWorkflow?.revision })
-        : await api.createWorkflow({ name: form.name, ...body });
+        : await api.createWorkflow({ name: newName, ...body });
       setSavedWorkflow(saved);
       await refreshMine();
       setEditing(saved.name);
       setForm(formFrom(saved));
+      setNotice("Workflow saved. Open Run & test when you are ready.");
       // The saved workflow itself, not its name: `doRun` would otherwise look
       // the name up in `mine`, whose value its closure captured BEFORE this
       // save. Save-and-run then executed the previous definition while the
@@ -468,7 +495,7 @@ export function WorkflowBuilder({
     } finally {
       setBusy(false);
     }
-  }, [editing, form, savedWorkflow, firstMissingInput, refreshMine]);
+  }, [editing, form, newName, savedWorkflow, firstMissingInput, refreshMine]);
 
   const remove = useCallback(
     async (name: string) => {
@@ -814,19 +841,22 @@ export function WorkflowBuilder({
   return (
     <div className="studio-pane">
       <div className="studio-list">
-        <button onClick={startNew} disabled={busy || running} style={primaryBtn}>
-          + New workflow
+        <button onClick={() => { if (confirmDiscard()) startNew(); }} disabled={busy || running || loading} style={secondaryBtn}>
+          New workflow
         </button>
+        <h3 className="studio-list-heading">Your workflows</h3>
         <ul className="studio-list-scroll">
-          {mine.length === 0 && (
+          {loading && <li role="status">Loading your workflows...</li>}
+          {listUnavailable && <li role="status">Your workflows could not be loaded. <button onClick={refreshMine} style={secondaryBtn}>Retry</button></li>}
+          {!loading && !listUnavailable && mine.length === 0 && (
             <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
-              No workflows yet.
+              Save your first workflow to reuse its steps here.
             </li>
           )}
           {mine.map((w) => (
             <li key={w.id} className="studio-list-row">
               <button
-                onClick={() => startEdit(w)}
+                onClick={() => { if (editing !== w.name && confirmDiscard()) startEdit(w); }}
                 disabled={busy || running}
                 aria-current={editing === w.name ? "true" : undefined}
                 className="studio-list-select"
@@ -841,7 +871,7 @@ export function WorkflowBuilder({
                 title="Delete"
                 className="studio-list-delete"
               >
-                ✕
+                Delete
               </button>
             </li>
           ))}
@@ -892,17 +922,25 @@ export function WorkflowBuilder({
           role="tabpanel"
           aria-labelledby={`workflow-tab-${tab}`}
         >
-          {error && (
+          {error && tab === "run" && (
             <p role="alert" className="studio-alert">
               {error}
             </p>
           )}
 
           {tab === "build" ? (
-            <>
-              <h3 style={{ margin: 0, fontSize: "1em" }}>
-                {editing ? `Edit ${editing}` : "New workflow"}
-              </h3>
+            <fieldset className="studio-form" disabled={busy || running}>
+              <div className="studio-editor-header">
+                <div>
+                  <h3>{editing ? `Edit ${savedWorkflow?.displayName || editing}` : "Create a workflow"}</h3>
+                  <p className="studio-help">A workflow runs agents in order, passing each result to the next step.</p>
+                </div>
+                <button onClick={submit} disabled={busy || loading} style={primaryBtn}>
+                  {busy ? "Saving…" : editing ? "Save changes" : "Create workflow"}
+                </button>
+                {error && <p role="alert" className="studio-alert">{error}</p>}
+                <p role="status" className="studio-save-status">{dirty ? "Unsaved changes" : notice}</p>
+              </div>
 
               {!editing && (
                 <div>
@@ -914,7 +952,7 @@ export function WorkflowBuilder({
                     value=""
                     style={inputStyle}
                     onChange={(e) => {
-                      if (e.target.value) startFromTemplate(e.target.value);
+                      if (e.target.value && confirmDiscard()) startFromTemplate(e.target.value);
                     }}
                   >
                     <option value="">Blank workflow</option>
@@ -933,46 +971,15 @@ export function WorkflowBuilder({
               )}
 
               <div>
-                <label style={labelStyle} htmlFor="wf-name">
-                  Name
-                </label>
-                <input
-                  id="wf-name"
-                  value={form.name}
-                  disabled={!!editing}
-                  placeholder="e.g. summarize"
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  style={{ ...inputStyle, opacity: editing ? 0.6 : 1 }}
-                />
-                {editing && (
-                  <p style={{ ...labelStyle, marginTop: 4 }}>
-                    Name is the stable ID and can&apos;t be changed.
-                  </p>
-                )}
-              </div>
-
-              <div>
                 <label style={labelStyle} htmlFor="wf-display">
-                  Display name
+                  Workflow name
                 </label>
                 <input
                   id="wf-display"
                   value={form.displayName}
                   maxLength={MAX_DISPLAY_NAME_LEN}
+                  placeholder="e.g. Research and write"
                   onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label style={labelStyle} htmlFor="wf-desc">
-                  Description
-                </label>
-                <input
-                  id="wf-desc"
-                  value={form.description}
-                  maxLength={MAX_DESCRIPTION_LEN}
-                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                   style={inputStyle}
                 />
               </div>
@@ -994,19 +1001,16 @@ export function WorkflowBuilder({
                       8,000 characters — not the full conversation history.
                     </HelpTooltip>
                   </span>
-                  <button onClick={addStep} disabled={form.steps.length >= MAX_STEPS} style={ghostBtn}>
-                    + Add step
-                  </button>
                 </div>
                 <p style={{ ...labelStyle, margin: 0 }}>
                   Use {INPUT_TOKEN} for the run input and {"{previous}"}{" "}for the prior step&apos;s
                   output. The first step must include {INPUT_TOKEN}.
                 </p>
-                <div className="workflow-steps">
+                <ol className="workflow-steps">
                   {form.steps.map((s, i) => {
                     const selectedAgent = agentsByName.get(s.agent);
                     return (
-                      <div key={s.key} className="workflow-step">
+                      <li key={s.key} className="workflow-step">
                         <div className="workflow-step-head">
                           <strong className="workflow-step-index">Step {i + 1}</strong>
                           <select
@@ -1019,29 +1023,30 @@ export function WorkflowBuilder({
                           </select>
                           <span className="workflow-step-actions">
                             <button onClick={() => moveStep(s.key, -1)} disabled={i === 0} aria-label={`Move step ${i + 1} up`}>
-                              ↑
+                              Move up
                             </button>
                             <button
                               onClick={() => moveStep(s.key, 1)}
                               disabled={i === form.steps.length - 1}
                               aria-label={`Move step ${i + 1} down`}
                             >
-                              ↓
+                              Move down
                             </button>
                             <button
                               onClick={() => removeStep(s.key)}
                               disabled={form.steps.length <= 1}
                               aria-label={`Remove step ${i + 1}`}
                             >
-                              ✕
+                              Remove
                             </button>
                           </span>
                         </div>
                         {selectedAgent?.description && (
                           <p style={{ ...labelStyle, margin: 0 }}>{selectedAgent.description}</p>
                         )}
-                        {renderChips(s.agent, `Step ${i + 1} capabilities`, s.extraTools)}
+                        <label style={labelStyle} htmlFor={`wf-instruction-${s.key}`}>Instructions for step {i + 1}</label>
                         <textarea
+                          id={`wf-instruction-${s.key}`}
                           aria-label={`Step ${i + 1} instruction`}
                           value={s.instruction}
                           maxLength={MAX_INSTRUCTION_LEN}
@@ -1050,7 +1055,11 @@ export function WorkflowBuilder({
                           onChange={(e) => patchStep(s.key, { instruction: e.target.value })}
                           style={{ ...inputStyle, resize: "vertical" }}
                         />
-                        {i === 0 && firstMissingInput && (
+                        <div className="studio-inline-actions">
+                          <button style={ghostBtn} disabled={s.instruction.length + INPUT_TOKEN.length + (s.instruction ? 1 : 0) > MAX_INSTRUCTION_LEN} onClick={() => patchStep(s.key, { instruction: `${s.instruction}${s.instruction ? " " : ""}${INPUT_TOKEN}` })}>Insert run input</button>
+                          {i > 0 && <button style={ghostBtn} disabled={s.instruction.length + "{previous}".length + (s.instruction ? 1 : 0) > MAX_INSTRUCTION_LEN} onClick={() => patchStep(s.key, { instruction: `${s.instruction}${s.instruction ? " " : ""}{previous}` })}>Insert previous result</button>}
+                        </div>
+                        {i === 0 && firstMissingInput && s.instruction && (
                           <p
                             role="alert"
                             style={{ color: "var(--danger)", fontSize: "0.8em", margin: 0 }}
@@ -1058,6 +1067,9 @@ export function WorkflowBuilder({
                             First step must include {INPUT_TOKEN}.
                           </p>
                         )}
+                        <details className="studio-details">
+                          <summary>Step tools and capabilities <span>({s.extraTools.length} added)</span></summary>
+                        {renderChips(s.agent, `Step ${i + 1} capabilities`, s.extraTools)}
                         {/* aria-label pins the group's accessible name. Without
                             it the name comes from the <legend>, which would fold
                             in the tooltip button's text and read identically for
@@ -1069,10 +1081,11 @@ export function WorkflowBuilder({
                           <legend>
                             Tools for this step
                             <HelpTooltip label="About step tools" size="sm">
-                              These are granted on top of whatever the step&apos;s agent already
+                              These are offered on top of whatever the step&apos;s agent already
                               has — they never replace them. Use this when the agent you picked is
                               one of the built-in ones, whose tools you cannot edit. Only tools
                               that actually work inside a workflow step are listed here.
+                              Selection never replaces execution-time permission or approval.
                             </HelpTooltip>
                           </legend>
                           {STEP_ATTACHABLE_TOOLS.map((t) => (
@@ -1086,12 +1099,29 @@ export function WorkflowBuilder({
                             </label>
                           ))}
                         </fieldset>
-                      </div>
+                        </details>
+                      </li>
                     );
                   })}
-                </div>
+                </ol>
+                <button onClick={addStep} disabled={form.steps.length >= MAX_STEPS} style={secondaryBtn}>
+                  Add step
+                </button>
               </div>
 
+              <details className="studio-details">
+                <summary>Workflow settings <span>Description, ID and availability</span></summary>
+                <div>
+                  <label style={labelStyle} htmlFor="wf-desc">Description</label>
+                  <input id="wf-desc" value={form.description} maxLength={MAX_DESCRIPTION_LEN}
+                    onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle} htmlFor="wf-name">Workflow ID</label>
+                  <input id="wf-name" value={editing ? form.name : newName} disabled={!!editing}
+                    onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
+                  <p className="studio-help">Suggested from the name for new workflows. Saved IDs remain unchanged when you rename a workflow.</p>
+                </div>
               <label style={checkRow}>
                 <input
                   type="checkbox"
@@ -1100,11 +1130,9 @@ export function WorkflowBuilder({
                 />
                 Enabled
               </label>
+              </details>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button onClick={submit} disabled={busy} style={primaryBtn}>
-                  {busy ? "Saving…" : editing ? "Save changes" : "Create workflow"}
-                </button>
                 {editing && (
                   <button onClick={() => setTab("run")} style={secondaryBtn}>
                     Run &amp; test →
@@ -1118,7 +1146,7 @@ export function WorkflowBuilder({
                 dirty={workflowDirty(form, savedWorkflow)}
                 busy={busy}
               />
-            </>
+            </fieldset>
           ) : !runTarget ? (
             <p style={{ ...labelStyle, margin: 0 }}>
               Save this workflow first, or pick one from the list, then run it here.

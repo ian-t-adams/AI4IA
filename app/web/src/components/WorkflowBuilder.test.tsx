@@ -146,6 +146,69 @@ async function openRunTab(
 }
 
 describe("WorkflowBuilder", () => {
+  it("distinguishes unavailable workflows from an empty saved list and retries", async () => {
+    mocks.listWorkflows.mockRejectedValueOnce(new Error("List temporarily unavailable."))
+      .mockResolvedValueOnce({ workflows: [], durableAvailable: false });
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
+    expect(await screen.findByText(/Your workflows could not be loaded/)).toBeInTheDocument();
+    expect(screen.queryByText(/Save your first workflow/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText(/Save your first workflow/)).toBeInTheDocument();
+  });
+  it("creates ordered steps, reorders their actual instructions and preserves the saved ID on rename", async () => {
+    const user = userEvent.setup();
+    mocks.createWorkflow.mockImplementation(async (body) => ({ ...WORKFLOWS[0], ...body, revision: 1 }));
+    mocks.updateWorkflow.mockImplementation(async (name, body) => ({ ...WORKFLOWS[0], ...body, name, revision: 2 }));
+    render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
+    expect(screen.getByLabelText("Workflow ID")).not.toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Save memory" })).not.toBeVisible();
+    await user.type(screen.getByLabelText("Workflow name"), "Review notes");
+    await user.type(screen.getByLabelText("Step 1 instruction"), "Research");
+    await user.click(screen.getByRole("button", { name: "Insert run input" }));
+    await user.click(screen.getByRole("button", { name: "Add step" }));
+    await user.selectOptions(screen.getByLabelText("Step 2 agent"), "research");
+    await user.type(screen.getByLabelText("Step 2 instruction"), "Write");
+    await user.click(screen.getAllByRole("button", { name: "Insert run input" })[1]);
+    await user.click(screen.getByRole("button", { name: "Insert previous result" }));
+    await user.click(screen.getByRole("button", { name: "Move step 2 up" }));
+    expect(screen.getByLabelText("Step 1 instruction")).toHaveValue("Write {input} {previous}");
+    expect(screen.getByLabelText("Step 1 agent")).toHaveValue("research");
+    expect(screen.getByLabelText("Step 2 instruction")).toHaveValue("Research {input}");
+    await user.click(screen.getByRole("button", { name: "Create workflow" }));
+    await screen.findByText(/Workflow saved/);
+    expect(mocks.createWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      name: "review-notes", steps: [
+        { agent: "research", instruction: "Write {input} {previous}", extraTools: [] },
+        { agent: "helper", instruction: "Research {input}", extraTools: [] },
+      ],
+    }));
+    await user.clear(screen.getByLabelText("Workflow name"));
+    await user.type(screen.getByLabelText("Workflow name"), "Review and publish");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(mocks.updateWorkflow).toHaveBeenCalledWith("review-notes", expect.objectContaining({
+      displayName: "Review and publish", expectedRevision: 1,
+    })));
+    expect(mocks.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("protects a draft from item and template replacement and reports failed saves", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    mocks.createWorkflow.mockRejectedValueOnce(new Error("Workflow could not be saved. Retry."));
+    render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
+    await user.type(screen.getByLabelText("Workflow name"), "My draft");
+    await user.click(screen.getByRole("button", { name: "Insert run input" }));
+    await user.click(await screen.findByRole("button", { name: "Summarize" }));
+    await user.selectOptions(screen.getByLabelText("Start from a template"), "mistral-ocr-extract");
+    expect(screen.getByLabelText("Workflow name")).toHaveValue("My draft");
+    await user.click(screen.getByRole("button", { name: "Create workflow" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Workflow could not be saved");
+    expect(screen.getByLabelText("Workflow name")).toHaveValue("My draft");
+    expect(confirm).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
+  });
+
   it("saves with the latest returned draft revision, not a stale list revision", async () => {
     mocks.updateWorkflow.mockResolvedValueOnce({ ...WORKFLOWS[0], revision: 6 }).mockResolvedValueOnce({ ...WORKFLOWS[0], revision: 7 });
     const user = userEvent.setup();
@@ -194,6 +257,7 @@ describe("WorkflowBuilder", () => {
     expect(screen.getByRole("checkbox", { name: "Workflow tool" })).not.toBeChecked();
     expect(screen.queryByRole("checkbox", { name: "chat" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeEnabled();
+    await user.click(screen.getByText("Step tools and capabilities", { selector: "summary" }));
     await user.click(screen.getByRole("checkbox", { name: "Save memory" }));
     expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeDisabled();
     expect(mocks.submitPublication).not.toHaveBeenCalled();
@@ -244,9 +308,9 @@ describe("WorkflowBuilder", () => {
 
     // The form is populated from the template...
     await waitFor(() =>
-      expect(screen.getByLabelText("Name")).toHaveValue("ocr-extract"),
+      expect(screen.getByLabelText("Workflow ID")).toHaveValue("ocr-extract"),
     );
-    expect(screen.getByLabelText("Display name")).toHaveValue(
+    expect(screen.getByLabelText("Workflow name")).toHaveValue(
       "Extract from scans (Mistral OCR)",
     );
     // ...including its steps, which is the part that makes the template useful.
@@ -325,6 +389,7 @@ describe("WorkflowBuilder", () => {
   it("warns on the step itself that memory is off, and says document reading is ambient", async () => {
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
 
+    await userEvent.setup().click(screen.getByText("Step tools and capabilities", { selector: "summary" }));
     const strip = await screen.findByRole("group", { name: "Step 1 capabilities" });
     expect(strip).toHaveTextContent(/Save memory · off/i);
     expect(strip).toHaveTextContent(/Recall memory · off/i);
@@ -340,6 +405,7 @@ describe("WorkflowBuilder", () => {
     // tools cannot be edited in Agents at all — which is precisely why a
     // workflow could claim to save memories while saving none.
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await userEvent.setup().click(screen.getByText("Step tools and capabilities", { selector: "summary" }));
     await screen.findByRole("group", { name: "Step 1 capabilities" });
 
     expect(screen.queryByRole("button", { name: /attach tools/i })).not.toBeInTheDocument();
@@ -369,6 +435,7 @@ describe("WorkflowBuilder", () => {
       inheritedTools: [],
     });
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await userEvent.setup().click(screen.getByText("Step tools and capabilities", { selector: "summary" }));
     const strip = await screen.findByRole("group", { name: "Step 1 capabilities" });
     // Control: the chip is off BEFORE the box is ticked, so a passing assertion
     // below cannot be the default state.
@@ -389,6 +456,7 @@ describe("WorkflowBuilder", () => {
     // do nothing: those tools deliver through a per-turn chat attachment sink a
     // step cannot drain. Offering one would be a brand-new inert control.
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
+    await userEvent.setup().click(screen.getByText("Step tools and capabilities", { selector: "summary" }));
     await screen.findByRole("checkbox", { name: "Save memory" });
 
     for (const absent of ["Generate image", "Generate video", "Process document"]) {
@@ -404,12 +472,13 @@ describe("WorkflowBuilder", () => {
     render(<WorkflowBuilder agents={AGENTS} runModel="gpt-4" onRun={() => {}} />);
     const user = userEvent.setup();
 
-    await user.type(await screen.findByLabelText(/^name/i), "notes");
+    await user.type(await screen.findByLabelText("Workflow name"), "notes");
     // `user.type` parses "{...}" as a key descriptor, so typing the {input}
     // token silently produces the wrong text and the first-step validation
     // rejects the save. `paste` inserts the string verbatim.
     await user.click(screen.getByLabelText("Step 1 instruction"));
     await user.paste("Record the decisions in {input}");
+    await user.click(screen.getByText("Step tools and capabilities", { selector: "summary" }));
     await user.click(screen.getByRole("checkbox", { name: "Save memory" }));
     await user.click(screen.getByRole("button", { name: /create workflow/i }));
 
@@ -829,6 +898,7 @@ describe("durable cancellation evidence continuation", () => {
       // An ongoing watch must not resurrect the old report after the user
       // selects another workflow while that evidence is still being refreshed.
       if (acknowledgedMessageStatus === "streaming") {
+        vi.spyOn(window, "confirm").mockReturnValueOnce(true);
         await user.click(screen.getByRole("button", { name: "Summarize" }));
         const readsAtSwitch = mocks.listMessages.mock.calls.length;
         await waitFor(() => expect(mocks.listMessages.mock.calls.length).toBeGreaterThan(readsAtSwitch), { timeout: 10000 });

@@ -8,6 +8,7 @@ import type { SurfaceVariant } from "./ModalShell";
 import { WorkflowBuilder } from "./WorkflowBuilder";
 import { McpServerBuilder } from "./McpServerBuilder";
 import { DecisionPlayground } from "./DecisionPlayground";
+import { allowWorkspaceNavigation } from "./useStudioDraft";
 
 type Tab = "agents" | "workflows" | "tools" | "decisions";
 
@@ -45,8 +46,12 @@ export function StudioPanel({
   const page = variant === "page";
 
   const selectTab = (nextTab: Tab, focus = false) => {
+    if (nextTab !== tab && !allowWorkspaceNavigation()) return;
     setTab(nextTab);
     if (focus) document.getElementById(`studio-tab-${nextTab}`)?.focus();
+  };
+  const close = () => {
+    if (allowWorkspaceNavigation()) onClose();
   };
 
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -75,13 +80,12 @@ export function StudioPanel({
         maxHeight: page ? undefined : "100%",
         minWidth: 0,
         borderRadius: "var(--radius)",
-        border: "1px solid var(--border)",
-        padding: "clamp(12px, 3vw, 24px)",
+        border: page ? "none" : "1px solid var(--border)",
+        padding: page ? 0 : "clamp(12px, 3vw, 24px)",
         display: "flex",
         flexDirection: "column",
         gap: 16,
         overflow: page ? undefined : "hidden",
-        ...(page ? { background: "var(--bg-elevated)" } : {}),
       }}
     >
       <div
@@ -132,7 +136,7 @@ export function StudioPanel({
         {page ? null : (
           <button
             type="button"
-            onClick={onClose}
+            onClick={close}
             aria-label="Close builder"
             style={{
               minWidth: 44,
@@ -186,7 +190,7 @@ export function StudioPanel({
   return (
     <DialogFrame
       ariaLabel="Agents and workflows builder"
-      onClose={onClose}
+      onClose={close}
       zIndex={50}
       overlayPadding={8}
     >

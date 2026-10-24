@@ -53,3 +53,18 @@ export function nameError(name: string): string | null {
   }
   return null;
 }
+
+// IDs are suggested only for new records. Saved references never follow a rename.
+export function suggestedStudioName(label: string, existing: string[], fallback: string): string {
+  const normalized = label.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const base = (normalized.match(/^[a-z]/) ? normalized : `${fallback}-${normalized}`)
+    .slice(0, MAX_NAME_LEN).replace(/-+$/g, "") || fallback;
+  const used = new Set(existing);
+  let candidate = base;
+  for (let suffix = 2; used.has(candidate); suffix += 1) {
+    const ending = `-${suffix}`;
+    candidate = `${base.slice(0, MAX_NAME_LEN - ending.length).replace(/-+$/g, "")}${ending}`;
+  }
+  return candidate;
+}

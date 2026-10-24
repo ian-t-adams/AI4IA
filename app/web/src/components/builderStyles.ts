@@ -1,16 +1,7 @@
-// Shared style constants for the "builder" surfaces (AgentBuilder,
-// WorkflowBuilder, McpServerBuilder). These were previously copy-pasted
-// verbatim (or near-verbatim) into each file; consolidating them here means a
-// visual tweak only needs to happen once, and keeps each builder file focused
-// on its own behavior instead of restating the same CSSProperties objects.
-//
-// `fieldset` unifies two slightly different variants (8px/gap:4 in
-// AgentBuilder vs 10px/gap:8 in McpServerBuilder) on the slightly more
-// spacious McpServerBuilder spacing — a minor, intentional cosmetic
-// harmonization, not a behavior change.
+// Shared controls for the Studio builders.
 
 export const labelStyle: React.CSSProperties = {
-  fontSize: "0.8em",
+  fontSize: "0.875em",
   color: "var(--fg-muted)",
   marginBottom: 4,
   display: "block",
@@ -51,6 +42,7 @@ export const secondaryBtn: React.CSSProperties = {
 // Compact variant of secondaryBtn used for inline row actions (e.g. workflow
 // step "Remove"/"Move" controls) where a full-size button would be too big.
 export const ghostBtn: React.CSSProperties = {
+  minHeight: 44,
   padding: "4px 8px",
   borderRadius: 6,
   border: "1px solid var(--border)",
@@ -60,19 +52,10 @@ export const ghostBtn: React.CSSProperties = {
   fontSize: "0.85em",
 };
 
-export const iconBtn: React.CSSProperties = {
-  border: "none",
-  background: "transparent",
-  color: "var(--fg-muted)",
-  padding: "4px 6px",
-  cursor: "pointer",
-};
-
 export const fieldset: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
+  border: 0,
   margin: 0,
-  padding: "10px 12px",
+  padding: 0,
   display: "flex",
   flexDirection: "column",
   gap: 8,

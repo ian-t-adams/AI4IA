@@ -114,6 +114,59 @@ afterEach(() => {
 });
 
 describe("AgentBuilder", () => {
+  it("distinguishes an unavailable saved list from an empty one and retries", async () => {
+    mocks.listMyAgents.mockRejectedValueOnce(new Error("List temporarily unavailable.")).mockResolvedValueOnce([]);
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
+    expect(await screen.findByText(/Your agents could not be loaded/)).toBeInTheDocument();
+    expect(screen.queryByText(/Your saved agents will appear here/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText(/Your saved agents will appear here/)).toBeInTheDocument();
+  });
+  it("creates from name and instructions, then renames without changing its ID or tools", async () => {
+    const user = userEvent.setup();
+    mocks.createAgent.mockImplementation(async (body) => ({ ...MINE[0], ...body, id: body.name, revision: 1 }));
+    mocks.updateAgent.mockImplementation(async (name, body) => ({ ...MINE[0], ...body, name, revision: 2 }));
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
+    expect(screen.getByLabelText("Name (@mention)")).not.toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Calculator" })).not.toBeVisible();
+    await user.type(screen.getByLabelText("Agent name"), "Helper");
+    await user.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Instructions are required");
+    expect(mocks.createAgent).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("Instructions"), "Summarize the user's notes.");
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
+    await user.click(screen.getByRole("checkbox", { name: "Calculator" }));
+    await user.click(screen.getByRole("button", { name: "Create agent" }));
+    await screen.findByText(/Saved\. Use @helper-2/);
+    expect(mocks.createAgent).toHaveBeenCalledWith(expect.objectContaining({
+      name: "helper-2", displayName: "Helper", tools: ["calculator"], defaultModel: null,
+    }));
+    await user.clear(screen.getByLabelText("Agent name"));
+    await user.type(screen.getByLabelText("Agent name"), "Note assistant");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(mocks.updateAgent).toHaveBeenCalledWith("helper-2", expect.objectContaining({
+      displayName: "Note assistant", tools: ["calculator"], expectedRevision: 1,
+    })));
+  });
+
+  it("retains new and existing drafts when switching is cancelled", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
+    await user.type(screen.getByLabelText("Instructions"), "Draft instructions");
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Draft instructions");
+    confirm.mockReturnValueOnce(true);
+    await user.click(screen.getByRole("button", { name: "Helper" }));
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Be helpful.");
+    await user.type(screen.getByLabelText("Instructions"), " Edited");
+    await user.click(screen.getByRole("button", { name: "New agent" }));
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Be helpful. Edited");
+    expect(mocks.updateAgent).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
   it("saves with the last server revision even when the follow-up list is older", async () => {
     mocks.updateAgent.mockResolvedValueOnce({ ...MINE[0], revision: 8 }).mockResolvedValueOnce({ ...MINE[0], revision: 9 });
     const user = userEvent.setup();
@@ -152,7 +205,7 @@ describe("AgentBuilder", () => {
     };
     await fillPublication();
     expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeEnabled();
-    await user.type(screen.getByLabelText("System prompt"), " More detail.");
+    await user.type(screen.getByLabelText("Instructions"), " More detail.");
     expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeDisabled();
     expect(screen.getByText(/Unsaved edits\. Save changes first/)).toBeInTheDocument();
     expect(mocks.submitPublication).not.toHaveBeenCalled();
@@ -198,6 +251,7 @@ describe("AgentBuilder", () => {
     const user = userEvent.setup();
     render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);
 
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
     const toolsGroup = await screen.findByRole("group", { name: /Tools \(max/i });
     const checkbox = within(toolsGroup).getByRole("checkbox", { name: "Calculator" });
     expect(checkbox).not.toBeChecked();
@@ -223,6 +277,7 @@ describe("AgentBuilder", () => {
     render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
     await waitFor(() => expect(mocks.listMyAgents).toHaveBeenCalled());
 
+    await user.click(screen.getByText("Delegation", { selector: "summary" }));
     const delegateGroup = await screen.findByRole("group", { name: /Delegate to/i });
     const helperCheckbox = within(delegateGroup).getByRole("checkbox", { name: "Helper" });
     // Regression test: the nested help button's aria-label must not leak
@@ -250,6 +305,7 @@ describe("AgentBuilder", () => {
       <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
     );
 
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     expect(checkbox.closest("label")).toBeNull();
@@ -272,6 +328,7 @@ describe("AgentBuilder", () => {
       <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
     );
 
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     const row = checkbox.parentElement as HTMLElement;
@@ -292,6 +349,7 @@ describe("AgentBuilder", () => {
       <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
     );
 
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     const row = checkbox.parentElement as HTMLElement;
@@ -317,6 +375,7 @@ describe("AgentBuilder", () => {
       <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
     );
 
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     const row = checkbox.parentElement as HTMLElement;
@@ -341,6 +400,7 @@ describe("AgentBuilder", () => {
       <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
     );
 
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkbox = within(mcpGroup).getByRole("checkbox", { name: "forecast" });
     const row = checkbox.parentElement as HTMLElement;
@@ -351,6 +411,7 @@ describe("AgentBuilder", () => {
   });
 
   it("keeps MCP checkbox ids unique and whitespace-safe even when discovered tool names collide and contain spaces", async () => {
+    const user = userEvent.setup();
     // Regression test: ids used to be built from the tool's namespaced name
     // (`ag-mcp-${namespacedName}`), so two tools sharing a name — or a name
     // containing whitespace — could collide or produce a broken id/label
@@ -368,6 +429,7 @@ describe("AgentBuilder", () => {
       <AgentBuilder agents={[]} models={[]} customToolsEnabled onChanged={async () => {}} />,
     );
 
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
     const mcpGroup = await screen.findByRole("group", { name: /MCP tools/i });
     const checkboxes = within(mcpGroup).getAllByRole("checkbox", { name: "foo bar" });
     expect(checkboxes).toHaveLength(2);
