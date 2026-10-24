@@ -495,7 +495,7 @@ function DiscoverySection({
   });
   return (
     <div style={fieldset}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <strong style={{ fontSize: "0.85em" }}>
           Discovered tools ({server.discoveredTools.length})
         </strong>
