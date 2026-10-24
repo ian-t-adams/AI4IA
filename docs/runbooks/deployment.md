@@ -2066,6 +2066,208 @@ The prerequisite check names what it refuses:
 | `... is not the canonical UTF-8 base64 transport ...` | The transport was edited, wrapped or re-encoded | Same fix |
 | `... substitutes ... directly ...` | A raw `${*_JSON}` token is back in `main.parameters.json` | Read the `*_JSON_B64` transport instead; see `scripts/_json_transport.py` |
 
+## API-only private Cosmos recovery
+
+**Source preparation is not activation.** The default `legacy` phase creates no
+private resources, and Cosmos `publicNetworkAccess` is **Disabled in every
+phase**. Never deploy a public-network restoration or policy exception to work
+around this boundary. The original API without VNet integration cannot reach
+that account. A green source PR does not mean this incident is resolved.
+One explicit migration authorization can cover candidate, drain/activation and
+web cutover **conditionally on the recorded proofs below**; three separate human
+round trips are not required. Phase readiness never supplies permission. Set the
+approved candidate phase/prefixes before the first approved merge/deploy; an
+unset legacy default neither opens Cosmos nor claims restoration.
+
+### Trusted-main preview-first bootstrap
+
+The reviewed migration code must reach `main` before using production OIDC;
+feature-branch credentials or a trust-policy exception are not substitutes.
+Set the reviewed candidate phase/CIDRs and disable the model canary **before**
+the approved merge. A pending-migration push selects **preview only**. An
+unconfigured or malformed phase/state fails before execution; it does not
+default to deploying the original API.
+
+The existing workflow retains its main-only admission, identity and job grants.
+It resolves current target/images first, then uses the runner's existing secure
+configuration for a full subscription-scope ARM **Provider** what-if. The
+preview renderer supports only this repository's whole-token scalar parameter
+shape and omitted ARM defaults, with the pinned azd Boolean/integer semantics;
+unsupported substitutions and unsafe unescaped strings refuse. The temporary
+parameter file stays in the runner, is removed after the call and is never
+uploaded. Only sanitized resource/field changes, scope, hashes and a binding
+are retained. The pinned azd preview UX drops resource IDs and nested array
+deltas, so it is not used as a complete machine-admission report.
+
+Preview cannot run provider registration, hostname mutation, provisioning,
+image pushes, attestations, deployment, model/options canaries or rollback.
+Each later step requires the separate execution gate, and a successful preview
+never opens it. Unreviewable, destructive, out-of-scope or incomplete ARM
+changes refuse; no permission or public-network fallback exists.
+
+For an approved phase, first run the existing workflow on main with
+`operation=preview` (the initial pending push does this automatically). Review
+the `private-preview-<run>-<attempt>` report and its exact source, phase, CIDRs,
+resource deltas and current execution blockers. Then dispatch:
+
+```powershell
+gh workflow run deploy.yml --ref main -f operation=deploy -f provision=true -f preview_binding="<binding from the reviewed report>"
+```
+
+That dispatch runs a **fresh** what-if and requires the same source, phase,
+resolved parameters and resource delta within 30 minutes. Changed/expired
+bindings fail. The final azd preprovision hook rechecks source/parameters and
+expiry after image/target derivation, before ARM can apply them. This binding is
+an anti-drift receipt, not a grant: the operator must still have the documented
+conditional migration approval. A preview may describe a blocked transition;
+execution still requires the current strict worker/identity/readiness checks.
+
+After observed completed private cutover (new backend selected, candidate mode
+off, legacy replicas absent and private readiness passing), default `auto`
+preserves ordinary releases and their existing verification. Missing or
+contradictory completion evidence cannot enable them. During migration provider
+checks remain read-only and custom-domain registration is refused. No
+`SecurityControl=Ignore` exemption tag is introduced.
+
+### Topology and protected state
+
+ACA's default Azure network reaches internet endpoints only; the environment
+network type is immutable. Its environment private endpoint is an **ingress**
+feature, not outbound Cosmos access. Use a side-by-side **external** Consumption
+workload-profile environment for the API only. Keep the original web/proxy/API
+resources and environment, existing API UAMI and all current Cosmos database,
+partition, TTL, backup, identity and role-assignment contracts. There is no
+customer-data migration or new Cosmos grant.
+
+| Scope | Permitted recovery delta |
+| --- | --- |
+| New API network | One standalone RFC1918 VNet, /26 delegated API subnet, separate /27 PE subnet; no peering, custom DNS, NAT, firewall, VM or inbound ACA PE |
+| New API environment/app | External Consumption environment; same API UAMI, configuration/secret references and signed ACR image. Candidate 0.5 vCPU / 1 GiB, min1/max1; active min1/max3 |
+| Cosmos | Existing account stays Entra-only and public-network Disabled; one approved `Sql` PE, `privatelink.documents.azure.com` zone, VNet link and zone group |
+| Existing web/proxy/APIM | Same environment, public domains, authentication and gateway path. Preserve actual web/proxy serving image digests during infrastructure reconciliation |
+| Final traffic selection | Web `API_BASE_URL` and direct voice `API_PUBLIC_URL` move together to the new API FQDN; API alert target follows only in `private` |
+| Retained legacy API | Explicitly drain/deactivate only at the separately approved activation boundary; no deletion, resource replacement or parallel worker processing |
+
+The October 24 proposed source environment is
+`cae-ai4ia-slurmfactory-api-private`, app `ca-api-private-slurmfactory`,
+VNet `vnet-ai4ia-slurmfactory-api-private`: `10.241.0.0/25`, API
+`10.241.0.0/26`, PE `10.241.0.64/27`. These were nonoverlapping in the bounded
+subscription inventory, **not** an IPAM allocation or organization-wide proof.
+Reconfirm policy, provider registration, environment/vCPU/network quotas, region
+availability and a scoped what-if before requesting execution approval. Do not
+register providers or provision as a validation shortcut.
+
+The website URL, Entra registration/audience/API scope and browser origin remain
+unchanged. API CORS and realtime allowed origins still derive from the original
+web environment/custom domain. The new API ingress FQDN affects same-origin
+server proxy traffic and direct browser voice WebSockets; reload runtime config
+and reconnect voice only after approved cutover. Do not add a new audience,
+wildcard CORS, API key in the browser, or an inbound private endpoint.
+
+### Finite phases and acceptance
+
+Set the phase and reviewed prefixes using the normal approved deployment
+configuration path in [the configuration reference](../configuration-reference.md#api-only-private-cosmos-recovery).
+Do not run the following transitions merely because the source exists:
+
+1. **Candidate approval.** Obtain explicit approval for exact resources/CIDRs,
+   incremental what-if and cost. Set `AI4IA_DEPLOY_VERIFY_CANARY=false`: this
+   recovery has no model-call budget. Nonlegacy token steps still acquire the
+   existing deploy identity's API token: the verifier uses
+   `--skip-canary --decision-options`, requiring one authenticated bounded GET
+   with a nonempty catalog-backed result. A missing token, 403/503, empty or
+   malformed result fails, not skips. This replaces only the model/session
+   canary: exact-image rollout, health, web/proxy and domain checks still run,
+   followed by private network/runtime/phase/worker readback. No role or secret
+   is added. `candidate` creates the private path and
+   API, leaving web/voice pointed at the original API. The inert initial image
+   has no workers; the existing release pipeline then scans/signs/verifies and
+   deploys its exact API digest. No `--all`, mutable-tag or local-rebuild shortcut.
+2. **Candidate proof.** Check approved Sql PE, DNS zone group and VNet link.
+   Actual `/health/ready` resolves the canonical Cosmos account to private VNet
+   addresses within the existing deadline, then performs the unchanged
+   canonical-store check. Existing deletion/startup prerequisites still fail
+   closed. The wired options check proves the existing deploy identity's authenticated
+   API access, not a human browser session. Also check authenticated
+   `/api/decisions/options` as a legitimate current owner without pressing Run.
+   Retain exact signed release and stable serving
+   revision/image evidence. Anonymous readiness is not that owner acceptance.
+3. **Activation approval.** Explicitly drain/deactivate legacy API revisions
+   using the existing approved operator path. Allow in-flight cleanup to finish;
+   min0 alone is insufficient. `activate` refuses if any legacy revision is
+   active **or any replica remains**, then reconciles the new API with its
+   already-observed serving digest and normal workers. Web/voice still target
+   the old API. Keep the resulting outage window supervised and short.
+4. **Activated proof and cutover approval.** Observe stable healthy activated
+   API, unchanged identity/account and current-owner options again. Only then
+   authorize `private`, which switches web backend and voice endpoint together.
+   Retain same-origin health/options and new voice configuration readback, with
+   no voice/model session. Update the existing `AI4IA_UPTIME_API_URL` repository
+   variable to the new API FQDN; Pages and uptime share this explicit target, so
+   retained old `api` tags cannot silently select the wrong app.
+   After completed cutover, a separately authorized routine release may restore
+   the ordinary model canary configuration; the recovery itself grants no calls.
+
+Candidate code allows only health GETs and authenticated Decision-options GETs;
+it refuses other HTTP routes/methods and all WebSockets. Startup document
+recovery, directory capture and DTS workers are suppressed. Memory warmup and
+automation/deletion layout validation remain read-only; readiness is not
+disabled. An options GET does not execute a model or gain broader permissions.
+The active stage and candidate may both answer readiness, so the preflight
+separately reads the actual candidate-mode flag before allowing final cutover.
+An inert placeholder can resume its initial stage but never satisfy acceptance.
+
+`check-api-private-network.py` performs scoped metadata reads only. Its normal
+CLI writes no cloud state; the explicit `--azd-env` preprovision hook stores only
+validated nonsecret target/image values in local azd state. It refuses incomplete
+inventory, unapproved/mismatched PE/DNS, different identity/account, unsettled
+images, active/terminating legacy workers or public DNS. It bounds reads to
+64 calls, 32 retained legacy revisions, a 120-second admission budget and
+45 seconds/512 KiB per CLI result; exhaustion is unknown, never drained.
+It preserves the current private API and web/proxy image digests across
+reconciliation, while normal production image signing/promotion stays intact.
+`AZURE_API_APP_NAME` explicitly selects the deployment/capture/rollback target.
+`AZURE_API_URL` remains the serving backend; `AZURE_API_TARGET_URL` is the
+candidate/active target used during recovery.
+
+These machine checks **do not** prove owner approval, signed provenance of an
+earlier candidate run, current-owner options acceptance, quota or absence of
+unrelated changes in a what-if. Those are retained release-gate evidence before
+each approved transition, not a Boolean claiming acceptance. Use incremental
+ARM deployment only; stop on any resource deletion/recreation, role/auth/data
+change, unexpected VNet peer/subnet, or web/proxy environment move.
+The hosted postprovision data-plane hooks still target public App
+Configuration/Foundry; no runner needs private Cosmos access. Actual Cosmos
+acceptance runs through the new API, not a hosted runner or a developer's DNS.
+
+### Cost, rollback and retained incident boundary
+
+The parent's October 24 primary Azure Retail observations estimate
+PE $0.01/hour + standard LB $0.025/hour + two standard IPv4 addresses
+$0.005/hour each + DNS $0.50/month: **$33.35/month** at 730 hours, before
+traffic, DNS queries, logs and compute. A supervised 30-minute 0.5-vCPU/1-GiB
+candidate adds approximately **$0.027** active compute before requests/egress.
+No free grant/discount is assumed. Active compute replaces the original API only
+after its explicit deactivation; retained web/proxy/environment costs continue.
+This is neither a cost cap nor an invoice. There is no Dedicated profile fee,
+NAT, private resolver or extra service private endpoint in this design.
+
+Capture before provisioning as usual. A failed candidate leaves the original
+outage and retained candidate resources for diagnosis; never delete data or reopen
+Cosmos to make it green. After activation, recover to a previously proved
+compatible revision in the **private** environment, keeping legacy workers
+inactive. Returning web to the old firewall-blocked API is **not** healthy
+restoration. Do not blindly replay an uncertain write, oscillate phase settings,
+or turn both worker populations on. Removal of retained old resources requires
+a later exact-resource cleanup approval.
+
+Public references:
+[ACA networking](https://learn.microsoft.com/azure/container-apps/networking),
+[workload-profile subnet delegation](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks),
+[Cosmos Sql private endpoints and DNS](https://learn.microsoft.com/azure/cosmos-db/how-to-configure-private-endpoints).
+The /26 is for workload-profile Consumption and is delegated; the legacy
+Consumption-only /23 rule is different and must not be used interchangeably.
+
 ## Switching the search index tenancy model
 
 `AI4IA_SEARCH_INDEX_PER_USER` (default `true`) chooses between an index per user

@@ -26,6 +26,7 @@ and a required-check entry that no longer matches anything blocks every PR.
 from __future__ import annotations
 
 import base64
+import ast
 import os
 import re
 import subprocess
@@ -405,7 +406,11 @@ class ClaudeWorkflowBoundaryTests(unittest.TestCase):
         self.assertLess(steps.index(check), steps.index(reader))
         self.assertLess(steps.index(reader), steps.index(routed))
         self.assertLess(steps.index(routed), steps.index(deploy))
-        self.assertEqual(routed["if"], reader["if"])
+        self.assertEqual(
+            routed["if"],
+            "${{ steps.execution.outputs.allowed == 'true' && (env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true') }}",
+        )
+        self.assertEqual(reader["if"], "${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}")
         self.assertEqual(routed["run"], "python scripts/check-claude-binding.py --routed")
         self.assertNotIn("provision", routed["if"])
 
@@ -453,9 +458,11 @@ class DeployCliLoginRefreshTests(unittest.TestCase):
         _require(refresh.get("uses") == first["uses"], f"refresh uses {refresh.get('uses')!r}")
         _require(first.get("with") == SOURCE_IDENTITY_INPUTS, f"first login inputs {first.get('with')!r}")
         _require(refresh.get("with") == first["with"], f"refresh inputs {refresh.get('with')!r}")
-        # Nothing else: no `if:` (neither an always() that outlives a failure nor
-        # a provision-only gate), no separate CLI profile, no error suppression.
-        _require(set(refresh) == {"name", "uses", "with"}, f"refresh keys {sorted(refresh)}")
+        # Always within an admitted deployment, including no-provision runs;
+        # the preview terminal boundary must not exchange a late deployment token.
+        _require(set(refresh) == {"name", "uses", "with", "if"}, f"refresh keys {sorted(refresh)}")
+        _require(refresh["if"] == "${{ steps.execution.outputs.allowed == 'true' }}",
+                 "refresh must depend only on admitted execution, not provision outcome")
         _require(
             position > 0 and names[position - 1] == "Provision infrastructure",
             f"refresh follows {names[position - 1]!r}, not provisioning",
@@ -1045,6 +1052,115 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         self.assertEqual(setup["with"]["version"], "1.29.0")
         verify = next(step for step in steps if step.get("name") == "Verify azd version")
         self.assertIn("azd version 1\\.29\\.0", verify["run"])
+
+
+class PrivatePreviewWorkflowTests(unittest.TestCase):
+    """Drive the actual operation and workflow gate expressions, without Azure."""
+
+    @staticmethod
+    def expression(text: str, values: dict[str, str]) -> bool:
+        source = text.removeprefix("${{").removesuffix("}}").strip()
+        for name, value in values.items():
+            source = source.replace(name, repr(value))
+        source = source.replace("&&", "and").replace("||", "or")
+        node = ast.parse(source, mode="eval").body
+
+        def evaluate(item):
+            if isinstance(item, ast.Constant):
+                return item.value
+            if isinstance(item, ast.BoolOp):
+                children = [evaluate(value) for value in item.values]
+                return all(children) if isinstance(item.op, ast.And) else any(children)
+            if isinstance(item, ast.Compare) and len(item.ops) == 1 and isinstance(item.ops[0], ast.Eq):
+                return evaluate(item.left) == evaluate(item.comparators[0])
+            raise AssertionError("Unexpected execution-gate syntax")
+        return bool(evaluate(node))
+
+    @staticmethod
+    def guarded(step: dict) -> None:
+        expression = step.get("if", "").removeprefix("${{").removesuffix("}}").strip()
+        gate = "steps.execution.outputs.allowed == 'true'"
+        assert expression.startswith(gate), step.get("name")
+        tail = expression[len(gate):].strip()
+        if not tail:
+            return
+        assert tail.startswith("&& (") and tail.endswith(")"), step.get("name")
+        depth = 0
+        for index, char in enumerate(tail[3:]):
+            depth += (char == "(") - (char == ")")
+            assert depth >= 0
+            if depth == 0:
+                assert index == len(tail[3:]) - 1, "an OR can escape the execution gate"
+
+    def test_pending_push_and_preview_success_cannot_dispatch_any_later_step(self):
+        from scripts._api_private import deployment_operation
+
+        document = yaml.safe_load(DEPLOY_WORKFLOW.read_text())
+        steps = document["jobs"]["deploy"]["steps"]
+        position = next(index for index, step in enumerate(steps) if step.get("id") == "execution")
+        authority = steps[position]["if"]
+        protected = steps[position + 1:]
+        for step in protected:
+            self.guarded(step)
+        required_effects = ("Preflight resource provider registration",
+                            "Preflight custom-domain bindings (guard wipes, register first binds)",
+                            "Provision infrastructure", "Deploy application",
+                            "Acquire the canary token for verification", "Roll back to the captured revisions")
+        names = {step["name"] for step in protected}
+        self.assertTrue(set(required_effects) <= names)
+        self.assertTrue(any("Attest " in name for name in names))
+        env = {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "push",
+               "AI4IA_API_NETWORK_PHASE": "candidate"}
+        operation = deployment_operation(env, pending=True, blocked=False)
+        for provider_claim in ("false", "true"):
+            allowed = self.expression(authority, {
+                "steps.release_mode.outputs.operation": operation,
+                "steps.private_preview.outputs.authorized": provider_claim,
+            })
+            # Even a successful or incorrectly authorizing preview cannot run
+            # provider/domain mutations, images, attestations, canaries or rollback.
+            dispatched = [step["name"] for step in protected if allowed]
+            self.assertEqual(dispatched, [])
+        ordinary = deployment_operation({**env, "AI4IA_API_NETWORK_PHASE": "private"},
+                                        pending=False, blocked=False)
+        self.assertTrue(self.expression(authority, {
+            "steps.release_mode.outputs.operation": ordinary,
+            "steps.private_preview.outputs.authorized": "false",
+        }))
+        self.assertFalse(self.expression(authority, {
+            "steps.release_mode.outputs.operation": "deploy",
+            "steps.private_preview.outputs.authorized": "false",
+        }))
+        self.assertTrue(self.expression(authority, {
+            "steps.release_mode.outputs.operation": "deploy",
+            "steps.private_preview.outputs.authorized": "true",
+        }))
+
+    def test_each_removed_or_escaped_write_guard_is_detected(self):
+        steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+        position = next(index for index, step in enumerate(steps) if step.get("id") == "execution")
+        for step in steps[position + 1:]:
+            with self.subTest(step=step["name"]):
+                self.guarded(step)
+                changed = deepcopy(step)
+                changed.pop("if")
+                with self.assertRaises(AssertionError):
+                    self.guarded(changed)
+                changed["if"] = "${{ steps.execution.outputs.allowed == 'true' || true }}"
+                with self.assertRaises(AssertionError):
+                    self.guarded(changed)
+
+    def test_preview_artifact_has_no_parameter_payload_and_pin_matches_existing(self):
+        steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+        retain = next(step for step in steps if step["name"] == "Retain sanitized private preview")
+        existing = next(step for step in steps if step["name"] == "Retain production image evidence")
+        self.assertEqual(retain["uses"], existing["uses"])
+        self.assertEqual(retain["with"]["path"], "${{ runner.temp }}/ai4ia-private-preview/report.json")
+        install = next(step for step in steps if step["name"] == "Install the same pinned Bicep as infra validation")
+        infra = yaml.safe_load((WORKFLOWS / "infra-validate.yml").read_text())
+        versions = [step["env"]["BICEP_VERSION"] for job in infra["jobs"].values()
+                    for step in job["steps"] if "BICEP_VERSION" in step.get("env", {})]
+        self.assertEqual(versions, [install["env"]["BICEP_VERSION"]])
 
 
 if __name__ == "__main__":

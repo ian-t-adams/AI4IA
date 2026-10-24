@@ -714,6 +714,28 @@ python -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.te
 
 ### Infra, manifests, and operational quality
 
+API-only private Cosmos recovery uses `AI4IA_API_NETWORK_PHASE`:
+`legacy` (default, no private resources), `candidate` (health/authenticated options
+only, no directory/document-recovery/DTS writers), `activate` (legacy revisions
+inactive and replicas absent), then `private` (approved web/voice cutover).
+Cosmos stays public-network Disabled in every phase; legacy is not a healthy
+fallback. Preflight pins exact API target/UAMI/Cosmos, private network/DNS,
+runtime private-DNS plus canonical readiness and existing serving image digests.
+Preserve those images through reconciliation, the old resources and default-off
+execution boundary. Readiness alone proves neither worker activation nor owner
+options acceptance. Retain signed-image/owner-options evidence before each
+approved transition; never add a model call, public restore or automatic drain.
+See `docs/runbooks/deployment.md#api-only-private-cosmos-recovery`.
+Pending migration pushes are terminal previews on trusted main, not resource
+deployment. Every later mutation/canary/rollback step needs the separate
+execution gate. An explicit migration deploy requires a fresh reviewed binding
+over source, phase, parameters and full ARM resource delta; final preprovision
+rechecks it. Never upload raw parameters/what-if bodies, add an exemption tag,
+relax branch/OIDC trust, or turn a preview return code into deployment authority.
+Ordinary auto releases resume only on observed completed private cutover.
+Keep `preview-api-private.py`'s scalar renderer bounded to the actual parameter
+contract, and keep its Bicep pin aligned with infra validation.
+
 `infra-validate` runs:
 
 ```powershell
@@ -737,6 +759,7 @@ python -m unittest scripts.tests.test_rai_policy
 python -m unittest scripts.tests.test_bicep_naming
 python -m unittest scripts.tests.test_cosmos_backup_policy
 python -m unittest scripts.tests.test_lean_azure_iac
+python -m unittest scripts.tests.test_api_private_network
 python -m unittest scripts.tests.test_bicep_compilation  # fails on diagnostics; inspects compiled ARM
 bicep build infra/main.bicep --stdout > /dev/null
 ```

@@ -10,6 +10,13 @@ param tags object
 @description('Environment name (e.g. ai4ia-dev).')
 param environmentName string
 
+@description('Exact API resource name; private recovery uses a new app and never moves the existing app between environments.')
+param appName string = 'ca-api-${environmentName}'
+
+@description('Readiness/options-only staging, with no document recovery or durable workers. Not a permission grant.')
+param recoveryCandidate bool = false
+param privateCosmosRequired bool = false
+
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 
@@ -878,7 +885,7 @@ var searchEnv = !empty(searchEndpoint) ? [
 // Container-app id is computed (not read off apiApp.id) so it can be emitted as an
 // env value without a self-reference cycle on the apiApp resource. apiAppName is the
 // single source of truth for the resource name below.
-var apiAppName = 'ca-api-${environmentName}'
+var apiAppName = appName
 var apiAppResourceId = resourceId('Microsoft.App/containerApps', apiAppName)
 
 // Admin dashboard resource-metric panels. The regional batch-metrics endpoint and
@@ -1093,7 +1100,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
   location: location
   tags: union(tags, {
-    'azd-service-name': 'api'
+    'azd-service-name': recoveryCandidate ? 'api-private-candidate' : 'api'
   })
   identity: {
     type: 'UserAssigned'
@@ -1130,7 +1137,10 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
-          env: apiEnv
+          env: concat(apiEnv, [
+            { name: 'AI4IA_PRIVATE_RECOVERY_CANDIDATE', value: string(recoveryCandidate) }
+            { name: 'AI4IA_PRIVATE_COSMOS_REQUIRED', value: string(privateCosmosRequired) }
+          ])
           // Wired to the app's own unauthenticated FastAPI probes
           // (ai4ia_api/routers/health.py). No Startup probe is defined here;
           // Container Apps applies its documented TCP-based default startup
@@ -1168,7 +1178,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
       ]
       scale: {
         minReplicas: 1
-        maxReplicas: 3
+        maxReplicas: recoveryCandidate ? 1 : 3
       }
     }
   }

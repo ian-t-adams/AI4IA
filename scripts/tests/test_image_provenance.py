@@ -701,7 +701,7 @@ class ImageAttestationWorkflowTests(unittest.TestCase):
                 else:
                     self.assertNotIn("sbom-path", inputs)
                 self.assertFalse(set(inputs) & {"subject-path", "subject-checksums", "predicate", "predicate-path"})
-                self.assertNotIn("if", step)
+                self.assertEqual(step["if"], "${{ steps.execution.outputs.allowed == 'true' }}")
                 self.assertNotIn("continue-on-error", step)
                 self.assertLess(_step_index(GENERATE), _step_index(step["name"]))
                 self.assertLess(_step_index(step["name"]), _step_index(VERIFY))
@@ -718,12 +718,13 @@ class ImageAttestationWorkflowTests(unittest.TestCase):
         for name in (PREPARE, GENERATE, VERIFY, DEPLOY_STEP):
             step = _step(name)
             self.assertNotIn("continue-on-error", step)
-            self.assertNotIn("if", step)
+            self.assertEqual(step["if"], "${{ steps.execution.outputs.allowed == 'true' }}")
             self.assertTrue(step["run"].startswith("set -euo pipefail\n"))
         deploy = _step(DEPLOY_STEP)["run"]
         self.assertLess(deploy.index("verify-image-provenance.py authorize"), deploy.index("azd deploy "))
         artifact = _step("Retain production image evidence")
-        self.assertEqual(artifact["if"], "${{ always() && steps.subjects.outcome == 'success' }}")
+        self.assertEqual(artifact["if"],
+                         "${{ steps.execution.outputs.allowed == 'true' && (always() && steps.subjects.outcome == 'success') }}")
         self.assertEqual(artifact["with"]["retention-days"], 30)
         self.assertEqual(artifact["with"]["if-no-files-found"], "error")
         self.assertEqual(artifact["with"]["path"], "${{ runner.temp }}/ai4ia-image-evidence/")

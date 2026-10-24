@@ -256,7 +256,10 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         ]
         self.assertEqual(len(data), 3)
         for row in data:
-            self.assertEqual(row["properties"]["publicNetworkAccess"], "Enabled")
+            self.assertEqual(
+                row["properties"]["publicNetworkAccess"],
+                "Disabled" if row["type"] == "Microsoft.DocumentDB/databaseAccounts" else "Enabled",
+            )
             key = "disableLocalAuth" if row["type"] == "Microsoft.DocumentDB/databaseAccounts" else "allowSharedKeyAccess"
             self.assertIs(row["properties"][key], key == "disableLocalAuth")
         vault = next(row for row in resources("keyvault") if row["type"] == "Microsoft.KeyVault/vaults")
@@ -270,6 +273,54 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         )
         managed = next(row for row in resources("platform") if row["type"] == "Microsoft.App/managedEnvironments")
         self.assertNotIn("vnetConfiguration", managed["properties"])
+
+    def test_private_recovery_is_api_only_and_preserves_phase_and_image_boundaries(self) -> None:
+        root = self.template
+        self.assertEqual(root["parameters"]["apiNetworkPhase"]["defaultValue"], "legacy")
+        self.assertEqual(root["parameters"]["apiNetworkPhase"]["allowedValues"],
+                         ["legacy", "candidate", "activate", "private"])
+        network = root["resources"]["apiPrivateNetwork"]
+        self.assertEqual(network["condition"], "[not(equals(parameters('apiNetworkPhase'), 'legacy'))]")
+        rows = network["properties"]["template"]["resources"]
+        resources = dict(zip(
+            ("vnet", "zone", "link", "endpoint", "zoneGroup", "environment"), rows, strict=True,
+        ))
+        self.assertEqual(
+            {row["type"] for row in resources.values()},
+            {"Microsoft.Network/virtualNetworks", "Microsoft.Network/privateDnsZones",
+             "Microsoft.Network/privateDnsZones/virtualNetworkLinks", "Microsoft.Network/privateEndpoints",
+             "Microsoft.Network/privateEndpoints/privateDnsZoneGroups", "Microsoft.App/managedEnvironments"},
+        )
+        subnets = resources["vnet"]["properties"]["subnets"]
+        self.assertEqual(len(subnets), 2)
+        self.assertEqual(subnets[0]["properties"]["delegations"][0]["properties"]["serviceName"], "Microsoft.App/environments")
+        self.assertEqual(subnets[1]["properties"]["privateEndpointNetworkPolicies"], "Disabled")
+        self.assertEqual(resources["vnet"]["properties"]["dhcpOptions"], {"dnsServers": []})
+        self.assertEqual(resources["zone"]["name"], "privatelink.documents.azure.com")
+        self.assertIs(resources["link"]["properties"]["registrationEnabled"], False)
+        self.assertEqual(resources["endpoint"]["properties"]["privateLinkServiceConnections"][0]["properties"]["groupIds"], ["Sql"])
+        self.assertIs(resources["environment"]["properties"]["vnetConfiguration"]["internal"], False)
+        self.assertEqual(resources["environment"]["properties"]["workloadProfiles"],
+                         [{"name": "Consumption", "workloadProfileType": "Consumption"}])
+        api = root["resources"]["api"]["properties"]["parameters"]
+        self.assertEqual(api["recoveryCandidate"]["value"], "[equals(parameters('apiNetworkPhase'), 'candidate')]")
+        self.assertIn("apiPrivateInitialImage", api["apiImage"])
+        self.assertIn("apiPrivateNetwork", api["containerEnvId"])
+        web = root["resources"]["web"]["properties"]["parameters"]
+        serving = (
+            "[if(or(equals(parameters('apiNetworkPhase'), 'private'), equals(parameters('apiNetworkPhase'), 'legacy')), "
+            "createObject('value', reference('api').outputs.apiUrl.value), "
+            "createObject('value', format('https://ca-api-{0}.{1}', parameters('environmentName'), "
+            "reference('platform').outputs.containerEnvDefaultDomain.value)))]"
+        )
+        self.assertEqual(web["apiBaseUrl"], serving)
+        self.assertEqual(web["apiPublicUrl"], serving)
+        self.assertIn("privateWebImage", web["webImage"])
+        self.assertIn("platform", web["containerEnvId"]["value"])
+        gateway = root["resources"]["gateway"]["properties"]["parameters"]
+        self.assertIn("privateProxyImage", gateway["proxyImage"])
+        self.assertIn("platform", gateway["containerEnvId"]["value"])
+        self.assertIn("parameters('apiNetworkPhase'), 'private'", root["outputs"]["AZURE_API_URL"]["value"])
 
     def test_claude_operator_units_compile_default_off_without_application_or_key_resources(self) -> None:
         for filename, gate, allowed in (
@@ -506,7 +557,7 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             "[parameters('speechVoiceLiveEnabled')]",
         )
         self.assertEqual(
-            web["parameters"]["apiPublicUrl"]["value"], web["parameters"]["apiBaseUrl"]["value"],
+            web["parameters"]["apiPublicUrl"], web["parameters"]["apiBaseUrl"],
         )
         frontend = web["template"]
         ready = frontend["variables"]["voiceLiveReady"]

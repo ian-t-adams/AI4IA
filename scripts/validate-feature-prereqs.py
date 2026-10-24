@@ -22,6 +22,7 @@ from _capacity_evidence import EvidenceError
 from _claude_binding import configured_binding
 from _json_transport import TRANSPORTS, TransportError, decode
 from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
+from _api_private import validate_prefixes
 
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS_FILE = ROOT / "infra" / "main.parameters.json"
@@ -171,6 +172,15 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors = retired_configuration_errors(parameters)
     warnings: list[str] = []
+    try:
+        validate_prefixes(
+            text(parameter_value(parameters, "apiNetworkPhase", "legacy")),
+            text(parameter_value(parameters, "apiPrivateVnetPrefix", "")),
+            text(parameter_value(parameters, "apiPrivateSubnetPrefix", "")),
+            text(parameter_value(parameters, "cosmosPrivateEndpointSubnetPrefix", "")),
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
     json_values = transported_json(parameters, errors)
     model_capacity_profile = text(
         parameter_value(parameters, "modelCapacityProfile", "baseline")
