@@ -15,14 +15,14 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 
-from _api_private import api_name, from_environment
+from _api_private import api_name, deployment_operation, from_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 PLACEHOLDER = "mcr.microsoft.com/k8se/quickstart:latest"
 APP_QUERY = (
     "{id:id,identity:identity,properties:{managedEnvironmentId:properties.managedEnvironmentId,"
     "latestReadyRevisionName:properties.latestReadyRevisionName,latestRevisionName:properties.latestRevisionName,"
-    "configuration:{ingress:properties.configuration.ingress}}}"
+    "configuration:{ingress:properties.configuration.ingress,activeRevisionsMode:properties.configuration.activeRevisionsMode}}}"
 )
 REVISION_QUERY = (
     "{properties:{active:properties.active,healthState:properties.healthState,"
@@ -64,7 +64,7 @@ def prove_ready(origin: str) -> bool:
     return result.status == 200 and result.json() == {"status": "ok", "stage": "session_store"}
 
 
-def admission(env, read=cli, ready=prove_ready):
+def admission(env, read=cli, ready=prove_ready, *, preview=False):
     transport = read
     started = time.monotonic()
     calls = 0
@@ -123,6 +123,8 @@ def admission(env, read=cli, ready=prove_ready):
         name = f"ca-{service}-{environment}"
         query = ["containerapp", "show", *scope, "-n", name, "--query", APP_QUERY]
         app = read(query)
+        require(app["properties"]["configuration"].get("activeRevisionsMode") == "Single",
+                "Private recovery requires stable Single-mode web/proxy image evidence.")
         serving = app["properties"]["latestReadyRevisionName"]
         require(bool(serving) and serving == app["properties"]["latestRevisionName"],
                 "Web/proxy serving revision is unsettled; cannot preserve its image.")
@@ -151,14 +153,25 @@ def admission(env, read=cli, ready=prove_ready):
                 "Initial private cutover requires nonbillable acceptance, not a model canary.")
     if candidate is None:
         require(selected == "candidate", "Stage and verify the private candidate before activation/cutover.")
-        return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": PLACEHOLDER, **preserved}
+        return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": PLACEHOLDER,
+                "AI4IA_PRIVATE_MIGRATION_PENDING": "true", "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]",
+                "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, **preserved}
     props = candidate["properties"]
+    require(props["configuration"].get("activeRevisionsMode") == "Single",
+            "Private API must retain Single revision mode.")
     expected_env = f"/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.App/managedEnvironments/cae-{workload}-{environment}-api-private"
     require(props["managedEnvironmentId"].casefold() == expected_env.casefold(), "Candidate environment mismatch.")
     identity = f"/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-api-{environment}"
-    require(candidate["identity"].get("type") == "UserAssigned"
-            and list(candidate["identity"]["userAssignedIdentities"]) == [identity]
-            and candidate["identity"] == legacy["identity"],
+    candidate_identity = dict(candidate["identity"])
+    legacy_identity = dict(legacy["identity"])
+    for observed in (candidate_identity, legacy_identity):
+        assigned = observed["userAssignedIdentities"]
+        require(isinstance(assigned, dict) and len(assigned) == 1
+                and all(isinstance(key, str) for key in assigned), "API identity inventory is not exact.")
+        observed["userAssignedIdentities"] = {key.casefold(): value for key, value in assigned.items()}
+    require(candidate_identity.get("type") == "UserAssigned"
+            and list(candidate_identity["userAssignedIdentities"]) == [identity.casefold()]
+            and candidate_identity == legacy_identity,
             "Candidate must reuse only the existing API managed identity.")
     revision = props.get("latestRevisionName")
     require(bool(revision), "Candidate revision is unknown.")
@@ -184,22 +197,33 @@ def admission(env, read=cli, ready=prove_ready):
         require(revision == props.get("latestReadyRevisionName"), "Candidate has pending or unready revision.")
         require(current.get("active") is True and current.get("healthState") == "Healthy"
                 and current.get("provisioningState") == "Provisioned", "Candidate is not healthy/provisioned.")
+    blockers = []
     if selected == "candidate":
         require(staged, "Refuse to demote an active private API through candidate staging.")
     else:
         old = read(["containerapp", "revision", "list", *scope, "-n", api_name(environment, "legacy"),
                     "--query", "[].{name:name,properties:{active:properties.active}}"])
         require(isinstance(old, list) and 0 < len(old) <= 32
-                and all(row.get("properties", {}).get("active") is False for row in old),
+                and all(type(row.get("properties", {}).get("active")) is bool for row in old),
+                "Legacy revision activity metadata is incomplete.")
+        drained = all(row["properties"]["active"] is False for row in old)
+        require(preview or drained,
                 "All legacy API revisions/workers must be explicitly drained and inactive before activation.")
+        if not drained:
+            blockers.append("legacy_revisions_active")
         for row in old:
             require(isinstance(row.get("name"), str) and row["name"].startswith(api_name(environment, "legacy") + "--"),
                     "Legacy revision inventory contains an unexpected identity.")
             replicas = read(["containerapp", "replica", "list", *scope, "-n", api_name(environment, "legacy"),
                              "--revision", row["name"], "--query", "[].name"])
-            require(replicas == [], "Legacy API still has running/terminating replicas; worker drain is incomplete.")
+            require(isinstance(replicas, list), "Legacy replica inventory is incomplete.")
+            require(preview or replicas == [], "Legacy API still has running/terminating replicas; worker drain is incomplete.")
+            if replicas and "legacy_replicas_present" not in blockers:
+                blockers.append("legacy_replicas_present")
         if selected == "private":
-            require(not staged, "Activate and verify private API before web/voice endpoint cutover.")
+            require(preview or not staged, "Activate and verify private API before web/voice endpoint cutover.")
+            if staged:
+                blockers.append("candidate_not_activated")
     network = read(["containerapp", "env", "show", *scope, "-n", f"cae-{workload}-{environment}-api-private"])
     subnet = network["properties"]["vnetConfiguration"]["infrastructureSubnetId"]
     require(subnet.casefold() == (expected_vnet + "/subnets/api").casefold(), "Candidate is not in the exact private VNet.")
@@ -233,15 +257,32 @@ def admission(env, read=cli, ready=prove_ready):
         require(ready(origin), "Candidate runtime cannot prove Cosmos readiness.")
     again = read(app_read)
     require(again == candidate, "Candidate changed during admission; stop without mutation.")
-    return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": image, **preserved}
+    completed = selected == "private" and not staged and not blockers and web_values["API_BASE_URL"] == origin
+    return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": image,
+            "AI4IA_PRIVATE_MIGRATION_PENDING": "false" if completed else "true",
+            "AI4IA_PRIVATE_EXECUTION_BLOCKERS": json.dumps(blockers, separators=(",", ":")),
+            "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, **preserved}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--azd-env", action="store_true", help="Persist validated nonsecret target/image to local azd state.")
+    parser.add_argument("--release-mode", action="store_true", help="Read-only trusted-main operation selection.")
     args = parser.parse_args()
     try:
-        values = admission(os.environ)
+        require(not (args.azd_env and args.release_mode), "Release selection cannot replace a strict azd hook.")
+        values = admission(os.environ, preview=args.release_mode)
+        if args.release_mode:
+            pending = values.get("AI4IA_PRIVATE_MIGRATION_PENDING")
+            require(pending in ("true", "false"), "Private migration completion is unknown.")
+            blockers = json.loads(values["AI4IA_PRIVATE_EXECUTION_BLOCKERS"])
+            operation = deployment_operation(os.environ, pending=pending == "true", blocked=bool(blockers))
+            target = os.environ.get("GITHUB_OUTPUT")
+            if not target:
+                raise AdmissionError("Release selection requires workflow outputs.")
+            with Path(target).open("a", encoding="utf-8") as file:
+                file.write(f"operation={operation}\n")
+                file.write(f"migration_pending={pending}\n")
         if args.azd_env and any(os.environ.get(key) != value for key, value in values.items()):
             descriptor, path = tempfile.mkstemp(prefix="ai4ia-api-target-", suffix=".env")
             try:

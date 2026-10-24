@@ -726,6 +726,15 @@ execution boundary. Readiness alone proves neither worker activation nor owner
 options acceptance. Retain signed-image/owner-options evidence before each
 approved transition; never add a model call, public restore or automatic drain.
 See `docs/runbooks/deployment.md#api-only-private-cosmos-recovery`.
+Pending migration pushes are terminal previews on trusted main, not resource
+deployment. Every later mutation/canary/rollback step needs the separate
+execution gate. An explicit migration deploy requires a fresh reviewed binding
+over source, phase, parameters and full ARM resource delta; final preprovision
+rechecks it. Never upload raw parameters/what-if bodies, add an exemption tag,
+relax branch/OIDC trust, or turn a preview return code into deployment authority.
+Ordinary auto releases resume only on observed completed private cutover.
+Keep `preview-api-private.py`'s scalar renderer bounded to the actual parameter
+contract, and keep its Bicep pin aligned with infra validation.
 
 `infra-validate` runs:
 

@@ -56,7 +56,8 @@ class Cloud:
                 "properties": {
                     "managedEnvironmentId": SCOPE + "/Microsoft.App/managedEnvironments/cae-ai4ia-test-api-private",
                     "latestReadyRevisionName": name + "--ready", "latestRevisionName": name + "--ready",
-                    "configuration": {"ingress": {"fqdn": name + ".synthetic.azurecontainerapps.io"}},
+                    "configuration": {"ingress": {"fqdn": name + ".synthetic.azurecontainerapps.io"},
+                                      "activeRevisionsMode": "Single"},
                 },
             }
             self.details[name] = {"properties": {
@@ -124,6 +125,9 @@ class PrivateAdmissionTests(unittest.TestCase):
                     "AI4IA_API_PRIVATE_INITIAL_IMAGE": image("api"),
                     "AI4IA_PRIVATE_WEB_IMAGE": image("web"),
                     "AI4IA_PRIVATE_PROXY_IMAGE": image("proxy"),
+                    "AI4IA_PRIVATE_MIGRATION_PENDING": "true",
+                    "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]",
+                    "AI4IA_PRIVATE_COSMOS_ENDPOINT": "https://cosmos-test.documents.azure.com:443/",
                 })
                 self.assertEqual(urls, ["https://ca-api-private-test.synthetic.azurecontainerapps.io"])
                 self.assertLessEqual(len(cloud.calls), 24)
@@ -149,7 +153,24 @@ class PrivateAdmissionTests(unittest.TestCase):
             "AI4IA_API_PRIVATE_INITIAL_IMAGE": image("api"),
             "AI4IA_PRIVATE_WEB_IMAGE": image("web"),
             "AI4IA_PRIVATE_PROXY_IMAGE": image("proxy"),
+            "AI4IA_PRIVATE_MIGRATION_PENDING": "true",
+            "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]",
+            "AI4IA_PRIVATE_COSMOS_ENDPOINT": "https://cosmos-test.documents.azure.com:443/",
         })
+
+    def test_arm_identity_key_case_is_not_a_different_identity(self):
+        cloud = Cloud()
+        legacy = cloud.apps["ca-api-test"]["identity"]["userAssignedIdentities"]
+        value = legacy.pop(IDENTITY)
+        legacy[IDENTITY.replace("/resourceGroups/", "/resourcegroups/")] = value
+        self.assertEqual(MODULE.admission(ENV, cloud.read, lambda _: True)["AZURE_API_APP_NAME"],
+                         "ca-api-private-test")
+        for wrong in (IDENTITY.replace("id-api-test", "id-web-test"),
+                      IDENTITY.replace(SUB, "22222222-2222-4222-8222-222222222222"),
+                      IDENTITY.replace("rg-ai4ia-test", "rg-other-test")):
+            cloud.apps["ca-api-private-test"]["identity"]["userAssignedIdentities"] = {wrong: value}
+            with self.assertRaisesRegex(ValueError, "existing API managed identity"):
+                MODULE.admission(ENV, cloud.read, lambda _: True)
 
     def test_staging_and_live_worker_guards_are_load_bearing(self):
         cloud = Cloud()
@@ -260,7 +281,7 @@ class PrivateAdmissionTests(unittest.TestCase):
 
     def test_workflow_and_hooks_use_gate_before_capture_or_parameter_resolution(self):
         workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
-        self.assertLess(workflow.index("run: python scripts/check-api-private-network.py"),
+        self.assertLess(workflow.index("run: python scripts/check-api-private-network.py --release-mode"),
                         workflow.index("- name: Capture pre-provision revisions"))
         hooks = (ROOT / "azure.yaml").read_text()
         self.assertIn("resourceName: ${AZURE_API_APP_NAME}", hooks)

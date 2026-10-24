@@ -2075,10 +2075,59 @@ around this boundary. The original API without VNet integration cannot reach
 that account. A green source PR does not mean this incident is resolved.
 One explicit migration authorization can cover candidate, drain/activation and
 web cutover **conditionally on the recorded proofs below**; three separate human
-round trips are not required. Phase readiness never supplies permission. There
-is currently no migration authorization, so all writes remain held. Set the
+round trips are not required. Phase readiness never supplies permission. Set the
 approved candidate phase/prefixes before the first approved merge/deploy; an
 unset legacy default neither opens Cosmos nor claims restoration.
+
+### Trusted-main preview-first bootstrap
+
+The reviewed migration code must reach `main` before using production OIDC;
+feature-branch credentials or a trust-policy exception are not substitutes.
+Set the reviewed candidate phase/CIDRs and disable the model canary **before**
+the approved merge. A pending-migration push selects **preview only**. An
+unconfigured or malformed phase/state fails before execution; it does not
+default to deploying the original API.
+
+The existing workflow retains its main-only admission, identity and job grants.
+It resolves current target/images first, then uses the runner's existing secure
+configuration for a full subscription-scope ARM **Provider** what-if. The
+preview renderer supports only this repository's whole-token scalar parameter
+shape and omitted ARM defaults, with the pinned azd Boolean/integer semantics;
+unsupported substitutions and unsafe unescaped strings refuse. The temporary
+parameter file stays in the runner, is removed after the call and is never
+uploaded. Only sanitized resource/field changes, scope, hashes and a binding
+are retained. The pinned azd preview UX drops resource IDs and nested array
+deltas, so it is not used as a complete machine-admission report.
+
+Preview cannot run provider registration, hostname mutation, provisioning,
+image pushes, attestations, deployment, model/options canaries or rollback.
+Each later step requires the separate execution gate, and a successful preview
+never opens it. Unreviewable, destructive, out-of-scope or incomplete ARM
+changes refuse; no permission or public-network fallback exists.
+
+For an approved phase, first run the existing workflow on main with
+`operation=preview` (the initial pending push does this automatically). Review
+the `private-preview-<run>-<attempt>` report and its exact source, phase, CIDRs,
+resource deltas and current execution blockers. Then dispatch:
+
+```powershell
+gh workflow run deploy.yml --ref main -f operation=deploy -f provision=true -f preview_binding="<binding from the reviewed report>"
+```
+
+That dispatch runs a **fresh** what-if and requires the same source, phase,
+resolved parameters and resource delta within 30 minutes. Changed/expired
+bindings fail. The final azd preprovision hook rechecks source/parameters and
+expiry after image/target derivation, before ARM can apply them. This binding is
+an anti-drift receipt, not a grant: the operator must still have the documented
+conditional migration approval. A preview may describe a blocked transition;
+execution still requires the current strict worker/identity/readiness checks.
+
+After observed completed private cutover (new backend selected, candidate mode
+off, legacy replicas absent and private readiness passing), default `auto`
+preserves ordinary releases and their existing verification. Missing or
+contradictory completion evidence cannot enable them. During migration provider
+checks remain read-only and custom-domain registration is refused. No
+`SecurityControl=Ignore` exemption tag is introduced.
 
 ### Topology and protected state
 
@@ -2138,7 +2187,7 @@ Do not run the following transitions merely because the source exists:
    Actual `/health/ready` resolves the canonical Cosmos account to private VNet
    addresses within the existing deadline, then performs the unchanged
    canonical-store check. Existing deletion/startup prerequisites still fail
-   closed.    The wired options check proves the existing deploy identity's authenticated
+   closed. The wired options check proves the existing deploy identity's authenticated
    API access, not a human browser session. Also check authenticated
    `/api/decisions/options` as a legitimate current owner without pressing Run.
    Retain exact signed release and stable serving

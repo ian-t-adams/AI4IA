@@ -394,7 +394,7 @@ class DeployWiringTests(unittest.TestCase):
     def test_provision_still_preserves_the_explicit_manual_opt_out(self) -> None:
         self.assertEqual(
             _step(PROVISION_STEP)["if"],
-            "${{ github.event_name != 'workflow_dispatch' || inputs.provision }}",
+            "${{ steps.execution.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}",
         )
 
     def test_every_azure_yaml_service_is_deployed_by_digest(self) -> None:

@@ -651,6 +651,10 @@ external VNet-integrated Consumption environment. Cosmos public networking is
 always Disabled; `legacy` is a source default, **not a working public fallback**.
 Migration execution, network cost and each worker/traffic transition require
 separate operator approval. See [the recovery procedure](runbooks/deployment.md#api-only-private-cosmos-recovery).
+One approval may conditionally cover those phases. Pending migration pushes run
+only the full-phase preview; the existing main-only workflow's `operation=deploy`
+requires a fresh `preview_binding` from the reviewed report. Default `auto`
+returns to normal releases only after observed completed private cutover.
 
 | Variable | Default | Contract |
 | --- | --- | --- |

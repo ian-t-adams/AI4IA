@@ -50,3 +50,29 @@ def from_environment(env: Mapping[str, str]) -> str:
         env.get("AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX", ""),
     )
     return selected
+
+
+def deployment_operation(env: Mapping[str, str], *, pending: bool, blocked: bool) -> str:
+    """Preview is not execution authority, including on the bootstrap main push."""
+    if type(pending) is not bool or type(blocked) is not bool:
+        raise ValueError("Private release state is incomplete.")
+    if env.get("GITHUB_REF") != "refs/heads/main":
+        raise ValueError("Private release operations require trusted main.")
+    selected = phase(env.get("AI4IA_API_NETWORK_PHASE") or "legacy")
+    if selected == "legacy":
+        raise ValueError("Configure the reviewed private migration phase before releasing.")
+    operation = env.get("AI4IA_RELEASE_OPERATION") or "auto"
+    event = env.get("GITHUB_EVENT_NAME")
+    if event not in ("push", "workflow_dispatch") or operation not in ("auto", "preview", "deploy"):
+        raise ValueError("Unknown release operation or event.")
+    if operation == "preview":
+        return "preview"
+    if operation == "deploy":
+        if event != "workflow_dispatch" or blocked or not env.get("AI4IA_PRIVATE_PREVIEW_BINDING"):
+            raise ValueError("Explicit deployment needs current admission and a reviewed preview binding.")
+        if env.get("AI4IA_RELEASE_PROVISION") != "true":
+            raise ValueError("A reviewed migration deployment cannot skip provisioning.")
+        return "deploy"
+    if selected == "private" and not pending and not blocked:
+        return "ordinary"
+    return "preview"

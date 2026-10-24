@@ -193,7 +193,7 @@ jobs:
         run: python -m unittest scripts.tests.test_lean_azure_iac
 
       - name: Private API migration admission controls
-        run: python -m unittest scripts.tests.test_api_private_network
+        run: python -m unittest scripts.tests.test_api_private_network scripts.tests.test_private_preview
 
       # `bicep build` exits zero for warnings. This test captures diagnostics and
       # inspects the compiled ARM expressions, so warnings or behavior drift fail CI.

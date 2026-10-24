@@ -1151,39 +1151,29 @@ class ProviderPreflightRunsBeforeProvisionTests(unittest.TestCase):
         ]
         self.assertEqual(
             len(preflight),
-            1,
-            "deploy.yml must run scripts/check-resource-providers.py exactly once; "
-            "without it an unregistered provider fails partway through a provision "
-            "instead of in seconds with the namespace to register.",
+            2,
+            "Preview has a read-only check; admitted deployment keeps its guarded preflight.",
         )
         self.assertTrue(provision, "deploy.yml no longer runs `azd provision`")
         self.assertLess(
-            preflight[0],
+            max(preflight),
             min(provision),
             "the resource-provider preflight must run BEFORE `azd provision`; after "
             "it, the deployment has already failed on the thing it checks.",
         )
 
-    def test_the_preflight_registers_rather_than_only_reporting(self) -> None:
-        """Report-only would fail the change window over a one-line fix.
-
-        Registration is idempotent, subscription-scoped, non-destructive, and
-        already granted by the deploy identity's Contributor role, so self-healing
-        is strictly better here than stopping. `--register` also waits for the
-        state to become Registered, which report-only cannot do.
-        """
+    def test_only_an_admitted_ordinary_release_may_register(self) -> None:
+        """Migration never registers providers; ordinary released behavior remains."""
         runs = [
             str(step.get("run", ""))
             for step in self._deploy_steps()
             if "check-resource-providers.py" in str(step.get("run", ""))
         ]
         self.assertTrue(runs, "no resource-provider preflight step found in deploy.yml")
-        self.assertIn(
-            "--register",
-            runs[0],
-            "the deploy preflight should pass --register so a newly added provider "
-            "self-heals instead of failing the run.",
-        )
+        self.assertNotIn("--register", runs[0])
+        self.assertIn('true) python scripts/check-resource-providers.py ;;', runs[1])
+        self.assertIn('false) python scripts/check-resource-providers.py --register ;;', runs[1])
+        self.assertIn('*) echo "::error::Private migration state is unknown."; exit 1 ;;', runs[1])
 
 
 if __name__ == "__main__":
