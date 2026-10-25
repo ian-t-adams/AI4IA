@@ -10,6 +10,51 @@ param tags object
 @description('Environment name (e.g. ai4ia-dev).')
 param environmentName string
 
+@description('Exact API resource name; private recovery uses a new app and never moves the existing app between environments.')
+param appName string = 'ca-api-${environmentName}'
+
+@description('Readiness/options-only staging, with no document recovery or durable workers. Not a permission grant.')
+param recoveryCandidate bool = false
+param privateCosmosRequired bool = false
+
+@description('Default-off same-environment secret reuse for the private API only; never an arbitrary source resource selector.')
+@allowed([
+  'none'
+  'legacy'
+  'private'
+])
+param recoverySource string = 'none'
+
+@sealed()
+type RecoverySecretDescriptor = {
+  name: 'model-gateway-api-key' | 'webiq-api-key' | 'admin-api-secret' | 'realtime-gateway-api-key' | 'realtime-ga-gateway-api-key' | 'speech-voice-live-gateway-api-key' | 'code-interpreter-api-key' | 'official-mcp-subscription-key'
+  keyVaultUrl: string?
+  identity: string?
+}
+
+@description('Verified current secret names/reference metadata only; never literal secret values.')
+@maxLength(8)
+param recoverySecretDescriptors RecoverySecretDescriptor[] = []
+
+var inheritsSecrets = recoverySource != 'none'
+var effectiveIdentityId = inheritsSecrets
+  ? resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', 'id-api-${environmentName}')
+  : apiIdentityResourceId
+var inheritedSecretNames = inheritsSecrets ? map(recoverySecretDescriptors, secret => secret.name) : []
+
+resource secretSource 'Microsoft.App/containerApps@2025-07-01' existing = {
+  name: recoverySource == 'private' ? 'ca-api-private-${environmentName}' : 'ca-api-${environmentName}'
+}
+
+var inheritedSecrets = map(recoverySecretDescriptors, secret => !empty(secret.?keyVaultUrl ?? '') ? {
+  name: secret.name
+  keyVaultUrl: secret.?keyVaultUrl
+  identity: secret.?identity
+} : {
+  name: secret.name
+  value: first(filter(secretSource.listSecrets().value, current => current.name == secret.name))!.value
+})
+
 @description('Container Apps managed environment resource ID.')
 param containerEnvId string
 
@@ -388,7 +433,7 @@ var entraEnv = authProvider == 'entra' ? [
 ] : []
 
 // Gateway API key is held as a Container App secret and referenced by env when present.
-var hasGatewayKey = !empty(modelGatewayApiKey)
+var hasGatewayKey = !empty(modelGatewayApiKey) || contains(inheritedSecretNames, 'model-gateway-api-key')
 var gatewaySecrets = hasGatewayKey ? [
   {
     name: 'model-gateway-api-key'
@@ -410,7 +455,7 @@ var gatewayKeyEnv = hasGatewayKey ? [
 // referenced by env only when web search is enabled AND a key is supplied;
 // otherwise the api falls back to EntraID (managed identity) when the feature is
 // on, or stays fully dormant when off (no secret, no env — byte-for-byte inert).
-var hasWebIqKey = webSearchEnabled && !empty(webIqApiKey)
+var hasWebIqKey = webSearchEnabled && (!empty(webIqApiKey) || contains(inheritedSecretNames, 'webiq-api-key'))
 var webIqSecrets = hasWebIqKey ? [
   {
     name: 'webiq-api-key'
@@ -457,7 +502,7 @@ var webSearchEnv = concat(
 
 // Admin API secret (entitlement management) held as a Container App secret and
 // referenced by env when present. Optional: empty means identity-only admin.
-var hasAdminSecret = !empty(adminApiSecret)
+var hasAdminSecret = !empty(adminApiSecret) || contains(inheritedSecretNames, 'admin-api-secret')
 var adminSecrets = hasAdminSecret ? [
   {
     name: 'admin-api-secret'
@@ -497,7 +542,7 @@ var memoryEnv = [
 // app's default behavior is unchanged. When enabled, the relay uses the APIM-only
 // realtime base URL (SimpleL7Proxy does not support WebSockets) while reusing the
 // separately scoped server-side credential.
-var hasRealtimeGatewayKey = realtimeEnabled && !empty(realtimeGatewayApiKey)
+var hasRealtimeGatewayKey = realtimeEnabled && (!empty(realtimeGatewayApiKey) || contains(inheritedSecretNames, 'realtime-gateway-api-key'))
 var realtimeGatewaySecrets = hasRealtimeGatewayKey ? [
   {
     name: 'realtime-gateway-api-key'
@@ -534,7 +579,7 @@ var realtimeEnv = realtimeEnabled ? [
   }
 ] : []
 
-var hasRealtimeGaGatewayKey = realtimeEnabled && realtimeGaEnabled && !empty(realtimeGaGatewayApiKey)
+var hasRealtimeGaGatewayKey = realtimeEnabled && realtimeGaEnabled && (!empty(realtimeGaGatewayApiKey) || contains(inheritedSecretNames, 'realtime-ga-gateway-api-key'))
 var realtimeGaGatewaySecrets = hasRealtimeGaGatewayKey ? [
   {
     name: 'realtime-ga-gateway-api-key'
@@ -568,7 +613,7 @@ var realtimeGaEnv = concat([
 // allowlist/default provider are meaningful only once the relay itself is
 // enabled, so they are emitted in the same conditional bundle rather than
 // unconditionally.
-var hasSpeechVoiceLiveGatewayKey = realtimeEnabled && speechVoiceLiveEnabled && !empty(speechVoiceLiveGatewayApiKey)
+var hasSpeechVoiceLiveGatewayKey = realtimeEnabled && speechVoiceLiveEnabled && (!empty(speechVoiceLiveGatewayApiKey) || contains(inheritedSecretNames, 'speech-voice-live-gateway-api-key'))
 var speechVoiceLiveGatewaySecrets = hasSpeechVoiceLiveGatewayKey ? [
   {
     name: 'speech-voice-live-gateway-api-key'
@@ -690,7 +735,7 @@ var documentEnv = documentUnderstandingEnabled ? concat([
 // compute AND the inline-attachment code interpreter, so it is emitted when EITHER
 // is on (and a base url is supplied). Emitted once here to avoid duplicate env keys
 // when both features are enabled; non-empty gating keeps the default-OFF posture.
-var hasCodeInterpreterKey = codeInterpreterAuthMode == 'api_key' && !empty(codeInterpreterApiKey)
+var hasCodeInterpreterKey = codeInterpreterAuthMode == 'api_key' && (!empty(codeInterpreterApiKey) || contains(inheritedSecretNames, 'code-interpreter-api-key'))
 var codeInterpreterSecrets = hasCodeInterpreterKey ? [
   {
     name: 'code-interpreter-api-key'
@@ -878,7 +923,7 @@ var searchEnv = !empty(searchEndpoint) ? [
 // Container-app id is computed (not read off apiApp.id) so it can be emitted as an
 // env value without a self-reference cycle on the apiApp resource. apiAppName is the
 // single source of truth for the resource name below.
-var apiAppName = 'ca-api-${environmentName}'
+var apiAppName = inheritsSecrets ? 'ca-api-private-${environmentName}' : appName
 var apiAppResourceId = resourceId('Microsoft.App/containerApps', apiAppName)
 
 // Admin dashboard resource-metric panels. The regional batch-metrics endpoint and
@@ -945,7 +990,7 @@ var customToolsEnv = customToolsEnabled ? concat([
 // is supplied; the gateway URL is a plain env var. config.validate_runtime fails
 // closed if enabled without both, so this only emits the enable flag alongside
 // them. When off, nothing is emitted and the path is byte-for-byte inert.
-var hasOfficialMcpKey = officialMcpEnabled && !empty(officialMcpSubscriptionKey)
+var hasOfficialMcpKey = officialMcpEnabled && (!empty(officialMcpSubscriptionKey) || contains(inheritedSecretNames, 'official-mcp-subscription-key'))
 var officialMcpSecrets = hasOfficialMcpKey ? [
   {
     name: 'official-mcp-subscription-key'
@@ -1092,20 +1137,20 @@ var apiEnv = concat([
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
   location: location
-  tags: union(tags, {
-    'azd-service-name': 'api'
+  tags: union(tags, recoverySource == 'private' ? {} : {
+    'azd-service-name': recoveryCandidate ? 'api-private-candidate' : 'api'
   })
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
-      '${apiIdentityResourceId}': {}
+      '${effectiveIdentityId}': {}
     }
   }
   properties: {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
+      secrets: inheritsSecrets ? inheritedSecrets : concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.
@@ -1117,7 +1162,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
       registries: [
         {
           server: acrLoginServer
-          identity: apiIdentityResourceId
+          identity: effectiveIdentityId
         }
       ]
     }
@@ -1130,7 +1175,10 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
-          env: apiEnv
+          env: concat(apiEnv, [
+            { name: 'AI4IA_PRIVATE_RECOVERY_CANDIDATE', value: string(recoveryCandidate) }
+            { name: 'AI4IA_PRIVATE_COSMOS_REQUIRED', value: string(privateCosmosRequired) }
+          ])
           // Wired to the app's own unauthenticated FastAPI probes
           // (ai4ia_api/routers/health.py). No Startup probe is defined here;
           // Container Apps applies its documented TCP-based default startup
@@ -1168,7 +1216,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
       ]
       scale: {
         minReplicas: 1
-        maxReplicas: 3
+        maxReplicas: recoveryCandidate ? 1 : 3
       }
     }
   }
@@ -1178,7 +1226,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
 // LA via the managed environment's appLogsConfiguration (container-app logs are
 // env-scoped only); this adds the per-app metric signal (HTTP 5xx, replica restarts,
 // CPU/memory) into the same workspace for correlation and alerting.
-resource apiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource apiDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!inheritsSecrets) {
   name: 'to-log-analytics'
   scope: apiApp
   properties: {

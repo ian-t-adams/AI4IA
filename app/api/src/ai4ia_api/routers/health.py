@@ -27,6 +27,7 @@ class SessionStoreReadiness:
         success_ttl_seconds: float = _READINESS_SUCCESS_TTL_SECONDS,
         failure_ttl_seconds: float = _READINESS_FAILURE_TTL_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
+        private_cosmos_endpoint: str | None = None,
     ) -> None:
         self._repo = repo
         self._timeout_seconds = timeout_seconds
@@ -36,6 +37,14 @@ class SessionStoreReadiness:
         self._lock = asyncio.Lock()
         self._expires_at = 0.0
         self._ready = False
+        self._private_cosmos_endpoint = private_cosmos_endpoint
+
+    async def _check_store(self) -> None:
+        if self._private_cosmos_endpoint is not None:
+            from ..private_recovery import require_private_cosmos
+
+            await require_private_cosmos(self._private_cosmos_endpoint)
+        await self._repo.check_ready()
 
     async def check(self) -> bool:
         now = self._monotonic()
@@ -47,7 +56,7 @@ class SessionStoreReadiness:
                 return self._ready
             try:
                 await asyncio.wait_for(
-                    self._repo.check_ready(), timeout=self._timeout_seconds
+                    self._check_store(), timeout=self._timeout_seconds
                 )
             except Exception:  # noqa: BLE001 - readiness fails closed
                 self._ready = False

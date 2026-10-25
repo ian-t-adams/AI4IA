@@ -2373,7 +2373,8 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertIn("AI4IA_VOICE_PROVIDER_ALLOWLIST", api)
         self.assertIn("AI4IA_VOICE_DEFAULT_PROVIDER", api)
         self.assertIn(
-            "var hasSpeechVoiceLiveGatewayKey = realtimeEnabled && speechVoiceLiveEnabled && !empty(speechVoiceLiveGatewayApiKey)",
+            "var hasSpeechVoiceLiveGatewayKey = realtimeEnabled && speechVoiceLiveEnabled && "
+            "(!empty(speechVoiceLiveGatewayApiKey) || contains(inheritedSecretNames, 'speech-voice-live-gateway-api-key'))",
             api,
         )
         self.assertIn("speech-voice-live-gateway-api-key", api)

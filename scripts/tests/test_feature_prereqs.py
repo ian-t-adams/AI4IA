@@ -1559,8 +1559,10 @@ class DeriveJsonTransportTests(unittest.TestCase):
         # azd reloads its environment after each entry, so only a SEPARATE earlier
         # entry lets the validator and the parameter file see derived values.
         entries = self.preprovision_entries()
-        self.assertEqual(len(entries), 2)
-        derive, checks = entries
+        self.assertEqual(len(entries), 3)
+        derive, private, checks = entries
+        self.assertEqual(private.count("check-api-private-network.py --azd-env"), 2)
+        self.assertEqual(private.count("continueOnError: false"), 2)
         self.assertTrue(derive.startswith("windows:\n"), derive)
         self.assertIn("\n      posix:\n", derive)
         self.assertEqual(re.findall(r"(?m)^\s+run: (.*)$", derive), [
