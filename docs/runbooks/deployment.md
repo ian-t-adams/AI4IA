@@ -2200,10 +2200,38 @@ Policy. Source now retains the same
 their exact respective subnet associations. The two additions explain the
 eight-resource source inventory; historical six-resource receipts remain valid
 historical evidence, not rewritten descriptions of later governance writes.
-Both NSGs declare an empty custom `securityRules` list. Complete NSG snapshots
-must prove that list even for `NoChange`; missing/malformed/custom rules refuse,
-as do NSG modifications and subnet detachments. Source adoption must preview as
-no-op for those existing resources, never erase a subsequently added rule.
+Both NSGs declare an empty custom `securityRules` list. The native what-if
+`NoChange` snapshots can omit their entire properties object. Only that
+absence (or an omitted rules field) can use a fresh raw ARM GET of the exact NSG
+at the same API version; the GET must prove explicitly present empty rules,
+Succeeded, the exact Region and subnet association. Null, malformed and nonempty
+rules refuse rather than falling back. The preview binds the stable GET digest,
+including ETag, and the artifact separately records its actual observation time.
+Apply re-reads and matches that digest immediately before the write and rechecks
+binding freshness; a changed ETag or rule set blocks. This preserves fresh reads
+across a matching re-preview without treating new observation times as drift.
+
+The already-applied foundation body also produces five reviewed what-if echoes.
+Their narrow admission keeps the original Modify paths and raw change digest
+visible, labeled `reviewed_source_identical_echo`; it does not claim NoChange.
+Each exact resource/type/Region must have identical remaining before/after
+content, and each declared delta must match the captured values:
+
+| Exact foundation resource | Allowed echo |
+| --- | --- |
+| VNet | `privateEndpointVNetPolicies`: `"Disabled"` to absent |
+| Private endpoint | `isIPv6EnabledPrivateEndpoint`: Boolean false to absent |
+| DNS VNet link | `resolutionPolicy`: `"Default"` to absent |
+| DNS zone group | One `cosmos-sql` config with unchanged exact zone ID; only validated id/type/etag/provisioningState/recordSets response metadata may disappear |
+| Container Apps environment | `peerAuthentication.mtls.enabled` and `peerTrafficConfiguration.encryption.enabled` remain false in their exact omitted objects; `dynamicJsonColumns` is false to absent; customerId is the current exact workspace GUID to the exact original unresolved `reference()` or the same GUID |
+
+The customer GUID is read from the exact existing workspace and bound, never
+hardcoded or inferred from a reference string. The IPv6 field is not exposed by
+the published writable schema: no unsupported property is added to Bicep.
+These are owner-reviewed echoes of the identical body already applied, not a
+general equivalence between missing and false. Unexpected paths, values,
+changes hidden outside delta, NSG modifications and subnet detachments fail.
+No rule, mTLS, peer encryption, DNS-resolution or public-access change is implied.
 
 This is an external **workload-profile** environment with a Consumption profile,
 not the legacy Consumption-only environment type.

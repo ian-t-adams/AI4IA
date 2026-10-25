@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from copy import deepcopy
 import hashlib
 import hmac
@@ -54,6 +55,214 @@ def require(condition: bool, message: str) -> None:
 
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+ABSENT = object()
+
+
+def at_path(value: dict, path: str) -> Any:
+    current: Any = value
+    for key in path.split("."):
+        if not isinstance(current, dict) or key not in current:
+            return ABSENT
+        current = current[key]
+    return current
+
+
+def remove_path(value: dict, path: str) -> None:
+    keys = path.split(".")
+    current = value
+    for key in keys[:-1]:
+        current = current[key]
+    del current[keys[-1]]
+
+
+def nsg_rules_state(resource: Any) -> str:
+    if not isinstance(resource, dict):
+        return "resource_invalid"
+    if "properties" not in resource:
+        return "properties_absent"
+    props = resource["properties"]
+    if not isinstance(props, dict):
+        return "properties_null" if props is None else "properties_invalid"
+    if "securityRules" not in props:
+        return "rules_absent"
+    rules = props["securityRules"]
+    if rules is None:
+        return "rules_null"
+    if not isinstance(rules, list):
+        return "rules_invalid"
+    return "rules_empty" if not rules else "rules_nonempty"
+
+
+def read_empty_nsg(rid: str, binding: dict, read: Callable[[list[str]], Any]) -> dict:
+    prefix = f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}/providers/"
+    suffix = f"{binding['workload']}-{binding['environment']}-api-private"
+    names = {
+        (prefix + f"Microsoft.Network/networkSecurityGroups/vnet-{suffix}-{name}-nsg-{binding['location']}").casefold(): name
+        for name in ("api", "cosmos")
+    }
+    require(rid in names, "NSG read is outside the exact foundation.")
+    snapshot = read([
+        "rest", "--method", "get", "--subscription", binding["subscription"],
+        "--url", f"https://management.azure.com{rid}?api-version=2024-05-01",
+        "--query", "{id:id,etag:etag,location:location,state:properties.provisioningState,"
+        "rulesPresent:contains(keys(properties), 'securityRules'),rules:properties.securityRules,"
+        "subnets:properties.subnets[].id}",
+    ])
+    require(isinstance(snapshot, dict) and isinstance(snapshot.get("id"), str)
+            and snapshot["id"].casefold() == rid and snapshot.get("state") == "Succeeded"
+            and snapshot.get("rulesPresent") is True and snapshot.get("rules") == []
+            and isinstance(snapshot.get("etag"), str) and 0 < len(snapshot["etag"]) <= 128,
+            "Live NSG rules are nonempty or unproven.")
+    require(canonical_location(snapshot.get("location"), binding["locationIdentity"]) == binding["location"],
+            "Live NSG Region changed.")
+    expected_subnet = (prefix + f"Microsoft.Network/virtualNetworks/vnet-{suffix}/subnets/{names[rid]}").casefold()
+    subnets = snapshot.get("subnets")
+    require(isinstance(subnets, list) and len(subnets) == 1 and isinstance(subnets[0], str)
+            and subnets[0].casefold() == expected_subnet, "Live NSG association changed.")
+    return {"resourceId": rid, "digest": digest(snapshot), "observedAt": int(time.time())}
+
+
+def verify_nsg_reads(preview: dict, binding: dict, read: Callable[[list[str]], Any]) -> list[dict]:
+    observations = []
+    for row in preview.get("nsgComparisons", []):
+        if "liveReadDigest" in row:
+            current = read_empty_nsg(row["resourceId"], binding, read)
+            require(current["digest"] == row["liveReadDigest"], "Live NSG changed after reviewed preview.")
+            observations.append(current)
+    return observations
+
+
+def foundation_echo(change: dict, binding: dict, resource_kind: str) -> bool:
+    """Only the reviewed source-identical response echoes, never general defaults."""
+    rid = change["resourceId"].casefold()
+    before, after = change["before"], change["after"]
+    types = {
+        "vnet": "Microsoft.Network/virtualNetworks",
+        "endpoint": "Microsoft.Network/privateEndpoints",
+        "link": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+        "zoneGroup": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+        "environment": "Microsoft.App/managedEnvironments",
+    }
+    for resource in (before, after):
+        if (not isinstance(resource.get("id"), str) or resource["id"].casefold() != rid
+                or resource.get("type") != types[resource_kind]):
+            return False
+        if resource_kind == "zoneGroup":
+            if resource.get("location") is not None:
+                return False
+        elif resource_kind == "link":
+            if resource.get("location") != "global":
+                return False
+        elif canonical_location(resource.get("location"), binding["locationIdentity"]) != binding["location"]:
+            return False
+    allowed = {
+        "vnet": {"properties.privateEndpointVNetPolicies": "Disabled"},
+        "endpoint": {"properties.isIPv6EnabledPrivateEndpoint": False},
+        "link": {"properties.resolutionPolicy": "Default"},
+        "environment": {
+            "properties.peerAuthentication": {"mtls": {"enabled": False}},
+            "properties.peerTrafficConfiguration": {"encryption": {"enabled": False}},
+            "properties.appLogsConfiguration.logAnalyticsConfiguration.dynamicJsonColumns": False,
+        },
+        "zoneGroup": {},
+    }[resource_kind]
+    left, right = deepcopy(before), deepcopy(after)
+    deltas = change["delta"]
+    paths = [delta["path"] for delta in deltas]
+    if len(paths) != len(set(paths)):
+        return False
+    customer_path = "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId"
+    for delta in deltas:
+        path = delta["path"]
+        old, new = at_path(before, path), at_path(after, path)
+        if resource_kind == "zoneGroup":
+            if path != "properties.privateDnsZoneConfigs" or delta.get("propertyChangeType") != "Array":
+                return False
+            if not dns_config_echo(old, new, delta, rid, binding):
+                return False
+            remove_path(left, path)
+            remove_path(right, path)
+            continue
+        if path == customer_path and resource_kind == "environment":
+            customer = binding.get("logAnalyticsCustomerId")
+            log_id = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
+                      f"/providers/Microsoft.OperationalInsights/workspaces/log-{binding['workload']}-{binding['environment']}")
+            expression = f"[reference('{log_id}', '2023-09-01').customerId]"
+            if (not isinstance(customer, str) or re.fullmatch(r"[0-9a-fA-F-]{36}", customer) is None
+                    or old != customer or new not in (customer, expression)
+                    or delta.get("propertyChangeType") != "Modify"
+                    or delta.get("before") != old or delta.get("after") != new):
+                return False
+            remove_path(left, path)
+            remove_path(right, path)
+            continue
+        if (path not in allowed or old is ABSENT or new is not ABSENT
+                or digest(old) != digest(allowed[path]) or delta.get("propertyChangeType") != "Delete"
+                or digest(delta.get("before")) != digest(old) or delta.get("after") is not None
+                or delta.get("children") not in (None, [])):
+            return False
+        remove_path(left, path)
+    return digest(left) == digest(right)
+
+
+def dns_config_echo(before: Any, after: Any, delta: dict, rid: str, binding: dict) -> bool:
+    if not isinstance(before, list) or not isinstance(after, list) or len(before) != 1 or len(after) != 1:
+        return False
+    old, new = before[0], after[0]
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return False
+    zone_id = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
+               "/providers/Microsoft.Network/privateDnsZones/privatelink.documents.azure.com")
+    expected = {"name": "cosmos-sql", "properties": {"privateDnsZoneId": zone_id}}
+    if new != expected or not isinstance(old.get("properties"), dict):
+        return False
+    reduced = deepcopy(old)
+    metadata = {
+        "id": rid + "/privatednszoneconfigs/cosmos-sql",
+        "type": "microsoft.network/privateendpoints/privatednszonegroups/privatednszoneconfigs",
+        "resourceGroup": binding["resourceGroup"].casefold(),
+    }
+    for key, expected_value in metadata.items():
+        if key in reduced:
+            value = reduced.pop(key)
+            if not isinstance(value, str) or value.casefold() != expected_value:
+                return False
+    if "etag" in reduced:
+        etag = reduced.pop("etag")
+        if not isinstance(etag, str) or re.fullmatch(r'W/"[0-9a-fA-F-]{36}"', etag) is None:
+            return False
+    props = reduced["properties"]
+    if "provisioningState" in props and props.pop("provisioningState") != "Succeeded":
+        return False
+    if "recordSets" in props:
+        records = props.pop("recordSets")
+        if not isinstance(records, list) or len(records) > 32 or not all(isinstance(row, dict) for row in records):
+            return False
+    if reduced != expected:
+        return False
+    children = delta.get("children")
+    if (not isinstance(children, list) or len(children) != 1 or not isinstance(children[0], dict)
+            or children[0].get("path") != "0"
+            or children[0].get("propertyChangeType") != "Modify"):
+        return False
+    leaves = children[0].get("children")
+    allowed = {"id", "etag", "type", "properties.provisioningState", "properties.recordSets"}
+    if not isinstance(leaves, list) or not leaves or len(leaves) > len(allowed):
+        return False
+    seen = set()
+    for leaf in leaves:
+        if not isinstance(leaf, dict):
+            return False
+        path = leaf.get("path")
+        if (not isinstance(path, str) or path not in allowed or path in seen or at_path(old, path) is ABSENT
+                or leaf.get("propertyChangeType") != "Delete" or leaf.get("after") is not None
+                or leaf.get("children") not in (None, []) or at_path(new, path) is not ABSENT
+                or digest(leaf.get("before")) != digest(at_path(old, path))):
+            return False
+        seen.add(path)
+    return True
 
 
 def resolve_parameters(source: dict, template: dict, env: dict[str, str]) -> dict:
@@ -243,7 +452,10 @@ def rejected_report(raw: Any, bound: dict) -> dict:
     return report
 
 
-def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None = None) -> dict:
+def scope_preview(
+    raw: dict, binding: dict, params: dict, baseline: dict | None = None, *,
+    read: Callable[[list[str]], Any] | None = None, observations: list[dict] | None = None,
+) -> dict:
     require(raw.get("status") == "Succeeded" and not raw.get("error"), "ARM preview did not succeed.")
     diagnostics = raw.get("diagnostics")
     require(diagnostics is None or (isinstance(diagnostics, list) and not diagnostics),
@@ -298,9 +510,27 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
         require(not change.get("unsupportedReason"), "ARM preview contains unsupported coverage.")
         if rid in nsgs.values() and (permitted is None or rid in permitted):
             after_nsg = change.get("after")
-            nsg_properties = after_nsg.get("properties") if isinstance(after_nsg, dict) else None
-            default_only = isinstance(nsg_properties, dict) and nsg_properties.get("securityRules") == []
-            nsg_evidence.append({"resourceId": rid, "customRulesEmpty": default_only})
+            state = nsg_rules_state(after_nsg)
+            default_only = state == "rules_empty"
+            evidence = {"resourceId": rid, "customRulesEmpty": default_only, "snapshotState": state}
+            if kind == "NoChange" and isinstance(change.get("before"), dict):
+                if nsg_rules_state(change["before"]) not in ("properties_absent", "rules_absent", "rules_empty"):
+                    errors.append("nsg_before_rules_nonempty_or_unknown")
+            if kind == "NoChange" and state in ("properties_absent", "rules_absent") and read is not None:
+                before_nsg = change.get("before")
+                require(nsg_rules_state(before_nsg) in ("properties_absent", "rules_absent", "rules_empty"),
+                        "Before NSG rules are nonempty or unproven.")
+                for snapshot in (before_nsg, after_nsg):
+                    require(isinstance(snapshot, dict) and isinstance(snapshot.get("id"), str)
+                            and snapshot["id"].casefold() == rid
+                            and snapshot.get("type") == "Microsoft.Network/networkSecurityGroups",
+                            "NSG snapshot identity is incomplete.")
+                proof = read_empty_nsg(rid, binding, read)
+                default_only = True
+                evidence.update(customRulesEmpty=True, liveReadDigest=proof["digest"])
+                if observations is not None:
+                    observations.append(proof)
+            nsg_evidence.append(evidence)
             if not default_only:
                 errors.append("nsg_rules_not_empty_or_unknown")
             if kind == "Modify":
@@ -534,6 +764,14 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
                     if tags != after.get("tags"):
                         errors.append("candidate_tags_changed")
         elif kind == "Modify" and isinstance(before, dict) and isinstance(after, dict):
+            echo_kind = {
+                vnet: "vnet", endpoint: "endpoint", private_env: "environment",
+                zone + f"/virtualnetworklinks/{suffix}": "link",
+                endpoint + "/privatednszonegroups/default": "zoneGroup",
+            }.get(rid)
+            if packet == "foundation" and echo_kind and foundation_echo(change, binding, echo_kind):
+                row["classification"] = "reviewed_source_identical_echo"
+                continue
             if packet in ("candidate", "activate", "cutover"):
                 if not isinstance(baseline, dict):
                     raise PreviewError("Current application snapshot is missing.")
@@ -703,6 +941,7 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
             "Scoped recovery subscription/workload is invalid.")
     group = f"rg-{workload}-{environment}"
     root = f"/subscriptions/{subscription}/resourceGroups/{group}/providers/"
+    log_id = root + f"Microsoft.OperationalInsights/workspaces/log-{workload}-{environment}"
     api_template = compile_module("api.bicep")
     api_meta, api_values = read_record(read, api_template, subscription, group, "api")
     require(api_values.get("environmentName") == environment and api_values.get("appEnvironment") == "prod"
@@ -727,7 +966,6 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
     recorded_web_location = None
     metadata = api_meta
     if packet == "foundation":
-        log_id = root + f"Microsoft.OperationalInsights/workspaces/log-{workload}-{environment}"
         require(api_values["logAnalyticsWorkspaceId"].casefold() == log_id.casefold(),
                 "Existing Log Analytics reference is outside the approved scope.")
         cosmos = re.fullmatch(r"https://([a-z0-9-]+)\.documents\.azure\.com(?::443)?/?",
@@ -826,6 +1064,17 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
     })
     if packet == "cutover":
         bound["locationObservations"]["recordedWebParameter"] = {"raw": recorded_web_location, "canonical": canonical}
+    if packet == "foundation":
+        workspace = read([
+            "monitor", "log-analytics", "workspace", "show", "--subscription", subscription,
+            "-g", group, "-n", f"log-{workload}-{environment}", "--query", "{id:id,customerId:customerId}",
+        ])
+        require(isinstance(workspace, dict) and isinstance(workspace.get("id"), str)
+                and workspace["id"].casefold() == log_id.casefold()
+                and isinstance(workspace.get("customerId"), str)
+                and re.fullmatch(r"[0-9a-fA-F-]{36}", workspace["customerId"]) is not None,
+                "Scoped Log Analytics customer identity is unknown.")
+        bound["logAnalyticsCustomerId"] = workspace["customerId"]
     return template, params, bound, baseline, expected
 
 
@@ -888,6 +1137,8 @@ def main() -> int:
                         and re.search(rb"(?m)^\s*(?:ERROR:\s*)?\(DeploymentNotFound\)", existing.stderr) is not None,
                         "Deployment claim already exists or its absence is unproven; never replay.")
                 verify_token(env["AI4IA_PRIVATE_PREVIEW_BINDING"], bound, proof["preview"], int(time.time()))
+                nsg_reads = verify_nsg_reads(proof["preview"], bound, cloud_read)
+                verify_token(env["AI4IA_PRIVATE_PREVIEW_BINDING"], bound, proof["preview"], int(time.time()))
                 run([
                     "az", "deployment", "group", "create", "--subscription", bound["subscription"],
                     "-g", bound["resourceGroup"], "-n", name, "--mode", "Incremental",
@@ -896,6 +1147,7 @@ def main() -> int:
                 ], limit=4096, timeout=1800)
                 (Path(env["RUNNER_TEMP"]) / "ai4ia-private-preview" / "execution.json").write_text(
                     json.dumps({"context": bound, "deploymentName": name, "resourceDeployment": "Succeeded",
+                                "nsgReads": nsg_reads,
                                 "runtimeAcceptance": "not_yet_observed", "modelCalls": 0}, indent=2), encoding="utf-8",
                 )
                 print("Exact scoped packet applied once. Runtime acceptance remains a separate gate.")
@@ -923,8 +1175,9 @@ def main() -> int:
         if kind != "deploy":
             os.unlink(parameter_path)
         payload = json.loads(raw)
+        nsg_reads: list[dict] = []
         try:
-            preview = scope_preview(payload, bound, expected, baseline)
+            preview = scope_preview(payload, bound, expected, baseline, read=cloud_read, observations=nsg_reads)
         except (PreviewError, KeyError, TypeError, ValueError, AttributeError):
             (output / "report.json").write_text(json.dumps(rejected_report(payload, bound), indent=2), encoding="utf-8")
             if Path(parameter_path).exists():
@@ -933,6 +1186,7 @@ def main() -> int:
         issued = int(time.time())
         token = make_token(bound, preview, issued)
         report = {"context": bound, "preview": preview, "issuedAt": issued,
+                  "nsgReads": nsg_reads,
                   "binding": token if not preview["blockingReasons"] else None,
                   "executionAuthorized": False,
                   "executionBlockers": json.loads(env.get("AI4IA_PRIVATE_EXECUTION_BLOCKERS", "[]"))}

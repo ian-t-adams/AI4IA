@@ -706,9 +706,16 @@ evidence. Omitted DNS is not an observed zero-server list.
 The foundation retains the two corporate-governance NSGs at their exact
 `vnet-<workload>-<environment>-api-private-<api|cosmos>-nsg-<location>` names
 and subnet associations. Both declare `securityRules: []`: default rules only,
-not custom ingress openings. Required NSG snapshots must prove that empty list;
-rule changes, missing proof and subnet detachment refuse. Adoption requires
-a fresh no-op preview, not permission to overwrite governance changes.
+not custom ingress openings. A `NoChange` snapshot omitting properties/rules
+requires a fresh exact raw ARM GET proving explicit empty rules, identity,
+Region and association. Null/nonempty/unknown never falls back. Bind the GET
+digest (including ETag), retain its actual time in the report, and re-read before
+apply; changing observation times alone is not configuration drift.
+Foundation-only echo admission is exact resource/type/path/before-value policy,
+not generic default normalization. Retain the five reviewed Modify rows and raw
+digest; only the unchanged-body IPv6=false, VNet Disabled, DNS Default, exact
+zone-config metadata and environment false/customer-reference echoes qualify.
+Unlisted values, paths, rule changes and subnet detachments still refuse.
 External workload-profile public ingress does not traverse the user subnet;
 the default AzureLoadBalancer allow already covers its documented probe ports.
 Default-off same-group API secret inheritance uses server-side listSecrets and
