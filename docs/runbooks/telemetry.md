@@ -68,11 +68,14 @@ replay possibly accepted audio as a latency fix. Native loopback controls in
 `app/api/tests/test_realtime_policy_frames.py` exercise the real transport,
 paced audio, slow owner storage and revocation without live models.
 
-The browser bounds outgoing microphone audio and stops on overflow. Typed chat
-is a separate HTTP/SSE request and is not spoken by the live avatar. A screenshot
-showing a typed reply generating while the avatar listens is therefore not proof
-of microphone input or an upstream speech response. Never collect audio, video,
-transcripts, browser tokens or raw provider payloads to establish that distinction.
+The browser bounds outgoing microphone audio and stops on overflow. While
+connected, the composer's **Send to** control distinguishes two paths: the live
+session (the default) receives typed input over its governed WebSocket and speaks
+the reply; **Text chat** sends a separate HTTP/SSE request whose reply is not
+spoken. A typed reply alone is therefore not proof of microphone input. Use the
+selected target and content-free flow counts below to distinguish the paths,
+not audio, video, transcripts, browser tokens or raw provider payloads. See
+[typed input in the user guide](../user-guide.md#voice).
 
 ### Voice Live conversation flow
 

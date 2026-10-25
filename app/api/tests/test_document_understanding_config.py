@@ -35,7 +35,7 @@ def test_disabled_by_default_validates():
 
 
 def test_enabled_local_with_memory_is_allowed():
-    # Local dev may use the in-memory library freely.
+    # Local dev needs neither durable storage nor a CU endpoint.
     _settings(document_understanding_enabled=True).validate_runtime()
 
 
@@ -78,11 +78,6 @@ def test_enabled_deployed_without_cu_or_blob_is_rejected():
         _settings(**base, document_blob_account_url="https://acct.blob.core.windows.net").validate_runtime()
     with pytest.raises(RuntimeError, match="AI4IA_CU_BASE_URL"):
         _settings(**base, cu_base_url="https://cu.example/").validate_runtime()
-
-
-def test_enabled_local_without_cu_or_blob_is_allowed():
-    # Local/dev runs with an in-memory blob store and CU disabled.
-    _settings(document_understanding_enabled=True).validate_runtime()
 
 
 def test_cu_analyzer_for_modality_maps_each_class():

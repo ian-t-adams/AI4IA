@@ -26,7 +26,6 @@ from ai4ia_api.realtime_flow import (
     event_properties,
     failure_identifiers,
     parse_response_done,
-    response_outcome,
 )
 from ai4ia_api.realtime_avatar import PROVIDER_ID_PLACEHOLDER
 from ai4ia_api.routers.realtime import DEV_SUBPROTOCOL, UpstreamMessage, relay
@@ -101,7 +100,7 @@ FAILURE = {
     ("not json", "other"),
 ])
 def test_response_outcome_admits_only_documented_status_and_reason_values(frame, label):
-    assert response_outcome(frame) == label
+    assert parse_response_done(frame).outcome == label
     assert label in RESPONSE_OUTCOMES
 
 
@@ -112,8 +111,8 @@ def test_response_outcome_skips_oversized_payloads():
 
     below, above = padded(RESPONSE_DONE_MAX_CHARS), padded(RESPONSE_DONE_MAX_CHARS + 1)
     assert len(below) == RESPONSE_DONE_MAX_CHARS and len(above) == RESPONSE_DONE_MAX_CHARS + 1
-    assert response_outcome(below) == "completed"  # control: the same payload under the bound
-    assert response_outcome(above) == "other"
+    assert parse_response_done(below).outcome == "completed"  # control: the same payload under the bound
+    assert parse_response_done(above).outcome == "other"
 
 
 def test_property_names_are_unique_and_events_drop_unknown_keys_and_zeros():

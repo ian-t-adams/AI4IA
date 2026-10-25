@@ -42,7 +42,6 @@ from ai4ia_api.agents.approvals import (
     consume_grant,
     draft_for_call,
     grant_hash,
-    invocation_approvals_for,
     mint_pending_approval,
     requires_invocation_approval,
 )
@@ -305,9 +304,7 @@ def test_invocation_key_round_trips_from_the_record():
     record, _ = mint_pending_approval(
         draft_for_call(_spec(), tool="mcp_courier_send", label="t", arguments=args)
     )
-    assert invocation_approvals_for([record]) == frozenset(
-        {approval_key("mcp_courier_send", arguments_digest(args))}
-    )
+    assert record.key == approval_key("mcp_courier_send", arguments_digest(args))
 
 
 def test_expiry_comparison_tolerates_a_naive_stored_timestamp():

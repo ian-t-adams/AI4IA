@@ -113,18 +113,12 @@
   cursor: not-allowed;
 }
 
-.icon-btn-sm {
-  width: 32px;
-  height: 32px;
-}
-
 @media (pointer: coarse) {
   .btn {
     min-height: 44px;
   }
 
-  .icon-btn,
-  .icon-btn-sm {
+  .icon-btn {
     width: 44px;
     height: 44px;
   }
@@ -142,35 +136,6 @@
   font-size: 0.72rem;
   font-weight: 700;
   line-height: 1;
-}
-
-.callout {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  color: var(--fg);
-  font-size: var(--text-sm);
-}
-
-.callout[data-tone="danger"] {
-  border-color: var(--danger);
-}
-
-.callout[data-tone="danger"] > :first-child {
-  color: var(--danger);
-}
-
-.callout > div {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.callout p {
-  margin: 0;
 }
 
 /* ---- Shell -------------------------------------------------------------- */
@@ -2257,10 +2222,6 @@
   background: var(--bg-hover);
 }
 
-.page-menu-button {
-  display: none;
-}
-
 .settings-section {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
@@ -2305,9 +2266,7 @@
 }
 
 /* Builder surfaces adopt the page width instead of a fixed modal box. */
-.page .studio-surface,
-.page .library-surface,
-.page .photo-avatar-surface {
+.page .studio-surface {
   min-width: 0;
 }
 
@@ -2376,17 +2335,9 @@
     justify-content: flex-end;
   }
 
-  .composer-toolbar > .composer-toolbar-spacer {
-    flex: 1 1 auto;
-  }
-
   .page-inner {
     gap: var(--space-5);
     padding: var(--space-3) var(--space-3) var(--space-6);
-  }
-
-  .page-menu-button {
-    display: inline-grid;
   }
 
   .settings-section {

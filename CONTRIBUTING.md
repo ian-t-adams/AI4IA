@@ -49,6 +49,57 @@ npm test
 npm run build --if-present
 ```
 
+#### Corporate npm mirrors
+
+If the corporate mirror lacks locked versions and public npm is unreachable,
+the failures have different causes:
+
+| Command | Failure |
+| --- | --- |
+| `npm ci` (mirror) | **404**: the mirror is reachable but does not carry every lockfile-pinned version |
+| `npm ci --registry=https://registry.npmjs.org` | **TLS handshake failure**: the public registry is unreachable |
+
+Do not rewrite the repository lockfile or weaken TLS verification. A separate
+scratch install can enable local checks, but it is **not lockfile-exact**; CI
+remains authoritative for reproducibility. `npm install` also honors an existing
+lockfile, so copy **only `package.json`** into the scratch directory to let the
+resolver select versions the mirror carries.
+
+From the repository root, with no existing `app\web\node_modules`:
+
+```powershell
+New-Item -ItemType Directory D:\ai4ia-web-scratch
+Copy-Item app\web\package.json D:\ai4ia-web-scratch
+Set-Location D:\ai4ia-web-scratch
+npm install --no-audit --no-fund
+
+# Replace <repo> with the checkout path; /node_modules is already gitignored.
+cmd /c mklink /J <repo>\app\web\node_modules D:\ai4ia-web-scratch\node_modules
+Set-Location <repo>\app\web
+npm test
+npm run lint
+```
+
+Keep Node 22. On a higher Node major, `ThemeProvider.test.tsx` can fail with
+`localStorage is not available because --localstorage-file was not provided`.
+That is an engine mismatch, not a product defect; do not change the tests.
+
+**Turbopack cannot build through an external junction**, on any drive. It fails
+during entrypoint discovery, before compiling source:
+
+```text
+Symlink [project]/node_modules is invalid, it points out of the filesystem root
+  - Execution of find_package failed
+```
+
+For a local production build, remove only the checkout's junction, leaving its
+scratch target intact, then copy the dependencies into a real directory:
+`robocopy <scratch>\node_modules <repo>\app\web\node_modules /E /MT:16`.
+Run `npm run build` there and remove the generated `app\web\.next` afterwards.
+Passing `tsc --noEmit` and tests through the junction is useful but not equivalent
+to a build: an extracted component missing `"use client"` can type-check and
+still fail the production build.
+
 ### API
 
 ```powershell

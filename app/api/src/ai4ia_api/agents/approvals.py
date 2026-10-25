@@ -99,7 +99,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -643,8 +643,3 @@ def consume_grant(
     if record.is_expired(now=now):
         return ApprovalOutcome(reason=ApprovalDenied.expired)
     return ApprovalOutcome(record=record)
-
-
-def invocation_approvals_for(records: Sequence[PendingToolApproval]) -> frozenset[str]:
-    """Turn redeemed records into the runtime's per-invocation approval set."""
-    return frozenset(record.key for record in records)

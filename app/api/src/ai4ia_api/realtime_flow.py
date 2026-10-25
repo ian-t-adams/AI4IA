@@ -169,11 +169,6 @@ def parse_response_done(frame: str) -> ResponseDone:
     return ResponseDone("other")
 
 
-def response_outcome(frame: str) -> str:
-    """The bounded outcome label for one ``response.done`` frame."""
-    return parse_response_done(frame).outcome
-
-
 def ordered_counts(counts: Mapping[str, int], allowlist: Iterable[str]) -> tuple[tuple[str, int], ...]:
     """Non-zero counts in allowlist order, so identical sessions log identically."""
     return tuple((key, counts[key]) for key in allowlist if counts.get(key, 0) > 0)
