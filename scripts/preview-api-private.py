@@ -219,6 +219,11 @@ def rejected_report(raw: Any, bound: dict) -> dict:
             "resourceId": resource_id(item.get("resourceId")),
             "changeType": kind if isinstance(kind, str) and kind in kinds else "unknown",
             "fields": [path for path in paths if path is not None],
+            "deltaPresent": "delta" in item,
+            "deltaType": ({
+                type(None): "null", list: "array", dict: "object", bool: "boolean",
+                str: "string", int: "number", float: "number",
+            }.get(type(item.get("delta")), "unknown") if "delta" in item else "absent"),
         })
     report = {
         "context": {key: bound[key] for key in ("source", "phase", "subscription", "resourceGroup", "template", "parameters")
@@ -299,8 +304,12 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
         before, after = change.get("before"), change.get("after")
         row = {"resourceId": rid, "changeType": kind, "fields": []}
         deltas = change.get("delta", [])
+        if kind == "Create" and deltas is None:
+            deltas = []
         require(isinstance(deltas, list), "ARM property changes are incomplete.")
+        require(kind != "Modify" or bool(deltas), "ARM Modify property changes are missing.")
         for delta in deltas:
+            require(isinstance(delta, dict), "ARM property change entry is malformed.")
             path = delta.get("path")
             require(isinstance(path, str) and re.fullmatch(r"[A-Za-z0-9_.\[\]-]{1,256}", path) is not None,
                     "Unsupported ARM property path shape.")

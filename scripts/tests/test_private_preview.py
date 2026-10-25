@@ -56,7 +56,144 @@ def fixture():
     return bound, raw, params
 
 
+def complete_foundation_fixture():
+    """Synthetic six-resource snapshot; native SDK/knack emits these null deltas."""
+    bound, original, params = fixture()
+    bound["packet"] = "foundation"
+    vnet, endpoint, group, zone, link, environment = [
+        row["resourceId"] for row in original["changes"][:6]
+    ]
+    prefix = vnet.split("/providers/")[0] + "/providers/"
+    snapshots = [
+        (vnet, "eastus2", {
+            "addressSpace": {"addressPrefixes": ["10.241.0.0/25"]},
+            "dhcpOptions": {"dnsServers": []},
+            "subnets": [
+                {"name": "api", "properties": {"addressPrefix": "10.241.0.0/26", "delegations": [
+                    {"name": "container-apps", "properties": {"serviceName": "Microsoft.App/environments"}},
+                ]}},
+                {"name": "cosmos", "properties": {"addressPrefix": "10.241.0.64/27",
+                                                  "privateEndpointNetworkPolicies": "Disabled"}},
+            ],
+        }),
+        (endpoint, "eastus2", {
+            "subnet": {"id": vnet + "/subnets/cosmos"},
+            "privateLinkServiceConnections": [{"name": "cosmos-sql", "properties": {
+                "privateLinkServiceId": prefix + "Microsoft.DocumentDB/databaseAccounts/cosmos-test",
+                "groupIds": ["Sql"],
+            }}],
+        }),
+        (group, None, {"privateDnsZoneConfigs": [
+            {"name": "cosmos-sql", "properties": {"privateDnsZoneId": zone}},
+        ]}),
+        (zone, "global", {}),
+        (link, "global", {"registrationEnabled": False, "virtualNetwork": {"id": vnet}}),
+        (environment, "eastus2", {
+            "vnetConfiguration": {"infrastructureSubnetId": vnet + "/subnets/api", "internal": False},
+            "publicNetworkAccess": "Enabled",
+            "appLogsConfiguration": {"destination": "log-analytics", "logAnalyticsConfiguration": {
+                "customerId": "00000000-0000-0000-0000-000000000001", "sharedKey": "********",
+            }},
+            "workloadProfiles": [{"name": "Consumption", "workloadProfileType": "Consumption"}],
+        }),
+    ]
+    changes = []
+    for resource_id, location, properties in snapshots:
+        segments = resource_id.split("/providers/")[1].split("/")
+        after = {
+            "id": resource_id, "type": "/".join([segments[0], *segments[1::2]]),
+            "name": "/".join(segments[2::2]), "properties": properties,
+        }
+        if location is not None:
+            after.update(location=location, tags={"owner": "synthetic"})
+        changes.append({"resourceId": resource_id, "changeType": "Create",
+                        "before": None, "after": after, "delta": None, "unsupportedReason": None})
+    for resource_id in (
+        prefix + "Microsoft.App/containerApps/ca-api-test",
+        prefix + "Microsoft.ApiManagement/service/existing-gateway",
+    ):
+        changes.append({"resourceId": resource_id, "changeType": "Ignore",
+                        "before": None, "after": None, "delta": None, "unsupportedReason": None})
+    return bound, {"status": "Succeeded", "error": None, "diagnostics": None, "changes": changes}, params
+
+
 class PreviewTests(unittest.TestCase):
+    def test_complete_six_create_native_envelope_accepts_only_optional_create_delta(self):
+        bound, raw, params = complete_foundation_fixture()
+        for form in ("null", "absent", "array"):
+            payload = deepcopy(raw)
+            for row in payload["changes"][:6]:
+                if form == "absent":
+                    row.pop("delta")
+                elif form == "array":
+                    row["delta"] = []
+            with self.subTest(form=form):
+                report = PREVIEW.scope_preview(payload, bound, params)
+                self.assertEqual(report["blockingReasons"], [])
+                self.assertEqual(len(report["changes"]), 6)
+                self.assertTrue(all(row["changeType"] == "Create" and row["fields"] for row in report["changes"]))
+                self.assertNotIn("********", json.dumps(report))
+                token = PREVIEW.make_token(bound, report, 1792860000)
+                PREVIEW.verify_token(token, bound, report, 1792860010)
+
+    def test_create_wrong_delta_types_and_missing_snapshots_still_refuse(self):
+        bound, raw, params = complete_foundation_fixture()
+        for value in (False, 0, "", "private-marker", {}, {"private": "marker"}, [None], ["private-marker"]):
+            payload = deepcopy(raw)
+            payload["changes"][0]["delta"] = value
+            with self.subTest(delta=value), self.assertRaises(PREVIEW.PreviewError):
+                PREVIEW.scope_preview(payload, bound, params)
+        for value in (None, [], "private-marker", {}):
+            payload = deepcopy(raw)
+            payload["changes"][0]["after"] = value
+            with self.subTest(after=value):
+                try:
+                    result = PREVIEW.scope_preview(payload, bound, params)
+                except ValueError:
+                    continue
+                self.assertTrue(result["blockingReasons"])
+                with self.assertRaises(PREVIEW.PreviewError):
+                    PREVIEW.verify_token(PREVIEW.make_token(bound, result, 1792860000), bound, result, 1792860010)
+        for missing in range(6):
+            payload = deepcopy(raw)
+            payload["changes"].pop(missing)
+            with self.subTest(missing=missing), self.assertRaises(PREVIEW.PreviewError):
+                PREVIEW.scope_preview(payload, bound, params)
+
+    def test_modify_requires_complete_delta_even_when_create_delta_is_optional(self):
+        bound, raw, params = complete_foundation_fixture()
+        row = raw["changes"][0]
+        row.update(changeType="Modify", before=deepcopy(row["after"]),
+                   delta=[{"path": "tags.SecurityControl", "propertyChangeType": "Delete"}])
+        row["before"]["tags"]["SecurityControl"] = "Ignore"
+        self.assertEqual(PREVIEW.scope_preview(raw, bound, params)["blockingReasons"], [])
+        for value in (None, [], False, 0, "", {}, [None]):
+            payload = deepcopy(raw)
+            payload["changes"][0]["delta"] = value
+            with self.subTest(delta=value), self.assertRaises(PREVIEW.PreviewError):
+                PREVIEW.scope_preview(payload, bound, params)
+        raw["changes"][0].pop("delta")
+        with self.assertRaises(PREVIEW.PreviewError):
+            PREVIEW.scope_preview(raw, bound, params)
+
+    def test_rejected_delta_evidence_contains_only_presence_and_type(self):
+        bound, raw, _ = complete_foundation_fixture()
+        for value, expected in ((None, "null"), ([], "array"), ({}, "object"),
+                                ({"nested": {"value": "private-value-do-not-publish"}}, "object"), (False, "boolean"),
+                                (123, "number"), ("private-value-do-not-publish", "string")):
+            payload = deepcopy(raw)
+            payload["changes"][0]["delta"] = value
+            report = PREVIEW.rejected_report(payload, bound)
+            self.assertIs(report["changes"][0]["deltaPresent"], True)
+            self.assertEqual(report["changes"][0]["deltaType"], expected)
+            self.assertNotIn("private-value-do-not-publish", json.dumps(report))
+            self.assertIsNone(report["binding"])
+            self.assertIs(report["executionAuthorized"], False)
+        raw["changes"][0].pop("delta")
+        row = PREVIEW.rejected_report(raw, bound)["changes"][0]
+        self.assertIs(row["deltaPresent"], False)
+        self.assertEqual(row["deltaType"], "absent")
+
     def test_foundation_context_uses_actual_direct_module_parameter_contract(self):
         api = json.loads(_compile(ROOT / "infra/modules/api.bicep").stdout)
         network = json.loads(_compile(ROOT / "infra/modules/api-private-network.bicep").stdout)

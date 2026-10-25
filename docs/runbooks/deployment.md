@@ -2146,6 +2146,13 @@ validated resource IDs/property paths. Messages, expressions, additional-info
 values, before/after payloads and parameters are never copied into that report.
 Unknown diagnostic shapes remain failures; a rejected report has no binding,
 `executionAuthorized=false`, and a nonzero command outcome.
+ARM Create changes may omit `delta`; the native CLI serializer can emit it as
+null. Only Create accepts those two representations, and its complete expanded
+`after` snapshot still passes every resource/region/identity/secret check.
+Modify requires a nonempty valid delta array; other wrong types never become an
+empty list. Rejected evidence records only delta presence/type, not its values.
+An older rejected report without those fields does not establish its original
+delta shape, and a truncated rejection report never proves complete scope.
 
 For an approved phase, first run the existing workflow on main with
 `operation=preview` and the exact `private_step` (the initial pending push previews
