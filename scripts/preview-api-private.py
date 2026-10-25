@@ -338,31 +338,83 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
                     errors.append("unapproved_region")
             props = after.get("properties", {})
             if rid == vnet:
+                require(isinstance(props, dict), "Created VNet properties are incomplete.")
                 if (props.get("virtualNetworkPeerings") not in (None, [])
                         or (props.get("enableDdosProtection") is not None and props.get("enableDdosProtection") is not False)
                         or props.get("ddosProtectionPlan") is not None):
                     errors.append("unapproved_network_addition")
                 expected = [params["apiPrivateVnetPrefix"]["value"]]
-                if props.get("addressSpace", {}).get("addressPrefixes") != expected:
+                address_space = props.get("addressSpace")
+                address_matches = isinstance(address_space, dict) and address_space.get("addressPrefixes") == expected
+                if not address_matches:
                     errors.append("vnet_address_drift")
-                subnets = props.get("subnets", [])
+                subnets = props.get("subnets")
                 expected_subnets = {"api": params["apiPrivateSubnetPrefix"]["value"],
                                     "cosmos": params["cosmosPrivateEndpointSubnetPrefix"]["value"]}
-                if (not isinstance(subnets, list) or len(subnets) != 2
-                        or {row.get("name"): row.get("properties", {}).get("addressPrefix") for row in subnets} != expected_subnets
-                        or props.get("dhcpOptions", {}).get("dnsServers") != []):
-                    errors.append("subnet_or_dns_drift")
-                if isinstance(subnets, list):
+                rows_valid = isinstance(subnets, list) and all(
+                    isinstance(subnet, dict) and isinstance(subnet.get("name"), str)
+                    and isinstance(subnet.get("properties"), dict) for subnet in subnets
+                )
+                count_matches = isinstance(subnets, list) and len(subnets) == 2
+                names_match = rows_valid and count_matches and {subnet["name"] for subnet in subnets} == set(expected_subnets)
+                evidence = {
+                    "addressSpaceMatches": address_matches,
+                    "subnetCount": min(len(subnets), 32) if isinstance(subnets, list) else None,
+                    "subnetCountCapped": isinstance(subnets, list) and len(subnets) > 32,
+                    "subnetRowsValid": rows_valid,
+                    "subnetNamesMatch": names_match if rows_valid and count_matches else None,
+                    "apiPrefixMatches": None, "endpointPrefixMatches": None,
+                    "apiDelegationMatches": None, "endpointPolicyMatches": None,
+                }
+                row["networkComparisons"] = evidence
+                if not rows_valid:
+                    errors.append("subnet_inventory_invalid")
+                elif not count_matches:
+                    errors.append("subnet_count_drift")
+                elif not names_match:
+                    errors.append("subnet_names_drift")
+                if rows_valid:
                     if any(subnet.get("properties", {}).get(key) not in (None, [])
                            for subnet in subnets for key in
                            ("natGateway", "networkSecurityGroup", "routeTable", "serviceEndpoints", "serviceEndpointPolicies")):
                         errors.append("unapproved_subnet_attachment")
-                    api_subnet = next((row for row in subnets if row.get("name") == "api"), {})
-                    pe_subnet = next((row for row in subnets if row.get("name") == "cosmos"), {})
-                    delegates = api_subnet.get("properties", {}).get("delegations", [])
-                    if (len(delegates) != 1 or delegates[0].get("properties", {}).get("serviceName") != "Microsoft.App/environments"
-                            or pe_subnet.get("properties", {}).get("privateEndpointNetworkPolicies") != "Disabled"):
-                        errors.append("subnet_delegation_drift")
+                    if any("dhcpOptions" in subnet["properties"] for subnet in subnets):
+                        errors.append("subnet_dns_override")
+                if names_match:
+                    by_name = {subnet["name"]: subnet["properties"] for subnet in subnets}
+                    evidence["apiPrefixMatches"] = by_name["api"].get("addressPrefix") == expected_subnets["api"]
+                    evidence["endpointPrefixMatches"] = by_name["cosmos"].get("addressPrefix") == expected_subnets["cosmos"]
+                    if not evidence["apiPrefixMatches"] or not evidence["endpointPrefixMatches"]:
+                        errors.append("subnet_prefix_drift")
+                    delegates = by_name["api"].get("delegations")
+                    evidence["apiDelegationMatches"] = (
+                        isinstance(delegates, list) and len(delegates) == 1 and isinstance(delegates[0], dict)
+                        and isinstance(delegates[0].get("properties"), dict)
+                        and delegates[0]["properties"].get("serviceName") == "Microsoft.App/environments"
+                    )
+                    evidence["endpointPolicyMatches"] = by_name["cosmos"].get("privateEndpointNetworkPolicies") == "Disabled"
+                    if not evidence["apiDelegationMatches"]:
+                        errors.append("api_subnet_delegation_drift")
+                    if not evidence["endpointPolicyMatches"]:
+                        errors.append("endpoint_subnet_policy_drift")
+                dns = props.get("dhcpOptions")
+                dns_evidence = {"optionsPresent": "dhcpOptions" in props, "representation": "invalid",
+                                "serverCount": None, "serverCountCapped": False}
+                row["dnsComparison"] = dns_evidence
+                # Azure-provided DNS needs no configuration on a new VNet.
+                # Only this Create/after omission is a default, never a read failure.
+                if "dhcpOptions" not in props:
+                    dns_evidence["representation"] = "omitted-create-default"
+                elif isinstance(dns, dict) and set(dns) == {"dnsServers"} and isinstance(dns["dnsServers"], list):
+                    dns_evidence["serverCount"] = min(len(dns["dnsServers"]), 128)
+                    dns_evidence["serverCountCapped"] = len(dns["dnsServers"]) > 128
+                    if not dns["dnsServers"]:
+                        dns_evidence["representation"] = "explicit-empty"
+                    else:
+                        dns_evidence["representation"] = "nonempty-list"
+                        errors.append("vnet_dns_not_default")
+                else:
+                    errors.append("vnet_dns_shape_invalid")
             elif rid == private_env:
                 network = props.get("vnetConfiguration", {})
                 if (network.get("infrastructureSubnetId", "").casefold() != vnet + "/subnets/api"

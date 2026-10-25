@@ -739,6 +739,10 @@ Private location comparisons bind the explicit subscription's unambiguous ARM
 name/displayName row. Write canonical packet locations, retain raw labels and
 the location ID in evidence, and reject unknown/different/ambiguous regions.
 Never use arbitrary punctuation/whitespace stripping or an unscoped CLI fallback.
+Only a fully checked new-VNet Create may use omitted DHCP as the documented
+Azure-provided DNS default. Keep explicit malformed/custom DNS and existing-VNet
+changes refused; retain exact subnet/delegation checks and value-free comparison
+evidence. Omitted DNS is not an observed zero-server list.
 Default-off same-group API secret inheritance uses server-side listSecrets and
 declared metadata; preserve Key Vault references, never export values.
 Unprotected/unknown secret representations and incomplete resource coverage

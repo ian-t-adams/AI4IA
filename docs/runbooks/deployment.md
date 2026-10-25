@@ -2153,6 +2153,17 @@ Modify requires a nonempty valid delta array; other wrong types never become an
 empty list. Rejected evidence records only delta presence/type, not its values.
 An older rejected report without those fields does not establish its original
 delta shape, and a truncated rejection report never proves complete scope.
+For the exact **new VNet Create** only, omitted `dhcpOptions` is the documented
+[Azure-provided DNS default](https://learn.microsoft.com/azure/virtual-network/virtual-networks-name-resolution-for-vms-and-role-instances#specify-dns-servers).
+The existing explicit empty DNS list remains valid. This is not a general
+missing-field rule: explicit null/false/scalar/empty-object/malformed DHCP,
+nonempty DNS lists and subnet DNS overrides refuse, as do DNS changes to an
+existing VNet. IaC does not install a DNS IP. All address/subnet/count/name/
+prefix/delegation/endpoint checks remain mandatory.
+The report separates these blocker categories and records only fixed comparison
+flags and bounded counts/representation metadata. Omitted DNS has no observed
+server count; it is not reported as a measured empty list. Old field-only reports
+cannot establish unretained subnet values or prove that DNS was the only mismatch.
 
 For an approved phase, first run the existing workflow on main with
 `operation=preview` and the exact `private_step` (the initial pending push previews
