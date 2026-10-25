@@ -36,6 +36,7 @@ import unittest
 from copy import deepcopy
 from fnmatch import fnmatchcase
 from pathlib import Path
+from unittest import mock
 
 # A hard import, deliberately not guarded by `unittest.skipIf`. This file is a
 # gate: if PyYAML were missing it would skip silently and report success while
@@ -1052,6 +1053,206 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         self.assertEqual(setup["with"]["version"], "1.29.0")
         verify = next(step for step in steps if step.get("name") == "Verify azd version")
         self.assertIn("azd version 1\\.29\\.0", verify["run"])
+
+
+class PushReconciliationTests(unittest.TestCase):
+    """Execute the workflow's Python against local Git history, never Azure."""
+
+    def setUp(self):
+        self.steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+        self.step = next(step for step in self.steps if step.get("id") == "reconciliation")
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.git("init", "--quiet")
+        self.git("config", "user.name", "Offline test")
+        self.git("config", "user.email", "test@example.invalid")
+        self.git("config", "core.autocrlf", "false")
+        self.commit({"app/api/file.txt": "old", "infra/model.json": "{}"})
+        self.before = self.git("rev-parse", "HEAD").strip()
+        self.output = self.root / "output"
+        self.output.touch()
+        self.script = self.root / "classify.py"
+        self.script.write_text(self.step["run"], encoding="utf-8")
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", *args], cwd=self.repo, check=True, capture_output=True, text=True
+        ).stdout
+
+    def commit(self, changes):
+        for name, content in changes.items():
+            target = self.repo / name
+            if content is None:
+                target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+        self.git("add", "--all")
+        self.git("commit", "--quiet", "--allow-empty", "-m", "synthetic change")
+
+    def environment(self, **extra):
+        return {
+            **os.environ, "RELEASE_EVENT": "push", "RELEASE_BEFORE": self.before,
+            "RELEASE_AFTER": self.git("rev-parse", "HEAD").strip(),
+            "RELEASE_MANUAL_PROVISION": "null", "GITHUB_OUTPUT": str(self.output),
+            **extra,
+        }
+
+    def run_scope(self, **extra):
+        self.output.write_text("")
+        result = subprocess.run(
+            [sys.executable, str(self.script)], cwd=self.repo,
+            env=self.environment(**extra), capture_output=True, text=True,
+        )
+        return result, self.output.read_text()
+
+    def assert_scope(self, expected, **extra):
+        result, output = self.run_scope(**extra)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(output, f"provision={expected}\n")
+
+    def test_app_only_and_manual_opt_out_share_the_same_result(self):
+        self.commit({"app/api/file.txt": "new", "app/web/spaced file.txt": "new"})
+        self.assert_scope("false")
+        for value in ("false", "true"):
+            with self.subTest(manual=value):
+                self.assert_scope(value, RELEASE_EVENT="workflow_dispatch",
+                                  RELEASE_MANUAL_PROVISION=value, RELEASE_BEFORE="")
+
+    def test_every_non_app_path_preserves_reconciliation(self):
+        for path in ("infra/model.json", "foundry/toolbox.json", "proxy/config.txt",
+                     "azure.yaml", ".github/workflows/deploy.yml", "scripts/release.py",
+                     "docs/note.md", "application/not-app.txt"):
+            with self.subTest(path=path):
+                self.commit({path: "changed", "app/api/file.txt": path})
+                self.assert_scope("true")
+
+    def test_entire_push_range_includes_earlier_infrastructure_commits(self):
+        self.commit({"infra/model.json": "changed"})
+        self.commit({"app/api/file.txt": "new"})
+        self.assert_scope("true")
+
+    def test_deletions_and_renames_include_the_old_non_app_path(self):
+        self.commit({"infra/model.json": None, "app/api/moved.json": "{}"})
+        self.assert_scope("true")
+        self.before = self.git("rev-parse", "HEAD").strip()
+        self.commit({"app/api/moved.json": None})
+        self.assert_scope("false")
+
+    def test_non_app_deletion_is_not_hidden_by_app_changes(self):
+        self.commit({"infra/model.json": None, "app/api/file.txt": "new"})
+        self.assert_scope("true")
+
+    def test_invalid_or_unavailable_history_refuses_without_output(self):
+        self.commit({"app/api/file.txt": "new"})
+        for changes in (
+            {"RELEASE_BEFORE": ""}, {"RELEASE_BEFORE": "0" * 40},
+            {"RELEASE_BEFORE": "f" * 40}, {"RELEASE_BEFORE": "--all"},
+            {"RELEASE_AFTER": "0" * 40}, {"RELEASE_AFTER": self.before},
+            {"RELEASE_EVENT": "pull_request"},
+            {"RELEASE_EVENT": "workflow_dispatch", "RELEASE_MANUAL_PROVISION": "null"},
+        ):
+            with self.subTest(changes=changes):
+                result, output = self.run_scope(**changes)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "")
+                self.assertIn("refusing release", result.stderr)
+
+    def test_empty_and_non_ancestor_ranges_refuse(self):
+        self.commit({})
+        result, output = self.run_scope()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.commit({"app/api/file.txt": "branch"})
+        branch = self.git("rev-parse", "HEAD").strip()
+        self.git("checkout", "--quiet", "--detach", self.before)
+        self.commit({"app/api/file.txt": "different"})
+        result, output = self.run_scope(RELEASE_BEFORE=branch)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.before = self.git("rev-parse", "HEAD").strip()
+        self.commit({"app/api/file.txt": "valid"})
+        self.assert_scope("false")
+
+    def test_shallow_history_refuses_instead_of_using_the_last_commit(self):
+        self.commit({"infra/model.json": "changed"})
+        self.commit({"app/api/file.txt": "new"})
+        clone = self.root / "shallow"
+        subprocess.run(
+            ["git", "clone", "--quiet", "--depth=1", self.repo.as_uri(), str(clone)],
+            check=True, capture_output=True,
+        )
+        complete = self.repo
+        self.repo = clone
+        result, output = self.run_scope()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.repo = complete
+        self.assert_scope("true")
+
+    def test_failed_or_malformed_git_inventory_cannot_publish_a_decision(self):
+        for failure in (subprocess.CalledProcessError(1, "git"),
+                        subprocess.TimeoutExpired("git", 60),
+                        FileNotFoundError("git"), b"", b"app/api/file.txt",
+                        b"app/api/file.txt\0\0"):
+            def fake_git(args, **kwargs):
+                if args[1] == "diff":
+                    if isinstance(failure, Exception):
+                        raise failure
+                    return subprocess.CompletedProcess(args, 0, stdout=failure)
+                return subprocess.CompletedProcess(args, 0, stdout=b"a" * 40 + b"\n")
+
+            with self.subTest(failure=failure), mock.patch.dict(
+                os.environ, self.environment(RELEASE_BEFORE="b" * 40, RELEASE_AFTER="a" * 40)
+            ), mock.patch("subprocess.run", side_effect=fake_git):
+                with self.assertRaisesRegex(SystemExit, "refusing release"):
+                    exec(compile(self.step["run"], "<workflow>", "exec"), {})
+                self.assertEqual(self.output.read_text(), "")
+        self.commit({"app/api/file.txt": "valid"})
+        self.assert_scope("false")
+
+    def test_classifier_precedes_cloud_login_and_requires_complete_checkout(self):
+        checkout = next(step for step in self.steps if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        self.assertIs(checkout["with"]["persist-credentials"], False)
+        self.assertEqual(self.step["shell"], "python")
+        self.assertEqual(self.step["env"], {
+            "RELEASE_EVENT": "${{ github.event_name }}",
+            "RELEASE_BEFORE": "${{ github.event.before }}",
+            "RELEASE_AFTER": "${{ github.sha }}",
+            "RELEASE_MANUAL_PROVISION": "${{ toJSON(inputs.provision) }}",
+        })
+        index = self.steps.index(self.step)
+        self.assertNotIn("if", self.step)
+        for position, step in enumerate(self.steps):
+            if "azd auth login" in step.get("run", "") or step.get("uses", "").startswith("azure/login@"):
+                self.assertLess(index, position)
+
+    def test_only_provision_steps_gain_the_reduction_gate(self):
+        gated = {
+            "Resolve deploy principal ID for Foundry and API Center data-plane setup",
+            "Preflight resource provider registration",
+            "Preflight custom-domain bindings (guard wipes, register first binds)",
+            "Provision infrastructure",
+        }
+        selected = [step for step in self.steps if "steps.reconciliation.outputs" in step.get("if", "")]
+        self.assertEqual({step["name"] for step in selected}, gated)
+        for step in selected:
+            authority = ("steps.release_mode.outputs.operation == 'ordinary'"
+                         if step["name"].startswith("Resolve deploy principal")
+                         else "steps.execution.outputs.allowed == 'true'")
+            self.assertEqual(step["if"], "${{ " + authority
+                             + " && (steps.reconciliation.outputs.provision == 'true') }}")
+            for admitted in ("false", "true"):
+                for provision in ("", "false", "true"):
+                    self.assertEqual(PrivatePreviewWorkflowTests.expression(step["if"], {
+                        "steps.release_mode.outputs.operation": "ordinary" if admitted == "true" else "preview",
+                        "steps.execution.outputs.allowed": admitted,
+                        "steps.reconciliation.outputs.provision": provision,
+                    }), admitted == "true" and provision == "true")
 
 
 class PrivatePreviewWorkflowTests(unittest.TestCase):
