@@ -283,16 +283,29 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertEqual(network["condition"], "[not(equals(parameters('apiNetworkPhase'), 'legacy'))]")
         rows = network["properties"]["template"]["resources"]
         resources = dict(zip(
-            ("vnet", "zone", "link", "endpoint", "zoneGroup", "environment"), rows, strict=True,
+            ("apiNsg", "cosmosNsg", "vnet", "zone", "link", "endpoint", "zoneGroup", "environment"), rows, strict=True,
         ))
         self.assertEqual(
             {row["type"] for row in resources.values()},
             {"Microsoft.Network/virtualNetworks", "Microsoft.Network/privateDnsZones",
              "Microsoft.Network/privateDnsZones/virtualNetworkLinks", "Microsoft.Network/privateEndpoints",
-             "Microsoft.Network/privateEndpoints/privateDnsZoneGroups", "Microsoft.App/managedEnvironments"},
+             "Microsoft.Network/privateEndpoints/privateDnsZoneGroups", "Microsoft.App/managedEnvironments",
+             "Microsoft.Network/networkSecurityGroups"},
         )
+        for name, subnet in (("apiNsg", "api"), ("cosmosNsg", "cosmos")):
+            nsg = resources[name]
+            self.assertEqual(nsg["name"], f"[format('vnet-{{0}}-{subnet}-nsg-{{1}}', variables('name'), parameters('location'))]")
+            self.assertEqual(nsg["location"], "[parameters('location')]")
+            self.assertEqual(nsg["tags"], "[parameters('tags')]")
+            self.assertEqual(nsg["properties"], {"securityRules": []})
         subnets = resources["vnet"]["properties"]["subnets"]
         self.assertEqual(len(subnets), 2)
+        for subnet, name in zip(subnets, ("api", "cosmos"), strict=True):
+            self.assertEqual(subnet["name"], name)
+            self.assertEqual(subnet["properties"]["networkSecurityGroup"], {
+               "id": "[resourceId('Microsoft.Network/networkSecurityGroups', "
+                     f"format('vnet-{{0}}-{name}-nsg-{{1}}', variables('name'), parameters('location')))]",
+            })
         self.assertEqual(subnets[0]["properties"]["delegations"][0]["properties"]["serviceName"], "Microsoft.App/environments")
         self.assertEqual(subnets[1]["properties"]["privateEndpointNetworkPolicies"], "Disabled")
         self.assertEqual(resources["vnet"]["properties"]["dhcpOptions"], {"dnsServers": []})

@@ -15,6 +15,24 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
   name: logAnalyticsName
 }
 
+resource apiNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+  name: 'vnet-${name}-api-nsg-${location}'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: []
+  }
+}
+
+resource cosmosNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+  name: 'vnet-${name}-cosmos-nsg-${location}'
+  location: location
+  tags: tags
+  properties: {
+    securityRules: []
+  }
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: 'vnet-${name}'
   location: location
@@ -27,6 +45,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
         name: 'api'
         properties: {
           addressPrefix: apiSubnetPrefix
+          networkSecurityGroup: { id: apiNsg.id }
           delegations: [
             { name: 'container-apps', properties: { serviceName: 'Microsoft.App/environments' } }
           ]
@@ -36,6 +55,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
         name: 'cosmos'
         properties: {
           addressPrefix: privateEndpointSubnetPrefix
+          networkSecurityGroup: { id: cosmosNsg.id }
           privateEndpointNetworkPolicies: 'Disabled'
         }
       }
