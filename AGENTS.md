@@ -735,6 +735,10 @@ source/phase/current-config/parameter/delta binding and strict admission.
 API/web modes preserve existing certificate/diagnostic resources; activation
 keeps the existing discovery tag and changes only staging/max replicas.
 Historical non-secure module inputs require actual current-config parity.
+Private location comparisons bind the explicit subscription's unambiguous ARM
+name/displayName row. Write canonical packet locations, retain raw labels and
+the location ID in evidence, and reject unknown/different/ambiguous regions.
+Never use arbitrary punctuation/whitespace stripping or an unscoped CLI fallback.
 Default-off same-group API secret inheritance uses server-side listSecrets and
 declared metadata; preserve Key Vault references, never export values.
 Unprotected/unknown secret representations and incomplete resource coverage
