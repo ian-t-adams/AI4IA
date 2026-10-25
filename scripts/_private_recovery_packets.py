@@ -29,6 +29,40 @@ def require(condition: bool, message: str) -> None:
         raise PacketError(message)
 
 
+def location_evidence(data: Any, subscription: str, expected: str) -> dict[str, str]:
+    """Bind one Region's name/displayName from the scoped ARM locations response."""
+    require(isinstance(expected, str) and re.fullmatch(r"[a-z][a-z0-9]{1,63}", expected) is not None
+            and expected != "global", "Approved canonical location is invalid.")
+    require(isinstance(data, dict) and data.get("nextLink") is None
+            and isinstance(data.get("rows"), list) and 0 < len(data["rows"]) <= 512,
+            "Azure location identity coverage is incomplete.")
+    rows = data["rows"]
+    for row in rows:
+        require(isinstance(row, dict)
+                and all(isinstance(row.get(key), str) and 0 < len(row[key]) <= 128
+                        for key in ("name", "displayName")),
+                "Azure location identity metadata is malformed.")
+    matches = [row for row in rows if row["name"] == expected]
+    require(len(matches) == 1, "Approved Azure location identity is absent or ambiguous.")
+    selected = matches[0]
+    resource_id = f"/subscriptions/{subscription}/locations/{expected}"
+    require(selected.get("type") == "Region" and isinstance(selected.get("id"), str)
+            and selected["id"].casefold() == resource_id.casefold(),
+            "Azure location identity does not match the approved subscription and Region.")
+    aliases = {selected["name"].casefold(), selected["displayName"].casefold()}
+    require(all(row is selected or not aliases.intersection(
+        {row["name"].casefold(), row["displayName"].casefold()}) for row in rows),
+        "Azure location representations are ambiguous.")
+    return {key: selected[key] for key in ("id", "name", "displayName", "type")}
+
+
+def canonical_location(value: Any, evidence: dict[str, str]) -> str:
+    require(isinstance(value, str) and value.casefold() in {
+        evidence["name"].casefold(), evidence["displayName"].casefold(),
+    }, "Location is missing, unknown or different from the approved Region.")
+    return evidence["name"]
+
+
 def secret_descriptors(rows: Any, identity: str) -> list[dict[str, str]]:
     require(isinstance(rows, list) and len(rows) <= len(SECRET_NAMES),
             "Secret metadata is missing or oversized.")

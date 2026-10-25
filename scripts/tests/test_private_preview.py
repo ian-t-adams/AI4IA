@@ -32,6 +32,10 @@ def fixture():
         "cosmosAccount": "cosmos-test",
     }
     prefix = f"/subscriptions/{bound['subscription']}/resourceGroups/rg-ai4ia-test/providers/"
+    bound["locationIdentity"] = {
+        "id": f"/subscriptions/{bound['subscription']}/locations/eastus2",
+        "name": "eastus2", "displayName": "East US 2", "type": "Region",
+    }
     vnet = prefix + "Microsoft.Network/virtualNetworks/vnet-ai4ia-test-api-private"
     endpoint = prefix + "Microsoft.Network/privateEndpoints/pe-ai4ia-test-api-private-cosmos"
     zone = prefix + "Microsoft.Network/privateDnsZones/privatelink.documents.azure.com"
@@ -70,7 +74,7 @@ class PreviewTests(unittest.TestCase):
                            for name, value in values.items()},
         }}
         app = {
-            "id": prefix + "Microsoft.App/containerApps/ca-api-test", "location": "eastus2",
+            "id": prefix + "Microsoft.App/containerApps/ca-api-test", "location": "East US 2",
             "tags": {"owner": "test"}, "identity": {}, "properties": {
                 "managedEnvironmentId": prefix + "Microsoft.App/managedEnvironments/old",
                 "latestReadyRevisionName": "ca-api-test--ready", "latestRevisionName": "ca-api-test--ready",
@@ -82,11 +86,17 @@ class PreviewTests(unittest.TestCase):
             },
         }
         env = {**ENV, "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40,
-               "AZURE_TENANT_ID": "tenant", "AI4IA_PRIVATE_STEP": "foundation",
+               "AZURE_TENANT_ID": "tenant", "AZURE_LOCATION": "eastus2", "AI4IA_PRIVATE_STEP": "foundation",
                "AI4IA_PRIVATE_COSMOS_ENDPOINT": "https://cosmos-test.documents.azure.com:443/"}
         calls = []
         def read(args):
             calls.append(args)
+            if args[0] == "rest":
+                self.assertEqual(args[args.index("--subscription") + 1], ENV["AZURE_SUBSCRIPTION_ID"])
+                self.assertEqual(args[args.index("--url") + 1],
+                    f"https://management.azure.com/subscriptions/{ENV['AZURE_SUBSCRIPTION_ID']}/locations?api-version=2022-12-01")
+                return jmespath.search(args[args.index("--query") + 1],
+                    {"value": [fixture()[0]["locationIdentity"]]})
             source = deployment if args[:3] == ["deployment", "group", "show"] else app
             if args[:3] == ["containerapp", "revision", "show"]:
                 return app["properties"]["template"]
@@ -99,6 +109,11 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(set(params), set(network["parameters"]))
         self.assertEqual(expected["apiAuthProvider"], {"value": "entra"})
         self.assertEqual(bound["packet"], "foundation")
+        self.assertEqual(params["location"], {"value": "eastus2"})
+        self.assertEqual(bound["location"], "eastus2")
+        self.assertEqual(bound["locationObservations"]["legacyApi"], {"raw": "East US 2", "canonical": "eastus2"})
+        self.assertEqual(bound["locationObservations"]["recordedApiParameter"],
+                         {"raw": "eastus2", "canonical": "eastus2"})
         self.assertIsNone(baseline)
         self.assertEqual([call.args[0] for call in compiled.call_args_list],
                          ["api.bicep", "api-private-network.bicep"])
@@ -122,6 +137,53 @@ class PreviewTests(unittest.TestCase):
         raw["changes"][0]["changeType"] = "Ignore"
         with self.assertRaises(PREVIEW.PreviewError):
             PREVIEW.scope_preview(raw, bound, params)
+
+    def test_activate_and_cutover_compare_verified_location_identity_not_spelling(self):
+        for packet, phase, app_name in (("activate", "activate", "ca-api-private-test"),
+                                        ("cutover", "private", "ca-web-test")):
+            with self.subTest(packet=packet):
+                bound, _, params = fixture()
+                bound.update(packet=packet, phase=phase, apiOrigin="https://ca-api-private-test.example.azurecontainerapps.io")
+                prefix = f"/subscriptions/{bound['subscription']}/resourceGroups/{bound['resourceGroup']}/providers/"
+                target = prefix + "Microsoft.App/containerApps/" + app_name
+                before = {
+                    "location": "East US 2", "tags": {},
+                    "identity": {"type": "UserAssigned", "userAssignedIdentities": {prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/existing": {}}},
+                    "properties": {
+                        "managedEnvironmentId": prefix + "Microsoft.App/managedEnvironments/existing",
+                        "configuration": {"activeRevisionsMode": "Single", "ingress": {"external": True}, "secrets": []},
+                        "template": {"scale": {"minReplicas": 1, "maxReplicas": 1 if packet == "activate" else 3},
+                                     "containers": [{"image": "same-retained-image", "env": [
+                                         {"name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": "true"},
+                                         {"name": "API_BASE_URL", "value": "https://old.example"},
+                                         {"name": "API_PUBLIC_URL", "value": "https://old.example"},
+                                     ]}]},
+                    },
+                }
+                after = deepcopy(before)
+                after["location"] = "eastus2"
+                rows = PREVIEW.env_rows(after["properties"]["template"])
+                if packet == "activate":
+                    rows["AI4IA_PRIVATE_RECOVERY_CANDIDATE"]["value"] = "false"
+                    after["properties"]["template"]["scale"]["maxReplicas"] = 3
+                else:
+                    for name in ("API_BASE_URL", "API_PUBLIC_URL"):
+                        rows[name]["value"] = bound["apiOrigin"]
+                raw = {"status": "Succeeded", "changes": [{
+                    "resourceId": target, "changeType": "Modify", "before": before, "after": after,
+                    "delta": [{"path": "properties.template"}],
+                }]}
+                report = PREVIEW.scope_preview(raw, bound, params, before)
+                self.assertEqual(report["blockingReasons"], [])
+                self.assertEqual(report["changes"][0]["locations"], {
+                    "before": {"raw": "East US 2", "canonical": "eastus2"},
+                    "after": {"raw": "eastus2", "canonical": "eastus2"},
+                })
+                for value in ("westus", "East-US-2", None, ""):
+                    invalid = deepcopy(raw)
+                    invalid["changes"][0]["after"]["location"] = value
+                    with self.subTest(location=value), self.assertRaises(ValueError):
+                        PREVIEW.scope_preview(invalid, bound, params, before)
 
     def test_candidate_create_preserves_current_app_and_rejects_unprotected_values(self):
         bound, _, params = fixture()
@@ -299,10 +361,12 @@ class PreviewTests(unittest.TestCase):
 
     def test_binding_is_same_head_phase_scope_inputs_delta_and_fresh(self):
         bound, raw, params = fixture()
+        bound["locationObservations"] = {"legacyApi": {"raw": "East US 2", "canonical": "eastus2"}}
         result = PREVIEW.scope_preview(raw, bound, params)
         token = PREVIEW.make_token(bound, result, 1792860000)
         PREVIEW.verify_token(token, bound, result, 1792860010)
-        for field in ("source", "phase", "subscription", "resourceGroup", "parameters", "template"):
+        for field in ("source", "phase", "subscription", "resourceGroup", "parameters", "template",
+                      "locationIdentity", "locationObservations"):
             with self.subTest(field=field):
                 changed = {**bound, field: "changed"}
                 with self.assertRaises(PREVIEW.PreviewError):
@@ -315,6 +379,24 @@ class PreviewTests(unittest.TestCase):
         altered = {**result, "rawChangeDigest": "d" * 64}
         with self.assertRaises(PREVIEW.PreviewError):
             PREVIEW.verify_token(token, bound, altered, 1792860010)
+
+    def test_global_dns_and_locationless_child_do_not_relax_regional_resources(self):
+        bound, raw, params = fixture()
+        bound["packet"] = "foundation"
+        zone = raw["changes"][3]["resourceId"]
+        raw["changes"][3].update(changeType="Create", after={"location": "global", "tags": {}, "properties": {}})
+        raw["changes"][2].update(changeType="Create", after={"properties": {
+            "privateDnsZoneConfigs": [{"properties": {"privateDnsZoneId": zone}}],
+        }})
+        result = PREVIEW.scope_preview(raw, bound, params)
+        self.assertEqual(result["blockingReasons"], [])
+        for wrong in ("East US 2", None, "unknown"):
+            changed = deepcopy(raw)
+            changed["changes"][3]["after"]["location"] = wrong
+            self.assertIn("unapproved_region", PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+        raw["changes"][2]["after"]["location"] = "unknown"
+        with self.assertRaises(ValueError):
+            PREVIEW.scope_preview(raw, bound, params)
 
     def test_complete_nochange_is_not_missing_coverage_or_permission(self):
         bound, raw, params = fixture()
@@ -362,6 +444,16 @@ class PreviewTests(unittest.TestCase):
                 {"name": "cosmos", "properties": {"addressPrefix": "10.241.0.64/27", "privateEndpointNetworkPolicies": "Disabled"}},
             ]}})
         self.assertEqual(PREVIEW.scope_preview(raw, bound, params)["blockingReasons"], [])
+        display = deepcopy(raw)
+        display["changes"][0]["after"]["location"] = "East US 2"
+        display_report = PREVIEW.scope_preview(display, bound, params)
+        self.assertEqual(display_report["blockingReasons"], [])
+        self.assertEqual(display_report["changes"][0]["location"], {"raw": "East US 2", "canonical": "eastus2"})
+        for location in ("westus", "West US", "East-US-2", "East  US 2", None, "", True, "global"):
+            changed = deepcopy(raw)
+            changed["changes"][0]["after"]["location"] = location
+            with self.subTest(location=location), self.assertRaises(ValueError):
+                PREVIEW.scope_preview(changed, bound, params)
         for mutate in (
             lambda node: node["after"]["tags"].update(SecurityControl="Ignore"),
             lambda node: node["after"]["properties"]["addressSpace"].update(addressPrefixes=["10.242.0.0/25"]),

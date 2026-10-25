@@ -33,6 +33,26 @@ def overrides(app=None, phase="candidate", image=IMAGE):
 
 
 class RecoveryInputTests(unittest.TestCase):
+    def test_location_name_and_display_name_require_one_exact_arm_identity(self):
+        row = {"id": f"/subscriptions/{SUBSCRIPTION}/locations/eastus2",
+               "name": "eastus2", "displayName": "East US 2", "type": "Region"}
+        evidence = packets.location_evidence({"rows": [row], "nextLink": None}, SUBSCRIPTION, "eastus2")
+        for value in ("eastus2", "East US 2", "EASTUS2", "east us 2"):
+            self.assertEqual(packets.canonical_location(value, evidence), "eastus2")
+        for value in (None, "", True, {}, "westus", "West US", "East-US-2", "East  US 2",
+                      " East US 2", "eastus2 ", "(US) East US 2", "global"):
+            with self.subTest(value=value), self.assertRaises(packets.PacketError):
+                packets.canonical_location(value, evidence)
+        for data in (
+            {"rows": []}, {"rows": [row], "nextLink": "more"}, {"rows": [row], "nextLink": False},
+            {"rows": [row, row]}, {"rows": [row, {**row, "name": "other"}]},
+            {"rows": [{**row, "id": row["id"].replace(SUBSCRIPTION, "other")}]},
+            {"rows": [{**row, "type": "EdgeZone"}]}, {"rows": [{**row, "displayName": None}]},
+            {"rows": [{**row, "name": "westus"}]},
+        ):
+            with self.subTest(data=data), self.assertRaises(packets.PacketError):
+                packets.location_evidence(data, SUBSCRIPTION, "eastus2")
+
     def test_exact_source_target_and_existing_identity(self):
         result = overrides()
         self.assertEqual(result["appName"], "ca-api-private-test")

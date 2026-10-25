@@ -19,7 +19,8 @@ from typing import Any
 
 from _api_private import api_name, from_environment
 from _private_recovery_packets import (
-    MODULES, PacketError, api_overrides, configuration_intent, consumption_headroom, read_record, record_parameters,
+    MODULES, PacketError, api_overrides, canonical_location, configuration_intent, consumption_headroom,
+    location_evidence, read_record, record_parameters,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -315,8 +316,17 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
             row["fields"] = created_fields(after)
             if "SecurityControl" in after.get("tags", {}):
                 errors.append("security_exemption_tag")
-            if after.get("location") not in (None, binding["location"], "global"):
-                errors.append("unapproved_region")
+            observed_location = after.get("location")
+            if rid in (zone, zone + f"/virtualnetworklinks/{suffix}"):
+                if observed_location != "global":
+                    errors.append("unapproved_region")
+                else:
+                    row["location"] = {"raw": observed_location, "placement": "global-dns-resource"}
+            elif rid != endpoint + "/privatednszonegroups/default" or observed_location is not None:
+                canonical = canonical_location(observed_location, binding["locationIdentity"])
+                row["location"] = {"raw": observed_location, "canonical": canonical}
+                if canonical != binding["location"]:
+                    errors.append("unapproved_region")
             props = after.get("properties", {})
             if rid == vnet:
                 if (props.get("virtualNetworkPeerings") not in (None, [])
@@ -461,8 +471,14 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
                             != {key.casefold() for key in current_identity.get("userAssignedIdentities", {})}
                             or props.get("managedEnvironmentId", props.get("environmentId", "")).casefold()
                             != current_props.get("managedEnvironmentId", "").casefold()
-                            or resource.get("location") != baseline.get("location")):
+                            or canonical_location(resource.get("location"), binding["locationIdentity"])
+                            != canonical_location(baseline.get("location"), binding["locationIdentity"])):
                         errors.append("protected_application_resource_changed")
+                row["locations"] = {
+                    name: {"raw": resource["location"],
+                           "canonical": canonical_location(resource["location"], binding["locationIdentity"])}
+                    for name, resource in (("before", before), ("after", after))
+                }
             paths = set(row["fields"])
             old_tags, new_tags = deepcopy(before.get("tags", {})), deepcopy(after.get("tags", {}))
             old_control = old_tags.pop("SecurityControl", None)
@@ -613,11 +629,19 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
     old_rows = env_rows(old_api["properties"]["template"])
     require(old_rows.get("AI4IA_COSMOS_ENDPOINT", {}).get("value") == env.get("AI4IA_PRIVATE_COSMOS_ENDPOINT"),
             "Canonical source account changed.")
-    require(old_api["location"] == api_values["location"], "Current API location differs from recorded inputs.")
+    location = location_evidence(read([
+        "rest", "--method", "get", "--subscription", subscription,
+        "--url", f"https://management.azure.com/subscriptions/{subscription}/locations?api-version=2022-12-01",
+        "--query", "{rows:value[].{id:id,name:name,displayName:displayName,type:type},nextLink:nextLink}",
+    ]), subscription, env.get("AZURE_LOCATION", ""))
+    canonical = canonical_location(api_values.get("location"), location)
+    require(canonical_location(old_api.get("location"), location) == canonical,
+            "Current API location differs from recorded inputs.")
     template = api_template if packet in ("candidate", "activate") else compile_module(MODULES[packet])
     baseline = None
     proof = None
     quota = None
+    recorded_web_location = None
     metadata = api_meta
     if packet == "foundation":
         log_id = root + f"Microsoft.OperationalInsights/workspaces/log-{workload}-{environment}"
@@ -628,7 +652,7 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
         if cosmos is None:
             raise PreviewError("Canonical Cosmos identity is unknown.")
         values = {
-            "location": old_api["location"], "tags": deepcopy(api_values["tags"]),
+            "location": canonical, "tags": deepcopy(api_values["tags"]),
             "workload": workload, "environmentName": environment,
             "logAnalyticsName": f"log-{workload}-{environment}",
             "cosmosAccountId": root + "Microsoft.DocumentDB/databaseAccounts/" + cosmos[1],
@@ -653,6 +677,9 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
             phase=packet, subscription=subscription, group=group, workload=workload, environment=environment,
             source=baseline, image=image,
         )
+        require(canonical_location(baseline.get("location"), location) == canonical,
+                "Current API is in a different Region.")
+        overrides["location"] = canonical
         registry = image.split(".", 1)[0]
         run(["az", "acr", "login", "--subscription", subscription, "--name", registry], limit=4096, timeout=60)
         proof = PROVENANCE.consume_private_api(receipt, env)
@@ -672,7 +699,11 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
         ]), 0.5 if packet == "candidate" else 1.5)
     else:
         metadata, values = read_record(read, template, subscription, group, "web")
+        recorded_web_location = values.get("location")
         baseline = app_snapshot(env, f"ca-web-{environment}", read)
+        require(canonical_location(values.get("location"), location) == canonical
+                and canonical_location(baseline.get("location"), location) == canonical,
+                "Current web location differs from the approved Region.")
         origin = env.get("AI4IA_PRIVATE_API_ORIGIN", "")
         require(re.fullmatch(r"https://ca-api-private-" + re.escape(environment)
                              + r"\.[a-z0-9.-]+\.azurecontainerapps\.io", origin) is not None,
@@ -680,12 +711,13 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
         params = record_parameters(template, metadata, values, {
             "recoveryCutover": True, "apiBaseUrl": origin,
             "tags": baseline["tags"],
+            "location": canonical,
             "webImage": baseline["properties"]["template"]["containers"][0]["image"],
         })
     expected = {name: {"value": api_values[name]} for name in ("appEnvironment", "entraTenantId", "entraAudience")}
     expected["apiAuthProvider"] = {"value": api_values["authProvider"]}
     expected.update({
-        "location": {"value": old_api["location"]},
+        "location": {"value": canonical},
         "apiPrivateVnetPrefix": {"value": env["AI4IA_API_PRIVATE_VNET_PREFIX"]},
         "apiPrivateSubnetPrefix": {"value": env["AI4IA_API_PRIVATE_SUBNET_PREFIX"]},
         "cosmosPrivateEndpointSubnetPrefix": {"value": env["AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX"]},
@@ -703,6 +735,14 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
                      "maxReplicas": source_template.get("scale", {}).get("maxReplicas"),
                      "evidence": "configuration_reference_not_runtime_acceptance",
                  })
+    bound.update(locationIdentity=location, locationObservations={
+        "legacyApi": {"raw": old_api["location"], "canonical": canonical},
+        "recordedApiParameter": {"raw": api_values["location"], "canonical": canonical},
+        "sourceApplication": {"raw": source_app["location"], "canonical": canonical},
+        "packetParameter": {"raw": params["location"]["value"], "canonical": canonical},
+    })
+    if packet == "cutover":
+        bound["locationObservations"]["recordedWebParameter"] = {"raw": recorded_web_location, "canonical": canonical}
     return template, params, bound, baseline, expected
 
 

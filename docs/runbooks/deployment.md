@@ -2108,6 +2108,16 @@ Recorded API/web module inputs supply only non-secure parameter candidates.
 Their types must match the current compiled module; stable current serving
 configuration and the fully expanded preview must also agree outside the
 approved differences. A historical deployment record alone proves nothing.
+Location identity comes from the explicit subscription's ARM `locations`
+metadata (`2022-12-01`), not arbitrary punctuation/whitespace stripping. The
+approved canonical name and its unambiguous `displayName` identify the same
+Region (for example, `eastus2` and `East US 2`). Packet parameters use the
+canonical name; bindings retain the raw snapshot/recorded labels and the exact
+ARM location ID separately. The same evidence governs resource Create/Modify
+comparisons. Missing, different, unknown or ambiguous regions refuse; only the
+two exact DNS resources use global placement. The locationless DNS-zone-group
+child does not infer a region from a missing field. Do not replace the scoped ARM
+GET with an unscoped CLI default if a convenience command rejects `--subscription`.
 The candidate's always-emitted metrics self-reference must change from the exact
 legacy API resource ID to the exact private API ID. Validate both ends against
 the bound scope before comparing that field; missing, stale or foreign IDs
