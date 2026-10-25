@@ -152,7 +152,8 @@ export function retryInteractiveTokenRecovery(): Promise<never> {
 // Returns an API access token for the active account, or null when Entra is
 // disabled or no account is present. Interaction-required sessions enter a
 // single-flight redirect and never fall through to an unauthenticated request.
-export async function getApiAccessToken(): Promise<string | null> {
+export async function getApiAccessToken(signal?: AbortSignal | null): Promise<string | null> {
+  signal?.throwIfAborted();
   const client = _msal;
   const config = _config;
   if (!client || config?.provider !== "entra") return null;
@@ -163,8 +164,10 @@ export async function getApiAccessToken(): Promise<string | null> {
       account,
       scopes: [config.apiScope],
     });
+    signal?.throwIfAborted();
     return result.accessToken;
   } catch (err) {
+    signal?.throwIfAborted();
     if (err instanceof InteractionRequiredAuthError) {
       return startInteractiveTokenRecovery();
     }
@@ -179,8 +182,11 @@ export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
+  const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+  signal?.throwIfAborted();
   if (!isEntraEnabled()) return fetch(input, init);
-  const token = await getApiAccessToken();
+  const token = await getApiAccessToken(signal);
+  signal?.throwIfAborted();
   if (!token) return fetch(input, init);
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);

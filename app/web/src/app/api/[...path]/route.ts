@@ -71,7 +71,10 @@ async function forward(req: NextRequest, path: string[]): Promise<Response> {
     headers,
     redirect: "manual",
   };
-  if (method === "POST" && encodedPath === "decisions/run") {
+  if (
+    (method === "POST" && encodedPath === "decisions/run") ||
+    (method === "GET" && encodedPath === "decisions/options")
+  ) {
     init.signal = req.signal;
   }
   if (hasBody) {
