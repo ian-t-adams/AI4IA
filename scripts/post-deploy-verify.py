@@ -70,6 +70,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
+from _api_private import PHASES, api_name, phase
 from _image_refs import SERVICES, ImageInputError as VerifyInputError, parse_expected_images
 from _canary_contract import (
     CANARY_PROMPT as CANARY_PROMPT, CANARY_TITLE as CANARY_TITLE,
@@ -579,7 +580,9 @@ def resource_group_name(workload: str | None, environment: str) -> str:
 
 
 def app_names(environment: str) -> dict[str, str]:
-    return {svc: f"{APP_NAME_PREFIX[svc]}{environment}" for svc in SERVICES}
+    names = {svc: f"{APP_NAME_PREFIX[svc]}{environment}" for svc in SERVICES}
+    names["api"] = api_name(environment, phase(os.environ.get("AI4IA_API_NETWORK_PHASE") or "legacy"))
+    return names
 
 
 def _validate_environment(value: str | None) -> str:
@@ -2000,6 +2003,43 @@ def _custom_domain_failures(live: dict[str, Any]) -> list[str]:
 def _canary_failures(
     args: argparse.Namespace, api_base: str | None, deadline: Deadline | None = None
 ) -> list[str]:
+    if getattr(args, "decision_options", False):
+        if os.environ.get("AI4IA_API_NETWORK_PHASE") not in PHASES[1:]:
+            return ["private recovery: authenticated options requires an explicit private phase"]
+        if not args.skip_canary:
+            return ["private recovery: authenticated options requires explicit --skip-canary"]
+        if not _ENV_NAME_RE.fullmatch(args.token_env) or not api_base:
+            return ["private recovery: explicit API target and token environment required"]
+        token = os.environ.get(args.token_env, "").strip()
+        if not token:
+            return ["private recovery: authenticated options token is missing"]
+        result = http_request(
+            "GET", api_base + "/api/decisions/options",
+            headers={"Authorization": f"Bearer {token}"}, timeout=20,
+            deadline=deadline or Deadline(20), body_limit=8192,
+        )
+        payload = result.json()
+        expected = {
+            row["name"] for row in load_model_catalog(args.models).get("catalog", [])
+            if row.get("category") == "decision" and row.get("runtimeEnabled", True) is True
+        }
+        rows = payload.get("models") if isinstance(payload, dict) and set(payload) == {"models"} else None
+        valid = (
+            result.status == 200 and isinstance(rows, list) and 0 < len(rows) <= 16
+            and all(
+                isinstance(row, dict) and set(row) == {"id", "displayName", "residencies"}
+                and isinstance(row["id"], str) and row["id"] in expected
+                and isinstance(row["displayName"], str) and 0 < len(row["displayName"]) <= 256
+                and isinstance(row["residencies"], list) and 0 < len(row["residencies"]) <= 8
+                and all(isinstance(value, str) and 0 < len(value) <= 64 for value in row["residencies"])
+                for row in rows
+            )
+            and len({row["id"] for row in rows}) == len(rows)
+        )
+        emit("decision_options", outcome="passed" if valid else "failed",
+             status=result.status, modelCount=len(rows) if valid and isinstance(rows, list) else None,
+             detail="Authenticated nonbillable availability only; no model execution.")
+        return [] if valid else ["private recovery: authenticated Decision availability failed"]
     if args.skip_canary:
         emit("canary", outcome="skipped", detail="--skip-canary was passed")
         annotate(
@@ -2323,6 +2363,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     verify.add_argument("--skip-canary", action="store_true", help="Do not run the model canary.")
+    verify.add_argument(
+        "--decision-options", action="store_true",
+        help="Require authenticated nonbillable Decision options instead of model calls; requires --skip-canary.",
+    )
     verify.add_argument(
         "--token-env",
         default=DEFAULT_TOKEN_ENV,

@@ -1081,11 +1081,19 @@ class ModelPreflightLifecycleWiringTests(unittest.TestCase):
             2,
             "Windows and POSIX azd provisions must both check model availability/quota",
         )
-        # preprovision is a list: every entry carries a windows and a posix hook.
-        self.assertEqual(len(re.findall(r"(?m)^    - windows:$", preprovision)), 2)
-        self.assertEqual(len(re.findall(r"(?m)^      posix:$", preprovision)), 2)
+        # Each ordered entry runs on both OSes before azd resolves parameters.
+        entries = re.split(r"(?m)^    - windows:$", preprovision)[1:]
+        self.assertEqual(len(entries), 3)
+        for entry, script in zip(entries, (
+            "scripts/derive-json-transport.py",
+            "scripts/check-api-private-network.py",
+            "scripts/check-model-availability.py",
+        ), strict=True):
+            self.assertEqual(entry.count(script), 2)
+            self.assertEqual(len(re.findall(r"(?m)^      posix:$", entry)), 1)
+            self.assertEqual(entry.count("continueOnError: false"), 2)
         self.assertNotIn("--skip-quota", preprovision)
-        self.assertEqual(preprovision.count("continueOnError: false"), 4)
+        self.assertEqual(preprovision.count("continueOnError: false"), 6)
 
     def test_preflight_script_changes_trigger_the_provisioning_workflow(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(
@@ -1143,39 +1151,29 @@ class ProviderPreflightRunsBeforeProvisionTests(unittest.TestCase):
         ]
         self.assertEqual(
             len(preflight),
-            1,
-            "deploy.yml must run scripts/check-resource-providers.py exactly once; "
-            "without it an unregistered provider fails partway through a provision "
-            "instead of in seconds with the namespace to register.",
+            2,
+            "Preview has a read-only check; admitted deployment keeps its guarded preflight.",
         )
         self.assertTrue(provision, "deploy.yml no longer runs `azd provision`")
         self.assertLess(
-            preflight[0],
+            max(preflight),
             min(provision),
             "the resource-provider preflight must run BEFORE `azd provision`; after "
             "it, the deployment has already failed on the thing it checks.",
         )
 
-    def test_the_preflight_registers_rather_than_only_reporting(self) -> None:
-        """Report-only would fail the change window over a one-line fix.
-
-        Registration is idempotent, subscription-scoped, non-destructive, and
-        already granted by the deploy identity's Contributor role, so self-healing
-        is strictly better here than stopping. `--register` also waits for the
-        state to become Registered, which report-only cannot do.
-        """
+    def test_only_an_admitted_ordinary_release_may_register(self) -> None:
+        """Migration never registers providers; ordinary released behavior remains."""
         runs = [
             str(step.get("run", ""))
             for step in self._deploy_steps()
             if "check-resource-providers.py" in str(step.get("run", ""))
         ]
         self.assertTrue(runs, "no resource-provider preflight step found in deploy.yml")
-        self.assertIn(
-            "--register",
-            runs[0],
-            "the deploy preflight should pass --register so a newly added provider "
-            "self-heals instead of failing the run.",
-        )
+        self.assertNotIn("--register", runs[0])
+        self.assertIn('true) python scripts/check-resource-providers.py ;;', runs[1])
+        self.assertIn('false) python scripts/check-resource-providers.py --register ;;', runs[1])
+        self.assertIn('*) echo "::error::Private migration state is unknown."; exit 1 ;;', runs[1])
 
 
 if __name__ == "__main__":

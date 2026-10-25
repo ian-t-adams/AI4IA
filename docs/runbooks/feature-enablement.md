@@ -1521,8 +1521,10 @@ setting App Configuration-writable is a reviewed change to the
 
 The incomplete private-network foundation, multi-application proxy projection,
 proxy durable async, Event Hub export and hosted CompanionApp console are
-removed. They are not flag-gated alternatives to the supported public/keyless
-data tier. One trusted FastAPI application still authenticates to the proxy
+removed. They are not flag-gated alternatives to the supported data tier.
+The separately reviewed [API-only private Cosmos recovery](deployment.md#api-only-private-cosmos-recovery)
+uses a new finite phase contract, not those retired switches, and creates no
+other data-service private endpoints. One trusted FastAPI application still authenticates to the proxy
 with its distinct ingress key; never share it and trust `X-AI4IA-App-Id` as an
 independent application's identity. A real multi-application or private-network
 design needs a separately reviewed implementation.

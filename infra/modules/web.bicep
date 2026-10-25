@@ -53,6 +53,9 @@ param managedCertificateName string = ''
 @description('Container Apps managed environment name (parent of the managed certificate).')
 param containerEnvName string
 
+@description('Default-off exact backend-URL cutover; retain existing certificate and diagnostic settings without redeploying them.')
+param recoveryCutover bool = false
+
 @description('Frontend auth provider (dev|entra). entra turns on MSAL sign-in in the browser.')
 @allowed([
   'dev'
@@ -192,7 +195,7 @@ resource managedEnv 'Microsoft.App/managedEnvironments@2024-10-02-preview' exist
   name: containerEnvName
 }
 
-resource webCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-10-02-preview' = if (!empty(customDomain)) {
+resource webCert 'Microsoft.App/managedEnvironments/managedCertificates@2024-10-02-preview' = if (!empty(customDomain) && !recoveryCutover) {
   parent: managedEnv
   name: webManagedCertName
   location: location
@@ -206,7 +209,9 @@ var webCustomDomains = empty(customDomain) ? [] : [
   {
     name: customDomain
     bindingType: 'SniEnabled'
-    certificateId: webCert.id
+    certificateId: recoveryCutover
+      ? resourceId('Microsoft.App/managedEnvironments/managedCertificates', containerEnvName, webManagedCertName)
+      : webCert.id
   }
 ]
 
@@ -267,7 +272,7 @@ resource webApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
 // LA via the managed environment's appLogsConfiguration (container-app logs are
 // env-scoped only); this adds the per-app metric signal (HTTP 5xx, replica restarts,
 // CPU/memory) into the same workspace for correlation.
-resource webDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource webDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!recoveryCutover) {
   name: 'to-log-analytics'
   scope: webApp
   properties: {
