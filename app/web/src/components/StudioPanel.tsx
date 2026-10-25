@@ -118,16 +118,7 @@ export function StudioPanel({
               tabIndex={tab === id ? 0 : -1}
               onClick={() => selectTab(id)}
               onKeyDown={onTabKeyDown}
-              style={{
-                minHeight: 44,
-                padding: "8px",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: tab === id ? "var(--accent)" : "var(--bg)",
-                color: tab === id ? "var(--accent-fg)" : "var(--fg)",
-                fontWeight: tab === id ? 600 : 400,
-                cursor: "pointer",
-              }}
+              className="workspace-tab"
             >
               {TAB_LABELS[id]}
             </button>

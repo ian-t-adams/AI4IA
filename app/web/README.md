@@ -48,6 +48,24 @@ npm run build
 
 ## Runtime configuration
 
+### Interface system
+
+The visual authority is [DESIGN.md](../../DESIGN.md). Theme colors, spacing,
+type roles and control geometry live in `src/app/globals.css`; reusable buttons
+(`.btn`), fields (`.field-control`), tabs (`.workspace-tab`), badges
+(`.status-pill`) and feedback (`.ui-state`) live in `src/app/ui.css`.
+Studio's existing `builderStyles.ts` exports adapt the same control tokens for
+inline-style consumers. Decision's CSS module owns layout, not a second set of
+button or field rules.
+
+Selected navigation uses a neutral surface, weight and an accent underline;
+filled accent buttons identify actions. Preserve the 44px control target,
+theme-derived foregrounds, global keyboard focus, high-contrast theme and
+font-scale reflow when extending these primitives. Loading, empty and unavailable
+states stay distinct; styling must never change request or approval behavior.
+
+### Server environment
+
 Server-side env in `src/app/(protected)/layout.tsx` controls auth and feature
 visibility; it is read at request time (not frozen at build), so deploy-time
 config can change without a rebuild. The root layout stays auth-free so 404 and

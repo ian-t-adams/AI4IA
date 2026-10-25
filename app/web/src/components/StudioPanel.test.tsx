@@ -73,7 +73,8 @@ describe("StudioPanel", () => {
     });
     expect(screen.getByRole("tablist")).toHaveClass("studio-tabs");
     for (const tab of screen.getAllByRole("tab")) {
-      expect(tab).toHaveStyle({ minHeight: "44px" });
+      expect(tab).toHaveClass("workspace-tab");
+      expect(tab.style.minHeight).toBe("");
     }
     expect(screen.getByRole("button", { name: "Close builder" })).toHaveStyle({
       minWidth: "44px",

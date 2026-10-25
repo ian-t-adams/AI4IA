@@ -316,7 +316,7 @@ export function AgentBuilder({
           {loading && <li role="status">Loading your agents...</li>}
           {listUnavailable && <li role="status">Your agents could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
           {!loading && !listUnavailable && mine.length === 0 && (
-            <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
+            <li className="studio-empty">
               Your saved agents will appear here. Create your first one in the editor.
             </li>
           )}

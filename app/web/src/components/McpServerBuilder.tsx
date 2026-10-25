@@ -280,7 +280,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
           {loading && <li role="status">Loading your connections...</li>}
           {listUnavailable && <li role="status">Your connections could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
           {!loading && !listUnavailable && mine.length === 0 && (
-            <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
+            <li className="studio-empty">
               Connect an existing server to make its tools available here.
             </li>
           )}

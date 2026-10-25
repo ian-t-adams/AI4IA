@@ -74,6 +74,12 @@
   --text-lg: 1.125rem;
   --text-xl: 1.375rem;
   --text-2xl: 1.75rem;
+  --control-height: 44px;
+  --control-height-sm: 32px;
+  --control-padding: 10px 12px;
+  --control-font-size: 0.875em;
+  --control-radius: var(--radius-sm);
+  --field-bg: var(--bg-elevated);
   --rail-width: 76px;
   --list-width: 288px;
   --inspector-width: 380px;
@@ -381,8 +387,10 @@ button:disabled {
 }
 
 .inspector-nav button[aria-selected="true"] {
-  background: var(--accent);
-  color: var(--accent-fg);
+  background: var(--bg-active);
+  color: var(--fg);
+  box-shadow: inset 0 -2px var(--accent);
+  font-weight: 600;
 }
 
 .inspector-body {
@@ -1590,8 +1598,9 @@ select {
 }
 
 .studio-worktabs button[aria-selected="true"] {
-  background: var(--accent);
-  color: var(--accent-fg);
+  background: var(--bg-active);
+  color: var(--fg);
+  box-shadow: inset 0 -2px var(--accent);
   font-weight: 650;
 }
 
@@ -1623,7 +1632,7 @@ select {
   align-items: start;
   gap: 12px;
   padding-block: 12px;
-  background: var(--bg);
+  background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
 }
 
@@ -1771,10 +1780,10 @@ select {
 .studio-alert {
   margin: 0;
   border: 1px solid var(--danger);
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-radius: var(--control-radius);
+  padding: var(--space-3) var(--space-4);
   color: var(--danger);
-  font-size: 0.82em;
+  font-size: var(--control-font-size);
   overflow-wrap: anywhere;
 }
 

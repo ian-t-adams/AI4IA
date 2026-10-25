@@ -3,43 +3,19 @@
   min-width: 0;
   color: var(--fg);
   overflow-wrap: anywhere;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
 }
 
-.playground h2 { font-size: 1.3rem; margin: 0 0 8px; }
-.playground h3 { font-size: 1.1rem; margin: 16px 0 8px; }
+.playground h2 { font-size: var(--text-xl); margin: 0 0 var(--space-2); }
+.playground h3 { font-size: var(--text-lg); margin: var(--space-6) 0 var(--space-3); }
 .playground h4 { font-size: 1rem; margin: 0; }
 .playground p { max-width: 72ch; margin: 8px 0; }
-.playground label { display: grid; gap: 6px; min-width: 0; }
-.playground input, .playground textarea, .playground select {
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  min-height: 44px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-}
+.playground label { display: grid; gap: var(--space-2); min-width: 0; font-size: var(--control-font-size); font-weight: 500; }
+.playground label :is(input, select, textarea) { font-size: calc(1rem * var(--font-scale)); font-weight: 400; }
 .playground textarea { resize: vertical; }
-.playground button {
-  min-height: 44px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-  font: inherit;
-  white-space: normal;
-}
-.playground button:hover:not(:disabled) { border-color: var(--accent); }
-.playground button:disabled { opacity: .6; cursor: not-allowed; }
-.playground :is(button, input, select, textarea, summary):focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
 .playground summary { min-height: 44px; padding: 10px 0; cursor: pointer; }
 .editor { border: 0; padding: 0; margin: 16px 0; min-width: 0; }
 .question {
@@ -57,9 +33,7 @@
 .toolbar { justify-content: space-between; }
 .toolbar > label { flex: 0 1 24rem; }
 .actions { align-items: center; margin: 16px 0; }
-.playground .primary { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
 .note { font-size: .875rem; color: var(--fg-muted); }
-.error { color: var(--danger); }
 .answer { padding: 16px 0; border-top: 1px solid var(--border); }
 .playground table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 12px; }
 .playground th, .playground td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
@@ -67,3 +41,8 @@
 .playground td { font-variant-numeric: tabular-nums; }
 .playground caption { text-align: left; font-size: .875rem; color: var(--fg-muted); padding-bottom: 8px; }
 .srOnly { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+@media (max-width: 720px) {
+  .playground { padding: var(--space-4); }
+  .toolbar > label { flex-basis: 100%; }
+}
