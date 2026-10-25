@@ -143,7 +143,7 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         self.assertLess(prepare_index, upload_index)
         prepare = steps[prepare_index]
         self.assertEqual(
-            "${{ steps.provision.outcome == 'success' }}",
+            "${{ steps.execution.outputs.allowed == 'true' && (steps.provision.outcome == 'success') }}",
             prepare["if"],
         )
         self.assertIn(
@@ -156,6 +156,17 @@ class FoundryAssetsWorkflowTests(unittest.TestCase):
         self.assertIn("printf 'true\\n'", prepare["run"])
         self.assertIn("invalid Foundry project endpoint", prepare["run"])
         upload = steps[upload_index]
+        self.assertEqual(upload["if"], prepare["if"])
+        from scripts.tests.test_gating_workflows import PrivatePreviewWorkflowTests
+
+        for allowed, outcome, expected in (
+            ("false", "success", False), ("true", "success", True),
+            ("true", "failure", False), ("true", "skipped", False),
+        ):
+            self.assertEqual(PrivatePreviewWorkflowTests.expression(prepare["if"], {
+                "steps.execution.outputs.allowed": allowed,
+                "steps.provision.outcome": outcome,
+            }), expected)
         self.assertEqual(
             "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             upload["uses"],

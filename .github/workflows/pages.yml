@@ -113,6 +113,7 @@ jobs:
           AI4IA_WORKLOAD: ${{ vars.AI4IA_WORKLOAD }}
           AI4IA_WEB_CUSTOM_DOMAIN: ${{ vars.AI4IA_WEB_CUSTOM_DOMAIN }}
           AI4IA_PROXY_CUSTOM_DOMAIN: ${{ vars.AI4IA_PROXY_CUSTOM_DOMAIN }}
+          AI4IA_UPTIME_API_URL: ${{ vars.AI4IA_UPTIME_API_URL }}
         run: |
           $workload = $env:AI4IA_WORKLOAD
           if ([string]::IsNullOrWhiteSpace($workload)) { $workload = 'ai4ia' }
@@ -127,6 +128,7 @@ jobs:
             -ResourceGroup $resourceGroup `
             -WebUrl $webUrl `
             -ProxyUrl $proxyUrl `
+            -ApiUrl $env:AI4IA_UPTIME_API_URL `
             -OutDir $outDir
           foreach ($name in 'inventory.js', 'status.js') {
             $path = Join-Path $outDir $name

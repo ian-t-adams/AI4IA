@@ -644,9 +644,44 @@ SimpleL7Proxy makes one attempt per dispatch against its single catch-all host
 (`SinglePass`, with `MaxAttempts=1` bounding `MultiPass`) and owns delayed
 requeue, avoiding retry multiplication.
 
+### API-only private Cosmos recovery
+
+This finite migration keeps public web/API ingress but moves only the API to an
+external VNet-integrated Consumption environment. Cosmos public networking is
+always Disabled; `legacy` is a source default, **not a working public fallback**.
+Migration execution, network cost and each worker/traffic transition require
+separate operator approval. See [the recovery procedure](runbooks/deployment.md#api-only-private-cosmos-recovery).
+One approval may conditionally cover those phases. Pending migration pushes run
+only the direct-module preview; the existing main-only workflow's `operation=deploy`
+requires the exact `private_step` and a fresh `preview_binding` from the reviewed
+packet. `operation=image` with `provision=false` is the explicit registry-only
+API producer. Its unchanged `api_image_receipt` is required for candidate
+preview/apply and activation; no rebuild or missing-evidence fallback is allowed.
+These are workflow inputs, not new azd variables or activation grants. Default `auto`
+returns to normal releases only after observed completed private cutover.
+
+| Variable | Default | Contract |
+| --- | --- | --- |
+| `AI4IA_API_NETWORK_PHASE` | `legacy` | `candidate` is readiness/options-only; `activate` requires drained legacy workers; `private` switches web/voice only after activated acceptance. No implicit return to legacy once the new API exists. |
+| `AI4IA_API_PRIVATE_VNET_PREFIX` | Empty | Explicit reviewed standalone RFC1918 /24 or /25; no peering or custom DNS. |
+| `AI4IA_API_PRIVATE_SUBNET_PREFIX` | Empty | Contained /26, delegated to Microsoft.App/environments. |
+| `AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX` | Empty | Contained, disjoint /27 for the single Cosmos Sql endpoint. |
+| `AI4IA_API_PRIVATE_INITIAL_IMAGE` | Inert quickstart placeholder | Legacy root/preflight transport only. Scoped candidate creation instead requires the verified build-once producer receipt; no functional placeholder. Never hand-author a promotion image. |
+| `AI4IA_PRIVATE_WEB_IMAGE` / `AI4IA_PRIVATE_PROXY_IMAGE` | Inert quickstart placeholder | Preflight-derived existing serving digests prevent infrastructure reconciliation replacing web/proxy code. |
+
+The API's server-owned `AI4IA_PRIVATE_RECOVERY_CANDIDATE` blocks application
+work, directory capture, document recovery and DTS workers. Only health and
+authenticated Decision options remain. `AI4IA_PRIVATE_COSMOS_REQUIRED` adds
+bounded runtime private-DNS proof before the unchanged canonical-store readiness
+read. Both are phase-derived, not browser or operator bypass switches.
+`AZURE_API_APP_NAME` pins azd and rollback to the actual deployment target;
+`AZURE_API_URL` remains the serving backend and `AZURE_API_TARGET_URL` identifies
+the staged target. Pages and uptime share the existing `AI4IA_UPTIME_API_URL`;
+update it only with approved traffic cutover.
+
 ### Retired optional integrations
 
-Incomplete private networking, multi-application proxy profiles, proxy async,
+The former general private-network scaffold, multi-application proxy profiles, proxy async,
 Event Hub export and the hosted CompanionApp console are removed, not
 enableable configuration. Shared-key ingress is still not a verified application
 identity boundary. The proxy explicitly disables those runtime paths; its
@@ -657,7 +692,8 @@ The preprovision validator refuses stale retired parameters or populated
 unsupported configuration instead of silently applying another posture.
 See [the retired-input inventory and retained cleanup boundary](runbooks/feature-enablement.md#retired-scaffolding-and-operational-add-ons).
 Removing a client or setting never removes actor restrictions, Azure resources,
-identities, RBAC or user data.
+identities, RBAC or user data. The bounded API/Cosmos recovery above does not
+restore the old private-network flags or any other service's private endpoint.
 
 ## Validation
 

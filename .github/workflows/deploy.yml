@@ -51,6 +51,10 @@ on:
       - "scripts/http_contract.py"
       - "scripts/verify-image-provenance.py"
       - "scripts/_image_refs.py"
+      - "scripts/_api_private.py"
+      - "scripts/_private_recovery_packets.py"
+      - "scripts/check-api-private-network.py"
+      - "scripts/preview-api-private.py"
       - "scripts/check-resource-providers.py"
       - "scripts/check-model-availability.py"
       - "scripts/check-claude-binding.py"
@@ -72,6 +76,24 @@ on:
       - "scripts/gen-gateway-policy.py"
   workflow_dispatch:
     inputs:
+      operation:
+        description: "auto preserves completed releases; pending migration is preview-only"
+        type: choice
+        options: [auto, preview, deploy, image]
+        default: auto
+      preview_binding:
+        description: "Exact fresh binding from the reviewed private-phase preview; required for deploy"
+        type: string
+        default: ""
+      private_step:
+        description: "One reviewed direct-module recovery packet (no automatic phase advancement)"
+        type: choice
+        options: [foundation, candidate, activate, cutover]
+        default: foundation
+      api_image_receipt:
+        description: "Exact registry-only API producer receipt, including original SPDX fingerprint"
+        type: string
+        default: ""
       provision:
         description: "Run azd provision (reconcile infrastructure) before deploy"
         type: boolean
@@ -411,6 +433,20 @@ jobs:
       # the ingress: an APIM key, gateway policy, or model-deployment regression will
       # ship green. See docs/runbooks/deployment.md section 6.
       AI4IA_DEPLOY_VERIFY_CANARY: ${{ vars.AI4IA_DEPLOY_VERIFY_CANARY }}
+      AI4IA_API_NETWORK_PHASE: ${{ vars.AI4IA_API_NETWORK_PHASE }}
+      AI4IA_RELEASE_OPERATION: ${{ inputs.operation }}
+      AI4IA_RELEASE_PROVISION: ${{ inputs.provision }}
+      AI4IA_PRIVATE_PREVIEW_BINDING: ${{ inputs.preview_binding }}
+      AI4IA_PRIVATE_STEP: ${{ inputs.private_step }}
+      AI4IA_PRIVATE_IMAGE_RECEIPT: ${{ inputs.api_image_receipt }}
+      AI4IA_API_PRIVATE_VNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_VNET_PREFIX }}
+      AI4IA_API_PRIVATE_SUBNET_PREFIX: ${{ vars.AI4IA_API_PRIVATE_SUBNET_PREFIX }}
+      AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX: ${{ vars.AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX }}
+      # Reserved derived values, never operator-selected image overrides.
+      # The private preflight fills these before any nonlegacy provisioning.
+      AI4IA_API_PRIVATE_INITIAL_IMAGE: ''
+      AI4IA_PRIVATE_WEB_IMAGE: ''
+      AI4IA_PRIVATE_PROXY_IMAGE: ''
       # Canonical memory backend selection for the staged mem0 -> Cosmos cutover.
       # main.parameters.json resolves memoryStore from ${AI4IA_MEMORY_STORE=cosmos};
       # CI can't run `azd env set`, so plumb it here or the parameter never sees the
@@ -592,8 +628,12 @@ jobs:
         if: ${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}
         run: python scripts/check-claude-binding.py
 
+      - name: Select observed private release operation
+        id: release_mode
+        run: python scripts/check-api-private-network.py --release-mode
+
       - name: Resolve deploy principal ID for Foundry and API Center data-plane setup
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        if: ${{ steps.release_mode.outputs.operation == 'ordinary' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -618,6 +658,80 @@ jobs:
           echo "AZURE_PRINCIPAL_ID=$principal_id" >> "$GITHUB_ENV"
           echo "Resolved the deploy principal id for Content Understanding, Foundry assets, and API Center catalog access."
 
+      - name: Derive azd transports for JSON-valued variables
+        run: python scripts/derive-json-transport.py --github-env
+
+      - name: Install the same pinned Bicep as infra validation
+        if: ${{ steps.release_mode.outputs.operation != 'ordinary' }}
+        env:
+          BICEP_VERSION: 0.45.15
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/private-preview-tools"
+          curl -sSfLo "${RUNNER_TEMP}/private-preview-tools/bicep" \
+            "https://github.com/Azure/bicep/releases/download/v${BICEP_VERSION}/bicep-linux-x64"
+          chmod +x "${RUNNER_TEMP}/private-preview-tools/bicep"
+          "${RUNNER_TEMP}/private-preview-tools/bicep" --version
+          echo "${RUNNER_TEMP}/private-preview-tools" >> "$GITHUB_PATH"
+
+      - name: Read provider registration for private preview
+        if: ${{ steps.release_mode.outputs.operation != 'ordinary' }}
+        run: python scripts/check-resource-providers.py
+
+      - name: Preview the full private phase without changing resources
+        id: private_preview
+        if: ${{ steps.release_mode.outputs.operation == 'preview' || steps.release_mode.outputs.operation == 'deploy' }}
+        env:
+          AI4IA_RELEASE_KIND: ${{ steps.release_mode.outputs.operation }}
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/preview-api-private.py prepare
+
+      - name: Retain sanitized private preview
+        if: ${{ always() && steps.private_preview.outcome != 'skipped' && steps.private_preview.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: private-preview-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ai4ia-private-preview/report.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Apply the exact reviewed private packet
+        id: private_apply
+        if: ${{ steps.release_mode.outputs.operation == 'deploy' && steps.private_preview.outputs.authorized == 'true' }}
+        env:
+          AI4IA_RELEASE_KIND: deploy
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/preview-api-private.py apply
+
+      - name: Remove ephemeral private parameters
+        if: ${{ always() && env.AI4IA_PRIVATE_PACKET_DIR != '' }}
+        run: python scripts/preview-api-private.py cleanup
+
+      - name: Retain scoped execution receipt
+        if: ${{ always() && steps.private_apply.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: private-execution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ai4ia-private-preview/execution.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Admit registry-only API image preparation
+        id: image_execution
+        if: ${{ steps.release_mode.outputs.operation == 'image' }}
+        run: |
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+          echo "AI4IA_RELEASE_KIND=image" >> "$GITHUB_ENV"
+
+      - name: Admit only the separately selected deployment operation
+        id: execution
+        if: ${{ steps.release_mode.outputs.operation == 'ordinary' }}
+        env:
+          RELEASE_KIND: ${{ steps.release_mode.outputs.operation }}
+        run: |
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+          echo "AI4IA_RELEASE_KIND=${RELEASE_KIND}" >> "$GITHUB_ENV"
+
       # A resource provider that is not registered fails the deployment PARTWAY
       # THROUGH, ~10+ minutes in, with `MissingSubscriptionRegistration` -- after
       # real resources already exist. The runbook has always listed this as manual
@@ -634,13 +748,22 @@ jobs:
       # identity's Contributor role, so self-healing in ~a minute beats failing a
       # change window over a one-line fix.
       - name: Preflight resource provider registration
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
-        run: python scripts/check-resource-providers.py --register
+        if: ${{ steps.execution.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
+        env:
+          MIGRATION_PENDING: ${{ steps.release_mode.outputs.migration_pending }}
+        run: |
+          case "$MIGRATION_PENDING" in
+            true) python scripts/check-resource-providers.py ;;
+            false) python scripts/check-resource-providers.py --register ;;
+            *) echo "::error::Private migration state is unknown."; exit 1 ;;
+          esac
 
       # Protect existing bindings and register first-time hostnames before ARM
       # creates their certificates. Failed reads are never evidence of absence.
       - name: Preflight custom-domain bindings (guard wipes, register first binds)
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
+        env:
+          MIGRATION_PENDING: ${{ steps.release_mode.outputs.migration_pending }}
         run: |
           set -euo pipefail
           # Must match infra/main.bicep's `rg-${workload}-${environmentName}`.
@@ -691,6 +814,11 @@ jobs:
             elif echo "$bound" | grep -qxF "$var_val"; then
               echo "OK: $app already has $var_val registered; bicep will assert its cert and SNI binding."
             else
+              if [ "${MIGRATION_PENDING:-}" = "true" ]; then
+                echo "::error::Private recovery cannot register or change a custom domain."
+                rc=1
+                return 0
+              fi
               # First bind of THIS hostname. Container Apps refuses to create a
               # managed certificate for a hostname that is not already a custom
               # hostname somewhere in the environment (RequireCustomHostnameInEnvironment),
@@ -723,6 +851,7 @@ jobs:
       # first stand-up.
       - name: Capture pre-provision revisions (rollback target)
         id: capture
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         run: |
           set -euo pipefail
           python scripts/post-deploy-verify.py capture \
@@ -736,14 +865,11 @@ jobs:
       # variables and the secret stay raw JSON. The script masks the transport of
       # the secret projection before writing it. No `if:`, so every later azd
       # invocation resolves the same values. See docs/runbooks/deployment.md 7.18.
-      - name: Derive azd transports for JSON-valued variables
-        run: python scripts/derive-json-transport.py --github-env
-
       - name: Provision infrastructure
         id: provision
-        # Skipped only when a manual run explicitly opts out; push events always
-        # reconcile infra. Stored template hashes do not detect rollback drift.
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.provision }}
+        # Only admitted execution reaches ARM. Ordinary manual runs retain their
+        # opt-out; pending migration pushes terminate at the reviewed preview.
+        if: ${{ steps.execution.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
         run: azd provision --no-prompt --no-state
 
       # `azure/login` hands the Azure CLI one GitHub OIDC assertion, and the CLI
@@ -757,10 +883,10 @@ jobs:
       # token steps below prefer azd (docs/runbooks/deployment.md section 7.17).
       #
       # Same pinned action, identity and inputs as the first login; no new
-      # permission. No `if:` on purpose: it also runs on a manual run that skipped
-      # provisioning, which still builds images before the canary, but never after
-      # a failed step.
+      # permission. Within admitted execution it also runs without provisioning,
+      # which still builds images before the canary, but never after a failed step.
       - name: Refresh the Azure CLI login after provisioning
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
@@ -771,7 +897,7 @@ jobs:
       # workflow_run consumer. A GitHub variable can fall back across scopes and
       # therefore cannot prove which deployment it names.
       - name: Prepare Foundry asset handoff
-        if: ${{ steps.provision.outcome == 'success' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (steps.provision.outcome == 'success') }}
         run: |
           set -euo pipefail
           endpoint="$(azd env get-value AZURE_FOUNDRY_PROJECT_ENDPOINT)"
@@ -787,7 +913,7 @@ jobs:
           fi
 
       - name: Retain Foundry asset handoff
-        if: ${{ steps.provision.outcome == 'success' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (steps.provision.outcome == 'success') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: foundry-assets-context
@@ -796,6 +922,7 @@ jobs:
           retention-days: 30
 
       - name: Verify legacy API inference roles are revoked
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         run: |
           set -euo pipefail
           rg="rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}"
@@ -888,6 +1015,7 @@ jobs:
       # so a local `azd deploy` and this workflow keep writing to the same ACR
       # repositories instead of forking into two parallel sets.
       - name: Build and push service images, recording their digests
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: images
         timeout-minutes: 45
         run: |
@@ -924,6 +1052,9 @@ jobs:
           # and docker-build.yml's PR-time builds.
           for entry in "web:app/web" "api:app/api" "proxy:proxy"; do
             service="${entry%%:*}"
+            if [ "$AI4IA_RELEASE_KIND" = image ] && [ "$service" != api ]; then
+              continue
+            fi
             context="${entry#*:}"
             ref="${registry}/ai4ia/${service}-${env_slug}"
             echo "::group::build ${service} (${context})"
@@ -963,6 +1094,7 @@ jobs:
           done
 
       - name: Bind production image subjects
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: subjects
         env:
           WEB_IMAGE: ${{ steps.images.outputs.web_image }}
@@ -970,6 +1102,11 @@ jobs:
           PROXY_IMAGE: ${{ steps.images.outputs.proxy_image }}
         run: |
           set -euo pipefail
+          if [ "$AI4IA_RELEASE_KIND" = image ]; then
+            python scripts/verify-image-provenance.py prepare --private-api \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
           python scripts/verify-image-provenance.py prepare \
             --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
             --expect-image "web=${WEB_IMAGE}" \
@@ -977,6 +1114,7 @@ jobs:
             --expect-image "proxy=${PROXY_IMAGE}"
 
       - name: Generate production SPDX SBOMs
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         timeout-minutes: 35
         env:
           WEB_IMAGE: ${{ steps.images.outputs.web_image }}
@@ -987,11 +1125,19 @@ jobs:
           # Scan registry bytes, not a tag, workspace, PR artifact or local image ID.
           for pair in "web:$WEB_IMAGE" "api:$API_IMAGE" "proxy:$PROXY_IMAGE"; do
             service="${pair%%:*}"
+            if [ "$AI4IA_RELEASE_KIND" = image ] && [ "$service" != api ]; then
+              continue
+            fi
             image="${pair#*:}"
             trivy image --image-src remote --format spdx-json --list-all-pkgs \
               --timeout 10m --output "${RUNNER_TEMP}/ai4ia-image-evidence/${service}.spdx.json" \
               "$image"
           done
+          if [ "$AI4IA_RELEASE_KIND" = image ]; then
+            python scripts/verify-image-provenance.py sboms --private-api \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
           python scripts/verify-image-provenance.py sboms \
             --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
             --expect-image "web=${WEB_IMAGE}" \
@@ -1003,6 +1149,7 @@ jobs:
       # Organization-only storage records are disabled: no artifact-metadata or
       # packages token grant is needed for ACR's existing Docker credentials.
       - name: Attest web build provenance
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: web_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1013,6 +1160,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest web SPDX SBOM
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: web_sbom
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1024,6 +1172,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest api build provenance
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: api_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1034,6 +1183,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest api SPDX SBOM
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: api_sbom
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1045,6 +1195,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest proxy build provenance
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: proxy_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1055,6 +1206,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest proxy SPDX SBOM
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: proxy_sbom
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1067,6 +1219,7 @@ jobs:
           create-storage-record: false
 
       - name: Verify production image attestations
+        if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         id: image_proofs
         timeout-minutes: 15
         env:
@@ -1082,6 +1235,11 @@ jobs:
           PROXY_SBOM_BUNDLE: ${{ steps.proxy_sbom.outputs.bundle-path }}
         run: |
           set -euo pipefail
+          if [ "$AI4IA_RELEASE_KIND" = image ]; then
+            python scripts/verify-image-provenance.py verify --private-api \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
           python scripts/verify-image-provenance.py verify \
             --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
             --expect-image "web=${WEB_IMAGE}" \
@@ -1089,7 +1247,7 @@ jobs:
             --expect-image "proxy=${PROXY_IMAGE}"
 
       - name: Retain production image evidence
-        if: ${{ always() && steps.subjects.outcome == 'success' }}
+        if: ${{ (steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true') && (always() && steps.subjects.outcome == 'success') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: production-image-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1124,10 +1282,11 @@ jobs:
       # gap between this step and the canary, and an expired token would present
       # as a 401 -- i.e. would roll back a healthy release.
       - name: Preflight the post-deploy canary token
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: canary_preflight
         run: |
           set -euo pipefail
-          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ] && [ "${AI4IA_API_NETWORK_PHASE:-legacy}" = "legacy" ]; then
             echo "::warning::AI4IA_DEPLOY_VERIFY_CANARY=false, so this deploy will not be proven end to end. The rollout, health, web, proxy and custom-domain assertions still run, but nothing will exercise SimpleL7Proxy -> APIM -> Foundry."
             exit 0
           fi
@@ -1173,16 +1332,17 @@ jobs:
       # but not here would silently stop being deployed, which the old
       # deploy-everything form could not do.
       - name: Verify current Claude routes before image rollout
-        if: ${{ env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (env.AI4IA_CLAUDE_EXTERNAL_ENABLED == 'true') }}
         run: python scripts/check-claude-binding.py --routed
 
       - name: Verify upstream Claude gateway routes before image rollout
-        if: ${{ env.AI4IA_CLAUDE_GATEWAY_ENABLED == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (env.AI4IA_CLAUDE_GATEWAY_ENABLED == 'true') }}
         run: |
           apim_id="$(azd env get-value AZURE_APIM_RESOURCE_ID)"
           python scripts/check-claude-binding.py --routed --source-apim-resource-id "${apim_id}"
 
       - name: Deploy application
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: deploy
         env:
           WEB_IMAGE: ${{ steps.images.outputs.web_image }}
@@ -1215,10 +1375,11 @@ jobs:
       # preflight above already proved the grant exists, so a failure at this
       # point is transient -- hence the retries.
       - name: Acquire the canary token for verification
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: canary_token
         run: |
           set -euo pipefail
-          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+          if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ] && [ "${AI4IA_API_NETWORK_PHASE:-legacy}" = "legacy" ]; then
             echo "Canary disabled; no token needed."
             exit 0
           fi
@@ -1259,6 +1420,7 @@ jobs:
       # Every assertion here is a hard gate. A failure fails the job AND triggers
       # the rollback step below.
       - name: Verify the deploy actually landed
+        if: ${{ steps.execution.outputs.allowed == 'true' }}
         id: verify
         # Bounded so a hung probe can never consume the job budget that a cold
         # provision needs (see the timeout-minutes comment at the top of this
@@ -1279,12 +1441,19 @@ jobs:
           # read as "the deploy did not replace the container" and rolled back a
           # healthy release. See scripts/post-deploy-verify.py.
           if [ "${AI4IA_DEPLOY_VERIFY_CANARY:-}" = "false" ]; then
+            recovery=()
+            if [ "${AI4IA_API_NETWORK_PHASE:-legacy}" != "legacy" ]; then
+              recovery+=(--decision-options)
+            fi
             python scripts/post-deploy-verify.py verify \
               --state "${RUNNER_TEMP}/ai4ia-deploy-state.json" \
               --expect-image "web=${WEB_IMAGE}" \
               --expect-image "api=${API_IMAGE}" \
               --expect-image "proxy=${PROXY_IMAGE}" \
-              --skip-canary
+              --skip-canary "${recovery[@]}"
+            if [ "${AI4IA_API_NETWORK_PHASE:-legacy}" != "legacy" ]; then
+              python scripts/check-api-private-network.py
+            fi
             exit 0
           fi
           python scripts/post-deploy-verify.py verify \
@@ -1304,7 +1473,7 @@ jobs:
       # timeout, both of which kill the runner outright. See
       # docs/runbooks/deployment.md section 6.
       - name: Roll back to the captured revisions
-        if: ${{ failure() && steps.capture.outcome == 'success' && steps.canary_preflight.outcome != 'failure' && steps.canary_token.outcome != 'failure' && (steps.provision.outcome != 'skipped' || steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure') }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (failure() && steps.capture.outcome == 'success' && steps.canary_preflight.outcome != 'failure' && steps.canary_token.outcome != 'failure' && (steps.provision.outcome != 'skipped' || steps.deploy.outcome == 'failure' || steps.verify.outcome == 'failure')) }}
         timeout-minutes: 20
         run: |
           set -euo pipefail

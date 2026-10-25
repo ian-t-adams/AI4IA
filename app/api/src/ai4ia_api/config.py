@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     )
 
     env: Environment = Environment.local
+    private_recovery_candidate: bool = False
+    private_cosmos_required: bool = False
 
     # --- Auth ---
     auth_provider: AuthProviderKind = AuthProviderKind.dev

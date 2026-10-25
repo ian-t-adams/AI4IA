@@ -14,6 +14,13 @@
     "modelCapacityProfile": {
       "value": "${AI4IA_MODEL_CAPACITY_PROFILE=baseline}"
     },
+    "apiNetworkPhase": { "value": "${AI4IA_API_NETWORK_PHASE=legacy}" },
+    "apiPrivateVnetPrefix": { "value": "${AI4IA_API_PRIVATE_VNET_PREFIX=}" },
+    "apiPrivateSubnetPrefix": { "value": "${AI4IA_API_PRIVATE_SUBNET_PREFIX=}" },
+    "cosmosPrivateEndpointSubnetPrefix": { "value": "${AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX=}" },
+    "apiPrivateInitialImage": { "value": "${AI4IA_API_PRIVATE_INITIAL_IMAGE=mcr.microsoft.com/k8se/quickstart:latest}" },
+    "privateWebImage": { "value": "${AI4IA_PRIVATE_WEB_IMAGE=mcr.microsoft.com/k8se/quickstart:latest}" },
+    "privateProxyImage": { "value": "${AI4IA_PRIVATE_PROXY_IMAGE=mcr.microsoft.com/k8se/quickstart:latest}" },
     "claudeEnabled": {
       "value": "${AI4IA_CLAUDE_ENABLED=false}"
     },

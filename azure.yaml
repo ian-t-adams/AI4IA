@@ -22,6 +22,7 @@ services:
       path: Dockerfile
   api:
     project: ./app/api
+    resourceName: ${AZURE_API_APP_NAME}
     language: python
     host: containerapp
     docker:
@@ -65,6 +66,16 @@ hooks:
         interactive: false
     - windows:
         shell: pwsh
+        run: python scripts/check-api-private-network.py --azd-env; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        continueOnError: false
+        interactive: false
+      posix:
+        shell: sh
+        run: python3 scripts/check-api-private-network.py --azd-env
+        continueOnError: false
+        interactive: false
+    - windows:
+        shell: pwsh
         run: |
           python scripts/gen-model-catalog.py --check
           python scripts/gen-mcp-catalog.py --check
@@ -75,6 +86,8 @@ hooks:
           # Requires Azure CLI credentials and verifies availability, lifecycle, and
           # quota before azd submits ARM resources. Failure is intentionally fatal.
           python scripts/check-model-availability.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/preview-api-private.py verify-binding
         continueOnError: false
         interactive: false
       posix:
@@ -86,7 +99,8 @@ hooks:
           python3 scripts/gen-gateway-policy.py --check
           python3 scripts/validate-feature-prereqs.py --require-deployment-attestation || exit $?
           # Same pre-resource hard gate as Windows; quota cannot be bypassed.
-          python3 scripts/check-model-availability.py
+          python3 scripts/check-model-availability.py || exit $?
+          python3 scripts/preview-api-private.py verify-binding
         continueOnError: false
         interactive: false
   postprovision:

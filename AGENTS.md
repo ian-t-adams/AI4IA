@@ -714,6 +714,52 @@ python -m unittest scripts.tests.test_immutable_image_promotion scripts.tests.te
 
 ### Infra, manifests, and operational quality
 
+API-only private Cosmos recovery uses `AI4IA_API_NETWORK_PHASE`:
+`legacy` (default, no private resources), `candidate` (health/authenticated options
+only, no directory/document-recovery/DTS writers), `activate` (legacy revisions
+inactive and replicas absent), then `private` (approved web/voice cutover).
+Cosmos stays public-network Disabled in every phase; legacy is not a healthy
+fallback. Preflight pins exact API target/UAMI/Cosmos, private network/DNS,
+runtime private-DNS plus canonical readiness and existing serving image digests.
+Preserve those images through reconciliation, the old resources and default-off
+execution boundary. Readiness alone proves neither worker activation nor owner
+options acceptance. Retain signed-image/owner-options evidence before each
+approved transition; never add a model call, public restore or automatic drain.
+See `docs/runbooks/deployment.md#api-only-private-cosmos-recovery`.
+Pending migration pushes are terminal previews on trusted main, not resource
+deployment. Every later mutation/canary/rollback step needs the separate
+execution gate. Migration previews/applies use direct RG modules, not the
+short-circuited full root: six-resource foundation, candidate API, activation,
+then web cutover. Each apply uses its exact compiled/frozen packet after fresh
+source/phase/current-config/parameter/delta binding and strict admission.
+API/web modes preserve existing certificate/diagnostic resources; activation
+keeps the existing discovery tag and changes only staging/max replicas.
+Historical non-secure module inputs require actual current-config parity.
+Private location comparisons bind the explicit subscription's unambiguous ARM
+name/displayName row. Write canonical packet locations, retain raw labels and
+the location ID in evidence, and reject unknown/different/ambiguous regions.
+Never use arbitrary punctuation/whitespace stripping or an unscoped CLI fallback.
+Only a fully checked new-VNet Create may use omitted DHCP as the documented
+Azure-provided DNS default. Keep explicit malformed/custom DNS and existing-VNet
+changes refused; retain exact subnet/delegation checks and value-free comparison
+evidence. Omitted DNS is not an observed zero-server list.
+Default-off same-group API secret inheritance uses server-side listSecrets and
+declared metadata; preserve Key Vault references, never export values.
+Unprotected/unknown secret representations and incomplete resource coverage
+refuse. Never upload raw parameters/what-if bodies, add an exemption tag,
+relax branch/OIDC trust, or turn a preview return code into deployment authority.
+Ordinary auto releases resume only on observed completed private cutover.
+Keep the private packet's Bicep pin aligned with infra validation.
+The explicit registry-only API-image operation builds once, retaining the existing
+same-run SLSA/SPDX/local-inventory checks. Cross-run consumption reuses that exact
+verification policy and pins repository/main SHA/producer run+attempt/event,
+immutable API digest and the producer's original canonical SPDX fingerprint.
+Never derive the expected fingerprint from the consumer response, rebuild at
+apply, or use API-only as a fallback for missing ordinary web/proxy evidence.
+Ordinary three-service same-run verification and job permissions stay unchanged.
+An existing/unknown binding-derived deployment claim refuses replay; this and
+workflow serialization are not a distributed ARM create-only fence.
+
 `infra-validate` runs:
 
 ```powershell
@@ -737,6 +783,7 @@ python -m unittest scripts.tests.test_rai_policy
 python -m unittest scripts.tests.test_bicep_naming
 python -m unittest scripts.tests.test_cosmos_backup_policy
 python -m unittest scripts.tests.test_lean_azure_iac
+python -m unittest scripts.tests.test_api_private_network
 python -m unittest scripts.tests.test_bicep_compilation  # fails on diagnostics; inspects compiled ARM
 bicep build infra/main.bicep --stdout > /dev/null
 ```
