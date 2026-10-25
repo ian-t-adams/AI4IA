@@ -118,6 +118,108 @@ def complete_foundation_fixture():
 
 
 class PreviewTests(unittest.TestCase):
+    def test_complete_new_vnet_default_dns_omission_keeps_exact_network_proof(self):
+        bound, raw, params = complete_foundation_fixture()
+        explicit = PREVIEW.scope_preview(raw, bound, params)
+        del raw["changes"][0]["after"]["properties"]["dhcpOptions"]
+        omitted = PREVIEW.scope_preview(raw, bound, params)
+        for report in (explicit, omitted):
+            self.assertEqual(report["blockingReasons"], [])
+            self.assertEqual(len(report["changes"]), 6)
+            network = next(row for row in report["changes"] if "networkComparisons" in row)
+            self.assertEqual(network["networkComparisons"], {
+                "addressSpaceMatches": True, "subnetCount": 2, "subnetCountCapped": False,
+                "subnetRowsValid": True, "subnetNamesMatch": True, "apiPrefixMatches": True,
+                "endpointPrefixMatches": True, "apiDelegationMatches": True, "endpointPolicyMatches": True,
+            })
+        old = next(row for row in explicit["changes"] if "dnsComparison" in row)["dnsComparison"]
+        new = next(row for row in omitted["changes"] if "dnsComparison" in row)["dnsComparison"]
+        self.assertEqual(old, {"optionsPresent": True, "representation": "explicit-empty",
+                               "serverCount": 0, "serverCountCapped": False})
+        self.assertEqual(new, {"optionsPresent": False, "representation": "omitted-create-default",
+                               "serverCount": None, "serverCountCapped": False})
+        self.assertNotEqual(explicit["rawChangeDigest"], omitted["rawChangeDigest"])
+
+    def test_omitted_dns_does_not_mask_missing_or_wrong_subnet_evidence(self):
+        bound, original, params = complete_foundation_fixture()
+        del original["changes"][0]["after"]["properties"]["dhcpOptions"]
+        mutations = (
+            ("subnet_inventory_invalid", lambda props: props.pop("subnets")),
+            ("subnet_inventory_invalid", lambda props: props.update(subnets=None)),
+            ("subnet_inventory_invalid", lambda props: props.update(subnets=[None, None])),
+            ("subnet_count_drift", lambda props: props["subnets"].pop()),
+            ("subnet_names_drift", lambda props: props["subnets"][0].update(name="unexpected-private-name")),
+            ("subnet_prefix_drift", lambda props: props["subnets"][0]["properties"].update(addressPrefix="10.242.0.0/26")),
+            ("subnet_prefix_drift", lambda props: props["subnets"][1]["properties"].update(addressPrefix="10.242.0.64/27")),
+            ("api_subnet_delegation_drift", lambda props: props["subnets"][0]["properties"].update(delegations=[])),
+            ("api_subnet_delegation_drift", lambda props: props["subnets"][0]["properties"].update(delegations=None)),
+            ("endpoint_subnet_policy_drift", lambda props: props["subnets"][1]["properties"].update(privateEndpointNetworkPolicies="Enabled")),
+            ("unapproved_subnet_attachment", lambda props: props["subnets"][0]["properties"].update(natGateway={"id": "unapproved"})),
+            ("subnet_dns_override", lambda props: props["subnets"][0]["properties"].update(dhcpOptions={"dnsServers": ["private-marker"]})),
+            ("vnet_address_drift", lambda props: props.pop("addressSpace")),
+        )
+        for expected, mutate in mutations:
+            payload = deepcopy(original)
+            mutate(payload["changes"][0]["after"]["properties"])
+            with self.subTest(expected=expected):
+                report = PREVIEW.scope_preview(payload, bound, params)
+                self.assertIn(expected, report["blockingReasons"])
+                self.assertNotIn("subnet_or_dns_drift", report["blockingReasons"])
+                self.assertNotIn("private-marker", json.dumps(report))
+                self.assertNotIn("unexpected-private-name", json.dumps(report))
+                with self.assertRaises(PREVIEW.PreviewError):
+                    PREVIEW.verify_token(PREVIEW.make_token(bound, report, 1792860000), bound, report, 1792860010)
+
+    def test_custom_or_malformed_dns_is_not_a_create_default(self):
+        bound, original, params = complete_foundation_fixture()
+        for dns in (None, False, 0, "", [], {}, {"dnsServers": None}, {"dnsServers": False},
+                    {"dnsServers": [], "unknown": "private-marker"}, {"dnsServers": ["private-marker"]}):
+            payload = deepcopy(original)
+            payload["changes"][0]["after"]["properties"]["dhcpOptions"] = dns
+            with self.subTest(dns=dns):
+                report = PREVIEW.scope_preview(payload, bound, params)
+                reason = "vnet_dns_not_default" if dns == {"dnsServers": ["private-marker"]} else "vnet_dns_shape_invalid"
+                self.assertIn(reason, report["blockingReasons"])
+                self.assertNotIn("private-marker", json.dumps(report))
+                network = next(row for row in report["changes"] if "dnsComparison" in row)
+                self.assertTrue(network["networkComparisons"]["subnetNamesMatch"])
+                self.assertTrue(network["networkComparisons"]["apiPrefixMatches"])
+                self.assertTrue(network["networkComparisons"]["endpointPrefixMatches"])
+        oversized = deepcopy(original)
+        oversized["changes"][0]["after"]["properties"]["dhcpOptions"]["dnsServers"] = ["private-marker"] * 129
+        report = PREVIEW.scope_preview(oversized, bound, params)
+        dns = next(row for row in report["changes"] if "dnsComparison" in row)["dnsComparison"]
+        self.assertEqual(dns["serverCount"], 128)
+        self.assertIs(dns["serverCountCapped"], True)
+        self.assertNotIn("private-marker", json.dumps(report))
+
+    def test_create_default_does_not_authorize_existing_vnet_dns_removal(self):
+        bound, raw, params = complete_foundation_fixture()
+        row = raw["changes"][0]
+        row.update(changeType="Modify", before=deepcopy(row["after"]),
+                   delta=[{"path": "properties.dhcpOptions", "propertyChangeType": "Delete"}])
+        row["before"]["properties"]["dhcpOptions"]["dnsServers"] = ["private-marker"]
+        del row["after"]["properties"]["dhcpOptions"]
+        report = PREVIEW.scope_preview(raw, bound, params)
+        self.assertIn("unapproved_modify", report["blockingReasons"])
+        self.assertNotIn("private-marker", json.dumps(report))
+
+    def test_omitted_vnet_dns_keeps_endpoint_and_private_dns_guards(self):
+        bound, raw, params = complete_foundation_fixture()
+        del raw["changes"][0]["after"]["properties"]["dhcpOptions"]
+        for index, mutate, expected in (
+            (1, lambda props: props["privateLinkServiceConnections"][0]["properties"].update(groupIds=["MongoDB"]),
+             "cosmos_endpoint_drift"),
+            (1, lambda props: props["subnet"].update(id="unapproved"), "cosmos_endpoint_drift"),
+            (2, lambda props: props["privateDnsZoneConfigs"][0]["properties"].update(privateDnsZoneId="unapproved"),
+             "dns_zone_group_drift"),
+            (4, lambda props: props.update(registrationEnabled=True), "dns_link_drift"),
+        ):
+            changed = deepcopy(raw)
+            mutate(changed["changes"][index]["after"]["properties"])
+            with self.subTest(expected=expected):
+                self.assertIn(expected, PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+
     def test_complete_six_create_native_envelope_accepts_only_optional_create_delta(self):
         bound, raw, params = complete_foundation_fixture()
         for form in ("null", "absent", "array"):
