@@ -93,7 +93,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Workaround for https://github.com/actions/setup-dotnet/issues/794 (dotnetorigin 409):
+      # use the runner's preinstalled .NET 10 SDK when present; revert by deleting this step and its `if`.
+      - name: Detect preinstalled .NET 10 SDK
+        id: dotnet-preinstalled
+        shell: bash
+        run: |
+          if dotnet --list-sdks 2>/dev/null | grep -Eq '^10\.0\.[0-9]+'; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            dotnet --list-sdks
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install .NET 10
+        if: steps.dotnet-preinstalled.outputs.present != 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
