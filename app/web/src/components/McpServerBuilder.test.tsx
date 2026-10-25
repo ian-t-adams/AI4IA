@@ -10,12 +10,14 @@ const mocks = vi.hoisted(() => ({
   listMcpServers: vi.fn(),
   createMcpServer: vi.fn(),
   updateMcpServer: vi.fn(),
+  testMcpServer: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
   listMcpServers: mocks.listMcpServers,
   createMcpServer: mocks.createMcpServer,
   updateMcpServer: mocks.updateMcpServer,
+  testMcpServer: mocks.testMcpServer,
 }));
 
 const SERVER: UserMcpServer = {
@@ -55,14 +57,75 @@ afterEach(() => {
 });
 
 describe("McpServerBuilder", () => {
+  it("distinguishes unavailable connections from an empty list and retries", async () => {
+    mocks.listMcpServers.mockRejectedValueOnce(new Error("List temporarily unavailable.")).mockResolvedValueOnce([]);
+    const user = userEvent.setup();
+    render(<McpServerBuilder />);
+    expect(await screen.findByText(/Your connections could not be loaded/)).toBeInTheDocument();
+    expect(screen.queryByText(/Connect an existing server to make/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText(/Connect an existing server to make/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+  it("validates the endpoint and credentials, retains a failed draft, and connects only on explicit save", async () => {
+    const user = userEvent.setup();
+    mocks.createMcpServer.mockRejectedValueOnce(new Error("Connection timed out. Retry."));
+    render(<McpServerBuilder />);
+    expect(screen.getByLabelText("MCP protocol")).not.toBeVisible();
+    await user.type(screen.getByLabelText("Connection name"), "Weather");
+    await user.type(screen.getByLabelText("Endpoint URL (https)"), "http://localhost/mcp");
+    await user.click(screen.getByRole("button", { name: "Connect & save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/https/i);
+    expect(mocks.createMcpServer).not.toHaveBeenCalled();
+    await user.clear(screen.getByLabelText("Endpoint URL (https)"));
+    await user.type(screen.getByLabelText("Endpoint URL (https)"), SERVER.endpoint);
+    await user.selectOptions(screen.getByLabelText("Authentication"), "api_key");
+    await user.click(screen.getByRole("button", { name: "Connect & save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/required/i);
+    expect(mocks.createMcpServer).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText("API key"), "synthetic-fixture-value");
+    await user.click(screen.getByRole("button", { name: "Connect & save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Connection timed out");
+    expect(screen.getByLabelText("API key")).toHaveValue("synthetic-fixture-value");
+    mocks.createMcpServer.mockImplementationOnce(async (body) => ({ ...SERVER, ...body, secret: undefined }));
+    await user.click(screen.getByRole("button", { name: "Connect & save" }));
+    await screen.findByText(/Connected — discovered 1 tool/);
+    expect(mocks.createMcpServer).toHaveBeenLastCalledWith(expect.objectContaining({
+      name: "weather-2", trusted: false, protocolVersion: "2025-06-18", authMode: "api_key",
+    }));
+    expect(screen.getByLabelText("API key")).toHaveValue("");
+  });
+
+  it("never overwrites connection edits through testing, approval changes or cancelled navigation", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<McpServerBuilder />);
+    await user.click(await screen.findByRole("button", { name: /Weather/ }));
+    expect(screen.getByRole("button", { name: "Test" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Approval" })).toBeEnabled();
+    await user.type(screen.getByLabelText("Connection name"), " edited");
+    expect(screen.getByRole("button", { name: "Test" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Approval" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "New connection" }));
+    expect(screen.getByLabelText("Connection name")).toHaveValue("Weather edited");
+    mocks.updateMcpServer.mockImplementation(async (name, body) => ({ ...SERVER, ...body, name }));
+    await user.click(screen.getByRole("button", { name: "Save & reconnect" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Test" })).toBeEnabled());
+    expect(mocks.updateMcpServer).toHaveBeenCalledWith("weather", expect.objectContaining({ displayName: "Weather edited" }));
+    expect(mocks.testMcpServer).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
   it.each(["2025-11-25", "2026-07-28"] as const)(
     "keeps legacy as the default and submits %s only after explicit selection",
     async (protocolVersion) => {
       const user = userEvent.setup();
+      mocks.listMcpServers.mockResolvedValue([]);
       mocks.createMcpServer.mockResolvedValue({ ...SERVER, protocolVersion });
       render(<McpServerBuilder />);
+      await user.click(screen.getByText("Connection settings", { selector: "summary" }));
       expect(screen.getByRole("combobox", { name: "MCP protocol" })).toHaveValue("2025-06-18");
-      await user.type(screen.getByLabelText("Name"), "weather");
+      await user.type(screen.getByLabelText("Connection name"), "weather");
       await user.type(screen.getByLabelText("Endpoint URL (https)"), SERVER.endpoint);
       await user.selectOptions(screen.getByRole("combobox", { name: "MCP protocol" }), protocolVersion);
       await user.click(screen.getByRole("button", { name: "Connect & save" }));
@@ -81,6 +144,7 @@ describe("McpServerBuilder", () => {
       mocks.updateMcpServer.mockResolvedValue(saved);
       render(<McpServerBuilder />);
       await user.click(await screen.findByRole("button", { name: /Weather/ }));
+      await user.click(screen.getByText("Connection settings", { selector: "summary" }));
       expect(screen.getByRole("combobox", { name: "MCP protocol" })).toHaveValue(protocolVersion);
       await user.selectOptions(screen.getByRole("combobox", { name: "Approval" }), "never");
       await waitFor(() => expect(mocks.updateMcpServer).toHaveBeenCalledWith("weather",
@@ -94,6 +158,7 @@ describe("McpServerBuilder", () => {
   it("interprets an older server response without a protocol field as legacy", async () => {
     render(<McpServerBuilder />);
     await userEvent.setup().click(await screen.findByRole("button", { name: /Weather/ }));
+    await userEvent.setup().click(screen.getByText("Connection settings", { selector: "summary" }));
     expect(screen.getByRole("combobox", { name: "MCP protocol" })).toHaveValue("2025-06-18");
   });
 

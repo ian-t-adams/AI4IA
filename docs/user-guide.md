@@ -106,10 +106,29 @@ its abilities, determine the next turn.
 | Workflow | An ordered, repeatable set of steps | Each step has its own effective capabilities |
 | Durable workflow | Work that should survive an API restart | Requires deployment support and an explicit per-run choice |
 
+Open **Agents & workflows** and choose a tab. Your saved items are listed beside
+the editor; **New agent**, **New workflow**, or **New connection** starts a draft.
+Switching items, tabs, or pages asks before discarding unsaved changes.
+
+For an agent, enter an **Agent name** and **Instructions**, then **Create agent**.
+The preferred model is optional and defaults to the conversation's choice.
+Expand **Tools** or **Delegation** only when needed; selecting tools never grants
+execution approval. **Agent settings** holds its description, availability, and
+stable `@mention` ID. New IDs are suggested from the name and can be adjusted
+before saving. Renaming a saved display name never changes its ID or references.
+
+For a workflow, enter a **Workflow name**, or choose a template to review first.
+Choose an agent and instructions for each numbered step. **Insert run input**
+adds `{input}` (required in the first step); **Insert previous result** adds
+`{previous}` in later steps. **Add step**, **Move up**, **Move down**, and **Remove**
+edit the actual saved order. **Create workflow** saves without running it.
+Description, stable ID, and availability are under **Workflow settings**.
+
 In the workflow editor, **Build** defines the steps; **Run & test** runs them and
 keeps their results visible. The result distinguishes completed, failed, and
 unstarted steps. **Open in chat** opens the run's conversation.
 
+Expand **Step tools and capabilities** to see what a step can use.
 **Tools for this step** adds capabilities to the selected agent's tools. Read
 the effective capability list: chat-only capabilities are not promised in a
 workflow. In particular, a step cannot upload or analyze a new library document;
@@ -584,7 +603,15 @@ live in Key Vault outside local development. Remote endpoints are checked before
 discovery and again when invoked. Neither a remote server nor a retrieved page
 can grant itself permission.
 
-The MCP server builder's **MCP protocol** setting defaults to
+In **Custom tools**, enter a **Connection name**, HTTPS endpoint, and the
+authentication the existing MCP server requires, then **Connect & save**.
+Trust for discovery is off by default and remains separate from invocation
+approval. Saving connects and discovers tools; failures stay visible without
+clearing the draft. Saved connections show tool health and standing approval
+controls. Save pending edits before **Test** or changing tool approvals so those
+actions cannot overwrite your draft.
+
+Under **Connection settings**, the **MCP protocol** setting defaults to
 **2025-06-18 (legacy)**. **2025-11-25 (stateful)** is a separate explicit choice,
 not a switch to stateless. Choose it or **2026-07-28 (stateless)** only after
 verifying that specific server supports the selected version, then

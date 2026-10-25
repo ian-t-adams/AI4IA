@@ -12,6 +12,7 @@ import {
   MAX_SYSTEM_PROMPT_LEN,
   MAX_TOOLS,
   nameError,
+  suggestedStudioName,
 } from "@/lib/studio";
 import {
   approvalPosture,
@@ -33,12 +34,14 @@ import {
 } from "./ModelPicker";
 import { Pill } from "./Pill";
 import { PublicationControls } from "./PublicationControls";
+import { useStudioDraft } from "./useStudioDraft";
 import {
   checkRow,
   fieldset,
   inputStyle,
   labelStyle,
   primaryBtn,
+  secondaryBtn,
 } from "./builderStyles";
 
 // Friendly names for the attachable tools (the registry uses snake_case ids).
@@ -100,6 +103,14 @@ export function AgentBuilder({
   const [form, setForm] = useState<AgentForm>(blankForm);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [listUnavailable, setListUnavailable] = useState(false);
+  const [toolError, setToolError] = useState<string | null>(null);
+  const [officialToolError, setOfficialToolError] = useState<string | null>(null);
+  const dirty = JSON.stringify(form) !== JSON.stringify(savedAgent ? formFrom(savedAgent) : blankForm());
+  const confirmDiscard = useStudioDraft(dirty, busy);
+  const newName = form.name || suggestedStudioName(form.displayName, [...agents, ...mine].map((a) => a.name), "agent");
 
   const groupedModels = useMemo(
     () => groupConversationalModels(models),
@@ -155,8 +166,12 @@ export function AgentBuilder({
   const refreshMine = useCallback(async () => {
     try {
       setMine(await api.listMyAgents());
+      setListUnavailable(false);
     } catch (e) {
+      setListUnavailable(true);
       setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -164,20 +179,18 @@ export function AgentBuilder({
     if (!customToolsEnabled) return;
     try {
       setMcpServers(await api.listMcpServers());
+      setToolError(null);
     } catch {
-      // A custom-tools store blip must never break agent editing; just show no
-      // MCP tools to attach (the built-in tools still work).
-      setMcpServers([]);
+      setToolError("Custom tools could not be loaded. Existing selections are retained; reopen this editor to retry.");
     }
   }, [customToolsEnabled]);
 
   const refreshOfficialMcp = useCallback(async () => {
     try {
       setOfficialMcpServers(await api.listOfficialMcpServers());
+      setOfficialToolError(null);
     } catch {
-      // The official endpoint returns [] when the plane is off; treat any blip the
-      // same so agent editing is never blocked by it.
-      setOfficialMcpServers([]);
+      setOfficialToolError("Official tools could not be loaded. Existing selections are retained; reopen this editor to retry.");
     }
   }, []);
 
@@ -201,6 +214,7 @@ export function AgentBuilder({
     setSavedAgent(null);
     setForm(blankForm());
     setError(null);
+    setNotice(null);
   }, []);
 
   const startEdit = useCallback((a: UserAgent) => {
@@ -208,6 +222,7 @@ export function AgentBuilder({
     setSavedAgent(a);
     setForm(formFrom(a));
     setError(null);
+    setNotice(null);
   }, []);
 
   const toggleIn = useCallback(
@@ -221,15 +236,20 @@ export function AgentBuilder({
 
   const submit = useCallback(async () => {
     setError(null);
+    setNotice(null);
     if (!editing) {
-      const ne = nameError(form.name);
+      if (!form.displayName.trim()) {
+        setError("Agent name is required.");
+        return;
+      }
+      const ne = nameError(newName);
       if (ne) {
         setError(ne);
         return;
       }
     }
     if (!form.systemPrompt.trim()) {
-      setError("System prompt is required.");
+      setError("Instructions are required. Describe what this agent should do.");
       return;
     }
     const body = {
@@ -245,10 +265,11 @@ export function AgentBuilder({
     try {
       const saved = editing
         ? await api.updateAgent(editing, { ...body, expectedRevision: savedAgent?.revision })
-        : await api.createAgent({ name: form.name, ...body });
+        : await api.createAgent({ name: newName, ...body });
       setSavedAgent(saved);
       setEditing(saved.name);
       setForm(formFrom(saved)); // reflect server-sanitized links
+      setNotice(`Saved. Use @${saved.name} in a chat or select it in a workflow.`);
       await refreshMine();
       await onChanged(); // keep the @-mention menu + link pickers fresh
     } catch (e) {
@@ -256,7 +277,7 @@ export function AgentBuilder({
     } finally {
       setBusy(false);
     }
-  }, [editing, form, savedAgent, refreshMine, onChanged]);
+  }, [editing, form, newName, savedAgent, refreshMine, onChanged]);
 
   const remove = useCallback(
     async (name: string) => {
@@ -287,20 +308,23 @@ export function AgentBuilder({
   return (
     <div className="studio-pane">
       <div className="studio-list">
-        <button onClick={startNew} disabled={busy} style={primaryBtn}>
-          + New agent
+        <button onClick={() => { if (confirmDiscard()) startNew(); }} disabled={busy || loading} style={secondaryBtn}>
+          New agent
         </button>
+        <h3 className="studio-list-heading">Your agents</h3>
         <ul className="studio-list-scroll">
-          {mine.length === 0 && (
+          {loading && <li role="status">Loading your agents...</li>}
+          {listUnavailable && <li role="status">Your agents could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
+          {!loading && !listUnavailable && mine.length === 0 && (
             <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
-              No agents yet.
+              Your saved agents will appear here. Create your first one in the editor.
             </li>
           )}
           {mine.map((a) => (
             <li key={a.id} className="studio-list-row">
               <button
                 className="studio-list-select"
-                onClick={() => startEdit(a)}
+                onClick={() => { if (editing !== a.name && confirmDiscard()) startEdit(a); }}
                 disabled={busy}
                 aria-current={editing === a.name ? "true" : undefined}
               >
@@ -314,64 +338,46 @@ export function AgentBuilder({
                 aria-label={`Delete ${a.name}`}
                 title="Delete"
               >
-                ✕
+                Delete
               </button>
             </li>
           ))}
         </ul>
       </div>
 
-      <div className="studio-workpanel">
-        <h3 style={{ margin: 0, fontSize: "1em" }}>
-          {editing ? `Edit @${editing}` : "New agent"}
-        </h3>
-
-        <div>
-          <label style={labelStyle} htmlFor="ag-name">Name (@mention)</label>
-          <input
-            id="ag-name"
-            value={form.name}
-            disabled={!!editing}
-            placeholder="e.g. pirate"
-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            style={{ ...inputStyle, opacity: editing ? 0.6 : 1 }}
-          />
-          <p style={{ ...labelStyle, marginTop: 4 }}>
-            {editing
-              ? "Name is the stable @mention ID and can't be changed. To rename, create a new agent and delete this one."
-              : "Lowercase; the stable ID used by @mentions and workflows."}
-          </p>
+      <fieldset className="studio-workpanel studio-form" disabled={busy}>
+        <div className="studio-editor-header">
+          <div>
+            <h3>{editing ? `Edit ${savedAgent?.displayName || editing}` : "Create an agent"}</h3>
+            <p className="studio-help">An agent is one assistant with its own instructions and optional tools.</p>
+          </div>
+          <button onClick={submit} disabled={busy || loading} style={primaryBtn}>
+            {busy ? "Saving…" : editing ? "Save changes" : "Create agent"}
+          </button>
+          {error && <p role="alert" className="studio-alert">{error}</p>}
+          <p role="status" className="studio-save-status">{dirty ? "Unsaved changes" : notice}</p>
         </div>
 
         <div>
-          <label style={labelStyle} htmlFor="ag-display">Display name</label>
+          <label style={labelStyle} htmlFor="ag-display">Agent name</label>
           <input
             id="ag-display"
             value={form.displayName}
             maxLength={MAX_DISPLAY_NAME_LEN}
+            placeholder="e.g. Research assistant"
             onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
             style={inputStyle}
           />
         </div>
 
         <div>
-          <label style={labelStyle} htmlFor="ag-desc">Description</label>
-          <input
-            id="ag-desc"
-            value={form.description}
-            maxLength={MAX_DESCRIPTION_LEN}
-            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-            style={inputStyle}
-          />
-        </div>
-
-        <div>
-          <label style={labelStyle} htmlFor="ag-sys">System prompt</label>
+          <label style={labelStyle} htmlFor="ag-sys">Instructions</label>
           <textarea
             id="ag-sys"
             value={form.systemPrompt}
             maxLength={MAX_SYSTEM_PROMPT_LEN}
             rows={5}
+            placeholder="Describe the job, how the assistant should respond, and any boundaries."
             onChange={(e) => setForm((f) => ({ ...f, systemPrompt: e.target.value }))}
             style={{ ...inputStyle, resize: "vertical" }}
           />
@@ -414,6 +420,11 @@ export function AgentBuilder({
           <ModelCategoryNote id={modelNoteId} category={selectedModel?.category} />
         </div>
 
+        <details className="studio-details">
+          <summary>Tools <span>({form.tools.length} selected, optional)</span></summary>
+          <p className="studio-help">Choose capabilities this agent may use. Selecting a tool does not approve its execution.</p>
+          {toolError && <p role="alert" className="studio-alert">{toolError}</p>}
+          {officialToolError && <p role="alert" className="studio-alert">{officialToolError}</p>}
         <fieldset style={fieldset}>
           <legend style={labelStyle}>Tools (max {MAX_TOOLS})</legend>
           {ATTACHABLE_TOOLS.map((t) => {
@@ -440,10 +451,10 @@ export function AgentBuilder({
           })}
         </fieldset>
 
-        {(customToolsEnabled || mcpByServer.length > 0) && (
+        {(customToolsEnabled || mcpByServer.length > 0 || orphanMcpTools.length > 0) && (
           <fieldset style={fieldset}>
             <legend style={labelStyle}>MCP tools</legend>
-            {mcpByServer.length === 0 && orphanMcpTools.length === 0 && (
+            {!toolError && !officialToolError && mcpByServer.length === 0 && orphanMcpTools.length === 0 && (
               <p style={{ ...labelStyle, margin: 0 }}>
                 No MCP tools yet. Register a server in the Custom tools tab, then its
                 tools appear here to attach.
@@ -550,7 +561,7 @@ export function AgentBuilder({
             {orphanMcpTools.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <strong style={{ fontSize: "0.82em", color: "var(--fg-muted)" }}>
-                  Unavailable (server removed)
+                  {toolError || officialToolError ? "Previously selected tools (availability unknown)" : "Unavailable (server removed)"}
                 </strong>
                 {orphanMcpTools.map((name) => {
                   const parsed = parseMcpToolName(name);
@@ -569,7 +580,10 @@ export function AgentBuilder({
             )}
           </fieldset>
         )}
+        </details>
 
+        <details className="studio-details">
+          <summary>Delegation <span>({form.links.length} linked agents, optional)</span></summary>
         <fieldset style={fieldset} aria-label={`Delegate to (links, max ${MAX_LINKS})`}>
           <legend style={labelStyle}>
             Delegate to (links, max {MAX_LINKS}){" "}
@@ -609,7 +623,21 @@ export function AgentBuilder({
             );
           })}
         </fieldset>
+        </details>
 
+        <details className="studio-details">
+          <summary>Agent settings <span>Description, ID and availability</span></summary>
+          <div>
+            <label style={labelStyle} htmlFor="ag-desc">Description</label>
+            <input id="ag-desc" value={form.description} maxLength={MAX_DESCRIPTION_LEN}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle} htmlFor="ag-name">Name (@mention)</label>
+            <input id="ag-name" value={editing ? form.name : newName} disabled={!!editing}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
+            <p className="studio-help">Stable ID used by @mentions and workflows. Suggested from the name for new agents; saved IDs never change.</p>
+          </div>
         <label style={{ ...checkRow, fontSize: "0.9em" }}>
           <input
             type="checkbox"
@@ -618,18 +646,7 @@ export function AgentBuilder({
           />
           Enabled
         </label>
-
-        {error && (
-          <p role="alert" style={{ color: "var(--danger)", fontSize: "0.85em", margin: 0 }}>
-            {error}
-          </p>
-        )}
-
-        <div>
-          <button onClick={submit} disabled={busy} style={primaryBtn}>
-            {busy ? "Saving…" : editing ? "Save changes" : "Create agent"}
-          </button>
-        </div>
+        </details>
         <PublicationControls
           kind="agent"
           saved={savedAgent}
@@ -639,7 +656,7 @@ export function AgentBuilder({
           models={models}
           defaultModelId={savedAgent?.defaultModel}
         />
-      </div>
+      </fieldset>
     </div>
   );
 }

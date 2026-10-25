@@ -85,9 +85,13 @@ depend on color alone.
   fields; primary interruption stays visible and managed processing details
   expand on demand without changing preferences.
 - Studio navigation uses one wrapping-label track per available tab, stacked
-  when enlarged text cannot fit. On mobile, the page scrolls the editor instead
-  of nesting a short scrolling form. Builder names and library filenames wrap
-  in full; row actions retain 44px targets.
+  when enlarged text cannot fit. The page scrolls the editor at every width,
+  rather than nesting a short scrolling form. Builders start with a friendly
+  name and the task's essential inputs; optional tools and technical settings
+  use native disclosures. Save stays at the editor heading, with explicit
+  feedback and confirmation before leaving a dirty draft. Saved IDs never
+  follow display-name edits. Builder names and library filenames wrap in full;
+  row actions retain labels and 44px targets.
 - On narrow screens, the conversation sidebar and inspector become labelled
   drawers with focus management, Escape close, and focus return.
 - At 200% text and short mobile heights, the sidebar keeps its header fixed and

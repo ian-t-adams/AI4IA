@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -14,6 +15,7 @@ import {
 import { hashForView, viewFromHash, type WorkspaceView } from "@/lib/workspaceView";
 import type { SidebarMode } from "./Sidebar";
 import { useMediaQuery } from "./useMediaQuery";
+import { allowWorkspaceNavigation } from "./useStudioDraft";
 
 // Phones: the sidebar is hidden behind a menu button and opens as a drawer.
 export const PHONE_QUERY = "(max-width: 720px)";
@@ -68,10 +70,20 @@ export function useWorkspacePanels() {
   const [rightCollapsed, setRightCollapsed] = useStoredPreference("ai4ia.rightCollapsed");
   const [drawer, setDrawer] = useState<MobileDrawer>(null);
   const [view, setView] = useState<WorkspaceView>("chat");
+  const currentView = useRef<WorkspaceView>("chat");
 
   // The hash names the page; read it after hydration and follow back/forward.
   useEffect(() => {
-    const sync = () => setView(viewFromHash(currentHash()));
+    const sync = () => {
+      const next = viewFromHash(currentHash());
+      if (next !== currentView.current && !allowWorkspaceNavigation()) {
+        const { pathname, search } = window.location;
+        window.history.replaceState(null, "", `${pathname}${search}${hashForView(currentView.current)}`);
+        return;
+      }
+      currentView.current = next;
+      setView(next);
+    };
     sync();
     window.addEventListener("hashchange", sync);
     window.addEventListener("popstate", sync);
@@ -82,6 +94,8 @@ export function useWorkspacePanels() {
   }, []);
 
   const navigate = useCallback((next: WorkspaceView) => {
+    if (next !== currentView.current && !allowWorkspaceNavigation()) return;
+    currentView.current = next;
     setView(next);
     setDrawer(null);
     if (viewFromHash(currentHash()) === next) return;

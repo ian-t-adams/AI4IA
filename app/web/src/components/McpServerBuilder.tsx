@@ -22,6 +22,8 @@ import {
 } from "@/lib/customTools";
 import { HelpTooltip } from "./HelpTooltip";
 import { Pill, pillToneColor } from "./Pill";
+import { suggestedStudioName } from "@/lib/studio";
+import { useStudioDraft } from "./useStudioDraft";
 import {
   checkRow,
   fieldset,
@@ -77,18 +79,28 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
   const [mine, setMine] = useState<UserMcpServer[]>([]);
   const [editing, setEditing] = useState<string | null>(null); // name, or null = new
   const [form, setForm] = useState<ServerForm>(blankForm);
+  const [savedForm, setSavedForm] = useState<ServerForm>(blankForm);
+  const [loading, setLoading] = useState(true);
+  const [listUnavailable, setListUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const dirty = JSON.stringify(form) !== JSON.stringify(savedForm);
+  const confirmDiscard = useStudioDraft(dirty, busy || testing);
+  const newName = form.name || suggestedStudioName(form.displayName, mine.map((s) => s.name), "tools");
 
   const current = editing ? mine.find((s) => s.name === editing) ?? null : null;
 
   const refreshMine = useCallback(async () => {
     try {
       setMine(await api.listMcpServers());
+      setListUnavailable(false);
     } catch (e) {
+      setListUnavailable(true);
       setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -100,6 +112,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
   const startNew = useCallback(() => {
     setEditing(null);
     setForm(blankForm());
+    setSavedForm(blankForm());
     setError(null);
     setNotice(null);
   }, []);
@@ -107,6 +120,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
   const startEdit = useCallback((s: UserMcpServer) => {
     setEditing(s.name);
     setForm(formFrom(s));
+    setSavedForm(formFrom(s));
     setError(null);
     setNotice(null);
   }, []);
@@ -115,7 +129,11 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
     setError(null);
     setNotice(null);
     if (!editing) {
-      const ne = mcpServerNameError(form.name);
+      if (!form.displayName.trim()) {
+        setError("Connection name is required.");
+        return;
+      }
+      const ne = mcpServerNameError(newName);
       if (ne) {
         setError(ne);
         return;
@@ -146,10 +164,11 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
     try {
       const saved = editing
         ? await api.updateMcpServer(editing, body)
-        : await api.createMcpServer({ name: form.name, ...body });
+        : await api.createMcpServer({ name: newName, ...body });
       await refreshMine();
       setEditing(saved.name);
       setForm(formFrom(saved));
+      setSavedForm(formFrom(saved));
       setNotice(
         `Connected — discovered ${saved.discoveredTools.length} tool${
           saved.discoveredTools.length === 1 ? "" : "s"
@@ -161,10 +180,10 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
     } finally {
       setBusy(false);
     }
-  }, [editing, form, refreshMine, onChanged]);
+  }, [editing, form, newName, refreshMine, onChanged]);
 
   const test = useCallback(async () => {
-    if (!editing) return;
+    if (!editing || dirty) return;
     setError(null);
     setNotice(null);
     setTesting(true);
@@ -176,6 +195,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
       });
       await refreshMine();
       setForm(formFrom(saved));
+      setSavedForm(formFrom(saved));
       setNotice(
         `Reconnected — ${saved.discoveredTools.length} tool${
           saved.discoveredTools.length === 1 ? "" : "s"
@@ -188,7 +208,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
     } finally {
       setTesting(false);
     }
-  }, [editing, form.authMode, form.secret, refreshMine, onChanged]);
+  }, [editing, dirty, form.authMode, form.secret, refreshMine, onChanged]);
 
   const remove = useCallback(
     async (name: string) => {
@@ -216,6 +236,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
   // mirroring the backend; a `default` choice clears the override.
   const setToolApproval = useCallback(
     async (server: UserMcpServer, toolName: string, posture: McpToolApproval) => {
+      if (dirty) return;
       setError(null);
       setNotice(null);
       const nextApprovals: Record<string, McpToolApproval> = { ...server.toolApprovals };
@@ -236,6 +257,7 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
         });
         await refreshMine();
         setForm(formFrom(saved));
+        setSavedForm(formFrom(saved));
         setNotice(`Approval for ${toolName} updated.`);
         onChanged?.();
       } catch (e) {
@@ -244,26 +266,30 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
         setBusy(false);
       }
     },
-    [refreshMine, onChanged],
+    [dirty, refreshMine, onChanged],
   );
 
   return (
     <div className="studio-pane">
       <div className="studio-list">
-        <button onClick={startNew} disabled={busy} style={primaryBtn}>
-          + Add MCP server
+        <button onClick={() => { if (confirmDiscard()) startNew(); }} disabled={busy || testing || loading} style={secondaryBtn}>
+          New connection
         </button>
+        <h3 className="studio-list-heading">Your connections</h3>
         <ul className="studio-list-scroll">
-          {mine.length === 0 && (
+          {loading && <li role="status">Loading your connections...</li>}
+          {listUnavailable && <li role="status">Your connections could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
+          {!loading && !listUnavailable && mine.length === 0 && (
             <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
-              No MCP servers yet.
+              Connect an existing server to make its tools available here.
             </li>
           )}
           {mine.map((s) => (
             <li key={s.id} className="studio-list-row">
               <button
                 className="studio-list-select"
-                onClick={() => startEdit(s)}
+                disabled={busy || testing}
+                onClick={() => { if (editing !== s.name && confirmDiscard()) startEdit(s); }}
                 aria-current={editing === s.name ? "true" : undefined}
               >
                 <span style={{ display: "block" }}>
@@ -285,62 +311,38 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
               <button
                 className="studio-list-delete"
                 onClick={() => remove(s.name)}
-                disabled={busy}
+                disabled={busy || testing}
                 aria-label={`Delete ${s.name}`}
                 title="Delete"
               >
-                ✕
+                Delete
               </button>
             </li>
           ))}
         </ul>
       </div>
 
-      <div className="studio-workpanel">
-        <h3 style={{ margin: 0, fontSize: "1em" }}>
-          {editing ? `Edit ${editing}` : "Add MCP server"}
-        </h3>
-        <p style={{ ...labelStyle, margin: 0 }}>
-          Register a remote MCP (Streamable HTTP) server you own or trust. We connect
-          over a strict egress guard, list its tools, and govern each as an external
-          tool whose network access is limited to the server&apos;s host.
-        </p>
-
-        <div>
-          <label style={labelStyle} htmlFor="mcp-name">Name</label>
-          <input
-            id="mcp-name"
-            value={form.name}
-            disabled={!!editing}
-            placeholder="e.g. weather"
-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            style={{ ...inputStyle, opacity: editing ? 0.6 : 1 }}
-          />
-          <p style={{ ...labelStyle, marginTop: 4 }}>
-            {editing
-              ? "Name is the stable ID and can't be changed. To rename, add a new server and delete this one."
-              : "Lowercase; the stable ID used to namespace this server's tools."}
-          </p>
+      <fieldset className="studio-workpanel studio-form" disabled={busy || testing}>
+        <div className="studio-editor-header">
+          <div>
+            <h3>{editing ? `Edit ${current?.displayName || editing}` : "Connect custom tools"}</h3>
+            <p className="studio-help">Connect an existing MCP server over Streamable HTTP, then attach its tools to an agent.</p>
+          </div>
+          <button onClick={submit} disabled={busy || testing || loading} style={primaryBtn}>
+            {busy ? "Connecting…" : editing ? "Save & reconnect" : "Connect & save"}
+          </button>
+          {error && <p role="alert" className="studio-alert">{error}</p>}
+          <p role="status" className="studio-save-status">{dirty ? "Unsaved changes" : notice}</p>
         </div>
 
         <div>
-          <label style={labelStyle} htmlFor="mcp-display">Display name</label>
+          <label style={labelStyle} htmlFor="mcp-display">Connection name</label>
           <input
             id="mcp-display"
             value={form.displayName}
             maxLength={MCP_MAX_DISPLAY_NAME_LEN}
+            placeholder="e.g. Company knowledge"
             onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
-            style={inputStyle}
-          />
-        </div>
-
-        <div>
-          <label style={labelStyle} htmlFor="mcp-desc">Description</label>
-          <input
-            id="mcp-desc"
-            value={form.description}
-            maxLength={MCP_MAX_DESCRIPTION_LEN}
-            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
             style={inputStyle}
           />
         </div>
@@ -354,32 +356,6 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
             onChange={(e) => setForm((f) => ({ ...f, endpoint: e.target.value }))}
             style={inputStyle}
           />
-        </div>
-
-        <div>
-          <label style={labelStyle} htmlFor="mcp-protocol">MCP protocol</label>
-          <select
-            id="mcp-protocol"
-            value={form.protocolVersion}
-            onChange={(e) => {
-              const choice = MCP_PROTOCOL_VERSIONS.find((p) => p.value === e.target.value);
-              if (!choice) {
-                setError("Unsupported MCP protocol.");
-                return;
-              }
-              setForm((f) => ({ ...f, protocolVersion: choice.value }));
-            }}
-            style={inputStyle}
-          >
-            {MCP_PROTOCOL_VERSIONS.map((p) => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
-          <p style={{ ...labelStyle, marginTop: 4 }}>
-            Change versions only after verifying this server supports the selected protocol.
-            Saving reconnects and changes the tool consent contract.
-            Errors never switch protocols or replay calls.
-          </p>
         </div>
 
         <div>
@@ -445,34 +421,50 @@ export function McpServerBuilder({ onChanged }: { onChanged?: () => void }) {
           Enabled
         </label>
 
-        {error && (
-          <p role="alert" style={{ color: "var(--danger)", fontSize: "0.85em", margin: 0 }}>
-            {error}
-          </p>
-        )}
-        {notice && (
-          <p style={{ color: "var(--success)", fontSize: "0.85em", margin: 0 }}>{notice}</p>
-        )}
+        <details className="studio-details">
+          <summary>Connection settings <span>Protocol, description and ID</span></summary>
+          <div>
+            <label style={labelStyle} htmlFor="mcp-protocol">MCP protocol</label>
+            <select id="mcp-protocol" value={form.protocolVersion} style={inputStyle}
+              onChange={(e) => {
+                const choice = MCP_PROTOCOL_VERSIONS.find((p) => p.value === e.target.value);
+                if (!choice) { setError("Unsupported MCP protocol."); return; }
+                setForm((f) => ({ ...f, protocolVersion: choice.value }));
+              }}>
+              {MCP_PROTOCOL_VERSIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+            <p className="studio-help">Change versions only after verifying server support. Saving reconnects and changes the tool consent contract. Errors never switch protocols or replay calls.</p>
+          </div>
+          <div>
+            <label style={labelStyle} htmlFor="mcp-desc">Description</label>
+            <input id="mcp-desc" value={form.description} maxLength={MCP_MAX_DESCRIPTION_LEN}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle} htmlFor="mcp-name">Connection ID</label>
+            <input id="mcp-name" value={editing ? form.name : newName} disabled={!!editing}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
+            <p className="studio-help">Suggested from the name for new connections. Saved IDs keep agent tool references intact and cannot change.</p>
+          </div>
+        </details>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button onClick={submit} disabled={busy || testing} style={primaryBtn}>
-            {busy ? "Connecting…" : editing ? "Save & reconnect" : "Connect & save"}
-          </button>
+        <div className="studio-inline-actions">
           {editing && (
-            <button onClick={test} disabled={busy || testing} style={secondaryBtn}>
+            <button onClick={test} disabled={busy || testing || dirty} style={secondaryBtn}>
               {testing ? "Testing…" : "Test"}
             </button>
           )}
+          {editing && dirty && <p className="studio-help">Save changes before testing or changing tool approvals.</p>}
         </div>
 
         {current && (
           <DiscoverySection
             server={current}
-            busy={busy || testing}
+            busy={busy || testing || dirty}
             onSetToolApproval={setToolApproval}
           />
         )}
-      </div>
+      </fieldset>
     </div>
   );
 }
@@ -503,7 +495,7 @@ function DiscoverySection({
   });
   return (
     <div style={fieldset}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <strong style={{ fontSize: "0.85em" }}>
           Discovered tools ({server.discoveredTools.length})
         </strong>

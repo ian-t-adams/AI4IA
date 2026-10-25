@@ -612,6 +612,12 @@ button:disabled {
   overflow: auto;
 }
 
+@container (max-width: 32em) {
+  .studio-tabs {
+    --studio-tab-columns: 2;
+  }
+}
+
 @container (max-width: 16em) {
   .studio-tabs {
     --studio-tab-columns: 1;
@@ -1507,7 +1513,7 @@ select {
 
 .studio-list-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 44px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   margin-bottom: 4px;
 }
@@ -1540,7 +1546,9 @@ select {
   border-radius: 8px;
   background: transparent;
   color: var(--fg-muted);
-  padding: 0;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 0.85em;
   cursor: pointer;
 }
 
@@ -1549,8 +1557,8 @@ select {
 }
 
 .studio-work {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   min-width: 0;
   min-height: 0;
@@ -1595,6 +1603,59 @@ select {
   gap: 14px;
   padding-right: 4px; /* keeps focus rings off the scrollbar */
 }
+
+.studio-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.studio-editor-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: 12px;
+  padding-block: 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.studio-editor-header > div { flex: 1 1 16rem; min-width: 0; }
+.studio-editor-header h3 { margin: 0 0 4px; font-size: 1.15em; overflow-wrap: anywhere; }
+.studio-editor-header > .studio-alert,
+.studio-save-status { flex-basis: 100%; }
+.studio-save-status { margin: 0; font-size: 0.85em; color: var(--fg-muted); }
+.studio-save-status:empty { display: none; }
+.studio-help { margin: 4px 0 0; max-width: 70ch; font-size: 0.875em; color: var(--fg-muted); }
+.studio-list-heading { margin: 12px 0 0; font-size: 0.9em; color: var(--fg-muted); }
+
+.studio-details { min-width: 0; border-top: 1px solid var(--border); padding-top: 8px; }
+.studio-details > summary {
+  min-height: 44px;
+  padding-block: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.studio-details > summary span { font-weight: 400; font-size: 0.875em; color: var(--fg-muted); }
+.studio-details[open] > :not(summary) { margin-block: 12px; }
+.studio-details > fieldset { min-width: 0; }
+.studio-form input:not([type="checkbox"]),
+.studio-form select { min-height: 44px; min-width: 0; }
+.studio-form input[type="checkbox"] { flex-shrink: 0; }
+.studio-form button:disabled { cursor: not-allowed; opacity: 0.6; }
+.studio-inline-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.studio-inline-actions button { min-height: 44px; }
+
+.studio-pane > .studio-list { align-self: start; }
+.studio-list-scroll { padding: 3px; }
 
 .workflow-automation-stack {
   display: flex;
@@ -1726,6 +1787,8 @@ select {
   .studio-list-scroll {
     max-height: 30vh;
   }
+
+  .studio-editor-header { position: static; }
 }
 
 /* --- Workflow disclosures (WAI-ARIA accordion, same shape as the inspector's)
@@ -1802,15 +1865,17 @@ select {
 }
 /* --- Workflow step editor -------------------------------------------------- */
 .workflow-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
 .workflow-step {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1840,9 +1905,9 @@ select {
 }
 
 .workflow-step-actions {
-  display: grid;
-  grid-template-columns: repeat(3, 44px);
-  justify-content: end;
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
@@ -1853,7 +1918,9 @@ select {
   border-radius: 7px;
   background: var(--bg);
   color: var(--fg-muted);
-  padding: 0;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 0.85em;
   cursor: pointer;
 }
 
