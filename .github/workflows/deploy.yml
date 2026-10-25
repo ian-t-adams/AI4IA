@@ -5,9 +5,10 @@ name: deploy
 # Why this exists: app-ci.yml and infra-validate.yml only *validate* (lint /
 # build / test). Nothing redeployed on merge, so main could be many commits
 # ahead of what is actually running. This workflow closes that gap — once the
-# one-time OIDC setup below is done, every merge to main reconciles infra and
-# ships the new app images. See docs/runbooks/greenfield-standup.md for setup
-# and docs/runbooks/deployment.md for routine operation.
+# one-time OIDC setup below is done, every eligible merge ships new app images.
+# Proven app-only pushes skip infrastructure reconciliation.
+# See docs/runbooks/greenfield-standup.md for setup and
+# docs/runbooks/deployment.md for routine operation.
 #
 # One-time setup (no secrets in this file): create a user-assigned managed
 # identity (or app registration) with a GitHub federated credential, grant it
@@ -528,11 +529,65 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+
+      - name: Select infrastructure reconciliation from the complete push diff
+        id: reconciliation
+        shell: python
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_BEFORE: ${{ github.event.before }}
+          RELEASE_AFTER: ${{ github.sha }}
+          RELEASE_MANUAL_PROVISION: ${{ toJSON(inputs.provision) }}
+        run: |
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.run(
+                  ["git", *args], check=True, capture_output=True, timeout=60
+              ).stdout
+
+          try:
+              event = os.environ["RELEASE_EVENT"]
+              if event == "workflow_dispatch":
+                  provision = os.environ["RELEASE_MANUAL_PROVISION"]
+                  if provision not in ("true", "false"):
+                      raise ValueError("Manual provision input is not a Boolean.")
+              elif event == "push":
+                  before = os.environ["RELEASE_BEFORE"]
+                  after = os.environ["RELEASE_AFTER"]
+                  for revision in (before, after):
+                      if not re.fullmatch(r"[0-9a-f]{40}", revision) or revision == "0" * 40:
+                          raise ValueError("Push endpoints must be nonzero commit SHAs.")
+                      git("cat-file", "-e", revision + "^{commit}")
+                  if git("rev-parse", "HEAD").decode("ascii").strip() != after:
+                      raise ValueError("Checkout does not match the pushed commit.")
+                  git("merge-base", "--is-ancestor", before, after)
+                  # Disable rename detection so both old and new paths participate.
+                  changed = git("diff", "--no-ext-diff", "--no-renames",
+                                "--name-only", "-z", before, after, "--")
+                  if not changed or not changed.endswith(b"\0"):
+                      raise ValueError("Push changed-file inventory is empty or incomplete.")
+                  paths = changed[:-1].split(b"\0")
+                  if any(not path for path in paths):
+                      raise ValueError("Push changed-file inventory has an empty path.")
+                  provision = "false" if all(path.startswith(b"app/") for path in paths) else "true"
+              else:
+                  raise ValueError("Unsupported release event.")
+          except (KeyError, ValueError, OSError, subprocess.SubprocessError):
+              raise SystemExit("::error::Cannot prove the release changed-file scope; refusing release.")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"provision={provision}\n")
+          print(f"Infrastructure reconciliation required: {provision}")
 
       - name: Install azd
         uses: Azure/setup-azd@0b7e3a35ab00f2eee7080c845eb39c3f0ebfa553 # v2.4.0
@@ -633,7 +688,7 @@ jobs:
         run: python scripts/check-api-private-network.py --release-mode
 
       - name: Resolve deploy principal ID for Foundry and API Center data-plane setup
-        if: ${{ steps.release_mode.outputs.operation == 'ordinary' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
+        if: ${{ steps.release_mode.outputs.operation == 'ordinary' && (steps.reconciliation.outputs.provision == 'true') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -748,7 +803,7 @@ jobs:
       # identity's Contributor role, so self-healing in ~a minute beats failing a
       # change window over a one-line fix.
       - name: Preflight resource provider registration
-        if: ${{ steps.execution.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (steps.reconciliation.outputs.provision == 'true') }}
         env:
           MIGRATION_PENDING: ${{ steps.release_mode.outputs.migration_pending }}
         run: |
@@ -761,7 +816,7 @@ jobs:
       # Protect existing bindings and register first-time hostnames before ARM
       # creates their certificates. Failed reads are never evidence of absence.
       - name: Preflight custom-domain bindings (guard wipes, register first binds)
-        if: ${{ steps.execution.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (steps.reconciliation.outputs.provision == 'true') }}
         env:
           MIGRATION_PENDING: ${{ steps.release_mode.outputs.migration_pending }}
         run: |
@@ -869,7 +924,7 @@ jobs:
         id: provision
         # Only admitted execution reaches ARM. Ordinary manual runs retain their
         # opt-out; pending migration pushes terminate at the reviewed preview.
-        if: ${{ steps.execution.outputs.allowed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.provision) }}
+        if: ${{ steps.execution.outputs.allowed == 'true' && (steps.reconciliation.outputs.provision == 'true') }}
         run: azd provision --no-prompt --no-state
 
       # `azure/login` hands the Azure CLI one GitHub OIDC assertion, and the CLI

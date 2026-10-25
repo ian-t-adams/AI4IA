@@ -30,6 +30,33 @@ deployment job can start. Missing values fail the workflow with their names;
 they never produce a successful skipped job. A repository with no deployment
 target must declare that posture with `AI4IA_DEPLOYMENT_ENABLED=false`.
 
+Before Azure login, the deployment job classifies the **complete push range**
+(`before` to the exact checked-out push SHA), not just the last commit or GitHub's
+path-filter sample. Only a nonempty diff whose every changed path is under
+`app/` skips root infrastructure provisioning. All other known changes retain
+reconciliation, including mixed app/docs changes, `infra/`, `foundry/`, any
+`proxy/` change, `azure.yaml`, workflow changes and release scripts. Renames
+include both old and new paths; deletions participate too.
+
+| Release scope | Root provision before | Root provision now |
+| --- | --- | --- |
+| Push: only `app/**` (web, API, or both) | Yes | No |
+| Push: `app/**` plus any non-app path | Yes | Yes |
+| Push: `infra/**` or `foundry/**` | Yes | Yes |
+| Push: `proxy/**`, release workflow/scripts, or `azure.yaml` | Yes | Yes |
+| Push: missing/invalid endpoints, unavailable history, non-ancestor range, failed/empty diff | Yes if otherwise admitted | Refuse release before Azure login |
+| Manual dispatch: `provision=false` / `true` | No / Yes | No / Yes |
+
+These choices only reduce the existing ordinary-release path; private migration
+preview, image-only preparation and separately approved packet admission remain
+unchanged. An app-only release follows the manual `provision=false` path: no
+provision-only principal lookup, provider registration, custom-domain
+registration/binding preflight, root provision or postprovision setup. It still
+builds and deploys **all three** service images, with the same signing, exact-image
+verification, health/domain checks, canary, revision capture and rollback.
+Unknown changed-file coverage stops the release rather than choosing either a
+provisioning fallback or an image-only success.
+
 The provisioning step uses `azd provision --no-prompt --no-state`. In the pinned
 azd, unchanged templates and parameters can otherwise produce a successful
 "There are no changes to provision" result without reconciling live resources.
@@ -107,16 +134,16 @@ push to main (app/infra/proxy/azure.yaml)       manual dispatch on main
                             (no permissions)
                                      |
                                      v
-                      deploy job: checkout + OIDC
+             deploy job: full checkout + push scope, then OIDC
                                      |
                                      v
-              provider + custom-domain safety preflights
+             provision-only provider + custom-domain preflights
                                      |
                                      v
                capture pre-provision Container App revisions
                                      |
                                      v
-                       azd provision --no-prompt
+           azd provision --no-prompt --no-state (when selected)
                                      |
                                      v
              build/push web + api + proxy once at commit SHA
