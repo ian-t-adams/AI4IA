@@ -2124,7 +2124,7 @@ diagnostics or broaden the migration allowlist. Ordinary post-migration root
 deployment remains a separate path.
 
 The finite `private_step` input selects `foundation`, `candidate`, `activate` or
-`cutover`. Foundation uses `api-private-network.bicep` directly (six resources).
+`cutover`. Foundation uses `api-private-network.bicep` directly (eight resources).
 Candidate/activation use the shipping `api.bicep`; cutover uses `web.bicep`.
 Scoped app modes do not redeploy diagnostic settings or the web certificate.
 API activation preserves its existing discovery tag: only its staging flag and
@@ -2191,6 +2191,30 @@ The report separates these blocker categories and records only fixed comparison
 flags and bounded counts/representation metadata. Omitted DNS has no observed
 server count; it is not reported as a measured empty list. Old field-only reports
 cannot establish unretained subnet values or prove that DNS was the only mismatch.
+
+The original six-resource foundation was subsequently associated with two
+default-rule NSGs by corporate subscription-governance automation, not Azure
+Policy. Source now retains the same
+`vnet-<workload>-<environment>-api-private-api-nsg-<location>` and
+`vnet-<workload>-<environment>-api-private-cosmos-nsg-<location>` resources and
+their exact respective subnet associations. The two additions explain the
+eight-resource source inventory; historical six-resource receipts remain valid
+historical evidence, not rewritten descriptions of later governance writes.
+Both NSGs declare an empty custom `securityRules` list. Complete NSG snapshots
+must prove that list even for `NoChange`; missing/malformed/custom rules refuse,
+as do NSG modifications and subnet detachments. Source adoption must preview as
+no-op for those existing resources, never erase a subsequently added rule.
+
+This is an external **workload-profile** environment with a Consumption profile,
+not the legacy Consumption-only environment type.
+[Microsoft's networking contract](https://learn.microsoft.com/azure/container-apps/firewall-integration)
+routes public ingress through the managed resource group's public IP rather
+than the user subnet. The
+[default NSG rules](https://learn.microsoft.com/azure/virtual-network/network-security-groups-overview#default-security-rules)
+already allow AzureLoadBalancer probes before the final inbound deny. Do not
+add internet/client inbound rules, an exemption, a new networking component or
+an unsupported source restriction to make this source adoption pass. Runtime
+DNS and real API acceptance remain separate gates.
 
 For an approved phase, first run the existing workflow on main with
 `operation=preview` and the exact `private_step` (the initial pending push previews
@@ -2300,7 +2324,7 @@ Do not run the following transitions merely because the source exists:
    malformed result fails, not skips. This replaces only the model/session
    canary: exact-image rollout, health, web/proxy and domain checks still run,
    followed by private network/runtime/phase/worker readback. No role or secret
-   is added. Within `candidate`, separately preview/review/apply the six-resource
+   is added. Within `candidate`, separately preview/review/apply the eight-resource
    foundation. Then observe that environment's own Consumption quota; the old
    environment's headroom cannot stand in for it. Prepare the current signed API
    image, then preview/review/apply the single API resource with that exact digest.

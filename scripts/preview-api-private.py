@@ -261,8 +261,12 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
     private_env = prefix + f"microsoft.app/managedenvironments/cae-{suffix}"
     zone = prefix + "microsoft.network/privatednszones/privatelink.documents.azure.com"
     endpoint = prefix + f"microsoft.network/privateendpoints/pe-{suffix}-cosmos"
+    nsgs = {
+        name: prefix + f"microsoft.network/networksecuritygroups/vnet-{suffix}-{name}-nsg-{binding['location']}"
+        for name in ("api", "cosmos")
+    }
     creates = {vnet, private_api, private_env, zone, zone + f"/virtualnetworklinks/{suffix}",
-               endpoint, endpoint + "/privatednszonegroups/default"}
+               endpoint, endpoint + "/privatednszonegroups/default", *nsgs.values()}
     app_ids = {private_api: "api", prefix + f"microsoft.app/containerapps/ca-web-{binding['environment']}": "web",
                prefix + f"microsoft.app/containerapps/ca-proxy-{binding['environment']}": "proxy"}
     packet = binding.get("packet")
@@ -280,6 +284,7 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
     report = []
     seen = set()
     errors = []
+    nsg_evidence = []
     for change in changes:
         rid = change.get("resourceId")
         kind = change.get("changeType")
@@ -291,6 +296,15 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
         require(kind in ("Create", "Modify", "Delete", "Deploy", "Ignore", "NoChange", "Unsupported"),
                 "Unknown ARM change type.")
         require(not change.get("unsupportedReason"), "ARM preview contains unsupported coverage.")
+        if rid in nsgs.values() and (permitted is None or rid in permitted):
+            after_nsg = change.get("after")
+            nsg_properties = after_nsg.get("properties") if isinstance(after_nsg, dict) else None
+            default_only = isinstance(nsg_properties, dict) and nsg_properties.get("securityRules") == []
+            nsg_evidence.append({"resourceId": rid, "customRulesEmpty": default_only})
+            if not default_only:
+                errors.append("nsg_rules_not_empty_or_unknown")
+            if kind == "Modify":
+                errors.append("unapproved_nsg_modify")
         if packet in ("candidate", "activate", "cutover") and rid in required:
             after_resource = change.get("after")
             if isinstance(after_resource, dict) and "configuration" in after_resource.get("properties", {}):
@@ -365,6 +379,7 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
                     "subnetNamesMatch": names_match if rows_valid and count_matches else None,
                     "apiPrefixMatches": None, "endpointPrefixMatches": None,
                     "apiDelegationMatches": None, "endpointPolicyMatches": None,
+                    "apiNsgMatches": None, "endpointNsgMatches": None,
                 }
                 row["networkComparisons"] = evidence
                 if not rows_valid:
@@ -376,12 +391,18 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
                 if rows_valid:
                     if any(subnet.get("properties", {}).get(key) not in (None, [])
                            for subnet in subnets for key in
-                           ("natGateway", "networkSecurityGroup", "routeTable", "serviceEndpoints", "serviceEndpointPolicies")):
+                           ("natGateway", "routeTable", "serviceEndpoints", "serviceEndpointPolicies")):
                         errors.append("unapproved_subnet_attachment")
                     if any("dhcpOptions" in subnet["properties"] for subnet in subnets):
                         errors.append("subnet_dns_override")
                 if names_match:
                     by_name = {subnet["name"]: subnet["properties"] for subnet in subnets}
+                    for name, key in (("api", "apiNsgMatches"), ("cosmos", "endpointNsgMatches")):
+                        attachment = by_name[name].get("networkSecurityGroup")
+                        nsg_id = attachment.get("id") if isinstance(attachment, dict) else None
+                        evidence[key] = isinstance(nsg_id, str) and nsg_id.casefold() == nsgs[name]
+                        if not evidence[key]:
+                            errors.append("subnet_nsg_drift")
                     evidence["apiPrefixMatches"] = by_name["api"].get("addressPrefix") == expected_subnets["api"]
                     evidence["endpointPrefixMatches"] = by_name["cosmos"].get("addressPrefix") == expected_subnets["cosmos"]
                     if not evidence["apiPrefixMatches"] or not evidence["endpointPrefixMatches"]:
@@ -587,6 +608,7 @@ def scope_preview(raw: dict, binding: dict, params: dict, baseline: dict | None 
     require(required <= seen, "ARM preview omitted required private resources.")
     require(len(json.dumps(report).encode()) <= 64 * 1024, "Full scoped field report exceeds its bound.")
     return {"changes": sorted(report, key=lambda row: row["resourceId"]),
+            "nsgComparisons": sorted(nsg_evidence, key=lambda row: row["resourceId"]),
             "blockingReasons": sorted(set(errors)),
             "rawChangeDigest": digest(sorted(changes, key=lambda row: row["resourceId"].casefold()))}
 

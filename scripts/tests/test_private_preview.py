@@ -43,11 +43,15 @@ def fixture():
         vnet, endpoint, endpoint + "/privateDnsZoneGroups/default", zone,
         zone + "/virtualNetworkLinks/ai4ia-test-api-private",
         prefix + "Microsoft.App/managedEnvironments/cae-ai4ia-test-api-private",
+        prefix + "Microsoft.Network/networkSecurityGroups/vnet-ai4ia-test-api-private-api-nsg-eastus2",
+        prefix + "Microsoft.Network/networkSecurityGroups/vnet-ai4ia-test-api-private-cosmos-nsg-eastus2",
         prefix + "Microsoft.App/containerApps/ca-api-private-test",
     ]
     raw = {"status": "Succeeded", "changes": [
         {"resourceId": rid, "changeType": "NoChange"} for rid in ids
     ]}
+    for row in raw["changes"][6:8]:
+        row["after"] = {"properties": {"securityRules": []}}
     params = {
         "apiPrivateVnetPrefix": {"value": "10.241.0.0/25"},
         "apiPrivateSubnetPrefix": {"value": "10.241.0.0/26"},
@@ -57,13 +61,14 @@ def fixture():
 
 
 def complete_foundation_fixture():
-    """Synthetic six-resource snapshot; native SDK/knack emits these null deltas."""
+    """Complete network snapshot; native SDK/knack emits these null deltas."""
     bound, original, params = fixture()
     bound["packet"] = "foundation"
     vnet, endpoint, group, zone, link, environment = [
         row["resourceId"] for row in original["changes"][:6]
     ]
     prefix = vnet.split("/providers/")[0] + "/providers/"
+    api_nsg, cosmos_nsg = [row["resourceId"] for row in original["changes"][6:8]]
     snapshots = [
         (vnet, "eastus2", {
             "addressSpace": {"addressPrefixes": ["10.241.0.0/25"]},
@@ -71,8 +76,9 @@ def complete_foundation_fixture():
             "subnets": [
                 {"name": "api", "properties": {"addressPrefix": "10.241.0.0/26", "delegations": [
                     {"name": "container-apps", "properties": {"serviceName": "Microsoft.App/environments"}},
-                ]}},
+                ], "networkSecurityGroup": {"id": api_nsg}}},
                 {"name": "cosmos", "properties": {"addressPrefix": "10.241.0.64/27",
+                                                  "networkSecurityGroup": {"id": cosmos_nsg},
                                                   "privateEndpointNetworkPolicies": "Disabled"}},
             ],
         }),
@@ -96,6 +102,8 @@ def complete_foundation_fixture():
             }},
             "workloadProfiles": [{"name": "Consumption", "workloadProfileType": "Consumption"}],
         }),
+        (api_nsg, "eastus2", {"securityRules": []}),
+        (cosmos_nsg, "eastus2", {"securityRules": []}),
     ]
     changes = []
     for resource_id, location, properties in snapshots:
@@ -118,6 +126,80 @@ def complete_foundation_fixture():
 
 
 class PreviewTests(unittest.TestCase):
+    def test_foundation_nsgs_require_complete_default_only_rules(self):
+        bound, raw, params = complete_foundation_fixture()
+        for kind in ("Create", "NoChange"):
+            for index in (6, 7):
+                control = deepcopy(raw)
+                control["changes"][index]["changeType"] = kind
+                report = PREVIEW.scope_preview(control, bound, params)
+                self.assertEqual(report["blockingReasons"], [])
+                self.assertEqual(report["nsgComparisons"], [
+                    {"resourceId": row["resourceId"].casefold(), "customRulesEmpty": True}
+                    for row in control["changes"][6:8]
+                ])
+                for rules in (None, False, "", {}, [{"name": "private-marker"}]):
+                    changed = deepcopy(control)
+                    changed["changes"][index]["after"]["properties"]["securityRules"] = rules
+                    with self.subTest(kind=kind, index=index, rules=rules):
+                        denied = PREVIEW.scope_preview(changed, bound, params)
+                        self.assertIn("nsg_rules_not_empty_or_unknown", denied["blockingReasons"])
+                        self.assertNotIn("private-marker", json.dumps(denied))
+                for missing in ("after", "properties", "securityRules"):
+                    changed = deepcopy(control)
+                    row = changed["changes"][index]
+                    if missing == "after":
+                        row.pop("after")
+                    elif missing == "properties":
+                        row["after"].pop("properties")
+                    else:
+                        row["after"]["properties"].pop("securityRules")
+                    self.assertIn("nsg_rules_not_empty_or_unknown",
+                                  PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+
+    def test_foundation_nsg_associations_are_exact_not_arbitrary_attachments(self):
+        bound, raw, params = complete_foundation_fixture()
+        for index in (0, 1):
+            expected = raw["changes"][6 + index]["resourceId"]
+            control = deepcopy(raw)
+            control["changes"][0]["after"]["properties"]["subnets"][index]["properties"]["networkSecurityGroup"] = {
+                "id": expected.upper(),
+            }
+            self.assertEqual(PREVIEW.scope_preview(control, bound, params)["blockingReasons"], [])
+            for attachment in (None, {}, {"id": raw["changes"][7 - index]["resourceId"]},
+                               {"id": expected.replace("rg-ai4ia-test", "rg-other")},
+                               {"id": expected + "-other"}, {"id": True}):
+                changed = deepcopy(control)
+                changed["changes"][0]["after"]["properties"]["subnets"][index]["properties"]["networkSecurityGroup"] = attachment
+                with self.subTest(index=index, attachment=attachment):
+                    self.assertIn("subnet_nsg_drift", PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+            changed = deepcopy(control)
+            changed["changes"][0]["after"]["properties"]["subnets"][index]["properties"].pop("networkSecurityGroup")
+            self.assertIn("subnet_nsg_drift", PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+
+    def test_nsg_adoption_never_authorizes_rule_removal_or_subnet_detachment(self):
+        bound, raw, params = complete_foundation_fixture()
+        for index in (6, 7):
+            changed = deepcopy(raw)
+            row = changed["changes"][index]
+            row.update(changeType="Modify", before=deepcopy(row["after"]),
+                       delta=[{"path": "properties.securityRules", "propertyChangeType": "Delete"}])
+            row["before"]["properties"]["securityRules"] = [{"name": "private-marker"}]
+            self.assertIn("unapproved_nsg_modify", PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+            for kind in ("Ignore", "Delete"):
+                row["changeType"] = kind
+                if kind == "Ignore":
+                    with self.assertRaises(PREVIEW.PreviewError):
+                        PREVIEW.scope_preview(changed, bound, params)
+                else:
+                    self.assertTrue(PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
+        detached = deepcopy(raw)
+        row = detached["changes"][0]
+        row.update(changeType="Modify", before=deepcopy(row["after"]),
+                   delta=[{"path": "properties.subnets", "propertyChangeType": "Array"}])
+        row["after"]["properties"]["subnets"][0]["properties"].pop("networkSecurityGroup")
+        self.assertIn("unapproved_modify", PREVIEW.scope_preview(detached, bound, params)["blockingReasons"])
+
     def test_complete_new_vnet_default_dns_omission_keeps_exact_network_proof(self):
         bound, raw, params = complete_foundation_fixture()
         explicit = PREVIEW.scope_preview(raw, bound, params)
@@ -125,12 +207,13 @@ class PreviewTests(unittest.TestCase):
         omitted = PREVIEW.scope_preview(raw, bound, params)
         for report in (explicit, omitted):
             self.assertEqual(report["blockingReasons"], [])
-            self.assertEqual(len(report["changes"]), 6)
+            self.assertEqual(len(report["changes"]), 8)
             network = next(row for row in report["changes"] if "networkComparisons" in row)
             self.assertEqual(network["networkComparisons"], {
                 "addressSpaceMatches": True, "subnetCount": 2, "subnetCountCapped": False,
                 "subnetRowsValid": True, "subnetNamesMatch": True, "apiPrefixMatches": True,
                 "endpointPrefixMatches": True, "apiDelegationMatches": True, "endpointPolicyMatches": True,
+                "apiNsgMatches": True, "endpointNsgMatches": True,
             })
         old = next(row for row in explicit["changes"] if "dnsComparison" in row)["dnsComparison"]
         new = next(row for row in omitted["changes"] if "dnsComparison" in row)["dnsComparison"]
@@ -220,11 +303,11 @@ class PreviewTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, PREVIEW.scope_preview(changed, bound, params)["blockingReasons"])
 
-    def test_complete_six_create_native_envelope_accepts_only_optional_create_delta(self):
+    def test_complete_network_create_native_envelope_accepts_only_optional_create_delta(self):
         bound, raw, params = complete_foundation_fixture()
         for form in ("null", "absent", "array"):
             payload = deepcopy(raw)
-            for row in payload["changes"][:6]:
+            for row in payload["changes"][:8]:
                 if form == "absent":
                     row.pop("delta")
                 elif form == "array":
@@ -232,7 +315,7 @@ class PreviewTests(unittest.TestCase):
             with self.subTest(form=form):
                 report = PREVIEW.scope_preview(payload, bound, params)
                 self.assertEqual(report["blockingReasons"], [])
-                self.assertEqual(len(report["changes"]), 6)
+                self.assertEqual(len(report["changes"]), 8)
                 self.assertTrue(all(row["changeType"] == "Create" and row["fields"] for row in report["changes"]))
                 self.assertNotIn("********", json.dumps(report))
                 token = PREVIEW.make_token(bound, report, 1792860000)
@@ -256,7 +339,7 @@ class PreviewTests(unittest.TestCase):
                 self.assertTrue(result["blockingReasons"])
                 with self.assertRaises(PREVIEW.PreviewError):
                     PREVIEW.verify_token(PREVIEW.make_token(bound, result, 1792860000), bound, result, 1792860010)
-        for missing in range(6):
+        for missing in range(8):
             payload = deepcopy(raw)
             payload["changes"].pop(missing)
             with self.subTest(missing=missing), self.assertRaises(PREVIEW.PreviewError):
@@ -362,7 +445,7 @@ class PreviewTests(unittest.TestCase):
             if definition["type"] == "securestring":
                 self.assertNotIn(name + ".value", projected)
 
-    def test_foundation_is_exactly_its_six_resources_not_the_root(self):
+    def test_foundation_is_exactly_its_network_resources_not_the_root(self):
         bound, raw, params = fixture()
         bound["packet"] = "foundation"
         raw["changes"].pop()
@@ -679,8 +762,10 @@ class PreviewTests(unittest.TestCase):
                            "dhcpOptions": {"dnsServers": []}, "subnets": [
                 {"name": "api", "properties": {"addressPrefix": "10.241.0.0/26", "delegations": [
                     {"properties": {"serviceName": "Microsoft.App/environments"}},
-                ]}},
-                {"name": "cosmos", "properties": {"addressPrefix": "10.241.0.64/27", "privateEndpointNetworkPolicies": "Disabled"}},
+                ], "networkSecurityGroup": {"id": raw["changes"][6]["resourceId"]}}},
+                {"name": "cosmos", "properties": {"addressPrefix": "10.241.0.64/27",
+                 "networkSecurityGroup": {"id": raw["changes"][7]["resourceId"]},
+                 "privateEndpointNetworkPolicies": "Disabled"}},
             ]}})
         self.assertEqual(PREVIEW.scope_preview(raw, bound, params)["blockingReasons"], [])
         display = deepcopy(raw)

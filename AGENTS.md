@@ -689,7 +689,7 @@ See `docs/runbooks/deployment.md#api-only-private-cosmos-recovery`.
 Pending migration pushes are terminal previews on trusted main, not resource
 deployment. Every later mutation/canary/rollback step needs the separate
 execution gate. Migration previews/applies use direct RG modules, not the
-short-circuited full root: six-resource foundation, candidate API, activation,
+short-circuited full root: eight-resource foundation, candidate API, activation,
 then web cutover. Each apply uses its exact compiled/frozen packet after fresh
 source/phase/current-config/parameter/delta binding and strict admission.
 API/web modes preserve existing certificate/diagnostic resources; activation
@@ -703,6 +703,14 @@ Only a fully checked new-VNet Create may use omitted DHCP as the documented
 Azure-provided DNS default. Keep explicit malformed/custom DNS and existing-VNet
 changes refused; retain exact subnet/delegation checks and value-free comparison
 evidence. Omitted DNS is not an observed zero-server list.
+The foundation retains the two corporate-governance NSGs at their exact
+`vnet-<workload>-<environment>-api-private-<api|cosmos>-nsg-<location>` names
+and subnet associations. Both declare `securityRules: []`: default rules only,
+not custom ingress openings. Required NSG snapshots must prove that empty list;
+rule changes, missing proof and subnet detachment refuse. Adoption requires
+a fresh no-op preview, not permission to overwrite governance changes.
+External workload-profile public ingress does not traverse the user subnet;
+the default AzureLoadBalancer allow already covers its documented probe ports.
 Default-off same-group API secret inheritance uses server-side listSecrets and
 declared metadata; preserve Key Vault references, never export values.
 Unprotected/unknown secret representations and incomplete resource coverage
