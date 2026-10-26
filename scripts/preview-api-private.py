@@ -1135,6 +1135,7 @@ def patch_raw_snapshot(env: dict, name: str, read: Callable, *, stable: bool = T
             and all(isinstance(key, str) for key in identity["userAssignedIdentities"])
             and {key.casefold() for key in identity["userAssignedIdentities"]} == {identity_id.casefold()},
             "Activation raw configuration or identity is incomplete.")
+    assert isinstance(props, dict)
     for key in ("latestRevisionName", "latestReadyRevisionName"):
         require(isinstance(props.get(key), str)
                 and re.fullmatch(re.escape(name) + r"--[a-z0-9-]{1,80}", props[key]) is not None,
