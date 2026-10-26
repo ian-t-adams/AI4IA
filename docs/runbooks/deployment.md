@@ -2117,7 +2117,8 @@ default to deploying the original API.
 
 The existing workflow retains its main-only admission, identity and job grants.
 It resolves current targets first, then previews one direct resource-group
-module with ARM **Provider** validation. The full-root migration preview is
+module with ARM **Provider** validation, except for the separately approved
+activation-only template PATCH described below. The full-root migration preview is
 retired: its nested API/web modules were short-circuited and its unrelated
 APIM/model reconciliation exceeded the approved write-set. Do not suppress those
 diagnostics or broaden the migration allowlist. Ordinary post-migration root
@@ -2125,7 +2126,9 @@ deployment remains a separate path.
 
 The finite `private_step` input selects `foundation`, `candidate`, `activate` or
 `cutover`. Foundation uses `api-private-network.bicep` directly (eight resources).
-Candidate/activation use the shipping `api.bicep`; cutover uses `web.bicep`.
+Candidate uses the shipping `api.bicep`; cutover uses `web.bicep`. Activation
+uses the exact raw-state/template PATCH contract, not a self-referencing
+full-ARM app update.
 Scoped app modes do not redeploy diagnostic settings or the web certificate.
 API activation preserves its existing discovery tag: only its staging flag and
 maximum replicas change. The normal root remains responsible for later
@@ -2156,6 +2159,25 @@ Key Vault references remain unchanged references. No CLI `listSecrets`, secret
 output, arbitrary source ID, new key or role is introduced. An unprotected or
 unrecognized provider secret-value representation fails closed. Offline compile
 controls are not live provider masking or resource-coverage evidence.
+
+Candidate creation inherits server-side from the **different** legacy app.
+Activation does not reuse that full-ARM path. An October26 attempt passed
+what-if but ARM create validation rejected the duplicate existing/target app
+declarations; replacing the symbol with the full resource ID then failed
+read-only validation on a circular self-secret read. Neither attempt changed
+the app. Do not fetch secret values or assume name-only secret retention to
+work around this provider boundary. Candidate and ordinary Bicep paths remain
+unchanged; activation has the separately approved template-only PATCH below.
+
+Scoped command failures retain a bounded sanitized error class, recognized
+ARM code, redacted target and message. The optional stderr capture is
+memory-only and capped at16KiB; overflow or unrecognized shapes withhold detail.
+Messages reuse the existing rollout credential redactor, redact quoted values
+and opaque tokens, and omit URLs. Ordinary image verification still discards
+stderr by default. Failures remain failures: no output, deadline, admission,
+signature or replay check is bypassed, and no diagnostic code alone establishes
+the write outcome. Determine that through the exact deployment/app readback
+and bounded activity evidence before considering a new claim.
 
 The two recovery flags deliberately emit lowercase `'true'`/`'false'` literals:
 ARM `string(bool)` emitted `"True"` in the candidate preview. The guard remains
@@ -2425,8 +2447,8 @@ Do not run the following transitions merely because the source exists:
 3. **Activation approval.** Explicitly drain/deactivate legacy API revisions
    using the existing approved operator path. Allow in-flight cleanup to finish;
    min0 alone is insufficient. `activate` refuses if any legacy revision is
-   active **or any replica remains**, then reconciles the new API with its
-   already-observed serving digest and normal workers. Web/voice still target
+   active **or any replica remains**, then applies the exact template-only
+   activation PATCH with its already-observed serving digest and normal workers. Web/voice still target
    the old API. Keep the resulting outage window supervised and short.
    Obtain terminal raw ARM inventory before deactivation and require exactly the
    owner-approved active revision. Deactivate only that revision, then obtain a
@@ -2473,25 +2495,43 @@ inactive metadata. The page/row counts and stable row digest are bound into
 preview and execution receipts and compared again immediately before apply.
 Exhaustion or incomplete coverage is unknown, never drained.
 
-The activation packet separately binds stable raw `2024-10-02-preview`
-observations of both the private candidate and retained legacy production
-shape. The October 26 capture established that the CLI omits the candidate's
-`imageType: ContainerImage`, while raw GET and native what-if retain it. Only
-that exact type is projected for this activation comparison, never an unknown
-type, changed image or another application.
+### Activation-only template PATCH
 
-The exact nine native delta paths remain visible in the report. Their reviewed
-response echoes require equal native-before/raw-live values and absent desired
-fields: scale cooldown300/polling30, exposed port0, one latest-revision/100%
-traffic row, inactive-revision retention100, Automatic patching and Consumption
-workload profile. The compiled source must also omit those fields. Legacy
-retention is observed null and remains null in evidence; it is not interpreted
-as100. Intended max replicas1->3 must equal the bound legacy production value.
-The candidate flag changes true->false; private readiness remains true.
-All remaining unmasked configuration and template fields still compare
-strictly, including credentials' references, image, ingress and identity.
-Any missing evidence, extra path, different presence/type/value or source
-declaration refuses. These observations do not preapprove web-cutover echoes.
+Activation's preview is a bounded comparison of fresh raw
+`2024-10-02-preview` app state and the derived after-template, **not** native
+ARM what-if or a full-resource deployment. The exact body is
+`{"properties":{"template": ...}}`. It cannot contain configuration, identity,
+secrets, ingress, tags or location. YAML update is prohibited because its
+client path reads secret values.
+
+The copied template changes only max replicas1->3 (matching the retained
+legacy production profile) and `AI4IA_PRIVATE_RECOVERY_CANDIDATE` true->false.
+Private readiness stays true. The image, every nonsecret environment value,
+every secretRef and the probes are unchanged. The provider's read-only
+ephemeral storage field is excluded; the revisionSuffix is deterministically
+derived from the reviewed binding. An existing suffix, rerun attempt or prior
+dispatch receipt refuses another send. That receipt is written before PATCH
+and retained even on failure; unknown outcomes never authorize replay.
+
+Immediately before sending, the raw configuration, metadata, identity, ingress
+and template must still match the preview, and complete legacy inventory must
+remain inactive/integer-zero. After sending, bounded read-only observation must
+find that exact ready revision, with matching image/template and byte-identical
+canonical protected-configuration and metadata digests. Readiness must pass.
+An operator then runs `python scripts/preview-api-private.py verify-activation`
+with `AI4IA_PRIVATE_ACTIVATION_RECEIPT` naming the verified execution receipt
+and the existing `AI4IA_DEPLOY_CANARY_TOKEN` held only in that process. It
+rechecks state, private readiness and authenticated Decision options. Never
+put the owner token in workflow inputs or broaden the deployment actor's model
+policy to make this check pass. Delivery/readiness and owner acceptance are
+separate receipt states; no web/voice cutover is permitted before owner
+acceptance succeeds.
+
+Failed postchecks leave the app as-is for operator disposition. Only a proven
+unhealthy new revision may be deactivated under the approved containment scope;
+no automated rollback, legacy reactivation or repeated PATCH is implied.
+This transport and its claim apply only to activation, not to candidate
+creation, ordinary deployments or unobserved web-cutover differences.
 
 It preserves the current private API and web/proxy image digests across
 reconciliation, while normal production image signing/promotion stays intact.

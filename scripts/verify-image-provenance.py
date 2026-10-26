@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -45,7 +45,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProvenanceError(ValueError):
-    """A fixed safe reason, without CLI stderr, credentials or payload excerpts."""
+    """A fixed reason with optional caller-sanitized diagnostic fields."""
+
+    def __init__(self, message: str, *, diagnostic: dict[str, str | None] | None = None):
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 def require(condition: bool, reason: str) -> None:
@@ -267,11 +271,18 @@ def sboms(directory: Path, images: dict[str, str]) -> dict[str, dict]:
     return result
 
 
-def run_bounded(command: list[str], *, limit: int, timeout: float) -> bytes:
-    """Bound stdout while it is produced; never retain raw tool/network stderr."""
+def run_bounded(
+    command: list[str], *, limit: int, timeout: float,
+    diagnostic: Callable[[str, bytes | None], dict[str, str | None]] | None = None,
+) -> bytes:
+    """Bound streams; stderr remains discarded unless a caller supplies sanitization."""
     data = bytearray()
     errors: list[OSError] = []
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
+    error_data = bytearray()
+    error_overflow = False
+    error_reads: list[OSError | ValueError] = []
+    with subprocess.Popen(command, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE if diagnostic else subprocess.DEVNULL) as process:
         assert process.stdout is not None
 
         def drain() -> None:
@@ -287,17 +298,47 @@ def run_bounded(command: list[str], *, limit: int, timeout: float) -> bytes:
 
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
+
+        def drain_error() -> None:
+            nonlocal error_overflow
+            assert process.stderr is not None
+            try:
+                while chunk := process.stderr.read(4096):
+                    remaining = 16384 - len(error_data)
+                    error_data.extend(chunk[:remaining])
+                    error_overflow = error_overflow or len(chunk) > remaining
+            except (OSError, ValueError) as exc:
+                error_reads.append(exc)
+
+        error_reader = threading.Thread(target=drain_error, daemon=True) if diagnostic else None
+        if error_reader is not None:
+            error_reader.start()
+
+        def failure(message: str, kind: str) -> ProvenanceError:
+            raw = (bytes(error_data) if error_reader is not None and not error_reader.is_alive()
+                   and not error_overflow and not error_reads else None)
+            safe = diagnostic(kind, raw) if diagnostic else None
+            error_data.clear()
+            return ProvenanceError(message, diagnostic=safe)
+
         try:
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             process.kill()
             process.wait()
             reader.join(timeout=5)
-            raise ProvenanceError("attestation verifier timed out") from exc
+            if error_reader is not None:
+                error_reader.join(timeout=5)
+            raise failure("attestation verifier timed out", "timeout") from exc
         reader.join(timeout=5)
-        require(len(data) <= limit, "attestation verifier output exceeds bounds")
-        require(not reader.is_alive() and not errors, "attestation verifier output unavailable")
-        require(code == 0, "attestation verifier failed; no image is authorized")
+        if error_reader is not None:
+            error_reader.join(timeout=5)
+        if len(data) > limit:
+            raise failure("attestation verifier output exceeds bounds", "stdout_limit")
+        if reader.is_alive() or errors or error_reader is not None and (error_reader.is_alive() or error_reads):
+            raise failure("attestation verifier output unavailable", "stream_unavailable")
+        if code != 0:
+            raise failure("attestation verifier failed; no image is authorized", "command_failed")
     return bytes(data)
 
 

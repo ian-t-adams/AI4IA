@@ -688,10 +688,10 @@ approved transition; never add a model call, public restore or automatic drain.
 See `docs/runbooks/deployment.md#api-only-private-cosmos-recovery`.
 Pending migration pushes are terminal previews on trusted main, not resource
 deployment. Every later mutation/canary/rollback step needs the separate
-execution gate. Migration previews/applies use direct RG modules, not the
-short-circuited full root: eight-resource foundation, candidate API, activation,
-then web cutover. Each apply uses its exact compiled/frozen packet after fresh
-source/phase/current-config/parameter/delta binding and strict admission.
+execution gate. Foundation, candidate and web cutover use direct RG modules,
+not the short-circuited full root. Activation alone uses the exact template PATCH
+below. Every apply uses its frozen packet after fresh source/phase/current-state/
+payload binding and strict admission.
 API/web modes preserve existing certificate/diagnostic resources; activation
 keeps the existing discovery tag and changes only staging/max replicas.
 Historical non-secure module inputs require actual current-config parity.
@@ -720,6 +720,10 @@ External workload-profile public ingress does not traverse the user subnet;
 the default AzureLoadBalancer allow already covers its documented probe ports.
 Default-off same-group API secret inheritance uses server-side listSecrets and
 declared metadata; preserve Key Vault references, never export values.
+That inheritance is for candidate creation from the distinct legacy app.
+Activation uses only the approved template-only PATCH, never full ARM or a
+self-listSecrets read (both symbolic and resourceId self-reads failed ARM
+validation). Keep candidate and ordinary Bicep paths unchanged.
 The candidate's two flags use explicit lowercase literals, not ARM string(bool),
 and inherited WebIQ keys must not also select Entra fallback. Native what-if may
 mask secret names and env refs as well as values. Derive the nonsecret descriptor
@@ -753,6 +757,12 @@ apply, or use API-only as a fallback for missing ordinary web/proxy evidence.
 Ordinary three-service same-run verification and job permissions stay unchanged.
 An existing/unknown binding-derived deployment claim refuses replay; this and
 workflow serialization are not a distributed ARM create-only fence.
+Scoped command failures may report a bounded sanitized class/ARM code/target/
+message through the existing rollout redactor. Raw stderr is opt-in, memory-only
+and capped before parsing; oversized, malformed or unknown diagnostics are
+withheld, not printed. Image verification keeps stderr discarded by default.
+Diagnostics do not change rejection, timeout, stdout bounds or never-replay
+rules; a code alone is not proof that no resource write occurred.
 Legacy drain evidence uses the pinned raw ARM revisions list, not the CLI's
 active-only default. Follow only the same HTTPS ARM app/version/page-size with
 one opaque `skipToken`; terminal coverage must stay below 32 pages, 640 rows and
@@ -762,18 +772,19 @@ replicas; at most four exception replica reads never replace missing row proof.
 Before the approved drain, require exactly its named active revision; before
 activation require every legacy row inactive/zero. Bind page/row counts and the
 stable row digest into the packet, recheck before apply, and retain the receipt.
-Activation also binds same-version raw current/legacy scalar evidence. The
-typed CLI can omit `imageType=ContainerImage` although native what-if and raw
-ARM retain it; never erase an unknown image type. Only the exact reviewed
-activation path set may omit its proven response echoes: cooldown300,
-polling30, exposedPort0, latest/100 traffic, maxInactiveRevisions100,
-Automatic patching and Consumption profile. Keep legacy's null retention
-value distinct from100. Source must still omit those fields; full unmasked
-configuration/template comparisons remain outside that narrow projection.
-Max replicas3 must equal the bound legacy production value; candidate mode
-changes true->false while private readiness stays true. Missing/changed
-evidence, extra paths, value/type changes or ingress/secret/identity drift
-refuse. This is not an allowance for unobserved web/cutover defaults.
+Activation previews a fresh raw-state/template diff, not native ARM what-if.
+Only max replicas1->3 (bound to legacy production) and candidate true->false
+change; private readiness, exact image, nonsecret values, secretRefs and probes
+stay unchanged. The body is only properties.template, with a binding-derived
+revisionSuffix and documented read-only fields excluded. Never send configuration,
+identity, secrets, ingress, tags or location. Existing suffixes, rerun attempts
+and a recorded dispatch refuse replay. Recheck complete legacy drain and exact
+raw pre-state immediately before PATCH. Persist the dispatch receipt first,
+then require the exact ready revision and unchanged protected/metadata digests.
+Owner Decision-options acceptance is a separate mandatory authenticated read;
+the deploy actor must not gain model categories to perform it. No cutover before
+that succeeds. Post-check failures leave the app as-is for disposition; no
+automatic rollback or patch replay. These permissions are activation-only.
 
 `infra-validate` runs:
 
