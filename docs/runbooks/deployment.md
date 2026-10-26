@@ -2472,6 +2472,27 @@ checks (at most four); those checks cannot overwrite unknown or contradictory
 inactive metadata. The page/row counts and stable row digest are bound into
 preview and execution receipts and compared again immediately before apply.
 Exhaustion or incomplete coverage is unknown, never drained.
+
+The activation packet separately binds stable raw `2024-10-02-preview`
+observations of both the private candidate and retained legacy production
+shape. The October 26 capture established that the CLI omits the candidate's
+`imageType: ContainerImage`, while raw GET and native what-if retain it. Only
+that exact type is projected for this activation comparison, never an unknown
+type, changed image or another application.
+
+The exact nine native delta paths remain visible in the report. Their reviewed
+response echoes require equal native-before/raw-live values and absent desired
+fields: scale cooldown300/polling30, exposed port0, one latest-revision/100%
+traffic row, inactive-revision retention100, Automatic patching and Consumption
+workload profile. The compiled source must also omit those fields. Legacy
+retention is observed null and remains null in evidence; it is not interpreted
+as100. Intended max replicas1->3 must equal the bound legacy production value.
+The candidate flag changes true->false; private readiness remains true.
+All remaining unmasked configuration and template fields still compare
+strictly, including credentials' references, image, ingress and identity.
+Any missing evidence, extra path, different presence/type/value or source
+declaration refuses. These observations do not preapprove web-cutover echoes.
+
 It preserves the current private API and web/proxy image digests across
 reconciliation, while normal production image signing/promotion stays intact.
 An existing API-image receipt may survive a script-only source correction only

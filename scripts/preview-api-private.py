@@ -418,6 +418,156 @@ def comparable(template: dict) -> str:
     return ROLLOUT._comparable_template(template)
 
 
+ACTIVATION_ECHOES = {
+    "properties.template.scale.cooldownPeriod": 300,
+    "properties.template.scale.pollingInterval": 30,
+    "properties.template.containers[0].imageType": "ContainerImage",
+    "properties.configuration.ingress.exposedPort": 0,
+    "properties.configuration.ingress.traffic": [{"latestRevision": True, "weight": 100}],
+    "properties.configuration.maxInactiveRevisions": 100,
+    "properties.patchingMode": "Automatic",
+    "properties.workloadProfileName": "Consumption",
+}
+ACTIVATION_CURRENT = {
+    **ACTIVATION_ECHOES,
+    "properties.template.scale.minReplicas": 1,
+    "properties.template.scale.maxReplicas": 1,
+}
+ACTIVATION_LEGACY = {
+    **ACTIVATION_CURRENT,
+    "properties.template.scale.maxReplicas": 3,
+    "properties.configuration.maxInactiveRevisions": None,
+}
+ACTIVATION_FLAGS = {"AI4IA_PRIVATE_RECOVERY_CANDIDATE": "true", "AI4IA_PRIVATE_COSMOS_REQUIRED": "true"}
+
+
+def activation_field(resource: dict, path: str) -> dict:
+    value: Any = resource
+    for key in path.replace("[0]", ".0").split("."):
+        if key == "0":
+            require(isinstance(value, list) and len(value) == 1, "Activation container inventory is not exact.")
+            value = value[0]
+        elif isinstance(value, dict) and key in value:
+            value = value[key]
+        else:
+            return {"present": False}
+    return {"present": True, "value": value}
+
+
+def activation_query() -> str:
+    fields = []
+    for path in ACTIVATION_CURRENT:
+        parent, _, key = path.rpartition(".")
+        fields.append(f"{json.dumps(path)}:{{present:contains(keys({parent}),'{key}'),value:{path}}}")
+    return (
+        "{id:id,revision:properties.latestRevisionName,ready:properties.latestReadyRevisionName,"
+        "containerCount:length(properties.template.containers),containerName:properties.template.containers[0].name,"
+        "image:properties.template.containers[0].image,fields:{" + ",".join(fields) + "},"
+        "flags:properties.template.containers[0].env[?name=='AI4IA_PRIVATE_RECOVERY_CANDIDATE' || "
+        "name=='AI4IA_PRIVATE_COSMOS_REQUIRED'].{name:name,value:value}}"
+    )
+
+
+def validate_activation_row(row: Any, expected: dict, source: dict, *, legacy: bool) -> None:
+    require(isinstance(row, dict) and set(row) == {
+        "id", "revision", "ready", "containerCount", "containerName", "image", "fields", "flags",
+    }, "Activation raw evidence is incomplete.")
+    require(isinstance(row["id"], str) and row["id"].casefold() == source["id"].casefold()
+            and row["revision"] == row["ready"] == source["properties"]["latestReadyRevisionName"]
+            and type(row["containerCount"]) is int and row["containerCount"] == 1
+            and row["containerName"] == "api"
+            and row["image"] == source["properties"]["template"]["containers"][0]["image"],
+            "Activation raw evidence changed application, revision or image.")
+    require(digest(row["fields"]) == digest({
+        path: {"present": True, "value": value} for path, value in expected.items()
+    }), "Activation raw field values differ from the exact reviewed profile.")
+    flags = row["flags"]
+    require(isinstance(flags, list), "Activation raw flags are unavailable.")
+    if legacy:
+        require(flags == [], "Legacy production recovery flags changed.")
+    else:
+        require(len(flags) == 2 and all(isinstance(item, dict) and set(item) == {"name", "value"} for item in flags)
+                and {item["name"]: item["value"] for item in flags} == ACTIVATION_FLAGS,
+                "Activation source is not the privately ready suppressed candidate.")
+    omitted_by_cli = {"properties.patchingMode", "properties.workloadProfileName",
+                      "properties.template.containers[0].imageType"}
+    for path, value in expected.items():
+        projected = activation_field(source, path)
+        require(digest(projected) == digest({"present": True, "value": value})
+                or projected == {"present": False} and path in omitted_by_cli,
+                "Raw activation fields disagree with the stabilized application snapshot.")
+
+
+def read_activation_evidence(template: dict, current: dict, legacy: dict, binding: dict, read: Callable) -> dict:
+    resource = template["resources"]["apiApp"]
+    require(resource["type"] == "Microsoft.App/containerApps" and resource["apiVersion"] == "2024-10-02-preview",
+            "Activation resource protocol changed.")
+    for path in ACTIVATION_ECHOES:
+        require(activation_field(resource, path) == {"present": False},
+                "Activation source no longer omits the reviewed echo field.")
+    result = {"apiVersion": resource["apiVersion"]}
+    for name, source, expected in (("current", current, ACTIVATION_CURRENT), ("legacy", legacy, ACTIVATION_LEGACY)):
+        args = ["rest", "--method", "get", "--subscription", binding["subscription"],
+                "--url", f"https://management.azure.com{source['id']}?api-version={resource['apiVersion']}",
+                "--query", activation_query()]
+        row = read(args)
+        validate_activation_row(row, expected, source, legacy=name == "legacy")
+        require(digest(read(args)) == digest(row), "Activation raw evidence changed during collection.")
+        result[name] = row
+    return result
+
+
+def activation_projections(
+    before: dict, after: dict, baseline: dict, binding: dict, paths: set[str],
+) -> tuple[dict, dict, dict]:
+    private_id = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
+                  f"/providers/Microsoft.App/containerApps/{api_name(binding['environment'], 'private')}")
+    require(binding.get("packet") == "activate" and binding.get("phase") == "activate"
+            and baseline["id"].casefold() == private_id.casefold(), "Activation proof changed its exact target.")
+    evidence = binding.get("activationEvidence")
+    if (not isinstance(evidence, dict) or set(evidence) != {"apiVersion", "current", "legacy"}
+            or evidence["apiVersion"] != "2024-10-02-preview"):
+        raise PreviewError("Activation value proof is missing.")
+    validate_activation_row(evidence["current"], ACTIVATION_CURRENT, baseline, legacy=False)
+    legacy = evidence["legacy"]
+    legacy_id = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
+                 f"/providers/Microsoft.App/containerApps/{api_name(binding['environment'], 'legacy')}")
+    require(isinstance(legacy, dict)
+            and isinstance(legacy.get("id"), str) and legacy["id"].casefold() == legacy_id.casefold()
+            and digest(legacy.get("fields")) == digest({
+                path: {"present": True, "value": value} for path, value in ACTIVATION_LEGACY.items()
+            }) and legacy.get("flags") == [], "Legacy production activation profile is unproven.")
+    allowed_paths = set(ACTIVATION_ECHOES) - {"properties.template.containers[0].imageType"}
+    allowed_paths |= {"properties.template.containers", "properties.template.scale.maxReplicas"}
+    require(paths == allowed_paths, "Activation delta paths differ from the exact reviewed change set.")
+    require(before.get("type") == after.get("type") == "Microsoft.App/containerApps"
+            and isinstance(before.get("id"), str) and isinstance(after.get("id"), str)
+            and before["id"].casefold() == after["id"].casefold() == baseline["id"].casefold(),
+            "Activation delta resource identity changed.")
+    for path, value in ACTIVATION_CURRENT.items():
+        require(digest(activation_field(before, path)) == digest({"present": True, "value": value}),
+                "Native activation before differs from the bound live field.")
+    for path in ACTIVATION_ECHOES:
+        require(activation_field(after, path) == {"present": False}, "Activation echo has a new desired value.")
+    for path in ("properties.template.scale.minReplicas", "properties.template.scale.maxReplicas"):
+        require(digest(activation_field(after, path)) == digest(legacy["fields"][path]),
+                "Activation scale differs from the bound legacy production value.")
+    for resource, candidate in ((before, "true"), (after, "false")):
+        rows = env_rows(resource["properties"]["template"])
+        require(rows.get("AI4IA_PRIVATE_RECOVERY_CANDIDATE") == {
+            "name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": candidate,
+        } and rows.get("AI4IA_PRIVATE_COSMOS_REQUIRED") == {
+            "name": "AI4IA_PRIVATE_COSMOS_REQUIRED", "value": "true",
+        }, "Activation recovery flags differ from the exact approved transition.")
+    projected = []
+    for resource in (before, after, baseline):
+        item = deepcopy(resource)
+        item["properties"]["template"]["containers"][0].pop("imageType", None)
+        item["properties"]["configuration"].pop("maxInactiveRevisions", None)
+        projected.append(item)
+    return projected[0], projected[1], projected[2]
+
+
 def created_fields(resource: dict) -> list[str]:
     """Report complete structural field names, never property or dynamic-map values."""
     fields = set()
@@ -844,6 +994,7 @@ def scope_preview(
                     if tags != after.get("tags"):
                         errors.append("candidate_tags_changed")
         elif kind == "Modify" and isinstance(before, dict) and isinstance(after, dict):
+            activation_projected = None
             echo_kind = {
                 vnet: "vnet", endpoint: "endpoint", private_env: "environment",
                 zone + f"/virtualnetworklinks/{suffix}": "link",
@@ -861,6 +1012,19 @@ def scope_preview(
                     before_compare = project_proven_metadata(before, descriptor)
                     after_compare = project_proven_metadata(after, descriptor)
                     baseline_compare = project_proven_metadata(baseline, descriptor)
+                if packet == "activate":
+                    require(len(set(row["fields"])) == len(row["fields"]), "Activation delta paths are duplicated.")
+                    activation_projected = activation_projections(
+                        before_compare, after_compare, baseline_compare, binding, set(row["fields"]),
+                    )
+                    before_compare, after_compare, baseline_compare = activation_projected
+                    row["activationEvidenceDigest"] = digest(binding["activationEvidence"])
+                    row["activationClassification"] = {
+                        "productionScale": "bound_to_legacy",
+                        "candidateFlag": "true_to_false",
+                        "privateRequired": "unchanged_true",
+                        "responseEchoes": deepcopy(ACTIVATION_ECHOES),
+                    }
                 current_props = baseline_compare["properties"]
                 before_props, after_props = before_compare.get("properties", {}), after_compare.get("properties", {})
                 if comparable(candidate_template_intent(before_props.get("template", {}))) != comparable(
@@ -894,12 +1058,17 @@ def scope_preview(
             if paths and paths <= {"tags", "tags.SecurityControl"} and tag_change_ok:
                 continue
             template_paths = paths - {"tags", "tags.SecurityControl"} if tag_change_ok else paths
+            if activation_projected is not None:
+                template_paths -= {path for path in ACTIVATION_ECHOES if not path.startswith("properties.template")}
             if rid in app_ids and template_paths and all(path.startswith("properties.template") for path in template_paths):
                 left = deepcopy(before.get("properties", {}).get("template", {}))
                 right = deepcopy(after.get("properties", {}).get("template", {}))
                 if descriptor is not None:
                     left = project_proven_metadata(before, descriptor)["properties"]["template"]
                     right = project_proven_metadata(after, descriptor)["properties"]["template"]
+                if activation_projected is not None:
+                    left = deepcopy(activation_projected[0]["properties"]["template"])
+                    right = deepcopy(activation_projected[1]["properties"]["template"])
                 left, right = candidate_template_intent(left), candidate_template_intent(right)
                 service = app_ids[rid]
                 allowed = set()
@@ -1185,6 +1354,9 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
         expected["sourceSecretMetadata"] = descriptor
     if packet in ("activate", "cutover"):
         bound["legacyInventory"] = legacy_inventory_proof(env.get("AI4IA_PRIVATE_LEGACY_INVENTORY", ""), bound)
+    if packet == "activate":
+        assert isinstance(baseline, dict)
+        bound["activationEvidence"] = read_activation_evidence(template, baseline, old_api, bound, read)
     return template, params, bound, baseline, expected
 
 
