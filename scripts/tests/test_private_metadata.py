@@ -146,9 +146,10 @@ class PrivateMetadataTests(unittest.TestCase):
                 template["variables"]["apiEnv"] = "[variables('apiEnv')]"
             else:
                 template["variables"]["apiEnv"] = "[unapprovedFunction()]"
-            with self.subTest(fault=fault), self.assertRaises(metadata.MetadataError) as caught:
-                metadata.source_descriptor(template, supplied, binding, baseline)
-            self.assertNotIn("never-log-this-secret", str(caught.exception))
+            with self.subTest(fault=fault):
+                with self.assertRaises(metadata.MetadataError) as caught:
+                    metadata.source_descriptor(template, supplied, binding, baseline)
+                self.assertNotIn("never-log-this-secret", str(caught.exception))
 
     def test_key_vault_source_kind_and_identity_are_preserved(self):
         params, baseline, binding = inputs(self.template)
