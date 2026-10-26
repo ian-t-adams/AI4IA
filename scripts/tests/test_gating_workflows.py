@@ -1238,7 +1238,8 @@ class PushReconciliationTests(unittest.TestCase):
             "Preflight custom-domain bindings (guard wipes, register first binds)",
             "Provision infrastructure",
         }
-        selected = [step for step in self.steps if "steps.reconciliation.outputs" in step.get("if", "")]
+        selected = [step for step in self.steps if "steps.reconciliation.outputs" in step.get("if", "")
+                    and step.get("id") != "outputs"]
         self.assertEqual({step["name"] for step in selected}, gated)
         for step in selected:
             authority = ("steps.release_mode.outputs.operation == 'ordinary'"
@@ -1253,6 +1254,224 @@ class PushReconciliationTests(unittest.TestCase):
                         "steps.execution.outputs.allowed": admitted,
                         "steps.reconciliation.outputs.provision": provision,
                     }), admitted == "true" and provision == "true")
+
+
+AZD_OUTPUT_STUB = """#!/usr/bin/env bash
+echo "$*" >> "$AZD_CALLS_FILE"
+case "$1 $2" in
+  "env refresh")
+    if [ -e "$AZD_STATE_DIR/refresh_fail" ]; then echo "ERROR: refresh failed" >&2; exit 1; fi
+    exit 0 ;;
+  "env get-value")
+    if [ -f "$AZD_STATE_DIR/outputs/$3" ]; then cat "$AZD_STATE_DIR/outputs/$3"; exit 0; fi
+    echo "ERROR: key '$3' not found in the environment values" >&2
+    exit 1 ;;
+esac
+echo "unexpected azd invocation: $*" >&2
+exit 97
+"""
+
+PYTHON_RECORDER_STUB = """#!/usr/bin/env bash
+echo "python $*" >> "$AZD_CALLS_FILE"
+exit 0
+"""
+
+
+@unittest.skipIf(find_bash() is None, "bash is unavailable on this machine")
+class ExistingOutputsWorkflowTests(unittest.TestCase):
+    """An app-only release loads, and proves, the outputs it skipped provisioning for."""
+
+    SUBSCRIPTION = "00000000-0000-0000-0000-000000000001"
+    VALID = {
+        "AZURE_RESOURCE_GROUP": "rg-ai4ia-slurmfactory",
+        "AZURE_LOCATION": "eastus2",
+        "AZURE_API_NETWORK_PHASE": "private",
+        "AZURE_API_APP_NAME": "ca-api-private-slurmfactory",
+        "AZURE_WEB_APP_NAME": "ca-web-slurmfactory",
+        "AZURE_PROXY_APP_NAME": "ca-proxy-slurmfactory",
+        "AZURE_APIM_RESOURCE_ID": (
+            f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-ai4ia-slurmfactory"
+            "/providers/Microsoft.ApiManagement/service/apim-ai4ia-slurmfactory"
+        ),
+    }
+
+    def setUp(self):
+        self.steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+        self.names = [step.get("name") for step in self.steps]
+        self.step = next(step for step in self.steps if step.get("id") == "outputs")
+
+    def position(self, name):
+        return self.names.index(name)
+
+    def test_refresh_runs_only_for_admitted_releases_that_skip_provisioning(self):
+        self.assertEqual(self.step["name"], "Load existing infrastructure outputs without provisioning")
+        self.assertEqual(self.step["shell"], "bash")
+        self.assertEqual(
+            self.step["if"],
+            "${{ steps.execution.outputs.allowed == 'true'"
+            " && (steps.reconciliation.outputs.provision != 'true') }}",
+        )
+        provision = next(step for step in self.steps if step.get("id") == "provision")
+        for admitted in ("false", "true"):
+            for value in ("", "false", "true"):
+                values = {"steps.execution.outputs.allowed": admitted,
+                          "steps.reconciliation.outputs.provision": value}
+                loads = PrivatePreviewWorkflowTests.expression(self.step["if"], values)
+                provisions = PrivatePreviewWorkflowTests.expression(provision["if"], values)
+                self.assertEqual(loads, admitted == "true" and value != "true")
+                # Exactly one of the two output sources runs for admitted execution.
+                self.assertEqual(loads or provisions, admitted == "true")
+                self.assertFalse(loads and provisions)
+
+    def test_refresh_is_read_only_and_never_falls_back_to_provisioning(self):
+        run = self.step["run"]
+        self.assertTrue(run.startswith("set -euo pipefail\n"))
+        commands = re.findall(r"\bazd\s+[a-z-]+(?:\s+[a-z-]+)?", run)
+        self.assertEqual(sorted(set(commands)), ["azd env get-value", "azd env refresh"])
+        self.assertIn("azd env refresh --no-prompt\n", run)
+        for forbidden in ("azd provision", "azd up", "azd env set", "az deployment", "continue-on-error"):
+            self.assertNotIn(forbidden, run)
+        self.assertNotIn("continue-on-error", self.step)
+        provision_run = next(step for step in self.steps if step.get("id") == "provision")["run"]
+        self.assertEqual(provision_run, "azd provision --no-prompt --no-state")
+
+    def test_refresh_precedes_every_output_consumer_and_follows_provisioning(self):
+        index = self.steps.index(self.step)
+        self.assertLess(self.position("Provision infrastructure"), index)
+        self.assertLess(self.position("Refresh the Azure CLI login after provisioning"), index)
+        for consumer in ("Verify upstream Claude gateway routes before image rollout",
+                         "Deploy application"):
+            self.assertLess(index, self.position(consumer))
+        for position, step in enumerate(self.steps):
+            run = step.get("run", "")
+            if position != index and ("azd env get-value" in run or "azd deploy" in run):
+                self.assertLess(index, position, step.get("name"))
+
+    def test_gateway_check_refuses_an_empty_apim_id(self):
+        gateway = next(step for step in self.steps
+                       if step.get("name") == "Verify upstream Claude gateway routes before image rollout")
+        self.assertIn("set -euo pipefail", gateway["run"])
+        outputs = dict(self.VALID)
+        code, out, calls = self.execute(gateway["run"], outputs={**outputs, "AZURE_APIM_RESOURCE_ID": ""})
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("refusing to skip the Claude gateway route check", out)
+        self.assertFalse([call for call in calls if call.startswith("python")])
+        code, out, calls = self.execute(gateway["run"], outputs=outputs)
+        self.assertEqual(code, 0, out)
+        self.assertIn("python scripts/check-claude-binding.py --routed --source-apim-resource-id "
+                      + outputs["AZURE_APIM_RESOURCE_ID"], calls)
+
+    def execute(self, script, *, outputs, refresh_fails=False, **env_overrides):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            (state / "outputs").mkdir(parents=True)
+            for name, value in outputs.items():
+                if value is not None:
+                    (state / "outputs" / name).write_text(value, newline="\n")
+            if refresh_fails:
+                (state / "refresh_fail").write_text("")
+            calls = root / "calls.txt"
+            calls.write_text("")
+            bindir = root / "bin"
+            bindir.mkdir()
+            for name, body in (("azd", AZD_OUTPUT_STUB), ("python", PYTHON_RECORDER_STUB)):
+                stub = bindir / name
+                stub.write_text(body, newline="\n")
+                stub.chmod(0o755)
+            step = root / "step.sh"
+            step.write_text(script.replace("\r\n", "\n"), newline="\n")
+
+            def posix(path: Path) -> str:
+                text = str(path).replace("\\", "/")
+                if len(text) > 1 and text[1] == ":":
+                    text = "/" + text[0].lower() + text[2:]
+                return text
+
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("AZURE_", "AI4IA_"))}
+            env.update({
+                "AZURE_ENV_NAME": "slurmfactory", "AZURE_LOCATION": "EastUS2",
+                "AZURE_SUBSCRIPTION_ID": self.SUBSCRIPTION,
+                "AZURE_API_APP_NAME": "ca-api-private-slurmfactory",
+                "AI4IA_API_NETWORK_PHASE": "private", "AI4IA_CLAUDE_GATEWAY_ENABLED": "true",
+                "AI4IA_WORKLOAD": "",
+                "AZD_STATE_DIR": posix(state), "AZD_CALLS_FILE": posix(calls),
+                "PATH": posix(bindir) + ":" + os.environ.get("PATH", ""),
+            })
+            env.update(env_overrides)
+            env = {key: value for key, value in env.items() if value is not None}
+            result = subprocess.run([find_bash(), str(step)], env=env,
+                                    capture_output=True, text=True, check=False)
+            return result.returncode, result.stdout + result.stderr, calls.read_text().splitlines()
+
+    def assert_loaded(self, outputs=None, **env):
+        code, out, calls = self.execute(self.step["run"], outputs=self.VALID if outputs is None else outputs, **env)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(calls[0], "env refresh --no-prompt")
+        self.assertTrue(all(call.startswith("env get-value ") for call in calls[1:]), calls)
+        return out
+
+    def assert_refused(self, message, outputs=None, **env):
+        code, out, calls = self.execute(self.step["run"], outputs=self.VALID if outputs is None else outputs, **env)
+        self.assertNotEqual(code, 0, out)
+        self.assertIn(message, out)
+        self.assertIn("::error::", out)
+        self.assertFalse([call for call in calls if "provision" in call], calls)
+
+    def test_valid_existing_outputs_load_without_provisioning(self):
+        self.assertIn("no provisioning ran", self.assert_loaded())
+
+    def test_failed_refresh_stops_the_release(self):
+        code, out, calls = self.execute(self.step["run"], outputs=self.VALID, refresh_fails=True)
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(calls, ["env refresh --no-prompt"])
+
+    def test_absent_or_empty_required_outputs_fail_closed(self):
+        for name in ("AZURE_RESOURCE_GROUP", "AZURE_LOCATION", "AZURE_API_NETWORK_PHASE",
+                     "AZURE_API_APP_NAME", "AZURE_WEB_APP_NAME", "AZURE_PROXY_APP_NAME"):
+            for value in (None, ""):
+                with self.subTest(name=name, value=value):
+                    self.assert_refused(f"has no {name} output", {**self.VALID, name: value})
+        # No deployment found: `env refresh` exits 0 with nothing written.
+        self.assert_refused("has no AZURE_RESOURCE_GROUP output", {})
+
+    def test_gateway_requires_a_valid_apim_id_in_the_release_group(self):
+        other_group = self.VALID["AZURE_APIM_RESOURCE_ID"].replace("rg-ai4ia-slurmfactory", "rg-other")
+        other_subscription = self.VALID["AZURE_APIM_RESOURCE_ID"].replace(self.SUBSCRIPTION, "f" * 8 + self.SUBSCRIPTION[8:])
+        for value in (None, "", other_group, other_subscription,
+                      self.VALID["AZURE_APIM_RESOURCE_ID"] + "/apis/x",
+                      self.VALID["AZURE_APIM_RESOURCE_ID"].rsplit("/", 1)[0] + "/"):
+            with self.subTest(value=value):
+                self.assert_refused("no valid AZURE_APIM_RESOURCE_ID",
+                                    {**self.VALID, "AZURE_APIM_RESOURCE_ID": value})
+        self.assert_loaded({**self.VALID, "AZURE_APIM_RESOURCE_ID": self.VALID["AZURE_APIM_RESOURCE_ID"].upper()})
+        for disabled in ("false", "", None):
+            with self.subTest(gateway=disabled):
+                self.assert_loaded({**self.VALID, "AZURE_APIM_RESOURCE_ID": None},
+                                   AI4IA_CLAUDE_GATEWAY_ENABLED=disabled)
+
+    def test_outputs_must_name_the_validated_release_target(self):
+        self.assert_refused("resource group does not match rg-ai4ia-slurmfactory",
+                            {**self.VALID, "AZURE_RESOURCE_GROUP": "rg-ai4ia-other"})
+        self.assert_loaded({**self.VALID, "AZURE_RESOURCE_GROUP": "rg-custom-slurmfactory",
+                            "AZURE_APIM_RESOURCE_ID": self.VALID["AZURE_APIM_RESOURCE_ID"].replace(
+                                "rg-ai4ia-", "rg-custom-")}, AI4IA_WORKLOAD="custom")
+        self.assert_refused("location does not match", {**self.VALID, "AZURE_LOCATION": "swedencentral"})
+        self.assert_refused("API network phase does not match",
+                            {**self.VALID, "AZURE_API_NETWORK_PHASE": "activate"})
+        self.assert_refused("API app does not match",
+                            {**self.VALID, "AZURE_API_APP_NAME": "ca-api-slurmfactory"})
+        self.assert_refused("API app does not match", AZURE_API_APP_NAME=None)
+        self.assert_loaded({**self.VALID, "AZURE_API_NETWORK_PHASE": "legacy",
+                            "AZURE_API_APP_NAME": "ca-api-slurmfactory"},
+                           AI4IA_API_NETWORK_PHASE=None, AZURE_API_APP_NAME="ca-api-slurmfactory")
+
+    def test_a_pre_migration_root_deployment_cannot_retarget_the_api(self):
+        # The refreshed .env value overrides the release target in azure.yaml, so
+        # stale legacy outputs would otherwise deploy to the drained legacy app.
+        self.assert_refused("API network phase does not match", {
+            **self.VALID, "AZURE_API_NETWORK_PHASE": "legacy", "AZURE_API_APP_NAME": "ca-api-slurmfactory"})
 
 
 class PrivatePreviewWorkflowTests(unittest.TestCase):
@@ -1280,6 +1499,8 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
                 return all(children) if isinstance(item.op, ast.And) else any(children)
             if isinstance(item, ast.Compare) and len(item.ops) == 1 and isinstance(item.ops[0], ast.Eq):
                 return evaluate(item.left) == evaluate(item.comparators[0])
+            if isinstance(item, ast.Compare) and len(item.ops) == 1 and isinstance(item.ops[0], ast.NotEq):
+                return evaluate(item.left) != evaluate(item.comparators[0])
             raise AssertionError("Unexpected execution-gate syntax")
         return bool(evaluate(node))
 
