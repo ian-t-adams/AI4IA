@@ -743,11 +743,25 @@ The explicit registry-only API-image operation builds once, retaining the existi
 same-run SLSA/SPDX/local-inventory checks. Cross-run consumption reuses that exact
 verification policy and pins repository/main SHA/producer run+attempt/event,
 immutable API digest and the producer's original canonical SPDX fingerprint.
+An older producer is accepted only when its commit is a proven ancestor of the
+current clean main checkout and the complete non-renaming Git diff changes no
+API source, Dockerfile, image workflow, lockfile or build-context control.
+Verify signatures against the original producer commit, never the consumer's.
+Retain `imageReuse: "ancestor, no image inputs changed"` and the changed paths.
 Never derive the expected fingerprint from the consumer response, rebuild at
 apply, or use API-only as a fallback for missing ordinary web/proxy evidence.
 Ordinary three-service same-run verification and job permissions stay unchanged.
 An existing/unknown binding-derived deployment claim refuses replay; this and
 workflow serialization are not a distributed ARM create-only fence.
+Legacy drain evidence uses the pinned raw ARM revisions list, not the CLI's
+active-only default. Follow only the same HTTPS ARM app/version/page-size with
+one opaque `skipToken`; terminal coverage must stay below 32 pages, 640 rows and
+120 seconds. Duplicate identities/cursors, unknown fields and exhausted bounds
+refuse. Inactive rows must themselves report Boolean false and integer zero
+replicas; at most four exception replica reads never replace missing row proof.
+Before the approved drain, require exactly its named active revision; before
+activation require every legacy row inactive/zero. Bind page/row counts and the
+stable row digest into the packet, recheck before apply, and retain the receipt.
 
 `infra-validate` runs:
 

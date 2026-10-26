@@ -138,6 +138,24 @@ def verify_nsg_reads(preview: dict, binding: dict, read: Callable[[list[str]], A
     return observations
 
 
+def legacy_inventory_proof(value: str, binding: dict) -> dict:
+    proof = json.loads(value)
+    expected_id = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
+                   f"/providers/Microsoft.App/containerApps/{api_name(binding['environment'], 'legacy')}")
+    require(isinstance(proof, dict) and set(proof) == {
+        "appId", "pageCount", "rowCount", "digest", "activeRevisions", "replicaReadCount",
+    }, "Complete legacy inventory proof is unavailable.")
+    require(isinstance(proof["appId"], str) and proof["appId"].casefold() == expected_id.casefold()
+            and type(proof["pageCount"]) is int and 0 < proof["pageCount"] < 32
+            and type(proof["rowCount"]) is int and 0 < proof["rowCount"] < 640
+            and type(proof["replicaReadCount"]) is int and 0 <= proof["replicaReadCount"] <= 4
+            and isinstance(proof["digest"], str) and re.fullmatch(r"[0-9a-f]{64}", proof["digest"]) is not None
+            and isinstance(proof["activeRevisions"], list) and len(proof["activeRevisions"]) <= 1
+            and all(isinstance(name, str) and name.startswith(api_name(binding["environment"], "legacy") + "--")
+                    for name in proof["activeRevisions"]), "Complete legacy inventory proof is invalid.")
+    return proof
+
+
 def candidate_metadata_gate(binding: dict, descriptor: dict, read: Callable[[list[str]], Any]) -> dict:
     name = api_name(binding["environment"], "private")
     rid = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
@@ -162,7 +180,7 @@ def contain_candidate(binding: dict, read: Callable[[list[str]], Any], execute: 
     """An authorized failed-candidate stop; never touch the retained legacy app."""
     name = api_name(binding["environment"], "private")
     scope = ["--subscription", binding["subscription"], "-g", binding["resourceGroup"], "-n", name]
-    query = ["containerapp", "revision", "list", *scope, "--query", "[].{name:name,active:properties.active}"]
+    query = ["containerapp", "revision", "list", *scope, "--all", "--query", "[].{name:name,active:properties.active}"]
 
     def inventory() -> list[dict]:
         rows = read(query)
@@ -1130,6 +1148,8 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
                      "maxReplicas": source_template.get("scale", {}).get("maxReplicas"),
                      "evidence": "configuration_reference_not_runtime_acceptance",
                  })
+    if proof is not None and "imageReuse" in proof:
+        bound.update(imageReuse=proof["imageReuse"], imageSourceChanges=proof["changedPaths"])
     bound.update(locationIdentity=location, locationObservations={
         "legacyApi": {"raw": old_api["location"], "canonical": canonical},
         "recordedApiParameter": {"raw": api_values["location"], "canonical": canonical},
@@ -1163,6 +1183,8 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
         bound["secretMetadataDigest"] = digest(descriptor)
         bound["baselineSecretMetadataDigest"] = digest(raw_metadata)
         expected["sourceSecretMetadata"] = descriptor
+    if packet in ("activate", "cutover"):
+        bound["legacyInventory"] = legacy_inventory_proof(env.get("AI4IA_PRIVATE_LEGACY_INVENTORY", ""), bound)
     return template, params, bound, baseline, expected
 
 
@@ -1212,7 +1234,11 @@ def main() -> int:
                 saved_params = json.loads((packet_dir / "parameters.json").read_text())["parameters"]
                 require(digest(saved_template) == bound["template"] and digest(saved_params) == bound["parameters"],
                         "Frozen packet changed after preview.")
-                ADMISSION.admission(env)
+                admitted = ADMISSION.admission(env)
+                if bound["packet"] in ("activate", "cutover"):
+                    current_inventory = legacy_inventory_proof(admitted.get("AI4IA_PRIVATE_LEGACY_INVENTORY", ""), bound)
+                    require(current_inventory == bound["legacyInventory"],
+                            "Legacy inventory changed after the reviewed preview.")
                 main = json.loads(run(["gh", "api", f"repos/{env['GITHUB_REPOSITORY']}/git/ref/heads/main"],
                                       limit=32 * 1024, timeout=30))
                 require(main.get("object", {}).get("sha") == env["GITHUB_SHA"], "Main changed before scoped apply.")
