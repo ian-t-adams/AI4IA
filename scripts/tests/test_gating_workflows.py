@@ -1266,6 +1266,10 @@ case "$1 $2" in
     if [ -f "$AZD_STATE_DIR/outputs/$3" ]; then cat "$AZD_STATE_DIR/outputs/$3"; exit 0; fi
     echo "ERROR: key '$3' not found in the environment values" >&2
     exit 1 ;;
+  "env set")
+    if [ "$#" -ne 4 ]; then echo "unexpected env set arity" >&2; exit 98; fi
+    if [ ! -e "$AZD_STATE_DIR/set_noop" ]; then printf '%s' "$4" > "$AZD_STATE_DIR/outputs/$3"; fi
+    exit 0 ;;
 esac
 echo "unexpected azd invocation: $*" >&2
 exit 97
@@ -1289,6 +1293,7 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
         "AZURE_API_APP_NAME": "ca-api-private-slurmfactory",
         "AZURE_WEB_APP_NAME": "ca-web-slurmfactory",
         "AZURE_PROXY_APP_NAME": "ca-proxy-slurmfactory",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "crai4iaslurmfactory.azurecr.io",
         "AZURE_APIM_RESOURCE_ID": (
             f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-ai4ia-slurmfactory"
             "/providers/Microsoft.ApiManagement/service/apim-ai4ia-slurmfactory"
@@ -1327,10 +1332,18 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
         run = self.step["run"]
         self.assertTrue(run.startswith("set -euo pipefail\n"))
         commands = re.findall(r"\bazd\s+[a-z-]+(?:\s+[a-z-]+)?", run)
-        self.assertEqual(sorted(set(commands)), ["azd env get-value", "azd env refresh"])
+        self.assertEqual(sorted(set(commands)), ["azd env get-value", "azd env refresh", "azd env set"])
         self.assertIn("azd env refresh --no-prompt\n", run)
-        for forbidden in ("azd provision", "azd up", "azd env set", "az deployment", "continue-on-error"):
+        # The only local write: the bounded pre-recovery api retarget.
+        self.assertEqual(re.findall(r"azd env set [^\n]*", run),
+                         ['azd env set AZURE_API_APP_NAME "$RELEASE_API_APP_NAME"'])
+        for forbidden in ("azd provision", "azd up", "az deployment", "continue-on-error"):
             self.assertNotIn(forbidden, run)
+        self.assertEqual(self.step["env"], {
+            "RELEASE_API_APP_NAME": "${{ steps.release_mode.outputs.api_app_name }}",
+            "RELEASE_MIGRATION_PENDING": "${{ steps.release_mode.outputs.migration_pending }}",
+            "RELEASE_EXECUTION_BLOCKERS": "${{ steps.release_mode.outputs.execution_blockers }}",
+        })
         self.assertNotIn("continue-on-error", self.step)
         provision_run = next(step for step in self.steps if step.get("id") == "provision")["run"]
         self.assertEqual(provision_run, "azd provision --no-prompt --no-state")
@@ -1361,7 +1374,7 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
         self.assertIn("python scripts/check-claude-binding.py --routed --source-apim-resource-id "
                       + outputs["AZURE_APIM_RESOURCE_ID"], calls)
 
-    def execute(self, script, *, outputs, refresh_fails=False, **env_overrides):
+    def execute(self, script, *, outputs, refresh_fails=False, set_noop=False, **env_overrides):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state = root / "state"
@@ -1371,6 +1384,8 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
                     (state / "outputs" / name).write_text(value, newline="\n")
             if refresh_fails:
                 (state / "refresh_fail").write_text("")
+            if set_noop:
+                (state / "set_noop").write_text("")
             calls = root / "calls.txt"
             calls.write_text("")
             bindir = root / "bin"
@@ -1393,7 +1408,8 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
             env.update({
                 "AZURE_ENV_NAME": "slurmfactory", "AZURE_LOCATION": "EastUS2",
                 "AZURE_SUBSCRIPTION_ID": self.SUBSCRIPTION,
-                "AZURE_API_APP_NAME": "ca-api-private-slurmfactory",
+                "RELEASE_API_APP_NAME": "ca-api-private-slurmfactory",
+                "RELEASE_MIGRATION_PENDING": "false", "RELEASE_EXECUTION_BLOCKERS": "[]",
                 "AI4IA_API_NETWORK_PHASE": "private", "AI4IA_CLAUDE_GATEWAY_ENABLED": "true",
                 "AI4IA_WORKLOAD": "",
                 "AZD_STATE_DIR": posix(state), "AZD_CALLS_FILE": posix(calls),
@@ -1403,13 +1419,16 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
             env = {key: value for key, value in env.items() if value is not None}
             result = subprocess.run([find_bash(), str(step)], env=env,
                                     capture_output=True, text=True, check=False)
+            self.final_outputs = {path.name: path.read_text() for path in (state / "outputs").iterdir()}
             return result.returncode, result.stdout + result.stderr, calls.read_text().splitlines()
 
-    def assert_loaded(self, outputs=None, **env):
+    def assert_loaded(self, outputs=None, *, retargets=False, **env):
         code, out, calls = self.execute(self.step["run"], outputs=self.VALID if outputs is None else outputs, **env)
         self.assertEqual(code, 0, out)
         self.assertEqual(calls[0], "env refresh --no-prompt")
-        self.assertTrue(all(call.startswith("env get-value ") for call in calls[1:]), calls)
+        sets = [call for call in calls if call.startswith("env set ")]
+        self.assertEqual(sets, ["env set AZURE_API_APP_NAME ca-api-private-slurmfactory"] if retargets else [])
+        self.assertTrue(all(call.startswith("env get-value ") for call in calls[1:] if call not in sets), calls)
         return out
 
     def assert_refused(self, message, outputs=None, **env):
@@ -1418,6 +1437,7 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
         self.assertIn(message, out)
         self.assertIn("::error::", out)
         self.assertFalse([call for call in calls if "provision" in call], calls)
+        self.assertFalse([call for call in calls if call.startswith("env set ")], calls)
 
     def test_valid_existing_outputs_load_without_provisioning(self):
         self.assertIn("no provisioning ran", self.assert_loaded())
@@ -1428,7 +1448,7 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
         self.assertEqual(calls, ["env refresh --no-prompt"])
 
     def test_absent_or_empty_required_outputs_fail_closed(self):
-        for name in ("AZURE_RESOURCE_GROUP", "AZURE_LOCATION", "AZURE_API_NETWORK_PHASE",
+        for name in ("AZURE_RESOURCE_GROUP", "AZURE_LOCATION", "AZURE_CONTAINER_REGISTRY_ENDPOINT",
                      "AZURE_API_APP_NAME", "AZURE_WEB_APP_NAME", "AZURE_PROXY_APP_NAME"):
             for value in (None, ""):
                 with self.subTest(name=name, value=value):
@@ -1462,16 +1482,58 @@ class ExistingOutputsWorkflowTests(unittest.TestCase):
                             {**self.VALID, "AZURE_API_NETWORK_PHASE": "activate"})
         self.assert_refused("API app does not match",
                             {**self.VALID, "AZURE_API_APP_NAME": "ca-api-slurmfactory"})
-        self.assert_refused("API app does not match", AZURE_API_APP_NAME=None)
+        self.assert_refused("did not report its validated API app target", RELEASE_API_APP_NAME="")
         self.assert_loaded({**self.VALID, "AZURE_API_NETWORK_PHASE": "legacy",
                             "AZURE_API_APP_NAME": "ca-api-slurmfactory"},
-                           AI4IA_API_NETWORK_PHASE=None, AZURE_API_APP_NAME="ca-api-slurmfactory")
+                           AI4IA_API_NETWORK_PHASE=None, RELEASE_API_APP_NAME="ca-api-slurmfactory")
 
-    def test_a_pre_migration_root_deployment_cannot_retarget_the_api(self):
-        # The refreshed .env value overrides the release target in azure.yaml, so
-        # stale legacy outputs would otherwise deploy to the drained legacy app.
+    PRE_RECOVERY = {"AZURE_API_NETWORK_PHASE": None, "AZURE_API_APP_NAME": "ca-api-slurmfactory"}
+
+    def test_a_completed_private_release_retargets_only_the_pre_recovery_api_output(self):
+        for phase in (None, ""):
+            with self.subTest(phase=phase):
+                before = {**self.VALID, **self.PRE_RECOVERY, "AZURE_API_NETWORK_PHASE": phase}
+                out = self.assert_loaded(before, retargets=True)
+                self.assertIn("predates the private recovery", out)
+                expected = {name: value for name, value in before.items() if value is not None}
+                expected["AZURE_API_APP_NAME"] = "ca-api-private-slurmfactory"
+                self.assertEqual(self.final_outputs, expected)
+
+    def test_any_other_phase_less_shape_refuses_without_writing(self):
+        message = "has no AZURE_API_NETWORK_PHASE output and is not the completed pre-recovery shape"
+        base = {**self.VALID, **self.PRE_RECOVERY}
+        for api in ("ca-api-private-slurmfactory", "ca-api-other", "ca-api-slurmfactory-old"):
+            with self.subTest(api=api):
+                self.assert_refused(message, {**base, "AZURE_API_APP_NAME": api})
+        cases = [
+            {"AI4IA_API_NETWORK_PHASE": None}, {"AI4IA_API_NETWORK_PHASE": "candidate"},
+            {"AI4IA_API_NETWORK_PHASE": "activate"}, {"AI4IA_API_NETWORK_PHASE": "legacy"},
+            {"RELEASE_MIGRATION_PENDING": "true"}, {"RELEASE_MIGRATION_PENDING": ""},
+            {"RELEASE_MIGRATION_PENDING": None},
+            {"RELEASE_EXECUTION_BLOCKERS": '["candidate_not_activated"]'},
+            {"RELEASE_EXECUTION_BLOCKERS": ""}, {"RELEASE_EXECUTION_BLOCKERS": None},
+            {"RELEASE_API_APP_NAME": "ca-api-slurmfactory"},
+            {"RELEASE_API_APP_NAME": "ca-api-private-other"},
+        ]
+        for env in cases:
+            with self.subTest(**{key: str(value) for key, value in env.items()}):
+                self.assert_refused(message, base, **env)
+
+    def test_a_present_phase_never_uses_the_allowance(self):
+        # Stale legacy outputs carrying a phase must still refuse, not retarget.
         self.assert_refused("API network phase does not match", {
             **self.VALID, "AZURE_API_NETWORK_PHASE": "legacy", "AZURE_API_APP_NAME": "ca-api-slurmfactory"})
+        self.assert_refused("API network phase does not match", {
+            **self.VALID, "AZURE_API_NETWORK_PHASE": "activate"})
+        self.assert_refused("API app does not match",
+                            {**self.VALID, "AZURE_API_APP_NAME": "ca-api-slurmfactory"})
+
+    def test_an_unpersisted_retarget_refuses(self):
+        code, out, calls = self.execute(self.step["run"], outputs={**self.VALID, **self.PRE_RECOVERY},
+                                        set_noop=True)
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("Could not retarget the api service", out)
+        self.assertIn("env set AZURE_API_APP_NAME ca-api-private-slurmfactory", calls)
 
 
 class PrivatePreviewWorkflowTests(unittest.TestCase):

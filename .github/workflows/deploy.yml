@@ -960,11 +960,17 @@ jobs:
       # subscription and location resolve from the same job env as provisioning.
       # It exits 0 when no deployment exists, and a failed deployment carries no
       # outputs, so the checks below fail closed rather than trusting the exit
-      # code. Never fall back to provisioning here.
+      # code. Never fall back to provisioning here. The only local write is the
+      # bounded pre-recovery AZURE_API_APP_NAME retarget below (`azd env set`
+      # edits this runner's .env, not Azure).
       - name: Load existing infrastructure outputs without provisioning
         id: outputs
         if: ${{ steps.execution.outputs.allowed == 'true' && (steps.reconciliation.outputs.provision != 'true') }}
         shell: bash
+        env:
+          RELEASE_API_APP_NAME: ${{ steps.release_mode.outputs.api_app_name }}
+          RELEASE_MIGRATION_PENDING: ${{ steps.release_mode.outputs.migration_pending }}
+          RELEASE_EXECUTION_BLOCKERS: ${{ steps.release_mode.outputs.execution_blockers }}
         run: |
           set -euo pipefail
           azd env refresh --no-prompt
@@ -976,12 +982,12 @@ jobs:
             printf '%s' "$value"
           }
           refuse() {
-            echo "::error::$1 Run a provisioning release (workflow_dispatch provision=true) to reconcile infrastructure; this app-only release will not provision."
+            echo "::error::$1 This app-only release will not provision; reconcile the root deployment through a separately approved change."
             exit 1
           }
           lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-          for name in AZURE_RESOURCE_GROUP AZURE_LOCATION AZURE_API_NETWORK_PHASE \
+          for name in AZURE_RESOURCE_GROUP AZURE_LOCATION AZURE_CONTAINER_REGISTRY_ENDPOINT \
                       AZURE_API_APP_NAME AZURE_WEB_APP_NAME AZURE_PROXY_APP_NAME; do
             if [ -z "$(output_value "$name")" ]; then
               refuse "The existing deployment for ${AZURE_ENV_NAME} has no ${name} output."
@@ -994,13 +1000,38 @@ jobs:
           if [ "$(lower "$(output_value AZURE_LOCATION)")" != "$(lower "${AZURE_LOCATION:-}")" ]; then
             refuse "The existing deployment's location does not match AZURE_LOCATION."
           fi
-          if [ "$(output_value AZURE_API_NETWORK_PHASE)" != "${AI4IA_API_NETWORK_PHASE:-legacy}" ]; then
-            refuse "The existing deployment's API network phase does not match AI4IA_API_NETWORK_PHASE."
+          # azure.yaml resolves the api service from AZURE_API_APP_NAME in the
+          # azd .env, so it must name the target release mode validated.
+          if [ -z "${RELEASE_API_APP_NAME:-}" ]; then
+            refuse "Release mode did not report its validated API app target."
           fi
-          # azure.yaml resolves the api service from AZURE_API_APP_NAME, and the
-          # refreshed .env value takes precedence over the release-mode target.
-          if [ -z "${AZURE_API_APP_NAME:-}" ] || [ "$(output_value AZURE_API_APP_NAME)" != "$AZURE_API_APP_NAME" ]; then
-            refuse "The existing deployment's API app does not match the validated release target."
+          output_phase="$(output_value AZURE_API_NETWORK_PHASE)"
+          output_api="$(output_value AZURE_API_APP_NAME)"
+          if [ -n "$output_phase" ]; then
+            if [ "$output_phase" != "${AI4IA_API_NETWORK_PHASE:-legacy}" ]; then
+              refuse "The existing deployment's API network phase does not match AI4IA_API_NETWORK_PHASE."
+            fi
+            if [ "$output_api" != "$RELEASE_API_APP_NAME" ]; then
+              refuse "The existing deployment's API app does not match the validated release target."
+            fi
+          else
+            # The only accepted phase-less shape: the last root deployment predates
+            # the private recovery (which used reviewed packets and template-only
+            # PATCHes, never a root provision), and release mode has observed a
+            # completed, unblocked private cutover. Retarget only the api service
+            # to the validated private app; the drained legacy app is never used.
+            if [ "$output_api" != "ca-api-${AZURE_ENV_NAME}" ] \
+              || [ "${AI4IA_API_NETWORK_PHASE:-}" != "private" ] \
+              || [ "${RELEASE_MIGRATION_PENDING:-}" != "false" ] \
+              || [ "${RELEASE_EXECUTION_BLOCKERS:-}" != "[]" ] \
+              || [ "$RELEASE_API_APP_NAME" != "ca-api-private-${AZURE_ENV_NAME}" ]; then
+              refuse "The existing deployment for ${AZURE_ENV_NAME} has no AZURE_API_NETWORK_PHASE output and is not the completed pre-recovery shape."
+            fi
+            azd env set AZURE_API_APP_NAME "$RELEASE_API_APP_NAME"
+            if [ "$(output_value AZURE_API_APP_NAME)" != "$RELEASE_API_APP_NAME" ]; then
+              refuse "Could not retarget the api service to the validated private app."
+            fi
+            echo "The existing deployment predates the private recovery; retargeted only AZURE_API_APP_NAME in the local .env to ${RELEASE_API_APP_NAME}."
           fi
           if [ "${AI4IA_CLAUDE_GATEWAY_ENABLED:-}" = "true" ]; then
             apim_id="$(output_value AZURE_APIM_RESOURCE_ID)"
