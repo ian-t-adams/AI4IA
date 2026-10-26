@@ -270,6 +270,7 @@ class PreviewTests(unittest.TestCase):
                     else:
                         self.assertEqual(sequence, ["create", "metadata", "deactivate"])
                         self.assertFalse(active)
+                        self.assertEqual(receipt["candidateContainment"]["status"], "inactive")
                         self.assertFalse(receipt["candidateContainment"]["legacyTouched"])
 
     def test_exact_foundation_echoes_preserve_reported_deltas_and_binding(self):
