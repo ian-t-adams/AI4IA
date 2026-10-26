@@ -319,15 +319,16 @@ class PreviewTests(unittest.TestCase):
         self.assertIn('"code":null', str(caught.exception))
 
     def test_activation_routes_only_to_patch_and_full_arm_constructor_refuses_it(self):
-        env = {**ENV, "AI4IA_API_NETWORK_PHASE": "activate", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40}
-        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "apply"]), \
-             patch.object(PREVIEW, "activation_patch_command", return_value=0) as patcher, \
-             patch.object(PREVIEW, "compiled_context", side_effect=AssertionError("Full ARM activation forbidden")):
-            self.assertEqual(PREVIEW.main(), 0)
-            patcher.assert_called_once()
-        with patch.object(PREVIEW, "compile_module", side_effect=AssertionError("No ARM compilation")):
-            with self.assertRaises(PREVIEW.PreviewError):
-                PREVIEW.compiled_context(env)
+        for phase in ("activate", "private"):
+            env = {**ENV, "AI4IA_API_NETWORK_PHASE": phase, "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40}
+            with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "apply"]), \
+                 patch.object(PREVIEW, "activation_patch_command", return_value=0) as patcher, \
+                 patch.object(PREVIEW, "compiled_context", side_effect=AssertionError("Full ARM app update forbidden")):
+                self.assertEqual(PREVIEW.main(), 0)
+                patcher.assert_called_once()
+            with patch.object(PREVIEW, "compile_module", side_effect=AssertionError("No ARM compilation")):
+                with self.assertRaises(PREVIEW.PreviewError):
+                    PREVIEW.compiled_context(env)
 
     def test_full_arm_activation_preview_is_retired_even_for_the_previously_approved_shape(self):
         bound, raw, params, baseline, _ = activation_fixture()
@@ -919,7 +920,7 @@ class PreviewTests(unittest.TestCase):
         with self.assertRaises(PREVIEW.PreviewError):
             PREVIEW.scope_preview(raw, bound, params)
 
-    def test_activate_and_cutover_compare_verified_location_identity_not_spelling(self):
+    def test_full_arm_activation_and_cutover_packets_are_retired(self):
         for packet, phase, app_name in (("activate", "activate", "ca-api-private-test"),
                                         ("cutover", "private", "ca-web-test")):
             with self.subTest(packet=packet):
@@ -954,23 +955,8 @@ class PreviewTests(unittest.TestCase):
                     "resourceId": target, "changeType": "Modify", "before": before, "after": after,
                     "delta": [{"path": "properties.template"}],
                 }]}
-                if packet == "activate":
-                    bound, raw, params, before, _ = activation_fixture()
-                    before["location"] = raw["changes"][0]["before"]["location"] = "East US 2"
-                    with self.assertRaises(PREVIEW.PreviewError):
-                        PREVIEW.scope_preview(raw, bound, params, before)
-                    continue
-                report = PREVIEW.scope_preview(raw, bound, params, before)
-                self.assertEqual(report["blockingReasons"], [])
-                self.assertEqual(report["changes"][0]["locations"], {
-                    "before": {"raw": "East US 2", "canonical": "eastus2"},
-                    "after": {"raw": "eastus2", "canonical": "eastus2"},
-                })
-                for value in ("westus", "East-US-2", None, ""):
-                    invalid = deepcopy(raw)
-                    invalid["changes"][0]["after"]["location"] = value
-                    with self.subTest(location=value), self.assertRaises(ValueError):
-                        PREVIEW.scope_preview(invalid, bound, params, before)
+                with self.assertRaisesRegex(PREVIEW.PreviewError, "Unknown scoped recovery packet"):
+                    PREVIEW.scope_preview(raw, bound, params, before)
 
     def test_candidate_create_preserves_current_app_and_rejects_unprotected_values(self):
         bound, _, params = fixture()
@@ -1559,6 +1545,7 @@ class PatchCloud:
         self.fault = ""
         self.source = original["source"]
         self.admission_calls = 0
+        self.app_name = "ca-api-private-test"
 
     def admission(self, _env):
         self.admission_calls += 1
@@ -1589,6 +1576,8 @@ class PatchCloud:
         return deepcopy(jmespath.search(query, data))
 
     def run(self, args, **kwargs):
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return self.source.encode()
         if args[0] == "gh":
             return json.dumps({"object": {"sha": self.source}}).encode()
         if args[:3] == ["az", "acr", "login"]:
@@ -1601,12 +1590,15 @@ class PatchCloud:
         if self.fault == "transport":
             raise PREVIEW.PreviewError("Unknown write outcome")
         template = deepcopy(body["properties"]["template"])
-        name = "ca-api-private-test--" + template["revisionSuffix"]
+        name = self.app_name + "--" + template["revisionSuffix"]
         self.current["properties"].update(template=template, latestRevisionName=name, latestReadyRevisionName=name)
         self.current["properties"]["template"]["containers"][0]["resources"]["ephemeralStorage"] = "2Gi"
         if self.fault == "post-config":
             self.current["properties"]["configuration"]["maxInactiveRevisions"] = 99
         elif self.fault == "post-secret":
+            secrets = self.current["properties"]["configuration"].get("secrets")
+            if not secrets:
+                self.current["properties"]["configuration"]["secrets"] = [{"name": "model-gateway-api-key"}]
             self.current["properties"]["configuration"]["secrets"][0].update(
                 keyVaultUrl="https://changed.vault.azure.net/secrets/key",
                 identity=next(iter(self.current["identity"]["userAssignedIdentities"])),
@@ -1617,14 +1609,85 @@ class PatchCloud:
             key = next(iter(self.current["identity"]["userAssignedIdentities"]))
             self.current["identity"]["userAssignedIdentities"][key] = {"principalId": "changed-principal"}
         elif self.fault == "post-probes":
-            self.current["properties"]["template"]["containers"][0]["probes"] = []
+            probes = self.current["properties"]["template"]["containers"][0]["probes"]
+            self.current["properties"]["template"]["containers"][0]["probes"] = (
+                [] if probes else [{"type": "Liveness", "httpGet": {"path": "/changed", "port": 3000}}]
+            )
         elif self.fault == "post-image":
             self.current["properties"]["template"]["containers"][0]["image"] = "changed"
+        elif self.fault == "post-storage":
+            self.current["properties"]["template"]["containers"][0]["resources"]["ephemeralStorage"] = "4Gi"
         self.revisions.append({"name": name, "properties": {
             "active": True, "healthState": "Healthy", "provisioningState": "Provisioned",
             "template": deepcopy(self.current["properties"]["template"]),
         }})
         return b""
+
+
+class WebPatchCloud(PatchCloud):
+    def __init__(self, *, voice=True):
+        super().__init__()
+        self.api = deepcopy(self.current)
+        self.api["properties"]["template"]["containers"][0]["env"][0]["value"] = "false"
+        self.api["properties"]["template"]["scale"]["maxReplicas"] = 3
+        self.app_name = "ca-web-test"
+        prefix = self.current["id"].split("/providers/")[0] + "/providers/"
+        self.current["id"] = prefix + "Microsoft.App/containerApps/ca-web-test"
+        self.current["identity"] = {"type": "UserAssigned", "userAssignedIdentities": {
+            prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/id-web-test": {},
+        }}
+        props = self.current["properties"]
+        props.update(latestRevisionName="ca-web-test--ready", latestReadyRevisionName="ca-web-test--ready")
+        props["configuration"]["secrets"] = None
+        props["configuration"]["ingress"].update(
+            fqdn="ca-web-test.example.azurecontainerapps.io",
+            customDomains=[{"name": "app.example.test", "certificateId": "retained"}],
+        )
+        self.legacy["properties"]["configuration"]["ingress"]["fqdn"] = "ca-api-test.example.azurecontainerapps.io"
+        self.old_origin = "https://ca-api-test.example.azurecontainerapps.io"
+        self.new_origin = "https://ca-api-private-test.example.azurecontainerapps.io"
+        self.readiness_calls = 0
+        container = props["template"]["containers"][0]
+        container["name"] = "web"
+        container["image"] = "synthetic.azurecr.io/ai4ia/web-test@sha256:" + "2" * 64
+        container["env"] = [
+            {"name": "API_BASE_URL", "value": self.old_origin},
+            {"name": "OTHER", "value": "retained"},
+            {"name": "VOICE_LIVE_ENABLED", "value": "true"},
+        ]
+        if voice:
+            container["env"].append({"name": "API_PUBLIC_URL", "value": self.old_origin})
+        container["probes"] = []
+        props["template"]["scale"]["maxReplicas"] = 3
+        self.image = container["image"]
+        self.revisions = [{"name": "ca-web-test--ready", "properties": {
+            "active": True, "healthState": "Healthy", "provisioningState": "Provisioned",
+        }}]
+
+    def admission(self, env):
+        result = super().admission(env)
+        result["AI4IA_API_PRIVATE_INITIAL_IMAGE"] = self.api["properties"]["template"]["containers"][0]["image"]
+        result["AI4IA_PRIVATE_WEB_IMAGE"] = self.image
+        if self.admission_calls == 4 and self.fault == "late-api":
+            self.api["properties"]["template"]["containers"][0]["env"][0]["value"] = "true"
+        return result
+
+    def ready(self, origin):
+        assert origin == self.new_origin
+        self.readiness_calls += 1
+        return not (self.fault == "late-ready" and self.readiness_calls >= 4)
+
+    def read(self, args, **kwargs):
+        if args[:3] == ["rest", "--method", "get"]:
+            url = args[args.index("--url") + 1]
+            query = args[args.index("--query") + 1]
+            if "/ca-api-private-test?" in url:
+                self.calls.append(args)
+                return deepcopy(jmespath.search(query, self.api))
+            if "/ca-web-test?" in url:
+                self.calls.append(args)
+                return deepcopy(jmespath.search(query, self.current))
+        return super().read(args, **kwargs)
 
 
 class ActivationPatchTests(unittest.TestCase):
@@ -1668,7 +1731,7 @@ class ActivationPatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Forbidden"):
             PREVIEW.activation_patch_body({**template, "configuration": {}}, token)
 
-    def flow(self, fault=""):
+    def flow(self, fault="", *, web=False, voice=True):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             env = {**ENV, "AI4IA_API_NETWORK_PHASE": "activate", "AI4IA_PRIVATE_STEP": "activate",
@@ -1677,11 +1740,18 @@ class ActivationPatchTests(unittest.TestCase):
                    "GITHUB_REPOSITORY": "ian-t-adams/AI4IA", "RUNNER_TEMP": directory,
                    "GITHUB_OUTPUT": str(root / "output"), "GITHUB_ENV": str(root / "env"),
                    "AI4IA_PRIVATE_IMAGE_RECEIPT": "", "AI4IA_RELEASE_KIND": "preview", "AI4IA_RELEASE_PROVISION": "true"}
-            cloud = PatchCloud()
+            cloud = WebPatchCloud(voice=voice) if web else PatchCloud()
+            if web:
+                env.update(AI4IA_API_NETWORK_PHASE="private", AI4IA_PRIVATE_STEP="cutover",
+                           AI4IA_WEB_CUSTOM_DOMAIN="app.example.test", GITHUB_EVENT_NAME="workflow_dispatch",
+                           GITHUB_WORKFLOW_REF="ian-t-adams/AI4IA/.github/workflows/deploy.yml@refs/heads/main",
+                           GITHUB_WORKFLOW_SHA="a" * 40, GITHUB_SERVER_URL="https://github.com", GITHUB_RUN_ATTEMPT="1")
             env["AI4IA_PRIVATE_IMAGE_RECEIPT"] = json.dumps({"image": cloud.image})
             health = PREVIEW.ROLLOUT.HttpOutcome(status=503 if fault == "post-ready" else 200,
                                                 body=b'{"status":"ok","stage":"session_store"}')
             with patch.object(PREVIEW.ADMISSION, "admission", side_effect=cloud.admission), \
+                 patch.object(PREVIEW.ADMISSION, "prove_ready",
+                              side_effect=cloud.ready if isinstance(cloud, WebPatchCloud) else lambda _: True), \
                  patch.object(PREVIEW.PROVENANCE, "consume_private_api", return_value={"verified": "original-producer"}), \
                  patch.object(PREVIEW, "run", side_effect=cloud.run), \
                  patch.object(PREVIEW.ROLLOUT, "http_request", return_value=health), redirect_stdout(io.StringIO()):
@@ -1718,7 +1788,7 @@ class ActivationPatchTests(unittest.TestCase):
                 else:
                     PREVIEW.activation_patch_command("apply", env, cloud.read)
                 after_dispatch = fault in ("transport", "post-config", "post-secret", "post-env",
-                                           "post-identity", "post-probes", "post-image", "post-ready") or not fault
+                                           "post-identity", "post-probes", "post-image", "post-ready", "post-storage") or not fault
                 self.assertEqual(len(cloud.writes), 1 if after_dispatch else 0)
                 receipt_path = root / "ai4ia-private-preview/execution.json"
                 if after_dispatch:
@@ -1736,6 +1806,12 @@ class ActivationPatchTests(unittest.TestCase):
                             PREVIEW.activation_patch_command("apply", env, cloud.read)
                         self.assertEqual(len(cloud.writes), 1)
                 if not fault:
+                    if web:
+                        sent = cloud.writes[0]["properties"]["template"]["containers"][0]["env"]
+                        mapped = {row["name"]: row["value"] for row in sent}
+                        self.assertEqual(mapped["API_BASE_URL"], cloud.new_origin)
+                        self.assertEqual(mapped.get("API_PUBLIC_URL"), cloud.new_origin if voice else None)
+                        self.assertEqual(mapped["VOICE_LIVE_ENABLED"], "true")
                     with self.assertRaises(ValueError):
                         PREVIEW.activation_patch_command("apply", env, cloud.read)
                     self.assertEqual(len(cloud.writes), 1)
@@ -1749,6 +1825,8 @@ class ActivationPatchTests(unittest.TestCase):
                         owner = PREVIEW.verify_activation_owner(env, receipt, cloud.read)
                         self.assertEqual(owner["ownerOptions"], "passed")
                         self.assertTrue(http.call_args.args[1].endswith("/api/decisions/options"))
+                        if web:
+                            self.assertEqual(http.call_args.args[1], "https://app.example.test/api/decisions/options")
                         self.assertNotIn("synthetic-owner-token", json.dumps(owner))
                     with patch.object(PREVIEW.ROLLOUT, "http_request", side_effect=[
                         health, PREVIEW.ROLLOUT.HttpOutcome(status=403, body=b"{}"),
@@ -1773,7 +1851,8 @@ class ActivationPatchTests(unittest.TestCase):
 
     def test_private_revision_claim_uses_complete_scoped_pages(self):
         cloud = PatchCloud()
-        binding = {"subscription": ENV["AZURE_SUBSCRIPTION_ID"], "resourceGroup": "rg-ai4ia-test", "environment": "test"}
+        binding = {"subscription": ENV["AZURE_SUBSCRIPTION_ID"], "resourceGroup": "rg-ai4ia-test",
+                   "environment": "test", "packet": "activate"}
         url = "https://management.azure.com" + cloud.current["id"] + "/revisions?api-version=2024-10-02-preview&pageSize=20&skipToken=next"
         row = {"name": "ca-api-private-test--first", "active": True, "health": "Healthy", "state": "Provisioned"}
         pages = [{"rows": [row], "nextLink": url}, {"rows": [{**row, "name": "ca-api-private-test--second"}]}]
@@ -1794,6 +1873,43 @@ class ActivationPatchTests(unittest.TestCase):
         calls.clear()
         with self.assertRaisesRegex(ValueError, "duplicated"):
             PREVIEW.private_revision_rows(binding, read)
+
+    def test_web_cutover_reuses_guards_and_does_not_add_absent_voice_row(self):
+        self.flow(web=True)
+        self.flow(web=True, voice=False)
+        for fault in ("pre-config", "pre-template", "late-config", "late-legacy", "late-api", "late-ready",
+                      "suffix", "body", "rerun", "transport", "post-config", "post-secret",
+                      "post-env", "post-identity", "post-probes", "post-image", "post-ready", "post-storage"):
+            with self.subTest(fault=fault):
+                self.flow(fault, web=True)
+
+    def test_web_template_refuses_wrong_origins_and_preserves_all_other_fields(self):
+        cloud = WebPatchCloud()
+        before = deepcopy(cloud.current)
+        template = PREVIEW.web_cutover_template(cloud.current, cloud.old_origin, cloud.new_origin, "test")
+        for origin in ("http://ca-api-private-test.example.azurecontainerapps.io",
+                       "https://outside.example", cloud.new_origin + "/extra", cloud.new_origin + "?q=x"):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                PREVIEW.web_cutover_template(cloud.current, cloud.old_origin, origin, "test")
+        self.assertEqual(cloud.current, before)
+        body = PREVIEW.activation_patch_body(template, "1700000000:" + "a" * 64, step="cutover")
+        self.assertEqual(body["properties"]["template"]["revisionSuffix"], "cutover-" + "a" * 16)
+        for mutate in (
+            lambda row: row["properties"].update(configuration={"secrets": []}),
+            lambda row: row["properties"]["template"]["containers"][0].update(image="changed"),
+            lambda row: row["properties"]["template"]["containers"][0]["env"][1].update(value="changed"),
+            lambda row: row["properties"]["template"]["containers"][0]["probes"].append({"type": "Liveness"}),
+        ):
+            altered = deepcopy(body)
+            mutate(altered)
+            with self.assertRaises(ValueError):
+                PREVIEW.validate_template_patch_body(altered, body)
+        original = PREVIEW.activation_template_projection(before["properties"]["template"])
+        for value in (template, original):
+            for row in value["containers"][0]["env"]:
+                if row["name"] in ("API_BASE_URL", "API_PUBLIC_URL"):
+                    row["value"] = "comparison-only"
+        self.assertEqual(template, original)
 
 
 class OperationTests(unittest.TestCase):

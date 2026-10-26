@@ -33,6 +33,18 @@ def overrides(app=None, phase="candidate", image=IMAGE):
 
 
 class RecoveryInputTests(unittest.TestCase):
+    def test_null_secrets_match_empty_without_discarding_nonempty_or_invalid_metadata(self):
+        empty = {"ingress": {"external": True}, "secrets": []}
+        null = {"ingress": {"external": True}, "secrets": None}
+        self.assertEqual(packets.configuration_intent(null), packets.configuration_intent(empty))
+        self.assertIsNone(null["secrets"])
+        self.assertNotEqual(packets.configuration_intent({
+            "ingress": {"external": True}, "secrets": [{"name": "retained"}],
+        }), packets.configuration_intent(empty))
+        for value in (False, 0, {}, "", [None]):
+            with self.subTest(value=value), self.assertRaises(packets.PacketError):
+                packets.configuration_intent({"ingress": {"external": True}, "secrets": value})
+
     def test_location_name_and_display_name_require_one_exact_arm_identity(self):
         row = {"id": f"/subscriptions/{SUBSCRIPTION}/locations/eastus2",
                "name": "eastus2", "displayName": "East US 2", "type": "Region"}

@@ -2118,7 +2118,7 @@ default to deploying the original API.
 The existing workflow retains its main-only admission, identity and job grants.
 It resolves current targets first, then previews one direct resource-group
 module with ARM **Provider** validation, except for the separately approved
-activation-only template PATCH described below. The full-root migration preview is
+activation/web template PATCHes described below. The full-root migration preview is
 retired: its nested API/web modules were short-circuited and its unrelated
 APIM/model reconciliation exceeded the approved write-set. Do not suppress those
 diagnostics or broaden the migration allowlist. Ordinary post-migration root
@@ -2126,9 +2126,8 @@ deployment remains a separate path.
 
 The finite `private_step` input selects `foundation`, `candidate`, `activate` or
 `cutover`. Foundation uses `api-private-network.bicep` directly (eight resources).
-Candidate uses the shipping `api.bicep`; cutover uses `web.bicep`. Activation
-uses the exact raw-state/template PATCH contract, not a self-referencing
-full-ARM app update.
+Candidate uses the shipping `api.bicep`. Activation and web cutover use the
+exact raw-state/template PATCH contract, not a full-ARM app update.
 Scoped app modes do not redeploy diagnostic settings or the web certificate.
 API activation preserves its existing discovery tag: only its staging flag and
 maximum replicas change. The normal root remains responsible for later
@@ -2495,7 +2494,7 @@ inactive metadata. The page/row counts and stable row digest are bound into
 preview and execution receipts and compared again immediately before apply.
 Exhaustion or incomplete coverage is unknown, never drained.
 
-### Activation-only template PATCH
+### Exact activation and web template PATCHes
 
 Activation's preview is a bounded comparison of fresh raw
 `2024-10-02-preview` app state and the derived after-template, **not** native
@@ -2530,8 +2529,28 @@ acceptance succeeds.
 Failed postchecks leave the app as-is for operator disposition. Only a proven
 unhealthy new revision may be deactivated under the approved containment scope;
 no automated rollback, legacy reactivation or repeated PATCH is implied.
-This transport and its claim apply only to activation, not to candidate
-creation, ordinary deployments or unobserved web-cutover differences.
+Web cutover has its own `private-web-cutover-patch-v1` binding and `cutover-`
+revision suffix, with the same raw-state, dispatch-receipt and replay controls.
+It changes only `API_BASE_URL` and the existing `API_PUBLIC_URL` row to the
+verified private API origin. An absent voice URL is not added and no voice
+enable flag changes. Image, other environment rows, probes, resources, scale
+and volumes remain byte-equal in the raw post-state, excluding the deterministic
+suffix. The same read-only ephemeral-storage field is omitted from the request,
+then checked against its original value on readback.
+
+Immediately before web PATCH, the private API must still be activated and
+return private readiness200, and legacy must remain drained. Afterward the
+exact new web revision must be ready with unchanged protected configuration
+and metadata, and the public web must return200. The owner verifier supports
+`verify-cutover` for an authenticated Decision-options GET **through the web**,
+not directly to the API. It requires the retained web domain in the raw ingress
+configuration. Browser sign-in-shell and chat-page acceptance remain separate.
+Neither PATCH applies to candidate creation or ordinary deployments.
+
+The raw web GET reports `configuration.secrets: null` when no secrets are
+configured. `configuration_intent` treats this exact null as the empty list;
+nonempty and malformed values remain distinct and checked. This does not
+authorize writing configuration or secrets: neither appears in the PATCH body.
 
 It preserves the current private API and web/proxy image digests across
 reconciliation, while normal production image signing/promotion stays intact.

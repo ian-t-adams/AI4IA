@@ -16,7 +16,6 @@ SECRET_NAMES = frozenset({
 MODULES = {
     "foundation": "api-private-network.bicep",
     "candidate": "api.bicep",
-    "cutover": "web.bicep",
 }
 PATCH_FORBIDDEN_KEYS = frozenset({"configuration", "identity", "secrets", "ingress", "tags", "location"})
 
@@ -72,6 +71,36 @@ def activation_patch_template(current: dict, legacy: dict) -> dict:
     return activation_template_projection(template)
 
 
+def web_cutover_template(
+    current: dict, legacy_origin: str, origin: str, environment: str, *, provider_projection: bool = True,
+) -> dict:
+    require(re.fullmatch(r"https://ca-api-private-" + re.escape(environment)
+                         + r"\.[a-z0-9.-]+\.azurecontainerapps\.io", origin) is not None
+            and re.fullmatch(r"https://ca-api-" + re.escape(environment)
+                            + r"\.[a-z0-9.-]+\.azurecontainerapps\.io", legacy_origin) is not None
+            and origin != legacy_origin, "Web cutover origin is not the exact verified private API.")
+    template = deepcopy(current["properties"]["template"])
+    containers = template.get("containers")
+    require(isinstance(containers, list) and len(containers) == 1 and containers[0].get("name") == "web",
+            "Cutover requires the exact single web container.")
+    rows = containers[0].get("env")
+    require(isinstance(rows, list) and len(rows) <= 512
+            and all(isinstance(row, dict) and isinstance(row.get("name"), str) for row in rows),
+            "Web cutover environment is unavailable.")
+    by_name = {row["name"]: row for row in rows}
+    require(len(by_name) == len(rows) and "API_BASE_URL" in by_name, "Web cutover URL rows are missing or duplicated.")
+    for name in ("API_BASE_URL", "API_PUBLIC_URL"):
+        if name not in by_name:
+            continue
+        require(by_name[name] == {"name": name, "value": legacy_origin},
+                "Web/voice source URL differs from the reviewed legacy origin.")
+        by_name[name]["value"] = origin
+    if provider_projection:
+        return activation_template_projection(template)
+    template.pop("revisionSuffix", None)
+    return template
+
+
 def activation_template_projection(template: dict) -> dict:
     """Only the revision claim and documented read-only storage are provider fields."""
     template = deepcopy(template)
@@ -90,15 +119,16 @@ def activation_template_projection(template: dict) -> dict:
     return template
 
 
-def activation_suffix(binding: str) -> str:
+def activation_suffix(binding: str, *, step: str = "activate") -> str:
     require(re.fullmatch(r"[0-9]{10}:[0-9a-f]{64}", binding) is not None, "Activation binding is invalid.")
-    return "activate-" + binding.split(":")[1][:16]
+    require(step in ("activate", "cutover"), "Unknown template PATCH step.")
+    return step + "-" + binding.split(":")[1][:16]
 
 
-def activation_patch_body(template: dict, binding: str) -> dict:
+def activation_patch_body(template: dict, binding: str, *, step: str = "activate") -> dict:
     desired = deepcopy(template)
     require("revisionSuffix" not in desired, "Activation suffix must be derived from the binding.")
-    desired["revisionSuffix"] = activation_suffix(binding)
+    desired["revisionSuffix"] = activation_suffix(binding, step=step)
     body = {"properties": {"template": desired}}
     pending: list[tuple[Any, int]] = [(body, 0)]
     count = 0
@@ -117,6 +147,10 @@ def activation_patch_body(template: dict, binding: str) -> dict:
 
 def validate_activation_patch_body(body: Any, current: dict, legacy: dict, binding: str) -> None:
     expected = activation_patch_body(activation_patch_template(current, legacy), binding)
+    validate_template_patch_body(body, expected)
+
+
+def validate_template_patch_body(body: Any, expected: dict) -> None:
     require(isinstance(body, dict) and set(body) == {"properties"}
             and isinstance(body["properties"], dict) and set(body["properties"]) == {"template"},
             "Activation PATCH must contain only properties.template.")
@@ -312,11 +346,16 @@ def api_overrides(
 def configuration_intent(configuration: dict) -> dict:
     """Project documented/default service fields; refuse unrepresented configuration."""
     result = deepcopy(configuration)
+    secrets = configuration.get("secrets")
+    if secrets is None:
+        secrets = []
+    require(isinstance(secrets, list) and all(isinstance(row, dict) for row in secrets),
+            "Secret configuration metadata is invalid.")
     result["secrets"] = [
         {key: value for key, value in row.items() if key != "value" and value is not None}
-        for row in result.get("secrets", [])
+        for row in secrets
     ]
-    for row in configuration.get("secrets", []):
+    for row in secrets:
         value = row.get("value")
         require(value is None or (isinstance(value, str) and re.fullmatch(r"\*{3,128}", value) is not None),
                 "Provider secret value is unprotected or its masking is unknown.")
