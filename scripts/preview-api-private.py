@@ -17,15 +17,17 @@ import sys
 import tempfile
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 from _api_private import api_name, from_environment
 from _private_recovery_packets import (
     MODULES, PacketError, api_overrides, candidate_template_intent, canonical_location, configuration_intent, consumption_headroom,
-    location_evidence, read_record, record_parameters,
+    location_evidence, read_record, record_parameters, activation_patch_template, activation_patch_body,
+    activation_suffix, validate_activation_patch_body, activation_template_projection, SECRET_NAMES,
 )
 from _private_metadata import (
     RAW_METADATA_QUERY, MetadataError, project_proven_metadata, source_descriptor,
-    validate_live_metadata, validate_native_metadata,
+    validate_live_metadata, validate_native_metadata, env_metadata, secret_metadata,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -416,156 +418,6 @@ def env_rows(template: dict) -> dict[str, dict]:
 def comparable(template: dict) -> str:
     # Reuse the existing provider-evidenced writable-template comparison.
     return ROLLOUT._comparable_template(template)
-
-
-ACTIVATION_ECHOES = {
-    "properties.template.scale.cooldownPeriod": 300,
-    "properties.template.scale.pollingInterval": 30,
-    "properties.template.containers[0].imageType": "ContainerImage",
-    "properties.configuration.ingress.exposedPort": 0,
-    "properties.configuration.ingress.traffic": [{"latestRevision": True, "weight": 100}],
-    "properties.configuration.maxInactiveRevisions": 100,
-    "properties.patchingMode": "Automatic",
-    "properties.workloadProfileName": "Consumption",
-}
-ACTIVATION_CURRENT = {
-    **ACTIVATION_ECHOES,
-    "properties.template.scale.minReplicas": 1,
-    "properties.template.scale.maxReplicas": 1,
-}
-ACTIVATION_LEGACY = {
-    **ACTIVATION_CURRENT,
-    "properties.template.scale.maxReplicas": 3,
-    "properties.configuration.maxInactiveRevisions": None,
-}
-ACTIVATION_FLAGS = {"AI4IA_PRIVATE_RECOVERY_CANDIDATE": "true", "AI4IA_PRIVATE_COSMOS_REQUIRED": "true"}
-
-
-def activation_field(resource: dict, path: str) -> dict:
-    value: Any = resource
-    for key in path.replace("[0]", ".0").split("."):
-        if key == "0":
-            require(isinstance(value, list) and len(value) == 1, "Activation container inventory is not exact.")
-            value = value[0]
-        elif isinstance(value, dict) and key in value:
-            value = value[key]
-        else:
-            return {"present": False}
-    return {"present": True, "value": value}
-
-
-def activation_query() -> str:
-    fields = []
-    for path in ACTIVATION_CURRENT:
-        parent, _, key = path.rpartition(".")
-        fields.append(f"{json.dumps(path)}:{{present:contains(keys({parent}),'{key}'),value:{path}}}")
-    return (
-        "{id:id,revision:properties.latestRevisionName,ready:properties.latestReadyRevisionName,"
-        "containerCount:length(properties.template.containers),containerName:properties.template.containers[0].name,"
-        "image:properties.template.containers[0].image,fields:{" + ",".join(fields) + "},"
-        "flags:properties.template.containers[0].env[?name=='AI4IA_PRIVATE_RECOVERY_CANDIDATE' || "
-        "name=='AI4IA_PRIVATE_COSMOS_REQUIRED'].{name:name,value:value}}"
-    )
-
-
-def validate_activation_row(row: Any, expected: dict, source: dict, *, legacy: bool) -> None:
-    require(isinstance(row, dict) and set(row) == {
-        "id", "revision", "ready", "containerCount", "containerName", "image", "fields", "flags",
-    }, "Activation raw evidence is incomplete.")
-    require(isinstance(row["id"], str) and row["id"].casefold() == source["id"].casefold()
-            and row["revision"] == row["ready"] == source["properties"]["latestReadyRevisionName"]
-            and type(row["containerCount"]) is int and row["containerCount"] == 1
-            and row["containerName"] == "api"
-            and row["image"] == source["properties"]["template"]["containers"][0]["image"],
-            "Activation raw evidence changed application, revision or image.")
-    require(digest(row["fields"]) == digest({
-        path: {"present": True, "value": value} for path, value in expected.items()
-    }), "Activation raw field values differ from the exact reviewed profile.")
-    flags = row["flags"]
-    require(isinstance(flags, list), "Activation raw flags are unavailable.")
-    if legacy:
-        require(flags == [], "Legacy production recovery flags changed.")
-    else:
-        require(len(flags) == 2 and all(isinstance(item, dict) and set(item) == {"name", "value"} for item in flags)
-                and {item["name"]: item["value"] for item in flags} == ACTIVATION_FLAGS,
-                "Activation source is not the privately ready suppressed candidate.")
-    omitted_by_cli = {"properties.patchingMode", "properties.workloadProfileName",
-                      "properties.template.containers[0].imageType"}
-    for path, value in expected.items():
-        projected = activation_field(source, path)
-        require(digest(projected) == digest({"present": True, "value": value})
-                or projected == {"present": False} and path in omitted_by_cli,
-                "Raw activation fields disagree with the stabilized application snapshot.")
-
-
-def read_activation_evidence(template: dict, current: dict, legacy: dict, binding: dict, read: Callable) -> dict:
-    resource = template["resources"]["apiApp"]
-    require(resource["type"] == "Microsoft.App/containerApps" and resource["apiVersion"] == "2024-10-02-preview",
-            "Activation resource protocol changed.")
-    for path in ACTIVATION_ECHOES:
-        require(activation_field(resource, path) == {"present": False},
-                "Activation source no longer omits the reviewed echo field.")
-    result = {"apiVersion": resource["apiVersion"]}
-    for name, source, expected in (("current", current, ACTIVATION_CURRENT), ("legacy", legacy, ACTIVATION_LEGACY)):
-        args = ["rest", "--method", "get", "--subscription", binding["subscription"],
-                "--url", f"https://management.azure.com{source['id']}?api-version={resource['apiVersion']}",
-                "--query", activation_query()]
-        row = read(args)
-        validate_activation_row(row, expected, source, legacy=name == "legacy")
-        require(digest(read(args)) == digest(row), "Activation raw evidence changed during collection.")
-        result[name] = row
-    return result
-
-
-def activation_projections(
-    before: dict, after: dict, baseline: dict, binding: dict, paths: set[str],
-) -> tuple[dict, dict, dict]:
-    private_id = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
-                  f"/providers/Microsoft.App/containerApps/{api_name(binding['environment'], 'private')}")
-    require(binding.get("packet") == "activate" and binding.get("phase") == "activate"
-            and baseline["id"].casefold() == private_id.casefold(), "Activation proof changed its exact target.")
-    evidence = binding.get("activationEvidence")
-    if (not isinstance(evidence, dict) or set(evidence) != {"apiVersion", "current", "legacy"}
-            or evidence["apiVersion"] != "2024-10-02-preview"):
-        raise PreviewError("Activation value proof is missing.")
-    validate_activation_row(evidence["current"], ACTIVATION_CURRENT, baseline, legacy=False)
-    legacy = evidence["legacy"]
-    legacy_id = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
-                 f"/providers/Microsoft.App/containerApps/{api_name(binding['environment'], 'legacy')}")
-    require(isinstance(legacy, dict)
-            and isinstance(legacy.get("id"), str) and legacy["id"].casefold() == legacy_id.casefold()
-            and digest(legacy.get("fields")) == digest({
-                path: {"present": True, "value": value} for path, value in ACTIVATION_LEGACY.items()
-            }) and legacy.get("flags") == [], "Legacy production activation profile is unproven.")
-    allowed_paths = set(ACTIVATION_ECHOES) - {"properties.template.containers[0].imageType"}
-    allowed_paths |= {"properties.template.containers", "properties.template.scale.maxReplicas"}
-    require(paths == allowed_paths, "Activation delta paths differ from the exact reviewed change set.")
-    require(before.get("type") == after.get("type") == "Microsoft.App/containerApps"
-            and isinstance(before.get("id"), str) and isinstance(after.get("id"), str)
-            and before["id"].casefold() == after["id"].casefold() == baseline["id"].casefold(),
-            "Activation delta resource identity changed.")
-    for path, value in ACTIVATION_CURRENT.items():
-        require(digest(activation_field(before, path)) == digest({"present": True, "value": value}),
-                "Native activation before differs from the bound live field.")
-    for path in ACTIVATION_ECHOES:
-        require(activation_field(after, path) == {"present": False}, "Activation echo has a new desired value.")
-    for path in ("properties.template.scale.minReplicas", "properties.template.scale.maxReplicas"):
-        require(digest(activation_field(after, path)) == digest(legacy["fields"][path]),
-                "Activation scale differs from the bound legacy production value.")
-    for resource, candidate in ((before, "true"), (after, "false")):
-        rows = env_rows(resource["properties"]["template"])
-        require(rows.get("AI4IA_PRIVATE_RECOVERY_CANDIDATE") == {
-            "name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": candidate,
-        } and rows.get("AI4IA_PRIVATE_COSMOS_REQUIRED") == {
-            "name": "AI4IA_PRIVATE_COSMOS_REQUIRED", "value": "true",
-        }, "Activation recovery flags differ from the exact approved transition.")
-    projected = []
-    for resource in (before, after, baseline):
-        item = deepcopy(resource)
-        item["properties"]["template"]["containers"][0].pop("imageType", None)
-        item["properties"]["configuration"].pop("maxInactiveRevisions", None)
-        projected.append(item)
-    return projected[0], projected[1], projected[2]
 
 
 def created_fields(resource: dict) -> list[str]:
@@ -994,7 +846,6 @@ def scope_preview(
                     if tags != after.get("tags"):
                         errors.append("candidate_tags_changed")
         elif kind == "Modify" and isinstance(before, dict) and isinstance(after, dict):
-            activation_projected = None
             echo_kind = {
                 vnet: "vnet", endpoint: "endpoint", private_env: "environment",
                 zone + f"/virtualnetworklinks/{suffix}": "link",
@@ -1012,19 +863,6 @@ def scope_preview(
                     before_compare = project_proven_metadata(before, descriptor)
                     after_compare = project_proven_metadata(after, descriptor)
                     baseline_compare = project_proven_metadata(baseline, descriptor)
-                if packet == "activate":
-                    require(len(set(row["fields"])) == len(row["fields"]), "Activation delta paths are duplicated.")
-                    activation_projected = activation_projections(
-                        before_compare, after_compare, baseline_compare, binding, set(row["fields"]),
-                    )
-                    before_compare, after_compare, baseline_compare = activation_projected
-                    row["activationEvidenceDigest"] = digest(binding["activationEvidence"])
-                    row["activationClassification"] = {
-                        "productionScale": "bound_to_legacy",
-                        "candidateFlag": "true_to_false",
-                        "privateRequired": "unchanged_true",
-                        "responseEchoes": deepcopy(ACTIVATION_ECHOES),
-                    }
                 current_props = baseline_compare["properties"]
                 before_props, after_props = before_compare.get("properties", {}), after_compare.get("properties", {})
                 if comparable(candidate_template_intent(before_props.get("template", {}))) != comparable(
@@ -1058,17 +896,12 @@ def scope_preview(
             if paths and paths <= {"tags", "tags.SecurityControl"} and tag_change_ok:
                 continue
             template_paths = paths - {"tags", "tags.SecurityControl"} if tag_change_ok else paths
-            if activation_projected is not None:
-                template_paths -= {path for path in ACTIVATION_ECHOES if not path.startswith("properties.template")}
             if rid in app_ids and template_paths and all(path.startswith("properties.template") for path in template_paths):
                 left = deepcopy(before.get("properties", {}).get("template", {}))
                 right = deepcopy(after.get("properties", {}).get("template", {}))
                 if descriptor is not None:
                     left = project_proven_metadata(before, descriptor)["properties"]["template"]
                     right = project_proven_metadata(after, descriptor)["properties"]["template"]
-                if activation_projected is not None:
-                    left = deepcopy(activation_projected[0]["properties"]["template"])
-                    right = deepcopy(activation_projected[1]["properties"]["template"])
                 left, right = candidate_template_intent(left), candidate_template_intent(right)
                 service = app_ids[rid]
                 allowed = set()
@@ -1126,15 +959,82 @@ def verify_token(token: str, binding: dict, preview: dict, now: int) -> None:
     require(not preview["blockingReasons"], "Preview contains unapproved resource changes.")
 
 
-def run(command: list[str], *, limit: int, timeout: int) -> bytes:
+ARM_ERROR_CODES = {
+    "InvalidTemplate", "InvalidTemplateDeployment", "DeploymentFailed", "AuthorizationFailed",
+    "ResourceNotFound", "DeploymentNotFound", "ResourceGroupNotFound", "InvalidResourceReference",
+    "InvalidRequestContent", "BadRequest", "Conflict", "InternalServerError", "TooManyRequests",
+    "RequestDisallowedByPolicy", "InvalidParameter", "OperationNotAllowed", "ParentResourceNotFound",
+    "LinkedAuthorizationFailed", "NoRegisteredProviderFound", "MissingSubscriptionRegistration",
+    "SkuNotAvailable", "InsufficientQuota", "InvalidAuthenticationToken", "AuthenticationFailed",
+}
+
+
+def command_diagnostic(command: list[str], kind: str, raw: bytes | None) -> dict[str, str | None]:
+    operation = ("azure_deployment_create" if command[:4] == ["az", "deployment", "group", "create"]
+                 else "azure_cli" if command[:1] == ["az"]
+                 else "github_cli" if command[:1] == ["gh"] else "bounded_command")
+    result: dict[str, str | None] = {
+        "class": kind, "operation": operation, "code": None, "target": None,
+        "message": "Provider error detail unavailable; no further execution is authorized.",
+    }
+    if kind != "command_failed" or raw is None or len(raw) > 16384:
+        return result
     try:
-        return PROVENANCE.run_bounded(command, limit=limit, timeout=timeout)
+        text = raw.decode("utf-8").strip().removeprefix("ERROR:").strip()
+        try:
+            parsed = PROVENANCE.strict_json(text.encode())
+        except PROVENANCE.ProvenanceError:
+            match = re.fullmatch(r"\(([A-Za-z][A-Za-z0-9]{1,63})\)\s+(.+)", text, re.DOTALL)
+            parsed = {"code": match[1], "message": match[2].split("\nCode:", 1)[0]} if match else None
+        if not isinstance(parsed, dict):
+            return result
+        error = parsed.get("error", parsed)
+        if not isinstance(error, dict) or error.get("code") not in ARM_ERROR_CODES:
+            return result
+        result.update(code=error["code"], **{"class": "arm_error"})
+        for key, limit in (("target", 256), ("message", 2048)):
+            value = error.get(key)
+            if not isinstance(value, str) or len(value) > 4096:
+                continue
+            if key == "target":
+                result[key] = value if value in {
+                    "properties.template.scale.maxReplicas", "apiApp", "secretSource",
+                    "properties.configuration.secrets", "properties.template.containers",
+                } else "[REDACTED_TARGET]"
+                continue
+            prefix = "Deployment template validation failed: '"
+            if value.startswith(prefix) and (value.endswith("'.") or value.endswith("'")):
+                value = "Deployment template validation failed: " + value[len(prefix):-(2 if value.endswith("'.") else 1)]
+            value = value.translate(str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'}))
+            value = re.sub(
+                r"(?i)(\b(?:client[_-]?secret|shared[_-]?key|connection[_-]?string|instrumentation[_-]?key)"
+                r"\b[\"']?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)", r"\1[REDACTED]", value,
+            )
+            safe = ROLLOUT.redact(value, max_chars=4096)
+            if safe:
+                safe = re.sub(r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`''', "[REDACTED_VALUE]", safe)
+                safe = re.sub(r'''["'`].*$''', "[REDACTED_VALUE]", safe)
+                safe = re.sub(r"https?://[^\s<>\"']+", "[REDACTED_URL]", safe)
+                safe = re.sub(r"[A-Za-z0-9_+/=-]{24,}", "[REDACTED]", safe)
+                result[key] = safe[:limit]
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        return result
+    return result
+
+
+def run(command: list[str], *, limit: int, timeout: float) -> bytes:
+    try:
+        return PROVENANCE.run_bounded(
+            command, limit=limit, timeout=timeout,
+            diagnostic=lambda kind, raw: command_diagnostic(command, kind, raw),
+        )
     except PROVENANCE.ProvenanceError as exc:
-        raise PreviewError("Bounded command failed; no further resource execution is authorized.") from exc
+        detail = "" if exc.diagnostic is None else " " + json.dumps(exc.diagnostic, separators=(",", ":"), ensure_ascii=True)
+        raise PreviewError("Bounded command failed; no further resource execution is authorized." + detail) from exc
 
 
-def cloud_read(args: list[str]) -> Any:
-    return json.loads(run(["az", *args, "-o", "json"], limit=8 * 1024 * 1024, timeout=60))
+def cloud_read(args: list[str], *, timeout: float = 60) -> Any:
+    return json.loads(run(["az", *args, "-o", "json"], limit=8 * 1024 * 1024, timeout=timeout))
 
 
 def compile_module(name: str) -> dict:
@@ -1180,6 +1080,362 @@ def app_snapshot(env: dict[str, str], name: str, read=cloud_read) -> dict:
                              + r"@sha256:[0-9a-f]{64}", containers[0]["image"]) is not None,
             "Current application image is not an exact retained service digest.")
     return app
+
+
+PATCH_API_VERSION = "2024-10-02-preview"
+PATCH_APP_QUERY = (
+    "{id:id,type:type,location:location,tags:tags,identity:identity,"
+    "properties:{managedEnvironmentId:properties.managedEnvironmentId,"
+    "provisioningState:properties.provisioningState,latestRevisionName:properties.latestRevisionName,"
+    "latestReadyRevisionName:properties.latestReadyRevisionName,patchingMode:properties.patchingMode,"
+    "workloadProfileName:properties.workloadProfileName,configuration:properties.configuration,"
+    "template:properties.template}}"
+)
+
+
+def patch_metadata(snapshot: dict) -> dict:
+    props = snapshot["properties"]
+    secrets = secret_metadata(props["configuration"].get("secrets"))
+    require({row["name"] for row in secrets} <= SECRET_NAMES, "Activation secret inventory changed.")
+    containers = props["template"].get("containers")
+    require(isinstance(containers, list) and len(containers) == 1 and containers[0].get("name") == "api",
+            "Activation metadata container changed.")
+    rows = containers[0].get("env")
+    refs, values, _ = env_metadata(rows)
+    require(set(refs.values()) <= {row["name"] for row in secrets}, "Activation has an undeclared secret reference.")
+    return {"secrets": secrets, "envSecretRefs": refs, "envValueNames": sorted(values),
+            "valuePresent": {row["name"]: "value" in row for row in rows if row["name"] in values}}
+
+
+def patch_protected(snapshot: dict) -> dict:
+    props = snapshot["properties"]
+    return {"identity": snapshot["identity"], "location": snapshot["location"], "tags": snapshot["tags"],
+            **{key: props[key] for key in (
+                "managedEnvironmentId", "configuration", "patchingMode", "workloadProfileName",
+            )}}
+
+
+def patch_raw_snapshot(env: dict, name: str, read: Callable, *, stable: bool = True, timeout: float = 45) -> dict:
+    require(name in (api_name(env["AZURE_ENV_NAME"], "private"), api_name(env["AZURE_ENV_NAME"], "legacy")),
+            "Activation raw target is outside scope.")
+    group = f"rg-{env.get('AI4IA_WORKLOAD') or 'ai4ia'}-{env['AZURE_ENV_NAME']}"
+    rid = f"/subscriptions/{env['AZURE_SUBSCRIPTION_ID']}/resourceGroups/{group}/providers/Microsoft.App/containerApps/{name}"
+    args = ["rest", "--method", "get", "--subscription", env["AZURE_SUBSCRIPTION_ID"],
+            "--url", f"https://management.azure.com{rid}?api-version={PATCH_API_VERSION}", "--query", PATCH_APP_QUERY]
+    snapshot = read(args, timeout=timeout)
+    require(isinstance(snapshot, dict) and isinstance(snapshot.get("id"), str)
+            and snapshot["id"].casefold() == rid.casefold() and snapshot.get("type") == "Microsoft.App/containerApps",
+            "Activation raw application identity is unavailable.")
+    props, identity = snapshot.get("properties"), snapshot.get("identity")
+    identity_id = (f"/subscriptions/{env['AZURE_SUBSCRIPTION_ID']}/resourceGroups/{group}"
+                   f"/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-api-{env['AZURE_ENV_NAME']}")
+    require(isinstance(props, dict) and isinstance(props.get("configuration"), dict)
+            and isinstance(props.get("template"), dict) and isinstance(identity, dict)
+            and identity.get("type") == "UserAssigned" and isinstance(identity.get("userAssignedIdentities"), dict)
+            and all(isinstance(key, str) for key in identity["userAssignedIdentities"])
+            and {key.casefold() for key in identity["userAssignedIdentities"]} == {identity_id.casefold()},
+            "Activation raw configuration or identity is incomplete.")
+    for key in ("latestRevisionName", "latestReadyRevisionName"):
+        require(isinstance(props.get(key), str)
+                and re.fullmatch(re.escape(name) + r"--[a-z0-9-]{1,80}", props[key]) is not None,
+                "Activation raw revision identity is unavailable.")
+    if name == api_name(env["AZURE_ENV_NAME"], "private"):
+        configuration = props["configuration"]
+        require(configuration.get("activeRevisionsMode") == "Single"
+                and isinstance(configuration.get("ingress"), dict) and configuration["ingress"].get("external") is True,
+                "Activation raw ingress or revision mode changed.")
+    PROVENANCE.encode(snapshot)
+    patch_metadata(snapshot)
+    if stable:
+        require(digest(read(args, timeout=timeout)) == digest(snapshot), "Activation raw snapshot changed during collection.")
+    return snapshot
+
+
+def private_revision_rows(binding: dict, read: Callable) -> list[dict]:
+    name = api_name(binding["environment"], "private")
+    path = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
+            f"/providers/Microsoft.App/containerApps/{name}/revisions")
+    query = f"api-version={PATCH_API_VERSION}&pageSize=20"
+    rows, names, cursors = [], set(), set()
+    started = time.monotonic()
+    for _ in range(31):
+        remaining = 120 - (time.monotonic() - started)
+        require(remaining > 0, "Private revision inventory exceeded its deadline.")
+        data = read(["rest", "--method", "get", "--subscription", binding["subscription"],
+                     "--url", "https://management.azure.com" + path + "?" + query,
+                     "--query", "{rows:map(&{name:name,active:properties.active,health:properties.healthState,"
+                     "state:properties.provisioningState},value),nextLink:nextLink}"], timeout=min(45, remaining))
+        require(isinstance(data, dict) and isinstance(data.get("rows"), list)
+                and len(rows) + len(data["rows"]) < 640, "Private revision coverage is invalid.")
+        for row in data["rows"]:
+            require(isinstance(row, dict) and isinstance(row.get("name"), str)
+                    and re.fullmatch(re.escape(name) + r"--[a-z0-9-]{1,80}", row["name"]) is not None
+                    and row["name"] not in names and type(row.get("active")) is bool,
+                    "Private revision identity/activity is invalid or duplicated.")
+            names.add(row["name"])
+            rows.append(row)
+        if data.get("nextLink") is None:
+            require(bool(rows) and time.monotonic() - started < 120, "Private revision inventory is empty or late.")
+            return rows
+        cursor = ADMISSION.revision_continuation(data["nextLink"], path)
+        require(bool(data["rows"]), "Private revision inventory has an empty nonterminal page.")
+        require(cursor not in cursors, "Private revision cursor repeated.")
+        cursors.add(cursor)
+        query = urlencode({"api-version": PATCH_API_VERSION, "pageSize": "20", "skipToken": cursor})
+    raise PreviewError("Private revision inventory reached its page cap.")
+
+
+def activation_patch_context(env: dict, read: Callable = cloud_read) -> tuple[dict, dict, dict, dict, dict]:
+    require(from_environment(env) == "activate" and env.get("AI4IA_PRIVATE_STEP", "activate") in ("", "activate")
+            and env.get("GITHUB_REF") == "refs/heads/main", "Activation PATCH requires its exact trusted phase.")
+    raw_receipt = env.get("AI4IA_PRIVATE_IMAGE_RECEIPT", "")
+    require(bool(raw_receipt), "Activation PATCH requires the explicit prepared image receipt.")
+    receipt = PROVENANCE.strict_json(raw_receipt.encode())
+    if not isinstance(receipt, dict):
+        raise PreviewError("Activation image receipt is invalid.")
+    admitted = ADMISSION.admission(env)
+    environment, subscription = env["AZURE_ENV_NAME"], env["AZURE_SUBSCRIPTION_ID"]
+    group = f"rg-{env.get('AI4IA_WORKLOAD') or 'ai4ia'}-{environment}"
+    current = patch_raw_snapshot(env, api_name(environment, "private"), read)
+    legacy = patch_raw_snapshot(env, api_name(environment, "legacy"), read)
+    require(current["properties"]["provisioningState"] == "Succeeded"
+            and current["properties"]["latestRevisionName"] == current["properties"]["latestReadyRevisionName"],
+            "Activation source revision is unsettled.")
+    image = current["properties"]["template"]["containers"][0]["image"]
+    require(image == receipt.get("image") == admitted["AI4IA_API_PRIVATE_INITIAL_IMAGE"],
+            "Activation cannot change the reviewed image.")
+    registry = image.split(".", 1)[0]
+    run(["az", "acr", "login", "--subscription", subscription, "--name", registry], limit=4096, timeout=60)
+    image_proof = PROVENANCE.consume_private_api(receipt, env)
+    after = activation_patch_template(current, legacy)
+    metadata = patch_metadata(current)
+    origin = admitted["AI4IA_PRIVATE_API_ORIGIN"]
+    bound = {
+        "contract": "private-activation-patch-v1", "packet": "activate", "phase": "activate",
+        "source": env["GITHUB_SHA"], "environment": environment, "subscription": subscription,
+        "resourceGroup": group, "apiVersion": PATCH_API_VERSION, "apiOrigin": origin,
+        "resourceId": current["id"], "image": image, "imageProof": digest(image_proof),
+        "snapshot": digest(current), "protected": digest(patch_protected(current)),
+        "configuration": digest(current["properties"]["configuration"]), "identity": digest(current["identity"]),
+        "metadata": digest(metadata), "beforeTemplate": digest(current["properties"]["template"]),
+        "afterTemplate": digest(after), "sourceRevision": current["properties"]["latestReadyRevisionName"],
+        "legacyProfile": digest(legacy["properties"]["template"]),
+        "legacyInventory": json.loads(admitted["AI4IA_PRIVATE_LEGACY_INVENTORY"]),
+        "privateCoreQuota": consumption_headroom(read([
+            "containerapp", "env", "list-usages", "--subscription", subscription, "-g", group,
+            "-n", f"cae-{env.get('AI4IA_WORKLOAD') or 'ai4ia'}-{environment}-api-private",
+        ]), 1.5),
+    }
+    require(bound["legacyInventory"]["activeRevisions"] == [], "Legacy workers are not drained.")
+    if "imageReuse" in image_proof:
+        bound.update(imageReuse=image_proof["imageReuse"], imageSourceChanges=image_proof["changedPaths"])
+    preview = {
+        "kind": "template_only_patch", "nativeWhatIf": False, "blockingReasons": [],
+        "changes": [
+            {"path": "properties.template.scale.maxReplicas", "before": 1, "after": 3, "source": "legacy_production"},
+            {"environmentVariable": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "before": "true", "after": "false"},
+        ],
+        "providerFields": {"revisionSuffix": "binding_derived", "ephemeralStorage": "read_only_omitted"},
+    }
+    return bound, preview, current, legacy, after
+
+
+def check_activation_post(snapshot: dict, revision: dict, body: dict, bound: dict, token: str) -> None:
+    suffix = activation_suffix(token)
+    name = api_name(bound["environment"], "private") + "--" + suffix
+    props = snapshot["properties"]
+    require(props["provisioningState"] == "Succeeded"
+            and props["latestRevisionName"] == props["latestReadyRevisionName"] == revision.get("name") == name
+            and revision.get("properties", {}).get("active") is True
+            and revision["properties"].get("healthState") == "Healthy"
+            and revision["properties"].get("provisioningState") == "Provisioned",
+            "Deterministic activation revision is not ready.")
+    require(digest(patch_protected(snapshot)) == bound["protected"]
+            and digest(props["configuration"]) == bound["configuration"]
+            and digest(snapshot["identity"]) == bound["identity"]
+            and digest(patch_metadata(snapshot)) == bound["metadata"],
+            "Activation changed protected configuration, identity or secret metadata.")
+    expected = body["properties"]["template"]
+    require(comparable(props["template"]) == comparable(expected)
+            and comparable(revision["properties"]["template"]) == comparable(expected),
+            "Activated template differs from the exact reviewed PATCH.")
+    require(props["template"]["containers"][0]["image"] == bound["image"],
+            "Activated image changed.")
+
+
+def activation_ready(env: dict, bound: dict, body: dict, token: str, read: Callable, *, clock=time.monotonic, sleep=time.sleep) -> dict:
+    expected = api_name(bound["environment"], "private") + "--" + activation_suffix(token)
+    started = clock()
+
+    def bounded_read(args, *, timeout=45):
+        remaining = 240 - (clock() - started)
+        require(remaining > 0, "Activation readiness deadline exhausted.")
+        result = read(args, timeout=min(timeout, remaining))
+        require(clock() - started < 240, "Activation readiness deadline exhausted.")
+        return result
+
+    for _ in range(12):
+        remaining = 240 - (clock() - started)
+        require(remaining > 0, "Activation readiness deadline exhausted.")
+        snapshot = patch_raw_snapshot(env, api_name(bound["environment"], "private"), bounded_read, stable=False, timeout=min(45, remaining))
+        props = snapshot["properties"]
+        if props["latestRevisionName"] == props["latestReadyRevisionName"] == expected and props["provisioningState"] == "Succeeded":
+            revision = bounded_read(["rest", "--method", "get", "--subscription", bound["subscription"],
+                             "--url", f"https://management.azure.com{bound['resourceId']}/revisions/{expected}?api-version={PATCH_API_VERSION}",
+                             "--query", "{name:name,properties:{active:properties.active,healthState:properties.healthState,"
+                             "provisioningState:properties.provisioningState,template:properties.template}}"])
+            check_activation_post(snapshot, revision, body, bound, token)
+            require(digest(patch_raw_snapshot(env, api_name(bound["environment"], "private"), bounded_read)) == digest(snapshot),
+                    "Activated application changed during verification.")
+            remaining = 240 - (clock() - started)
+            require(remaining > 0, "Activation post-check deadline exhausted.")
+            health = ROLLOUT.http_request("GET", bound["apiOrigin"] + "/health/ready", timeout=min(20, remaining),
+                                         deadline=ROLLOUT.Deadline(min(20, remaining)), body_limit=4096)
+            require(health.status == 200 and health.json() == {"status": "ok", "stage": "session_store"},
+                    "Activated private Cosmos readiness failed.")
+            require(clock() - started < 240, "Activation post-check deadline exhausted.")
+            return {"revision": expected, "configuration": bound["configuration"], "metadata": bound["metadata"],
+                    "identity": bound["identity"], "template": digest(props["template"]),
+                    "readiness": "passed", "ownerOptions": "required_separate_authenticated_gate"}
+        remaining = 240 - (clock() - started)
+        require(remaining > 0, "Activation readiness deadline exhausted.")
+        sleep(min(5, remaining))
+    raise PreviewError("Deterministic activation revision did not become ready within its bound.")
+
+
+def verify_activation_owner(
+    env: dict, execution: dict, read: Callable = cloud_read, *, admission_read: Callable | None = None,
+) -> dict:
+    """Owner-scoped read-only acceptance; never substitute or broaden the deployment actor."""
+    token = env.get(ROLLOUT.DEFAULT_TOKEN_ENV, "")
+    require(bool(token), "Authenticated owner acceptance token is unavailable.")
+    bound = execution["context"]
+    require(bound.get("contract") == "private-activation-patch-v1"
+            and execution.get("status") == "ready_pending_owner_acceptance"
+            and bound["environment"] == env["AZURE_ENV_NAME"] and bound["subscription"] == env["AZURE_SUBSCRIPTION_ID"]
+            and bound["resourceGroup"] == f"rg-{env.get('AI4IA_WORKLOAD') or 'ai4ia'}-{env['AZURE_ENV_NAME']}",
+            "Owner acceptance receipt is outside the approved activation.")
+    admitted = ADMISSION.admission(env) if admission_read is None else ADMISSION.admission(env, read=admission_read)
+    legacy = json.loads(admitted["AI4IA_PRIVATE_LEGACY_INVENTORY"])
+    require(legacy["activeRevisions"] == [] and admitted["AI4IA_API_PRIVATE_INITIAL_IMAGE"] == bound["image"],
+            "Activation image or legacy drain changed before owner acceptance.")
+    snapshot = patch_raw_snapshot(env, api_name(bound["environment"], "private"), read)
+    props = snapshot["properties"]
+    expected = api_name(bound["environment"], "private") + "--" + activation_suffix(execution["binding"])
+    require(props["latestRevisionName"] == props["latestReadyRevisionName"] == execution["revision"] == expected
+            and props["provisioningState"] == "Succeeded"
+            and digest(patch_protected(snapshot)) == bound["protected"]
+            and digest(patch_metadata(snapshot)) == bound["metadata"]
+            and digest(activation_template_projection(props["template"])) == bound["afterTemplate"],
+            "Activation changed before owner acceptance.")
+    origin = "https://" + props["configuration"]["ingress"]["fqdn"]
+    require(origin == bound["apiOrigin"] and re.fullmatch(
+        r"https://ca-api-private-" + re.escape(env["AZURE_ENV_NAME"]) + r"\.[a-z0-9.-]+\.azurecontainerapps\.io", origin,
+    ) is not None, "Owner acceptance origin is unverified.")
+    health = ROLLOUT.http_request("GET", origin + "/health/ready", timeout=20,
+                                 deadline=ROLLOUT.Deadline(20), body_limit=4096)
+    require(health.status == 200 and health.json() == {"status": "ok", "stage": "session_store"},
+            "Owner acceptance private readiness failed.")
+    response = ROLLOUT.http_request("GET", origin + "/api/decisions/options",
+                                   headers={"Authorization": "Bearer " + token}, timeout=20,
+                                   deadline=ROLLOUT.Deadline(20), body_limit=8192)
+    result = response.json()
+    catalog = json.loads((ROOT / "infra/models.json").read_text(encoding="utf-8"))
+    expected_models = {row["name"] for row in catalog["catalog"]
+                       if row["category"] == "decision" and row.get("runtimeEnabled", True) is True}
+    require(response.status == 200 and isinstance(result, dict) and isinstance(result.get("models"), list)
+            and 0 < len(result["models"]) <= 32
+            and all(isinstance(row, dict) and isinstance(row.get("id"), str)
+                    and isinstance(row.get("residencies"), list) and bool(row["residencies"])
+                    and all(isinstance(value, str) and bool(value) for value in row["residencies"])
+                    for row in result["models"])
+            and len({row["id"] for row in result["models"]}) == len(result["models"])
+            and {row.get("id") for row in result["models"]} == expected_models,
+            "Authenticated owner Decision options acceptance failed.")
+    return {"status": "verified", "revision": expected, "configuration": bound["configuration"],
+            "metadata": bound["metadata"], "readiness": "passed", "ownerOptions": "passed",
+            "legacyInventory": legacy, "observedAt": int(time.time()), "modelCalls": 0}
+
+
+def activation_patch_command(command: str, env: dict, read: Callable = cloud_read) -> int:
+    if command == "apply":
+        require(env.get("GITHUB_RUN_ATTEMPT") == "1"
+                and not (Path(env["RUNNER_TEMP"]) / "ai4ia-private-preview/execution.json").exists(),
+                "Activation dispatch was already attempted or recorded; never replay.")
+    bound, preview, current, legacy, after = activation_patch_context(env, read)
+    output = Path(env["RUNNER_TEMP"]) / "ai4ia-private-preview"
+    output.mkdir(exist_ok=True)
+    kind = env.get("AI4IA_RELEASE_KIND")
+    require(kind in ("preview", "deploy"), "Activation PATCH requires an explicit preview/deploy.")
+    now = int(time.time())
+    token = make_token(bound, preview, now) if kind == "preview" else env.get("AI4IA_PRIVATE_PREVIEW_BINDING", "")
+    verify_token(token, bound, preview, now)
+    body = activation_patch_body(after, token)
+    expected_revision = api_name(bound["environment"], "private") + "--" + activation_suffix(token)
+    report = {"context": bound, "preview": preview, "binding": token, "issuedAt": int(token.split(":")[0]),
+              "observedAt": now, "revision": expected_revision, "patchBodyDigest": digest(body),
+              "executionAuthorized": False, "executionBlockers": []}
+    if command == "prepare":
+        rows = private_revision_rows(bound, read)
+        require(bound["sourceRevision"] in {row["name"] for row in rows}
+                and expected_revision not in {row["name"] for row in rows}, "Activation suffix is used or current coverage is missing.")
+        (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if kind == "deploy":
+            directory = Path(tempfile.mkdtemp(prefix=f"ai4ia-private-packet-{env['GITHUB_RUN_ID']}-", dir=env["RUNNER_TEMP"]))
+            fd = os.open(directory / "patch.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(body, stream, allow_nan=False)
+            proof = output / "proof.json"
+            proof.write_text(json.dumps(report), encoding="utf-8")
+            with Path(env["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+                stream.write(f"AI4IA_PRIVATE_PREVIEW_PROOF={proof}\nAI4IA_PRIVATE_PACKET_DIR={directory}\n")
+        with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+            stream.write(f"authorized={'true' if kind == 'deploy' else 'false'}\n")
+        print("Activation PATCH preview bound to fresh raw state; configuration and secrets are not in its body.")
+        return 0
+    require(command == "apply" and kind == "deploy" and env.get("AI4IA_RELEASE_PROVISION") == "true",
+            "Only the explicitly reviewed activation PATCH may execute.")
+    proof = PROVENANCE.read_object(Path(env["AI4IA_PRIVATE_PREVIEW_PROOF"]), 64 * 1024)
+    require(proof["context"] == bound and proof["preview"] == preview and proof["binding"] == token,
+            "Activation state changed after reviewed preview.")
+    directory = Path(env["AI4IA_PRIVATE_PACKET_DIR"]).resolve()
+    require(directory.is_relative_to(Path(env["RUNNER_TEMP"]).resolve()), "Activation packet is outside this runner.")
+    frozen = PROVENANCE.read_object(directory / "patch.json", 512 * 1024)
+    validate_activation_patch_body(frozen, current, legacy, token)
+    require(digest(frozen) == proof["patchBodyDigest"], "Frozen activation PATCH changed.")
+    admitted = ADMISSION.admission(env)
+    require(json.loads(admitted["AI4IA_PRIVATE_LEGACY_INVENTORY"]) == bound["legacyInventory"],
+            "Legacy drain changed immediately before PATCH.")
+    rows = private_revision_rows(bound, read)
+    require(bound["sourceRevision"] in {row["name"] for row in rows}
+            and expected_revision not in {row["name"] for row in rows}, "Activation revision suffix already exists; never replay.")
+    main = json.loads(run(["gh", "api", f"repos/{env['GITHUB_REPOSITORY']}/git/ref/heads/main"], limit=32768, timeout=30))
+    require(main.get("object", {}).get("sha") == bound["source"], "Main changed before activation PATCH.")
+    require(digest(patch_raw_snapshot(env, api_name(bound["environment"], "private"), read)) == bound["snapshot"],
+            "Activation raw state changed immediately before PATCH.")
+    verify_token(token, bound, preview, int(time.time()))
+    execution = {"context": bound, "binding": token, "revision": expected_revision, "patchBodyDigest": digest(frozen),
+                 "transport": "template_only_patch", "status": "dispatching", "modelCalls": 0}
+    with (output / "execution.json").open("x", encoding="utf-8") as stream:
+        json.dump(execution, stream, indent=2)
+    with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+        stream.write("receipt=true\n")
+    try:
+        run(["az", "rest", "--method", "patch", "--subscription", bound["subscription"],
+             "--url", f"https://management.azure.com{bound['resourceId']}?api-version={PATCH_API_VERSION}",
+             "--body", "@" + str(directory / "patch.json"), "--headers", "Content-Type=application/json",
+             "--only-show-errors", "-o", "none"], limit=4096, timeout=120)
+        execution["status"] = "accepted"
+        execution["postChecks"] = activation_ready(env, bound, frozen, token, read)
+        execution["status"] = "ready_pending_owner_acceptance"
+    except (ValueError, OSError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        execution["status"] = "outcome_unknown" if execution["status"] == "dispatching" else "post_check_failed"
+        raise
+    finally:
+        (output / "execution.json").write_text(json.dumps(execution, indent=2), encoding="utf-8")
+        (directory / "patch.json").unlink(missing_ok=True)
+    print("Exact activation PATCH delivered and readiness checked; authenticated owner options remain a separate gate.")
+    return 0
 
 
 def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, dict, dict | None, dict]:
@@ -1354,20 +1610,21 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
         expected["sourceSecretMetadata"] = descriptor
     if packet in ("activate", "cutover"):
         bound["legacyInventory"] = legacy_inventory_proof(env.get("AI4IA_PRIVATE_LEGACY_INVENTORY", ""), bound)
-    if packet == "activate":
-        assert isinstance(baseline, dict)
-        bound["activationEvidence"] = read_activation_evidence(template, baseline, old_api, bound, read)
     return template, params, bound, baseline, expected
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "verify-binding", "apply", "cleanup"))
+    parser.add_argument("command", choices=("prepare", "verify-binding", "apply", "cleanup", "verify-activation"))
     args = parser.parse_args()
     env = dict(os.environ)
     packet_dir = None
     retain_packet = False
     try:
+        if args.command == "verify-activation":
+            execution = PROVENANCE.read_object(Path(env["AI4IA_PRIVATE_ACTIVATION_RECEIPT"]), 64 * 1024)
+            print(json.dumps(verify_activation_owner(env, execution), indent=2))
+            return 0
         if args.command == "cleanup":
             directory = Path(env["AI4IA_PRIVATE_PACKET_DIR"])
             require(directory.is_absolute() and not directory.is_symlink()
@@ -1376,6 +1633,7 @@ def main() -> int:
                     "Cleanup target is not this run's private packet.")
             (directory / "parameters.json").unlink(missing_ok=True)
             (directory / "template.json").unlink(missing_ok=True)
+            (directory / "patch.json").unlink(missing_ok=True)
             directory.rmdir()
             return 0
         if args.command == "prepare":
@@ -1391,6 +1649,8 @@ def main() -> int:
             return 0
         if args.command == "verify-binding":
             raise PreviewError("A scoped migration packet cannot authorize root azd provisioning; use exact packet apply.")
+        if from_environment(env) == "activate":
+            return activation_patch_command(args.command, env)
         template, params, bound, baseline, expected = compiled_context(env)
         if args.command == "apply":
             proof = json.loads(Path(env["AI4IA_PRIVATE_PREVIEW_PROOF"]).read_text())

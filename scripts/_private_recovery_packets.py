@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import re
 import math
 from typing import Any, Callable
@@ -15,9 +16,9 @@ SECRET_NAMES = frozenset({
 MODULES = {
     "foundation": "api-private-network.bicep",
     "candidate": "api.bicep",
-    "activate": "api.bicep",
     "cutover": "web.bicep",
 }
+PATCH_FORBIDDEN_KEYS = frozenset({"configuration", "identity", "secrets", "ingress", "tags", "location"})
 
 
 class PacketError(ValueError):
@@ -27,6 +28,101 @@ class PacketError(ValueError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise PacketError(message)
+
+
+def activation_patch_template(current: dict, legacy: dict) -> dict:
+    """Copy the current template; change only the approved flag and production maximum."""
+    template = deepcopy(current["properties"]["template"])
+    containers = template.get("containers")
+    require(isinstance(containers, list) and len(containers) == 1 and containers[0].get("name") == "api",
+            "Activation requires the exact single API container.")
+    resources = containers[0].get("resources")
+    require(isinstance(resources, dict) and type(resources.get("cpu")) is float and resources["cpu"] == 0.5
+            and resources.get("memory") == "1Gi" and containers[0].get("imageType") == "ContainerImage",
+            "Activation compute/image type differs from the approved profile.")
+    scale = template.get("scale")
+    production = legacy["properties"]["template"].get("scale")
+    require(isinstance(scale, dict) and isinstance(production, dict)
+            and type(scale.get("minReplicas")) is int and scale["minReplicas"] == 1
+            and type(scale.get("maxReplicas")) is int and scale["maxReplicas"] == 1
+            and type(production.get("minReplicas")) is int and production["minReplicas"] == 1
+            and type(production.get("maxReplicas")) is int and production["maxReplicas"] == 3,
+            "Activation scale is not the reviewed current/legacy profile.")
+    rows = containers[0].get("env")
+    require(isinstance(rows, list) and len(rows) <= 512, "Activation environment is unavailable.")
+    seen = set()
+    for row in rows:
+        require(isinstance(row, dict) and set(row) <= {"name", "value", "secretRef"}
+                and isinstance(row.get("name"), str) and row["name"] not in seen,
+                "Activation environment names or fields are invalid.")
+        require(not ("value" in row and "secretRef" in row)
+                and ("value" not in row or isinstance(row["value"], str))
+                and ("secretRef" not in row or isinstance(row["secretRef"], str) and bool(row["secretRef"])),
+                "Activation environment value/reference mode is invalid.")
+        seen.add(row["name"])
+    flags = {row["name"]: row for row in rows if row["name"] in {
+        "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "AI4IA_PRIVATE_COSMOS_REQUIRED",
+    }}
+    require(flags == {
+        name: {"name": name, "value": "true"} for name in
+        ("AI4IA_PRIVATE_RECOVERY_CANDIDATE", "AI4IA_PRIVATE_COSMOS_REQUIRED")
+    }, "Activation source is not privately ready and worker-suppressed.")
+    flags["AI4IA_PRIVATE_RECOVERY_CANDIDATE"]["value"] = "false"
+    scale["maxReplicas"] = production["maxReplicas"]
+    return activation_template_projection(template)
+
+
+def activation_template_projection(template: dict) -> dict:
+    """Only the revision claim and documented read-only storage are provider fields."""
+    template = deepcopy(template)
+    template.pop("revisionSuffix", None)
+    for name in ("containers", "initContainers"):
+        group = template.get(name)
+        require(group is None or isinstance(group, list), "Activation container collection is invalid.")
+        for container in group or []:
+            require(isinstance(container, dict), "Activation container shape is invalid.")
+            resources = container.get("resources")
+            require(resources is None or isinstance(resources, dict), "Activation resources are invalid.")
+            if resources is not None:
+                require(resources.get("ephemeralStorage") is None or isinstance(resources["ephemeralStorage"], str),
+                        "Activation read-only storage shape is unknown.")
+                resources.pop("ephemeralStorage", None)
+    return template
+
+
+def activation_suffix(binding: str) -> str:
+    require(re.fullmatch(r"[0-9]{10}:[0-9a-f]{64}", binding) is not None, "Activation binding is invalid.")
+    return "activate-" + binding.split(":")[1][:16]
+
+
+def activation_patch_body(template: dict, binding: str) -> dict:
+    desired = deepcopy(template)
+    require("revisionSuffix" not in desired, "Activation suffix must be derived from the binding.")
+    desired["revisionSuffix"] = activation_suffix(binding)
+    body = {"properties": {"template": desired}}
+    pending: list[tuple[Any, int]] = [(body, 0)]
+    count = 0
+    while pending:
+        value, depth = pending.pop()
+        count += 1
+        require(count <= 16384 and depth <= 32, "Activation PATCH exceeds its shape bound.")
+        if isinstance(value, dict):
+            require(not PATCH_FORBIDDEN_KEYS.intersection(value), "Forbidden field in activation PATCH.")
+            pending.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list):
+            pending.extend((child, depth + 1) for child in value)
+    require(len(json.dumps(body, allow_nan=False).encode()) <= 512 * 1024, "Activation PATCH exceeds its byte bound.")
+    return body
+
+
+def validate_activation_patch_body(body: Any, current: dict, legacy: dict, binding: str) -> None:
+    expected = activation_patch_body(activation_patch_template(current, legacy), binding)
+    require(isinstance(body, dict) and set(body) == {"properties"}
+            and isinstance(body["properties"], dict) and set(body["properties"]) == {"template"},
+            "Activation PATCH must contain only properties.template.")
+    require(json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            == json.dumps(expected, sort_keys=True, separators=(",", ":"), allow_nan=False),
+            "Activation PATCH changed image, environment, probes or unapproved template fields.")
 
 
 def location_evidence(data: Any, subscription: str, expected: str) -> dict[str, str]:

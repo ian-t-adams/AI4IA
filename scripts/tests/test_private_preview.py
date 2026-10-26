@@ -247,11 +247,6 @@ def activation_fixture():
     legacy["properties"]["template"]["scale"]["maxReplicas"] = 3
     legacy["properties"]["configuration"]["maxInactiveRevisions"] = None
     legacy["properties"]["template"]["containers"][0]["env"] = [{"name": "UNCHANGED_SETTING", "value": "retained"}]
-    bound["activationEvidence"] = {
-        "apiVersion": "2024-10-02-preview",
-        "current": jmespath.search(PREVIEW.activation_query(), before),
-        "legacy": jmespath.search(PREVIEW.activation_query(), legacy),
-    }
     raw = {"status": "Succeeded", "changes": [{
         "resourceId": rid, "changeType": "Modify", "before": before, "after": after,
         "delta": [{"path": path} for path in ACTIVATION_FIELDS],
@@ -260,115 +255,84 @@ def activation_fixture():
 
 
 class PreviewTests(unittest.TestCase):
-    def test_activation_exact_echoes_and_production_values_keep_full_paths(self):
-        bound, raw, params, baseline, _ = activation_fixture()
-        report = PREVIEW.scope_preview(raw, bound, params, baseline)
-        self.assertEqual(report["blockingReasons"], [])
-        self.assertEqual(report["changes"][0]["fields"], ACTIVATION_FIELDS)
-        self.assertEqual(report["changes"][0]["activationEvidenceDigest"], PREVIEW.digest(bound["activationEvidence"]))
-        self.assertEqual(report["changes"][0]["activationClassification"]["productionScale"], "bound_to_legacy")
-        self.assertIsNone(bound["activationEvidence"]["legacy"]["fields"]["properties.configuration.maxInactiveRevisions"]["value"])
+    def test_bounded_command_reports_safe_arm_class_code_target_and_message(self):
+        error = {"error": {
+            "code": "InvalidTemplate", "target": "apiApp",
+            "message": "Deployment template validation failed: 'The resource 'private-target' at line '1' "
+                       "and column '33' is defined multiple times in a template. Please see https://example.test/help.'",
+        }}
+        command = [sys.executable, "-c", "import sys;sys.stderr.write(" + repr("ERROR: " + json.dumps(error))
+                   + ");raise SystemExit(1)"]
+        with self.assertRaises(PREVIEW.PreviewError) as caught:
+            PREVIEW.run(command, limit=1024, timeout=5)
+        text = str(caught.exception)
+        self.assertIn('"class":"arm_error"', text)
+        self.assertIn('"code":"InvalidTemplate"', text)
+        self.assertIn('"target":"apiApp"', text)
+        self.assertIn("defined multiple times", text)
+        self.assertNotIn("private-target", text)
+        self.assertNotIn("example.test", text)
 
-    def test_activation_each_echo_needs_exact_before_absent_after_and_raw_value(self):
-        paths = [path for path in ACTIVATION_FIELDS if path not in (
-            "properties.template.containers", "properties.template.scale.maxReplicas",
-        )] + ["properties.template.containers[0].imageType"]
-        for path in paths:
-            for fault in ("before", "after", "raw", "type"):
-                with self.subTest(path=path, fault=fault):
-                    bound, raw, params, baseline, _ = activation_fixture()
-                    change = raw["changes"][0]
-                    original = PREVIEW.activation_field(change["before"], path)["value"]
-                    if fault == "before":
-                        activation_set(change["before"], path, None)
-                    elif fault == "after":
-                        activation_set(change["after"], path, original)
-                    elif fault == "raw":
-                        bound["activationEvidence"]["current"]["fields"][path]["present"] = False
-                    else:
-                        activation_set(change["before"], path, float(original) if type(original) is int else False)
-                    with self.assertRaises(PREVIEW.PreviewError):
-                        PREVIEW.scope_preview(raw, bound, params, baseline)
+    def test_command_diagnostic_redacts_secrets_and_withholds_unknown_or_oversize_data(self):
+        secrets = ("short-api", "short-s7p", "short-client", "short-connection", "short-quoted",
+                   "opaque" * 8, "eyJabc.eyJdef.signature123", "signed-query", "target-secret")
+        message = (
+            f"api_key='{secrets[0]}' S7P-KEY={secrets[1]} clientSecret={secrets[2]} "
+            f"connection_string='{secrets[3]}' supplied value '{secrets[4]}'; "
+            f"{secrets[5]} Authorization: Bearer {secrets[6]} "
+            f"https://example.test/path?sig={secrets[7]}"
+        )
+        payload = {"code": "InvalidTemplate", "target": secrets[8], "message": message}
+        diagnostic = PREVIEW.command_diagnostic(["az", "deployment", "group", "create"], "command_failed",
+                                                json.dumps(payload).encode())
+        encoded = json.dumps(diagnostic)
+        self.assertEqual(diagnostic["operation"], "azure_deployment_create")
+        self.assertEqual(diagnostic["target"], "[REDACTED_TARGET]")
+        for secret in secrets:
+            self.assertNotIn(secret, encoded)
+        for raw in (b"sensitive-unstructured-value", b"x" * 16385, b"\xff", b'{"code":"secret-code"}',
+                    b'{"code":"InvalidTemplate","code":"AuthorizationFailed","message":"private"}'):
+            result = PREVIEW.command_diagnostic(["az"], "command_failed", raw)
+            self.assertIsNone(result["code"])
+            self.assertNotIn("sensitive-unstructured-value", json.dumps(result))
+            self.assertNotIn("private", json.dumps(result))
+        for kind in ("timeout", "stdout_limit", "stream_unavailable"):
+            result = PREVIEW.command_diagnostic(["az"], kind, json.dumps(payload).encode())
+            self.assertEqual(result["class"], kind)
+            self.assertIsNone(result["code"])
+        plain = PREVIEW.command_diagnostic(["az"], "command_failed",
+                                           b"ERROR: (InvalidTemplate) Invalid value 'do-not-print'\nCode: InvalidTemplate")
+        self.assertEqual(plain["code"], "InvalidTemplate")
+        self.assertNotIn("do-not-print", json.dumps(plain))
 
-    def test_activation_does_not_hide_real_application_drift(self):
-        changes = [
-            ("properties.configuration.ingress.external", False),
-            ("properties.configuration.registries", [{"server": "different.azurecr.io"}]),
-            ("properties.configuration.secrets", [{"name": "unexpected"}]),
-            ("properties.template.containers[0].image", "different.azurecr.io/api@sha256:" + "2" * 64),
-            ("properties.template.containers[0].resources.cpu", 1),
-        ]
-        for path, value in changes:
-            with self.subTest(path=path):
-                bound, raw, params, baseline, _ = activation_fixture()
-                activation_set(raw["changes"][0]["after"], path, value)
-                self.assertTrue(PREVIEW.scope_preview(raw, bound, params, baseline)["blockingReasons"])
-        for path in ("properties.configuration.unknown", "properties.template.scale.minReplicas"):
-            bound, raw, params, baseline, _ = activation_fixture()
-            raw["changes"][0]["delta"].append({"path": path})
+    def test_real_bounded_stderr_does_not_change_success_timeout_or_failure_admission(self):
+        success = [sys.executable, "-c", "import sys;sys.stderr.write('private-warning');sys.stdout.write('ok')"]
+        self.assertEqual(PREVIEW.run(success, limit=2, timeout=5), b"ok")
+        with self.assertRaisesRegex(PREVIEW.PreviewError, '"class":"stdout_limit"'):
+            PREVIEW.run(success, limit=1, timeout=5)
+        with self.assertRaisesRegex(PREVIEW.PreviewError, '"class":"timeout"'):
+            PREVIEW.run([sys.executable, "-c", "import time;time.sleep(5)"], limit=10, timeout=1)
+        flood = [sys.executable, "-c", "import sys;sys.stderr.write('secret-flood'*10000);raise SystemExit(1)"]
+        with self.assertRaises(PREVIEW.PreviewError) as caught:
+            PREVIEW.run(flood, limit=1024, timeout=5)
+        self.assertNotIn("secret-flood", str(caught.exception))
+        self.assertIn('"code":null', str(caught.exception))
+
+    def test_activation_routes_only_to_patch_and_full_arm_constructor_refuses_it(self):
+        env = {**ENV, "AI4IA_API_NETWORK_PHASE": "activate", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40}
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "apply"]), \
+             patch.object(PREVIEW, "activation_patch_command", return_value=0) as patcher, \
+             patch.object(PREVIEW, "compiled_context", side_effect=AssertionError("Full ARM activation forbidden")):
+            self.assertEqual(PREVIEW.main(), 0)
+            patcher.assert_called_once()
+        with patch.object(PREVIEW, "compile_module", side_effect=AssertionError("No ARM compilation")):
             with self.assertRaises(PREVIEW.PreviewError):
-                PREVIEW.scope_preview(raw, bound, params, baseline)
+                PREVIEW.compiled_context(env)
+
+    def test_full_arm_activation_preview_is_retired_even_for_the_previously_approved_shape(self):
         bound, raw, params, baseline, _ = activation_fixture()
-        raw["changes"][0]["after"]["properties"]["template"]["containers"][0]["env"][2]["value"] = "changed"
-        self.assertIn("protected_app_template_changed", PREVIEW.scope_preview(raw, bound, params, baseline)["blockingReasons"])
-
-    def test_activation_legacy_identity_flags_and_scale_are_not_optional(self):
-        for fault in ("missing", "foreign", "legacy-scale", "legacy-flags", "readiness", "scale", "identity"):
-            with self.subTest(fault=fault):
-                bound, raw, params, baseline, _ = activation_fixture()
-                after = raw["changes"][0]["after"]
-                if fault == "missing":
-                    bound.pop("activationEvidence")
-                elif fault == "foreign":
-                    bound["activationEvidence"]["legacy"]["id"] += "-other"
-                elif fault == "legacy-scale":
-                    bound["activationEvidence"]["legacy"]["fields"]["properties.template.scale.maxReplicas"]["value"] = 4
-                    after["properties"]["template"]["scale"]["maxReplicas"] = 4
-                elif fault == "legacy-flags":
-                    bound["activationEvidence"]["legacy"]["flags"] = [{"name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": "true"}]
-                elif fault == "readiness":
-                    after["properties"]["template"]["containers"][0]["env"][1]["value"] = "false"
-                elif fault == "scale":
-                    after["properties"]["template"]["scale"]["maxReplicas"] = 3.0
-                else:
-                    after["identity"]["type"] = "SystemAssigned"
-                if fault == "identity":
-                    self.assertIn("protected_application_resource_changed", PREVIEW.scope_preview(raw, bound, params, baseline)["blockingReasons"])
-                else:
-                    with self.assertRaises(PREVIEW.PreviewError):
-                        PREVIEW.scope_preview(raw, bound, params, baseline)
-
-    def test_activation_raw_collection_is_scoped_stable_and_source_bound(self):
-        bound, raw, _, baseline, legacy = activation_fixture()
-        source = {"type": "Microsoft.App/containerApps", "apiVersion": "2024-10-02-preview",
-                  "properties": deepcopy(raw["changes"][0]["after"]["properties"])}
-        template = {"resources": {"apiApp": source}}
-        evidence = bound["activationEvidence"]
-        def read(args):
-            self.assertEqual(args[:3], ["rest", "--method", "get"])
-            self.assertEqual(args[args.index("--subscription") + 1], bound["subscription"])
-            url = args[args.index("--url") + 1]
-            side = "current" if "/ca-api-private-test?" in url else "legacy"
-            self.assertEqual(url, "https://management.azure.com" + evidence[side]["id"] + "?api-version=2024-10-02-preview")
-            self.assertEqual(args[-1], PREVIEW.activation_query())
-            return deepcopy(evidence[side])
-        self.assertEqual(PREVIEW.read_activation_evidence(template, baseline, legacy, bound, read), evidence)
-        for path in PREVIEW.ACTIVATION_ECHOES:
-            changed = deepcopy(template)
-            activation_set(changed["resources"]["apiApp"], path, None)
-            with self.subTest(path=path), self.assertRaises(PREVIEW.PreviewError):
-                PREVIEW.read_activation_evidence(changed, baseline, legacy, bound,
-                                                lambda _: self.fail("Source must refuse before cloud reads"))
-        calls = 0
-        def changing(args):
-            nonlocal calls
-            calls += 1
-            row = read(args)
-            if calls == 2:
-                row["fields"]["properties.configuration.ingress.exposedPort"]["value"] = False
-            return row
-        with self.assertRaisesRegex(PREVIEW.PreviewError, "changed during collection"):
-            PREVIEW.read_activation_evidence(template, baseline, legacy, bound, changing)
+        with self.assertRaisesRegex(PREVIEW.PreviewError, "Unknown scoped recovery packet"):
+            PREVIEW.scope_preview(raw, bound, params, baseline)
 
     def test_post_create_metadata_gate_precedes_success_and_contains_only_candidate(self):
         from scripts.tests.test_private_metadata import live_snapshot
@@ -993,6 +957,9 @@ class PreviewTests(unittest.TestCase):
                 if packet == "activate":
                     bound, raw, params, before, _ = activation_fixture()
                     before["location"] = raw["changes"][0]["before"]["location"] = "East US 2"
+                    with self.assertRaises(PREVIEW.PreviewError):
+                        PREVIEW.scope_preview(raw, bound, params, before)
+                    continue
                 report = PREVIEW.scope_preview(raw, bound, params, before)
                 self.assertEqual(report["blockingReasons"], [])
                 self.assertEqual(report["changes"][0]["locations"], {
@@ -1564,6 +1531,269 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(set(result), set(source["parameters"]))
         self.assertGreater(len(result), 100)
         self.assertEqual(result["apiNetworkPhase"], {"value": "legacy"})
+
+
+class PatchCloud:
+    def __init__(self):
+        original, raw, _, _, legacy = activation_fixture()
+        self.current = deepcopy(raw["changes"][0]["before"])
+        self.legacy = legacy
+        self.current["properties"]["configuration"]["ingress"]["fqdn"] = "ca-api-private-test.example.azurecontainerapps.io"
+        for row in (self.current, self.legacy):
+            row["properties"]["provisioningState"] = "Succeeded"
+        container = self.current["properties"]["template"]["containers"][0]
+        container["env"].extend([
+            {"name": "AI4IA_MODEL_GATEWAY_API_KEY", "secretRef": "model-gateway-api-key"},
+            {"name": "EMPTY_SETTING"},
+        ])
+        container["probes"] = [{"type": "Readiness", "httpGet": {"path": "/health/ready", "port": 8000}}]
+        container["resources"]["ephemeralStorage"] = "2Gi"
+        self.current["properties"]["configuration"]["secrets"] = [{"name": "model-gateway-api-key"}]
+        self.image = container["image"]
+        self.inventory = {"appId": self.legacy["id"], "pageCount": 1, "rowCount": 1, "digest": "d" * 64,
+                          "activeRevisions": [], "replicaReadCount": 0}
+        self.revisions = [{"name": self.current["properties"]["latestReadyRevisionName"],
+                           "properties": {"active": True, "healthState": "Healthy", "provisioningState": "Provisioned"}}]
+        self.calls = []
+        self.writes = []
+        self.fault = ""
+        self.source = original["source"]
+        self.admission_calls = 0
+
+    def admission(self, _env):
+        self.admission_calls += 1
+        if self.admission_calls == 4 and self.fault == "late-config":
+            self.current["properties"]["configuration"]["maxInactiveRevisions"] = 99
+        if self.admission_calls == 4 and self.fault == "late-legacy":
+            self.inventory["digest"] = "e" * 64
+        return {"AI4IA_API_PRIVATE_INITIAL_IMAGE": self.image,
+                "AI4IA_PRIVATE_API_ORIGIN": "https://ca-api-private-test.example.azurecontainerapps.io",
+                "AI4IA_PRIVATE_LEGACY_INVENTORY": json.dumps(self.inventory)}
+
+    def read(self, args, **kwargs):
+        self.calls.append(args)
+        if args[:3] == ["containerapp", "env", "list-usages"]:
+            return {"value": [{"name": {"value": "ManagedEnvironmentConsumptionCores"},
+                               "currentValue": 0.5, "limit": 500}]}
+        assert args[:3] == ["rest", "--method", "get"]
+        url = args[args.index("--url") + 1]
+        query = args[args.index("--query") + 1]
+        assert "api-version=2024-10-02-preview" in url
+        if "/revisions?" in url:
+            data = {"value": self.revisions}
+        elif "/revisions/" in url:
+            name = url.split("/revisions/")[1].split("?")[0]
+            data = next(row for row in self.revisions if row["name"] == name)
+        else:
+            data = self.current if "/ca-api-private-test?" in url else self.legacy
+        return deepcopy(jmespath.search(query, data))
+
+    def run(self, args, **kwargs):
+        if args[0] == "gh":
+            return json.dumps({"object": {"sha": self.source}}).encode()
+        if args[:3] == ["az", "acr", "login"]:
+            return b""
+        assert args[:4] == ["az", "rest", "--method", "patch"]
+        assert "--yaml" not in args
+        body = json.loads(Path(args[args.index("--body") + 1][1:]).read_bytes())
+        assert set(body) == {"properties"} and set(body["properties"]) == {"template"}
+        self.writes.append(body)
+        if self.fault == "transport":
+            raise PREVIEW.PreviewError("Unknown write outcome")
+        template = deepcopy(body["properties"]["template"])
+        name = "ca-api-private-test--" + template["revisionSuffix"]
+        self.current["properties"].update(template=template, latestRevisionName=name, latestReadyRevisionName=name)
+        self.current["properties"]["template"]["containers"][0]["resources"]["ephemeralStorage"] = "2Gi"
+        if self.fault == "post-config":
+            self.current["properties"]["configuration"]["maxInactiveRevisions"] = 99
+        elif self.fault == "post-secret":
+            self.current["properties"]["configuration"]["secrets"][0].update(
+                keyVaultUrl="https://changed.vault.azure.net/secrets/key",
+                identity=next(iter(self.current["identity"]["userAssignedIdentities"])),
+            )
+        elif self.fault == "post-env":
+            self.current["properties"]["template"]["containers"][0]["env"][2]["value"] = "changed"
+        elif self.fault == "post-identity":
+            key = next(iter(self.current["identity"]["userAssignedIdentities"]))
+            self.current["identity"]["userAssignedIdentities"][key] = {"principalId": "changed-principal"}
+        elif self.fault == "post-probes":
+            self.current["properties"]["template"]["containers"][0]["probes"] = []
+        elif self.fault == "post-image":
+            self.current["properties"]["template"]["containers"][0]["image"] = "changed"
+        self.revisions.append({"name": name, "properties": {
+            "active": True, "healthState": "Healthy", "provisioningState": "Provisioned",
+            "template": deepcopy(self.current["properties"]["template"]),
+        }})
+        return b""
+
+
+class ActivationPatchTests(unittest.TestCase):
+    def test_body_is_exact_template_only_and_preserves_image_env_refs_and_probes(self):
+        cloud = PatchCloud()
+        before = deepcopy(cloud.current)
+        template = PREVIEW.activation_patch_template(cloud.current, cloud.legacy)
+        token = "1700000000:" + "a" * 64
+        body = PREVIEW.activation_patch_body(template, token)
+        PREVIEW.validate_activation_patch_body(body, cloud.current, cloud.legacy, token)
+        self.assertEqual(cloud.current, before)
+        self.assertEqual(body["properties"]["template"]["revisionSuffix"], "activate-" + "a" * 16)
+        self.assertEqual(template["containers"][0]["image"], cloud.image)
+        self.assertEqual(template["containers"][0]["probes"], before["properties"]["template"]["containers"][0]["probes"])
+        self.assertEqual(template["containers"][0]["env"][-2:], before["properties"]["template"]["containers"][0]["env"][-2:])
+        self.assertNotIn("ephemeralStorage", template["containers"][0]["resources"])
+        for mutate in (
+            lambda row: row.update(configuration={}),
+            lambda row: row["properties"].update(secrets=[]),
+            lambda row: row["properties"]["template"].update(identity={}),
+            lambda row: row["properties"]["template"]["containers"][0].update(image="other"),
+            lambda row: row["properties"]["template"]["containers"][0]["env"][2].update(value="other"),
+            lambda row: row["properties"]["template"]["containers"][0]["env"][-2].update(secretRef="other"),
+            lambda row: row["properties"]["template"]["containers"][0]["probes"].clear(),
+            lambda row: row["properties"]["template"].update(revisionSuffix="other"),
+        ):
+            changed = deepcopy(body)
+            mutate(changed)
+            with self.assertRaises(ValueError):
+                PREVIEW.validate_activation_patch_body(changed, cloud.current, cloud.legacy, token)
+        for fault in ("flag", "legacy-scale", "cpu"):
+            current, legacy = deepcopy(cloud.current), deepcopy(cloud.legacy)
+            if fault == "flag":
+                current["properties"]["template"]["containers"][0]["env"][0]["value"] = "false"
+            elif fault == "legacy-scale":
+                legacy["properties"]["template"]["scale"]["maxReplicas"] = 4
+            else:
+                current["properties"]["template"]["containers"][0]["resources"]["cpu"] = 1.0
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                PREVIEW.activation_patch_template(current, legacy)
+        with self.assertRaisesRegex(ValueError, "Forbidden"):
+            PREVIEW.activation_patch_body({**template, "configuration": {}}, token)
+
+    def flow(self, fault=""):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {**ENV, "AI4IA_API_NETWORK_PHASE": "activate", "AI4IA_PRIVATE_STEP": "activate",
+                   "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123",
+                   "GITHUB_RUN_ATTEMPT": "1",
+                   "GITHUB_REPOSITORY": "ian-t-adams/AI4IA", "RUNNER_TEMP": directory,
+                   "GITHUB_OUTPUT": str(root / "output"), "GITHUB_ENV": str(root / "env"),
+                   "AI4IA_PRIVATE_IMAGE_RECEIPT": "", "AI4IA_RELEASE_KIND": "preview", "AI4IA_RELEASE_PROVISION": "true"}
+            cloud = PatchCloud()
+            env["AI4IA_PRIVATE_IMAGE_RECEIPT"] = json.dumps({"image": cloud.image})
+            health = PREVIEW.ROLLOUT.HttpOutcome(status=503 if fault == "post-ready" else 200,
+                                                body=b'{"status":"ok","stage":"session_store"}')
+            with patch.object(PREVIEW.ADMISSION, "admission", side_effect=cloud.admission), \
+                 patch.object(PREVIEW.PROVENANCE, "consume_private_api", return_value={"verified": "original-producer"}), \
+                 patch.object(PREVIEW, "run", side_effect=cloud.run), \
+                 patch.object(PREVIEW.ROLLOUT, "http_request", return_value=health), redirect_stdout(io.StringIO()):
+                PREVIEW.activation_patch_command("prepare", env, cloud.read)
+                report = json.loads((root / "ai4ia-private-preview/report.json").read_text())
+                self.assertFalse(report["preview"]["nativeWhatIf"])
+                self.assertFalse(report["executionAuthorized"])
+                env.update(AI4IA_RELEASE_KIND="deploy", AI4IA_PRIVATE_PREVIEW_BINDING=report["binding"])
+                PREVIEW.activation_patch_command("prepare", env, cloud.read)
+                for line in (root / "env").read_text().splitlines():
+                    key, value = line.split("=", 1)
+                    env[key] = value
+                if fault == "pre-config":
+                    cloud.current["properties"]["configuration"]["ingress"]["external"] = False
+                elif fault == "pre-secret":
+                    cloud.current["properties"]["configuration"]["secrets"][0]["name"] = "webiq-api-key"
+                elif fault == "legacy":
+                    cloud.inventory["activeRevisions"] = ["ca-api-test--active"]
+                elif fault == "suffix":
+                    cloud.revisions.append({"name": report["revision"], "properties": {"active": False}})
+                elif fault == "body":
+                    path = Path(env["AI4IA_PRIVATE_PACKET_DIR"]) / "patch.json"
+                    body = json.loads(path.read_bytes())
+                    body["properties"]["configuration"] = {"secrets": []}
+                    path.write_text(json.dumps(body))
+                elif fault == "pre-template":
+                    cloud.current["properties"]["template"]["containers"][0]["env"][2]["value"] = "changed"
+                elif fault == "rerun":
+                    env["GITHUB_RUN_ATTEMPT"] = "2"
+                cloud.fault = fault
+                if fault:
+                    with self.assertRaises((ValueError, KeyError)):
+                        PREVIEW.activation_patch_command("apply", env, cloud.read)
+                else:
+                    PREVIEW.activation_patch_command("apply", env, cloud.read)
+                after_dispatch = fault in ("transport", "post-config", "post-secret", "post-env",
+                                           "post-identity", "post-probes", "post-image", "post-ready") or not fault
+                self.assertEqual(len(cloud.writes), 1 if after_dispatch else 0)
+                receipt_path = root / "ai4ia-private-preview/execution.json"
+                if after_dispatch:
+                    receipt = json.loads(receipt_path.read_bytes())
+                    self.assertEqual(receipt["status"], "ready_pending_owner_acceptance" if not fault else
+                                     "outcome_unknown" if fault == "transport" else "post_check_failed")
+                    self.assertNotIn("UNCHANGED_SETTING", json.dumps(receipt))
+                    self.assertFalse((Path(env["AI4IA_PRIVATE_PACKET_DIR"]) / "patch.json").exists())
+                    if fault == "transport":
+                        PREVIEW.activation_patch_command("prepare", env, cloud.read)
+                        for line in (root / "env").read_text().splitlines():
+                            key, value = line.split("=", 1)
+                            env[key] = value
+                        with self.assertRaisesRegex(PREVIEW.PreviewError, "already attempted"):
+                            PREVIEW.activation_patch_command("apply", env, cloud.read)
+                        self.assertEqual(len(cloud.writes), 1)
+                if not fault:
+                    with self.assertRaises(ValueError):
+                        PREVIEW.activation_patch_command("apply", env, cloud.read)
+                    self.assertEqual(len(cloud.writes), 1)
+                    env[PREVIEW.ROLLOUT.DEFAULT_TOKEN_ENV] = "synthetic-owner-token"
+                    models = json.loads((ROOT / "infra/models.json").read_text())["catalog"]
+                    options = {"models": [{"id": row["name"], "residencies": ["us"]} for row in models
+                                          if row["category"] == "decision" and row.get("runtimeEnabled", True)]}
+                    with patch.object(PREVIEW.ROLLOUT, "http_request", side_effect=[
+                        health, PREVIEW.ROLLOUT.HttpOutcome(status=200, body=json.dumps(options).encode()),
+                    ]) as http:
+                        owner = PREVIEW.verify_activation_owner(env, receipt, cloud.read)
+                        self.assertEqual(owner["ownerOptions"], "passed")
+                        self.assertTrue(http.call_args.args[1].endswith("/api/decisions/options"))
+                        self.assertNotIn("synthetic-owner-token", json.dumps(owner))
+                    with patch.object(PREVIEW.ROLLOUT, "http_request", side_effect=[
+                        health, PREVIEW.ROLLOUT.HttpOutcome(status=403, body=b"{}"),
+                    ]):
+                        with self.assertRaises(PREVIEW.PreviewError):
+                            PREVIEW.verify_activation_owner(env, receipt, cloud.read)
+                    env.pop(PREVIEW.ROLLOUT.DEFAULT_TOKEN_ENV)
+                    with patch.object(PREVIEW.ROLLOUT, "http_request") as no_http:
+                        with self.assertRaisesRegex(PREVIEW.PreviewError, "token is unavailable"):
+                            PREVIEW.verify_activation_owner(env, receipt, cloud.read)
+                        no_http.assert_not_called()
+
+    def test_real_patch_dispatch_and_owner_read_only_acceptance(self):
+        self.flow()
+
+    def test_preconditions_replay_body_and_postconditions_fail_closed(self):
+        for fault in ("pre-config", "pre-secret", "pre-template", "legacy", "late-config", "late-legacy",
+                      "suffix", "body", "rerun", "transport", "post-config", "post-secret", "post-env",
+                      "post-identity", "post-probes", "post-image", "post-ready"):
+            with self.subTest(fault=fault):
+                self.flow(fault)
+
+    def test_private_revision_claim_uses_complete_scoped_pages(self):
+        cloud = PatchCloud()
+        binding = {"subscription": ENV["AZURE_SUBSCRIPTION_ID"], "resourceGroup": "rg-ai4ia-test", "environment": "test"}
+        url = "https://management.azure.com" + cloud.current["id"] + "/revisions?api-version=2024-10-02-preview&pageSize=20&skipToken=next"
+        row = {"name": "ca-api-private-test--first", "active": True, "health": "Healthy", "state": "Provisioned"}
+        pages = [{"rows": [row], "nextLink": url}, {"rows": [{**row, "name": "ca-api-private-test--second"}]}]
+        calls = []
+        def read(args, **kwargs):
+            calls.append(args)
+            self.assertGreater(kwargs["timeout"], 0)
+            return deepcopy(pages[len(calls) - 1])
+        self.assertEqual(len(PREVIEW.private_revision_rows(binding, read)), 2)
+        self.assertIn("skipToken=next", calls[1][calls[1].index("--url") + 1])
+        for link in (url.replace("management.azure.com", "outside.example"), url + "&extra=1"):
+            calls.clear()
+            pages[0]["nextLink"] = link
+            with self.assertRaises(ValueError):
+                PREVIEW.private_revision_rows(binding, read)
+        pages[0]["nextLink"] = url
+        pages[1]["rows"] = [row]
+        calls.clear()
+        with self.assertRaisesRegex(ValueError, "duplicated"):
+            PREVIEW.private_revision_rows(binding, read)
 
 
 class OperationTests(unittest.TestCase):
