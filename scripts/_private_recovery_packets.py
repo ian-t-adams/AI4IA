@@ -229,6 +229,8 @@ def configuration_intent(configuration: dict) -> dict:
     if not isinstance(ingress, dict):
         raise PacketError("Ingress configuration is unavailable.")
     ingress.pop("fqdn", None)
+    if ingress.get("transport") == "Auto":
+        ingress["transport"] = "auto"
     # Preserve populated ACL/CORS/session settings rather than projecting them away.
     for key in ("additionalPortMappings", "clientCertificateMode", "corsPolicy", "customDomains",
                 "ipSecurityRestrictions", "stickySessions", "targetPortHttpScheme"):
@@ -245,12 +247,28 @@ def configuration_intent(configuration: dict) -> dict:
     for key in ("dapr", "runtime", "service"):
         if result.get(key) is None:
             result.pop(key, None)
+    if result.get("maxInactiveRevisions") is None:
+        result.pop("maxInactiveRevisions", None)
+    if result.get("identitySettings") == []:
+        result.pop("identitySettings")
     for registry in result.get("registries", []):
         for key in ("username", "passwordSecretRef"):
             if registry.get(key) in (None, ""):
                 registry.pop(key, None)
         if isinstance(registry.get("identity"), str):
             registry["identity"] = registry["identity"].casefold()
+    return result
+
+
+def candidate_template_intent(template: dict) -> dict:
+    """Only observed null optional members; populated settings remain comparable."""
+    result = deepcopy(template)
+    for key in ("initContainers", "serviceBinds", "terminationGracePeriodSeconds", "volumes"):
+        if result.get(key) is None:
+            result.pop(key, None)
+    scale = result.get("scale")
+    if isinstance(scale, dict) and scale.get("rules") is None:
+        scale.pop("rules", None)
     return result
 
 

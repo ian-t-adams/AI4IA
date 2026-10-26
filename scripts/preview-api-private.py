@@ -20,8 +20,12 @@ from typing import Any
 
 from _api_private import api_name, from_environment
 from _private_recovery_packets import (
-    MODULES, PacketError, api_overrides, canonical_location, configuration_intent, consumption_headroom,
+    MODULES, PacketError, api_overrides, candidate_template_intent, canonical_location, configuration_intent, consumption_headroom,
     location_evidence, read_record, record_parameters,
+)
+from _private_metadata import (
+    RAW_METADATA_QUERY, MetadataError, project_proven_metadata, source_descriptor,
+    validate_live_metadata, validate_native_metadata,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,6 +136,50 @@ def verify_nsg_reads(preview: dict, binding: dict, read: Callable[[list[str]], A
             require(current["digest"] == row["liveReadDigest"], "Live NSG changed after reviewed preview.")
             observations.append(current)
     return observations
+
+
+def candidate_metadata_gate(binding: dict, descriptor: dict, read: Callable[[list[str]], Any]) -> dict:
+    name = api_name(binding["environment"], "private")
+    rid = (f"/subscriptions/{binding['subscription']}/resourceGroups/{binding['resourceGroup']}"
+           f"/providers/Microsoft.App/containerApps/{name}")
+    snapshot = read([
+        "rest", "--method", "get", "--subscription", binding["subscription"],
+        "--url", f"https://management.azure.com{rid}?api-version=2024-10-02-preview",
+        "--query", RAW_METADATA_QUERY,
+    ])
+    flags = snapshot.get("flags") if isinstance(snapshot, dict) else None
+    require(isinstance(flags, list) and len(flags) == 2
+            and all(isinstance(row, dict) and set(row) == {"name", "value"}
+                    and isinstance(row["name"], str) and row["value"] == "true" for row in flags)
+            and {row["name"] for row in flags} == {"AI4IA_PRIVATE_RECOVERY_CANDIDATE", "AI4IA_PRIVATE_COSMOS_REQUIRED"},
+            "Created candidate is not worker-suppressed with private readiness.")
+    metadata = validate_live_metadata(snapshot, descriptor, rid)
+    return {"status": "verified", "sourceDigest": digest(descriptor), "liveDigest": digest(metadata),
+            "observedAt": int(time.time())}
+
+
+def contain_candidate(binding: dict, read: Callable[[list[str]], Any], execute: Callable) -> dict:
+    """An authorized failed-candidate stop; never touch the retained legacy app."""
+    name = api_name(binding["environment"], "private")
+    scope = ["--subscription", binding["subscription"], "-g", binding["resourceGroup"], "-n", name]
+    query = ["containerapp", "revision", "list", *scope, "--query", "[].{name:name,active:properties.active}"]
+
+    def inventory() -> list[dict]:
+        rows = read(query)
+        require(isinstance(rows, list) and 0 < len(rows) <= 32
+                and all(isinstance(row, dict) and isinstance(row.get("name"), str)
+                        and re.fullmatch(re.escape(name) + r"--[a-z0-9-]{1,80}", row["name"]) is not None
+                        and type(row.get("active")) is bool for row in rows),
+                "Candidate containment inventory is unknown.")
+        require(len({row["name"] for row in rows}) == len(rows), "Candidate revision inventory is duplicated.")
+        return rows
+
+    active = [row["name"] for row in inventory() if row["active"]]
+    for revision in active:
+        execute(["az", "containerapp", "revision", "deactivate", *scope, "--revision", revision, "-o", "none"],
+                limit=4096, timeout=120)
+    require(not any(row["active"] for row in inventory()), "Candidate containment did not confirm inactivity.")
+    return {"status": "inactive", "deactivatedRevisions": len(active), "legacyTouched": False}
 
 
 def foundation_echo(change: dict, binding: dict, resource_kind: str) -> bool:
@@ -497,6 +545,10 @@ def scope_preview(
     seen = set()
     errors = []
     nsg_evidence = []
+    descriptor = params.get("sourceSecretMetadata")
+    if binding.get("secretMetadataDigest") is not None:
+        require(isinstance(descriptor, dict) and digest(descriptor) == binding["secretMetadataDigest"],
+                "Source-bound secret metadata proof is missing or changed.")
     for change in changes:
         rid = change.get("resourceId")
         kind = change.get("changeType")
@@ -539,6 +591,9 @@ def scope_preview(
             after_resource = change.get("after")
             if isinstance(after_resource, dict) and "configuration" in after_resource.get("properties", {}):
                 configuration_intent(after_resource["properties"]["configuration"])
+            if descriptor is not None:
+                require(isinstance(after_resource, dict), "Native secret metadata structure is unavailable.")
+                validate_native_metadata(after_resource, descriptor)
         if kind in ("Ignore", "NoChange"):
             require(not (kind == "Ignore" and rid in required), "Required resource coverage was ignored.")
             continue
@@ -547,6 +602,9 @@ def scope_preview(
             continue
         before, after = change.get("before"), change.get("after")
         row = {"resourceId": rid, "changeType": kind, "fields": []}
+        if descriptor is not None and rid in required:
+            row["secretMetadataProof"] = "source-bound; native masked"
+            row["secretMetadataDigest"] = digest(descriptor)
         deltas = change.get("delta", [])
         if kind == "Create" and deltas is None:
             deltas = []
@@ -729,8 +787,12 @@ def scope_preview(
                 if packet == "candidate":
                     if not isinstance(baseline, dict):
                         raise PreviewError("Current API configuration evidence is missing.")
-                    left = deepcopy(baseline["properties"]["template"])
-                    right = deepcopy(template)
+                    before_compare, after_compare = baseline, after
+                    if descriptor is not None:
+                        before_compare = project_proven_metadata(baseline, descriptor)
+                        after_compare = project_proven_metadata(after, descriptor)
+                    left = candidate_template_intent(before_compare["properties"]["template"])
+                    right = candidate_template_intent(after_compare["properties"]["template"])
                     metric = "AI4IA_METRICS_CONTAINER_APP_RESOURCE_ID"
                     old_self, new_self = env_rows(left).get(metric, {}), env_rows(right).get(metric, {})
                     source_id = baseline.get("id")
@@ -753,8 +815,8 @@ def scope_preview(
                         current.get("scale", {}).pop("maxReplicas", None)
                     if comparable(left) != comparable(right):
                         errors.append("candidate_configuration_changed")
-                    if digest(configuration_intent(baseline["properties"]["configuration"])) != digest(
-                        configuration_intent(props.get("configuration", {}))
+                    if digest(configuration_intent(before_compare["properties"]["configuration"])) != digest(
+                        configuration_intent(after_compare["properties"].get("configuration", {}))
                     ):
                         errors.append("candidate_ingress_registry_or_secret_references_changed")
                     tags = deepcopy(baseline.get("tags", {}))
@@ -775,11 +837,19 @@ def scope_preview(
             if packet in ("candidate", "activate", "cutover"):
                 if not isinstance(baseline, dict):
                     raise PreviewError("Current application snapshot is missing.")
-                current_props = baseline["properties"]
-                before_props, after_props = before.get("properties", {}), after.get("properties", {})
-                if comparable(before_props.get("template", {})) != comparable(current_props["template"]):
+                before_compare, after_compare, baseline_compare = before, after, baseline
+                if descriptor is not None:
+                    validate_native_metadata(before, descriptor)
+                    before_compare = project_proven_metadata(before, descriptor)
+                    after_compare = project_proven_metadata(after, descriptor)
+                    baseline_compare = project_proven_metadata(baseline, descriptor)
+                current_props = baseline_compare["properties"]
+                before_props, after_props = before_compare.get("properties", {}), after_compare.get("properties", {})
+                if comparable(candidate_template_intent(before_props.get("template", {}))) != comparable(
+                    candidate_template_intent(current_props["template"])
+                ):
                     errors.append("preview_before_differs_from_current_configuration")
-                for resource, props in ((before, before_props), (after, after_props)):
+                for resource, props in ((before_compare, before_props), (after_compare, after_props)):
                     if digest(configuration_intent(props.get("configuration", {}))) != digest(
                         configuration_intent(current_props["configuration"])
                     ):
@@ -809,6 +879,10 @@ def scope_preview(
             if rid in app_ids and template_paths and all(path.startswith("properties.template") for path in template_paths):
                 left = deepcopy(before.get("properties", {}).get("template", {}))
                 right = deepcopy(after.get("properties", {}).get("template", {}))
+                if descriptor is not None:
+                    left = project_proven_metadata(before, descriptor)["properties"]["template"]
+                    right = project_proven_metadata(after, descriptor)["properties"]["template"]
+                left, right = candidate_template_intent(left), candidate_template_intent(right)
                 service = app_ids[rid]
                 allowed = set()
                 if service == "api":
@@ -1075,6 +1149,20 @@ def compiled_context(env: dict[str, str], read=cloud_read) -> tuple[dict, dict, 
                 and re.fullmatch(r"[0-9a-fA-F-]{36}", workspace["customerId"]) is not None,
                 "Scoped Log Analytics customer identity is unknown.")
         bound["logAnalyticsCustomerId"] = workspace["customerId"]
+    if packet in ("candidate", "activate"):
+        require(isinstance(baseline, dict), "Source application metadata is missing.")
+        assert isinstance(baseline, dict)
+        descriptor = source_descriptor(template, params, bound, baseline)
+        source_id = baseline["id"]
+        snapshot = read([
+            "rest", "--method", "get", "--subscription", subscription,
+            "--url", f"https://management.azure.com{source_id}?api-version=2024-10-02-preview",
+            "--query", RAW_METADATA_QUERY,
+        ])
+        raw_metadata = validate_live_metadata(snapshot, descriptor, source_id, baseline=packet == "candidate")
+        bound["secretMetadataDigest"] = digest(descriptor)
+        bound["baselineSecretMetadataDigest"] = digest(raw_metadata)
+        expected["sourceSecretMetadata"] = descriptor
     return template, params, bound, baseline, expected
 
 
@@ -1139,17 +1227,37 @@ def main() -> int:
                 verify_token(env["AI4IA_PRIVATE_PREVIEW_BINDING"], bound, proof["preview"], int(time.time()))
                 nsg_reads = verify_nsg_reads(proof["preview"], bound, cloud_read)
                 verify_token(env["AI4IA_PRIVATE_PREVIEW_BINDING"], bound, proof["preview"], int(time.time()))
+                descriptor = expected.get("sourceSecretMetadata")
+                if bound["packet"] == "candidate":
+                    require(isinstance(descriptor, dict) and digest(descriptor) == bound.get("secretMetadataDigest"),
+                            "Post-create source metadata proof is missing.")
                 run([
                     "az", "deployment", "group", "create", "--subscription", bound["subscription"],
                     "-g", bound["resourceGroup"], "-n", name, "--mode", "Incremental",
                     "--template-file", str(packet_dir / "template.json"),
                     "--parameters", "@" + str(packet_dir / "parameters.json"), "-o", "none",
                 ], limit=4096, timeout=1800)
+                execution = {"context": bound, "deploymentName": name, "resourceDeployment": "Succeeded",
+                             "nsgReads": nsg_reads, "runtimeAcceptance": "not_yet_observed", "modelCalls": 0}
+                metadata_failed = False
+                if bound["packet"] == "candidate":
+                    assert isinstance(descriptor, dict)
+                    try:
+                        execution["candidateSecretMetadata"] = candidate_metadata_gate(bound, descriptor, cloud_read)
+                    except (MetadataError, PreviewError, OSError, KeyError, TypeError, ValueError, AttributeError):
+                        metadata_failed = True
+                        execution["candidateSecretMetadata"] = {"status": "failed", "sourceDigest": digest(descriptor)}
+                        try:
+                            execution["candidateContainment"] = contain_candidate(bound, cloud_read, run)
+                        except (PreviewError, OSError, KeyError, TypeError, ValueError):
+                            execution["candidateContainment"] = {"status": "unknown", "legacyTouched": False}
                 (Path(env["RUNNER_TEMP"]) / "ai4ia-private-preview" / "execution.json").write_text(
-                    json.dumps({"context": bound, "deploymentName": name, "resourceDeployment": "Succeeded",
-                                "nsgReads": nsg_reads,
-                                "runtimeAcceptance": "not_yet_observed", "modelCalls": 0}, indent=2), encoding="utf-8",
-                )
+                    json.dumps(execution, indent=2), encoding="utf-8")
+                if env.get("GITHUB_OUTPUT"):
+                    with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as file:
+                        file.write("receipt=true\n")
+                require(not metadata_failed,
+                        "Candidate secret metadata verification failed; inspect candidate-only containment before continuing.")
                 print("Exact scoped packet applied once. Runtime acceptance remains a separate gate.")
             return 0
         require(kind in ("preview", "deploy"), "Explicit preview/deploy operation required.")
@@ -1205,7 +1313,7 @@ def main() -> int:
         print("Private phase preview retained; no resources changed. Execution requires its separate guarded path.")
         return 0
     except (PreviewError, PacketError, OSError, KeyError, TypeError, ValueError, AttributeError, subprocess.SubprocessError) as exc:
-        print(str(exc) if isinstance(exc, PreviewError) else "Private preview failed with incomplete evidence.", file=sys.stderr)
+        print(str(exc) if isinstance(exc, (PreviewError, MetadataError)) else "Private preview failed with incomplete evidence.", file=sys.stderr)
         return 1
     finally:
         if packet_dir is not None and not retain_packet:

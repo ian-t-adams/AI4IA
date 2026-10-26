@@ -720,8 +720,22 @@ External workload-profile public ingress does not traverse the user subnet;
 the default AzureLoadBalancer allow already covers its documented probe ports.
 Default-off same-group API secret inheritance uses server-side listSecrets and
 declared metadata; preserve Key Vault references, never export values.
-Unprotected/unknown secret representations and incomplete resource coverage
-refuse. Never upload raw parameters/what-if bodies, add an exemption tag,
+The candidate's two flags use explicit lowercase literals, not ARM string(bool),
+and inherited WebIQ keys must not also select Entra fallback. Native what-if may
+mask secret names and env refs as well as values. Derive the nonsecret descriptor
+from the actual bound compiled ARM through `scripts/_private_metadata.py`:
+its bounded interpreter gives listSecrets symbolic source/name origins, never
+credentials or network access. Compare source to same-version raw live metadata,
+then require the native unordered secret/source shape and exact env binding modes.
+No positional mask filling or count-only equality. Retain proof digests.
+Post-create raw metadata equality and the two true flags precede operator
+readiness/options/drain. Failure deactivates only the candidate's scoped active
+revisions and stops; containment failure is unknown, not a rollback success.
+Retain the execution receipt even for that failure. Never fetch secret values.
+Only the captured optional-null fields, Auto/auto spelling and source-proven
+empty env values share comparison projections; populated changes still refuse.
+Unprotected/unknown secret values and incomplete resource coverage refuse.
+Never upload raw parameters/what-if bodies, add an exemption tag,
 relax branch/OIDC trust, or turn a preview return code into deployment authority.
 Ordinary auto releases resume only on observed completed private cutover.
 Keep the private packet's Bicep pin aligned with infra validation.

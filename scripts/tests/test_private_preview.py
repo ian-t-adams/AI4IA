@@ -176,6 +176,102 @@ def foundation_echo_fixture():
 
 
 class PreviewTests(unittest.TestCase):
+    def test_post_create_metadata_gate_precedes_success_and_contains_only_candidate(self):
+        from scripts.tests.test_private_metadata import live_snapshot
+
+        descriptor = {
+            "secrets": [{"name": "model-gateway-api-key", "kind": "containerApp"}],
+            "envSecretRefs": {"AI4IA_MODEL_GATEWAY_API_KEY": "model-gateway-api-key"},
+            "envValueNames": [], "emptyEnvValues": [], "valueOrigins": [],
+        }
+        for fault in ("none", "metadata", "read", "containment", "missing-proof", "flags"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                packet = root / "ai4ia-private-packet-123-test"
+                packet.mkdir()
+                output = root / "ai4ia-private-preview"
+                output.mkdir()
+                template, parameters = {"resources": []}, {}
+                bound, _, expected = fixture()
+                bound.update(packet="candidate", template=PREVIEW.digest(template), parameters=PREVIEW.digest(parameters),
+                             secretMetadataDigest=PREVIEW.digest(descriptor))
+                expected["sourceSecretMetadata"] = deepcopy(descriptor)
+                if fault == "missing-proof":
+                    expected.pop("sourceSecretMetadata")
+                preview = {"changes": [], "nsgComparisons": [], "blockingReasons": []}
+                token = PREVIEW.make_token(bound, preview, int(PREVIEW.time.time()))
+                proof = output / "proof.json"
+                proof.write_text(json.dumps({"context": bound, "preview": preview}))
+                (packet / "template.json").write_text(json.dumps(template))
+                (packet / "parameters.json").write_text(json.dumps({"parameters": parameters}))
+                env = {**ENV, "RUNNER_TEMP": directory, "GITHUB_RUN_ID": "123", "GITHUB_SHA": bound["source"],
+                       "GITHUB_REPOSITORY": "ian-t-adams/AI4IA", "AI4IA_RELEASE_KIND": "deploy",
+                       "AI4IA_RELEASE_PROVISION": "true", "AI4IA_PRIVATE_PREVIEW_BINDING": token,
+                       "AI4IA_PRIVATE_PACKET_DIR": str(packet), "AI4IA_PRIVATE_PREVIEW_PROOF": str(proof),
+                       "GITHUB_OUTPUT": str(root / "step-output")}
+                sequence = []
+                active = True
+                rid = (f"/subscriptions/{bound['subscription']}/resourceGroups/{bound['resourceGroup']}"
+                       "/providers/Microsoft.App/containerApps/ca-api-private-test")
+
+                def read(args):
+                    if args[0] == "rest":
+                        sequence.append("metadata")
+                        self.assertIn(rid + "?api-version=2024-10-02-preview", args[args.index("--url") + 1])
+                        self.assertEqual(args[-1], PREVIEW.RAW_METADATA_QUERY)
+                        if fault == "read":
+                            raise PREVIEW.PreviewError("Metadata unavailable.")
+                        result = live_snapshot(descriptor, rid)
+                        if fault in ("metadata", "containment"):
+                            result["secrets"][0]["name"] = "other-secret"
+                        elif fault == "flags":
+                            result["flags"][0]["value"] = "false"
+                        return result
+                    self.assertEqual(args[:3], ["containerapp", "revision", "list"])
+                    self.assertEqual(args[args.index("-n") + 1], "ca-api-private-test")
+                    if fault == "containment":
+                        raise PREVIEW.PreviewError("Containment inventory unavailable.")
+                    return [{"name": "ca-api-private-test--candidate", "active": active}]
+
+                def execute(args, **kwargs):
+                    nonlocal active
+                    if args[0] == "gh":
+                        return json.dumps({"object": {"sha": bound["source"]}}).encode()
+                    if args[:4] == ["az", "deployment", "group", "create"]:
+                        sequence.append("create")
+                        return b""
+                    self.assertEqual(args[:4], ["az", "containerapp", "revision", "deactivate"])
+                    self.assertEqual(args[args.index("-n") + 1], "ca-api-private-test")
+                    self.assertEqual(args[args.index("--subscription") + 1], bound["subscription"])
+                    self.assertEqual(args[args.index("--revision") + 1], "ca-api-private-test--candidate")
+                    sequence.append("deactivate")
+                    active = False
+                    return b""
+
+                claim = SimpleNamespace(returncode=1, stdout=b"", stderr=b"ERROR: (DeploymentNotFound) absent")
+                with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["preview", "apply"]), \
+                     patch.object(PREVIEW, "compiled_context", return_value=(template, parameters, bound, None, expected)), \
+                     patch.object(PREVIEW, "cloud_read", side_effect=read), patch.object(PREVIEW, "run", side_effect=execute), \
+                     patch.object(PREVIEW.subprocess, "run", return_value=claim), \
+                     patch.object(PREVIEW.ADMISSION, "admission"), redirect_stdout(io.StringIO()), patch.object(sys, "stderr", io.StringIO()):
+                    self.assertEqual(PREVIEW.main(), 0 if fault == "none" else 1)
+                if fault == "missing-proof":
+                    self.assertEqual(sequence, [])
+                    self.assertFalse((output / "execution.json").exists())
+                else:
+                    self.assertEqual(sequence[:2], ["create", "metadata"])
+                    receipt = json.loads((output / "execution.json").read_text())
+                    self.assertEqual(receipt["candidateSecretMetadata"]["status"], "verified" if fault == "none" else "failed")
+                    self.assertIn("receipt=true", (root / "step-output").read_text())
+                    if fault == "none":
+                        self.assertEqual(sequence, ["create", "metadata"])
+                    elif fault == "containment":
+                        self.assertEqual(receipt["candidateContainment"]["status"], "unknown")
+                    else:
+                        self.assertEqual(sequence, ["create", "metadata", "deactivate"])
+                        self.assertFalse(active)
+                        self.assertFalse(receipt["candidateContainment"]["legacyTouched"])
+
     def test_exact_foundation_echoes_preserve_reported_deltas_and_binding(self):
         bound, raw, params = foundation_echo_fixture()
         report = PREVIEW.scope_preview(raw, bound, params)
@@ -801,6 +897,53 @@ class PreviewTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             PREVIEW.scope_preview(changed, bound, params, baseline)
         self.assertNotIn("unprotected-private-value", str(caught.exception))
+
+        source, native = deepcopy(baseline), deepcopy(raw)
+        before_props = source["properties"]
+        after_props = native["changes"][0]["after"]["properties"]
+        before_props["template"].update(initContainers=None, serviceBinds=None, terminationGracePeriodSeconds=None, volumes=None)
+        before_props["template"]["scale"]["rules"] = None
+        before_props["configuration"].update(identitySettings=[], maxInactiveRevisions=None)
+        before_props["configuration"]["ingress"]["transport"] = "Auto"
+        before_props["template"]["containers"][0]["env"] += [
+            {"name": "AI4IA_MODEL_GATEWAY_API_KEY", "secretRef": "model-gateway-api-key"},
+            {"name": "AI4IA_HARD_QUOTA_ROLLOUT_ID", "value": ""},
+        ]
+        after_props["configuration"]["secrets"][0]["name"] = "*******"
+        after_props["template"]["containers"][0]["env"] += [
+            {"name": "AI4IA_MODEL_GATEWAY_API_KEY", "secretRef": "*******"},
+            {"name": "AI4IA_HARD_QUOTA_ROLLOUT_ID"},
+        ]
+        descriptor = {
+            "secrets": [{"name": "model-gateway-api-key", "kind": "containerApp"}],
+            "envSecretRefs": {"AI4IA_MODEL_GATEWAY_API_KEY": "model-gateway-api-key"},
+            "envValueNames": sorted(row["name"] for row in after_props["template"]["containers"][0]["env"]
+                                    if "secretRef" not in row),
+            "emptyEnvValues": ["AI4IA_HARD_QUOTA_ROLLOUT_ID"], "valueOrigins": [],
+        }
+        proven_bound = {**bound, "secretMetadataDigest": PREVIEW.digest(descriptor)}
+        proven_params = {**params, "sourceSecretMetadata": descriptor}
+        result = PREVIEW.scope_preview(native, proven_bound, proven_params, source)
+        self.assertEqual(result["blockingReasons"], [])
+        self.assertEqual(result["changes"][0]["secretMetadataProof"], "source-bound; native masked")
+        for fault in ("value", "ingress", "registry", "null_setting", "identity_setting"):
+            bad_source, changed = deepcopy(source), deepcopy(native)
+            target_props = changed["changes"][0]["after"]["properties"]
+            if fault == "value":
+                PREVIEW.env_rows(target_props["template"])["OTHER_SETTING"]["value"] = "changed"
+            elif fault == "ingress":
+                target_props["configuration"]["ingress"]["allowInsecure"] = True
+            elif fault == "registry":
+                target_props["configuration"]["registries"][0]["server"] = "other.azurecr.io"
+            elif fault == "null_setting":
+                bad_source["properties"]["template"]["initContainers"] = [{"name": "must-retain"}]
+            else:
+                bad_source["properties"]["configuration"]["identitySettings"] = [{"identity": "must-retain"}]
+            with self.subTest(masked_fault=fault):
+                self.assertTrue(PREVIEW.scope_preview(changed, proven_bound, proven_params, bad_source)["blockingReasons"])
+        wrong_proof = {**proven_bound, "secretMetadataDigest": "0" * 64}
+        with self.assertRaises(PREVIEW.PreviewError):
+            PREVIEW.scope_preview(native, wrong_proof, proven_params, source)
 
     def test_actual_cli_projection_excludes_values_and_keeps_reference_metadata(self):
         app = {
