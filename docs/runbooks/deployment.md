@@ -57,6 +57,24 @@ verification, health/domain checks, canary, revision capture and rollback.
 Unknown changed-file coverage stops the release rather than choosing either a
 provisioning fallback or an image-only success.
 
+A fresh runner's azd environment has no Bicep outputs unless provisioning ran,
+so every admitted release with `provision` not `true` first runs
+`azd env refresh --no-prompt`. In the pinned azd this only reads the newest
+completed subscription deployment tagged with the same `azd-env-name`, using
+the job's `AZURE_ENV_NAME`, `AZURE_SUBSCRIPTION_ID` and `AZURE_LOCATION`, and
+writes its outputs to the local `.env`; it creates or modifies no deployment and
+runs no provision hooks. Because it succeeds even when no deployment exists, the
+step then fails closed unless the resource group, location, API network phase
+and web/API/proxy app names are present, the group is
+`rg-<workload>-<environment>`, the location and phase match the job variables,
+the API app equals the validated release target and, with the Claude gateway
+enabled, `AZURE_APIM_RESOURCE_ID` names an APIM service in that subscription and
+group. The gateway route check itself also refuses an empty APIM ID. There is no
+provisioning fallback: a missing, stale or pre-private-phase root deployment
+(for example one last provisioned before the private cutover, which used the
+reviewed packet path) blocks app-only releases until a separately approved
+manual `workflow_dispatch` with `provision=true` writes current root outputs.
+
 The provisioning step uses `azd provision --no-prompt --no-state`. In the pinned
 azd, unchanged templates and parameters can otherwise produce a successful
 "There are no changes to provision" result without reconciling live resources.
