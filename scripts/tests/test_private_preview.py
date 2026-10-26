@@ -175,7 +175,201 @@ def foundation_echo_fixture():
     return bound, raw, params
 
 
+ACTIVATION_FIELDS = [
+    "properties.configuration.ingress.exposedPort",
+    "properties.configuration.ingress.traffic",
+    "properties.configuration.maxInactiveRevisions",
+    "properties.patchingMode",
+    "properties.template.containers",
+    "properties.template.scale.cooldownPeriod",
+    "properties.template.scale.maxReplicas",
+    "properties.template.scale.pollingInterval",
+    "properties.workloadProfileName",
+]
+
+
+def activation_set(resource, path, value=None, *, remove=False):
+    keys = path.replace("[0]", ".0").split(".")
+    parent = resource
+    for key in keys[:-1]:
+        parent = parent[int(key)] if isinstance(parent, list) else parent[key]
+    if remove:
+        parent.pop(keys[-1], None)
+    else:
+        parent[keys[-1]] = value
+
+
+def activation_fixture():
+    bound, _, params = fixture()
+    bound.update(packet="activate", phase="activate")
+    prefix = f"/subscriptions/{bound['subscription']}/resourceGroups/{bound['resourceGroup']}/providers/"
+    rid = prefix + "Microsoft.App/containerApps/ca-api-private-test"
+    before = {
+        "id": rid, "type": "Microsoft.App/containerApps", "location": "eastus2", "tags": {},
+        "identity": {"type": "UserAssigned", "userAssignedIdentities": {
+            prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/id-api-test": {},
+        }},
+        "properties": {
+            "managedEnvironmentId": prefix + "Microsoft.App/managedEnvironments/private",
+            "latestRevisionName": "ca-api-private-test--ready", "latestReadyRevisionName": "ca-api-private-test--ready",
+            "patchingMode": "Automatic", "workloadProfileName": "Consumption",
+            "configuration": {
+                "activeRevisionsMode": "Single", "maxInactiveRevisions": 100, "secrets": [],
+                "ingress": {"external": True, "targetPort": 8000, "exposedPort": 0, "transport": "auto",
+                            "traffic": [{"latestRevision": True, "weight": 100}]},
+                "registries": [{"server": "synthetic.azurecr.io", "identity": prefix + "Microsoft.ManagedIdentity/userAssignedIdentities/id-api-test"}],
+            },
+            "template": {
+                "scale": {"minReplicas": 1, "maxReplicas": 1, "cooldownPeriod": 300, "pollingInterval": 30},
+                "containers": [{
+                    "name": "api", "image": "synthetic.azurecr.io/ai4ia/api-test@sha256:" + "1" * 64,
+                    "imageType": "ContainerImage", "resources": {"cpu": 0.5, "memory": "1Gi"},
+                    "env": [
+                        {"name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": "true"},
+                        {"name": "AI4IA_PRIVATE_COSMOS_REQUIRED", "value": "true"},
+                        {"name": "UNCHANGED_SETTING", "value": "retained"},
+                    ],
+                }],
+            },
+        },
+    }
+    after, baseline, legacy = deepcopy(before), deepcopy(before), deepcopy(before)
+    for path in ACTIVATION_FIELDS:
+        if path not in ("properties.template.containers", "properties.template.scale.maxReplicas"):
+            activation_set(after, path, remove=True)
+    activation_set(after, "properties.template.containers[0].imageType", remove=True)
+    after["properties"]["template"]["scale"]["maxReplicas"] = 3
+    after["properties"]["template"]["containers"][0]["env"][0]["value"] = "false"
+    for path in ("properties.patchingMode", "properties.workloadProfileName", "properties.template.containers[0].imageType"):
+        activation_set(baseline, path, remove=True)
+    legacy["id"] = prefix + "Microsoft.App/containerApps/ca-api-test"
+    legacy["properties"].update(latestRevisionName="ca-api-test--ready", latestReadyRevisionName="ca-api-test--ready")
+    legacy["properties"]["template"]["scale"]["maxReplicas"] = 3
+    legacy["properties"]["configuration"]["maxInactiveRevisions"] = None
+    legacy["properties"]["template"]["containers"][0]["env"] = [{"name": "UNCHANGED_SETTING", "value": "retained"}]
+    bound["activationEvidence"] = {
+        "apiVersion": "2024-10-02-preview",
+        "current": jmespath.search(PREVIEW.activation_query(), before),
+        "legacy": jmespath.search(PREVIEW.activation_query(), legacy),
+    }
+    raw = {"status": "Succeeded", "changes": [{
+        "resourceId": rid, "changeType": "Modify", "before": before, "after": after,
+        "delta": [{"path": path} for path in ACTIVATION_FIELDS],
+    }]}
+    return bound, raw, params, baseline, legacy
+
+
 class PreviewTests(unittest.TestCase):
+    def test_activation_exact_echoes_and_production_values_keep_full_paths(self):
+        bound, raw, params, baseline, _ = activation_fixture()
+        report = PREVIEW.scope_preview(raw, bound, params, baseline)
+        self.assertEqual(report["blockingReasons"], [])
+        self.assertEqual(report["changes"][0]["fields"], ACTIVATION_FIELDS)
+        self.assertEqual(report["changes"][0]["activationEvidenceDigest"], PREVIEW.digest(bound["activationEvidence"]))
+        self.assertEqual(report["changes"][0]["activationClassification"]["productionScale"], "bound_to_legacy")
+        self.assertIsNone(bound["activationEvidence"]["legacy"]["fields"]["properties.configuration.maxInactiveRevisions"]["value"])
+
+    def test_activation_each_echo_needs_exact_before_absent_after_and_raw_value(self):
+        paths = [path for path in ACTIVATION_FIELDS if path not in (
+            "properties.template.containers", "properties.template.scale.maxReplicas",
+        )] + ["properties.template.containers[0].imageType"]
+        for path in paths:
+            for fault in ("before", "after", "raw", "type"):
+                with self.subTest(path=path, fault=fault):
+                    bound, raw, params, baseline, _ = activation_fixture()
+                    change = raw["changes"][0]
+                    original = PREVIEW.activation_field(change["before"], path)["value"]
+                    if fault == "before":
+                        activation_set(change["before"], path, None)
+                    elif fault == "after":
+                        activation_set(change["after"], path, original)
+                    elif fault == "raw":
+                        bound["activationEvidence"]["current"]["fields"][path]["present"] = False
+                    else:
+                        activation_set(change["before"], path, float(original) if type(original) is int else False)
+                    with self.assertRaises(PREVIEW.PreviewError):
+                        PREVIEW.scope_preview(raw, bound, params, baseline)
+
+    def test_activation_does_not_hide_real_application_drift(self):
+        changes = [
+            ("properties.configuration.ingress.external", False),
+            ("properties.configuration.registries", [{"server": "different.azurecr.io"}]),
+            ("properties.configuration.secrets", [{"name": "unexpected"}]),
+            ("properties.template.containers[0].image", "different.azurecr.io/api@sha256:" + "2" * 64),
+            ("properties.template.containers[0].resources.cpu", 1),
+        ]
+        for path, value in changes:
+            with self.subTest(path=path):
+                bound, raw, params, baseline, _ = activation_fixture()
+                activation_set(raw["changes"][0]["after"], path, value)
+                self.assertTrue(PREVIEW.scope_preview(raw, bound, params, baseline)["blockingReasons"])
+        for path in ("properties.configuration.unknown", "properties.template.scale.minReplicas"):
+            bound, raw, params, baseline, _ = activation_fixture()
+            raw["changes"][0]["delta"].append({"path": path})
+            with self.assertRaises(PREVIEW.PreviewError):
+                PREVIEW.scope_preview(raw, bound, params, baseline)
+        bound, raw, params, baseline, _ = activation_fixture()
+        raw["changes"][0]["after"]["properties"]["template"]["containers"][0]["env"][2]["value"] = "changed"
+        self.assertIn("protected_app_template_changed", PREVIEW.scope_preview(raw, bound, params, baseline)["blockingReasons"])
+
+    def test_activation_legacy_identity_flags_and_scale_are_not_optional(self):
+        for fault in ("missing", "foreign", "legacy-scale", "legacy-flags", "readiness", "scale", "identity"):
+            with self.subTest(fault=fault):
+                bound, raw, params, baseline, _ = activation_fixture()
+                after = raw["changes"][0]["after"]
+                if fault == "missing":
+                    bound.pop("activationEvidence")
+                elif fault == "foreign":
+                    bound["activationEvidence"]["legacy"]["id"] += "-other"
+                elif fault == "legacy-scale":
+                    bound["activationEvidence"]["legacy"]["fields"]["properties.template.scale.maxReplicas"]["value"] = 4
+                    after["properties"]["template"]["scale"]["maxReplicas"] = 4
+                elif fault == "legacy-flags":
+                    bound["activationEvidence"]["legacy"]["flags"] = [{"name": "AI4IA_PRIVATE_RECOVERY_CANDIDATE", "value": "true"}]
+                elif fault == "readiness":
+                    after["properties"]["template"]["containers"][0]["env"][1]["value"] = "false"
+                elif fault == "scale":
+                    after["properties"]["template"]["scale"]["maxReplicas"] = 3.0
+                else:
+                    after["identity"]["type"] = "SystemAssigned"
+                if fault == "identity":
+                    self.assertIn("protected_application_resource_changed", PREVIEW.scope_preview(raw, bound, params, baseline)["blockingReasons"])
+                else:
+                    with self.assertRaises(PREVIEW.PreviewError):
+                        PREVIEW.scope_preview(raw, bound, params, baseline)
+
+    def test_activation_raw_collection_is_scoped_stable_and_source_bound(self):
+        bound, raw, _, baseline, legacy = activation_fixture()
+        source = {"type": "Microsoft.App/containerApps", "apiVersion": "2024-10-02-preview",
+                  "properties": deepcopy(raw["changes"][0]["after"]["properties"])}
+        template = {"resources": {"apiApp": source}}
+        evidence = bound["activationEvidence"]
+        def read(args):
+            self.assertEqual(args[:3], ["rest", "--method", "get"])
+            self.assertEqual(args[args.index("--subscription") + 1], bound["subscription"])
+            url = args[args.index("--url") + 1]
+            side = "current" if "/ca-api-private-test?" in url else "legacy"
+            self.assertEqual(url, "https://management.azure.com" + evidence[side]["id"] + "?api-version=2024-10-02-preview")
+            self.assertEqual(args[-1], PREVIEW.activation_query())
+            return deepcopy(evidence[side])
+        self.assertEqual(PREVIEW.read_activation_evidence(template, baseline, legacy, bound, read), evidence)
+        for path in PREVIEW.ACTIVATION_ECHOES:
+            changed = deepcopy(template)
+            activation_set(changed["resources"]["apiApp"], path, None)
+            with self.subTest(path=path), self.assertRaises(PREVIEW.PreviewError):
+                PREVIEW.read_activation_evidence(changed, baseline, legacy, bound,
+                                                lambda _: self.fail("Source must refuse before cloud reads"))
+        calls = 0
+        def changing(args):
+            nonlocal calls
+            calls += 1
+            row = read(args)
+            if calls == 2:
+                row["fields"]["properties.configuration.ingress.exposedPort"]["value"] = False
+            return row
+        with self.assertRaisesRegex(PREVIEW.PreviewError, "changed during collection"):
+            PREVIEW.read_activation_evidence(template, baseline, legacy, bound, changing)
+
     def test_post_create_metadata_gate_precedes_success_and_contains_only_candidate(self):
         from scripts.tests.test_private_metadata import live_snapshot
 
@@ -796,6 +990,9 @@ class PreviewTests(unittest.TestCase):
                     "resourceId": target, "changeType": "Modify", "before": before, "after": after,
                     "delta": [{"path": "properties.template"}],
                 }]}
+                if packet == "activate":
+                    bound, raw, params, before, _ = activation_fixture()
+                    before["location"] = raw["changes"][0]["before"]["location"] = "East US 2"
                 report = PREVIEW.scope_preview(raw, bound, params, before)
                 self.assertEqual(report["blockingReasons"], [])
                 self.assertEqual(report["changes"][0]["locations"], {

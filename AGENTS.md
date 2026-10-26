@@ -762,6 +762,18 @@ replicas; at most four exception replica reads never replace missing row proof.
 Before the approved drain, require exactly its named active revision; before
 activation require every legacy row inactive/zero. Bind page/row counts and the
 stable row digest into the packet, recheck before apply, and retain the receipt.
+Activation also binds same-version raw current/legacy scalar evidence. The
+typed CLI can omit `imageType=ContainerImage` although native what-if and raw
+ARM retain it; never erase an unknown image type. Only the exact reviewed
+activation path set may omit its proven response echoes: cooldown300,
+polling30, exposedPort0, latest/100 traffic, maxInactiveRevisions100,
+Automatic patching and Consumption profile. Keep legacy's null retention
+value distinct from100. Source must still omit those fields; full unmasked
+configuration/template comparisons remain outside that narrow projection.
+Max replicas3 must equal the bound legacy production value; candidate mode
+changes true->false while private readiness stays true. Missing/changed
+evidence, extra paths, value/type changes or ingress/secret/identity drift
+refuse. This is not an allowance for unobserved web/cutover defaults.
 
 `infra-validate` runs:
 
