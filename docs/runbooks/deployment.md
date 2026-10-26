@@ -2157,6 +2157,61 @@ output, arbitrary source ID, new key or role is introduced. An unprotected or
 unrecognized provider secret-value representation fails closed. Offline compile
 controls are not live provider masking or resource-coverage evidence.
 
+The two recovery flags deliberately emit lowercase `'true'`/`'false'` literals:
+ARM `string(bool)` emitted `"True"` in the candidate preview. The guard remains
+strict. WebIQ's no-key Entra branch uses `!hasWebIqKey`, so an inherited API key
+retains the existing key-based mode instead of enabling an additional fallback.
+
+### Candidate secret metadata proof
+
+Azure's native what-if projection also masks secret **names** and environment
+`secretRef` strings. Count or array position cannot establish their identity.
+The candidate uses a source-bound preview followed by a mandatory live gate.
+At preview:
+
+1. `scripts/_private_metadata.py` evaluates the actual compiled API resource's
+   secret and environment expressions, with bounded syntax, recursion, work and
+   collection sizes. It has no network operations. `listSecrets` evaluates only
+   to the exact existing application's named value origins; no credential is
+   resolved. Unknown syntax/functions, ambiguous selectors, supplied secret values,
+   changed value origins or references fail. The derived names, source kinds,
+   Key Vault URLs/identities and env reference map must equal the existing
+   application's same-version raw ARM metadata. The template, parameters and
+   descriptor digests stay bound in the preview.
+2. Native what-if must have the same secret count and an unordered match of the
+   declared source kinds. Every unmasked field must agree; every masked env ref
+   must occur on the exact source-declared env name. Added/removed names, duplicate
+   known names, value/ref swaps and unexpected fields fail. This is recorded as
+   `secretMetadataProof: "source-bound; native masked"`. Separately proven
+   metadata is excluded from the remaining value comparison, never filled from
+   the baseline by array index or guessed from a mask.
+
+Immediately after the worker-suppressed candidate's ARM creation, the same
+helper verifies **unmasked live** names, stored source kinds, Key Vault identities
+and env refs, plus both recovery flags. This gate runs before any operator
+readiness/options proof, legacy drain or activation. Platform health probes
+remain the declared automatic probes; they are not operator acceptance.
+On mismatch or unavailable metadata, deactivate only the exact candidate's
+active revisions, confirm inactivity, and stop with the legacy app untouched.
+Do not delete anything or replay an uncertain containment operation. A failed
+containment is explicitly unknown. The existing execution artifact retains the
+post-create result even when the guard returns failure.
+
+No secret values are requested or logged in either part. Ordinary deployment,
+user identities, resource permissions and the original secure server-side
+inheritance remain unchanged.
+
+The remaining comparison admits only captured representation pairs: `Auto` and
+`auto` for the same ingress enum; null optional template fields
+`initContainers`, `serviceBinds`, `terminationGracePeriodSeconds`, `volumes` and
+`scale.rules` versus omission; null `maxInactiveRevisions` and empty
+`identitySettings` versus omission. An empty env `value` may be absent only when
+the bound source proves that exact env name has an empty value. Null is not an
+empty string, and a populated setting, changed credential mode, different
+ingress/registry/identity or other value still fails the original comparison.
+
+### Preview packet handling
+
 Parameter files stay private in the ephemeral runner and are never uploaded.
 Preview-only files are removed immediately. An authorized apply retains the exact
 compiled template/parameters until the single scoped operation, then removes the

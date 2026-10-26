@@ -486,7 +486,7 @@ var webSearchEnv = concat(
   // No key supplied but the feature is on: authenticate Web IQ with the api's
   // managed identity (EntraID DefaultAzureCredential) so the deploy does not
   // fail closed at startup (validate_runtime requires a key OR use-entra).
-  (webSearchEnabled && empty(webIqApiKey)) ? [
+  (webSearchEnabled && !hasWebIqKey) ? [
     {
       name: 'AI4IA_WEBIQ_USE_ENTRA'
       value: 'true'
@@ -1176,8 +1176,8 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
             memory: '1Gi'
           }
           env: concat(apiEnv, [
-            { name: 'AI4IA_PRIVATE_RECOVERY_CANDIDATE', value: string(recoveryCandidate) }
-            { name: 'AI4IA_PRIVATE_COSMOS_REQUIRED', value: string(privateCosmosRequired) }
+            { name: 'AI4IA_PRIVATE_RECOVERY_CANDIDATE', value: recoveryCandidate ? 'true' : 'false' }
+            { name: 'AI4IA_PRIVATE_COSMOS_REQUIRED', value: privateCosmosRequired ? 'true' : 'false' }
           ])
           // Wired to the app's own unauthenticated FastAPI probes
           // (ai4ia_api/routers/health.py). No Startup probe is defined here;

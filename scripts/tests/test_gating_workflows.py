@@ -1378,6 +1378,16 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
         self.assertEqual(sum("steps.image_execution.outputs.allowed" in step.get("if", "") for step in steps),
                          len(self.IMAGE_ONLY_STEPS))
 
+    def test_post_create_failure_receipt_is_retained_without_authorizing_work(self):
+        steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+        receipt = next(step for step in steps if step["name"] == "Retain scoped execution receipt")
+        self.assertEqual(receipt["if"], "${{ always() && steps.private_apply.outputs.receipt == 'true' }}")
+        self.assertTrue(receipt["uses"].startswith("actions/upload-artifact@"))
+        self.assertTrue(receipt["with"]["path"].endswith("/execution.json"))
+        for step in steps:
+            if "steps.private_apply.outputs.receipt" in step.get("if", ""):
+                self.assertIs(step, receipt)
+
     def test_each_removed_or_escaped_write_guard_is_detected(self):
         steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
         position = next(index for index, step in enumerate(steps) if step.get("id") == "execution")
