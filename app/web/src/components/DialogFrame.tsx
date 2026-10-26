@@ -32,7 +32,7 @@ export function DialogFrame({
         position: "fixed",
         inset: 0,
         padding: overlayPadding,
-        background: "rgba(0,0,0,0.45)",
+        background: "var(--scrim)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",

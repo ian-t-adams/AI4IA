@@ -128,34 +128,34 @@ export function DecisionPlayground() {
       <h2>Decision playground</h2>
       <p>Evaluate text or JSON with named yes/no, choice and score questions. Results are model judgments, not calibrated guarantees or permission to act. No explanations or automatic actions.</p>
     </header>
-    {availabilityError ? <div role="alert">
+    {availabilityError ? <div role="alert" className="ui-state">
       <p>{availabilityError}</p>
-      <button type="button" onClick={() => { setAvailabilityError(""); setModels(null); setRefresh((v) => v + 1); }}>Reload availability</button>
-    </div> : models === null ? <p role="status">Loading Decision availability...</p>
-      : models.length === 0 ? <p role="status">No Decision model is available under the current model and residency policy.</p> : null}
+      <button className="btn" type="button" onClick={() => { setAvailabilityError(""); setModels(null); setRefresh((v) => v + 1); }}>Reload availability</button>
+    </div> : models === null ? <p role="status" className="ui-state">Loading Decision availability...</p>
+      : models.length === 0 ? <p role="status" className="ui-state">No Decision model is available under the current model and residency policy.</p> : null}
     <form onSubmit={run} aria-label="Decision input">
       <fieldset disabled={busy || !model} className={styles.editor}>
         <legend className={styles.srOnly}>Define a decision</legend>
         <div className={styles.toolbar}>
           <label>Model
-            <select value={model} onChange={(e) => { setModel(e.target.value); setResult(null); }}>
+            <select className="field-control" value={model} onChange={(e) => { setModel(e.target.value); setResult(null); }}>
               {!model && <option value="">Unavailable</option>}
               {models?.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
             </select>
           </label>
-          <button type="button" onClick={loadExample}>Load synthetic example</button>
+          <button className="btn" type="button" onClick={loadExample}>Load synthetic example</button>
         </div>
         {model && <p className={styles.note}>Processing residency: {models?.find((m) => m.id === model)?.residencies.join(", ").toUpperCase()}. Cost estimate: Unknown.</p>}
         <div className={styles.toolbar}>
           <h3>Input</h3>
           <label>Input format
-            <select value={inputFormat} onChange={(e) => { setInputFormat(e.target.value === "json" ? "json" : "text"); setResult(null); }}>
+            <select className="field-control" value={inputFormat} onChange={(e) => { setInputFormat(e.target.value === "json" ? "json" : "text"); setResult(null); }}>
               <option value="text">Text</option><option value="json">JSON (parsed)</option>
             </select>
           </label>
         </div>
         <label>Content to evaluate
-          <textarea value={input} maxLength={16000} rows={5} required onChange={(e) => { setInput(e.target.value); setResult(null); }}
+          <textarea className="field-control" value={input} maxLength={16000} rows={5} required onChange={(e) => { setInput(e.target.value); setResult(null); }}
             aria-describedby="decision-input-help" />
         </label>
         <p id="decision-input-help" className={styles.note}>Up to 16,000 characters. Input is evaluated as data, not instructions. This playground does not save inputs or results.</p>
@@ -163,52 +163,52 @@ export function DecisionPlayground() {
         {questions.map((q, index) => <fieldset key={q.id} className={styles.question}>
           <legend>Question {index + 1}</legend>
           <div className={styles.row}>
-            <label>Name<input value={q.name} maxLength={64} required onChange={(e) => editQuestion(q.id, { name: e.target.value })} /></label>
-            <label>Answer type<select value={q.type} onChange={(e) => editQuestion(q.id, {
+            <label>Name<input className="field-control" value={q.name} maxLength={64} required onChange={(e) => editQuestion(q.id, { name: e.target.value })} /></label>
+            <label>Answer type<select className="field-control" value={q.type} onChange={(e) => editQuestion(q.id, {
               type: e.target.value === "choice" ? "choice" : e.target.value === "score" ? "score" : "noul",
               options: q.options.slice(0, 10),
             })}><option value="noul">Yes/no</option><option value="choice">Choice</option><option value="score">Score</option></select></label>
-            <button type="button" disabled={questions.length === 1} aria-label={`Remove question ${index + 1}`}
+            <button className="btn" type="button" disabled={questions.length === 1} aria-label={`Remove question ${index + 1}`}
               onClick={() => { setQuestions((current) => current.filter((item) => item.id !== q.id)); setResult(null); }}>Remove</button>
           </div>
-          <label>Instructions<textarea value={q.instructions} maxLength={2000} rows={2} required
+          <label>Instructions<textarea className="field-control" value={q.instructions} maxLength={2000} rows={2} required
             onChange={(e) => editQuestion(q.id, { instructions: e.target.value })} /></label>
           {q.type === "noul" ? <details>
             <summary>Optional yes/no criteria</summary>
             <div className={styles.row}>
-              <label>Yes means<input value={q.yes} maxLength={512} onChange={(e) => editQuestion(q.id, { yes: e.target.value })} /></label>
-              <label>No means<input value={q.no} maxLength={512} onChange={(e) => editQuestion(q.id, { no: e.target.value })} /></label>
+              <label>Yes means<input className="field-control" value={q.yes} maxLength={512} onChange={(e) => editQuestion(q.id, { yes: e.target.value })} /></label>
+              <label>No means<input className="field-control" value={q.no} maxLength={512} onChange={(e) => editQuestion(q.id, { no: e.target.value })} /></label>
             </div>
           </details> : <>
             <p className={styles.note}>{q.type === "choice" ? "Define 2 to 12 distinct options." : "Order 2 to 10 levels from lowest to highest. Scores are fractional and zero-based."}</p>
             {q.options.map((option, optionIndex) => <div className={styles.row} key={optionIndex}>
-              {q.type === "choice" ? <label>Option {optionIndex + 1} name<input value={option.label} maxLength={64} required
+              {q.type === "choice" ? <label>Option {optionIndex + 1} name<input className="field-control" value={option.label} maxLength={64} required
                 onChange={(e) => editQuestion(q.id, { options: q.options.map((o, i) => i === optionIndex ? { ...o, label: e.target.value } : o) })} /></label> : <span>Level {optionIndex}</span>}
               <label>{q.type === "choice" ? `Option ${optionIndex + 1} description` : `Level ${optionIndex} label`}
-                <input value={option.description} maxLength={512} required
+                <input className="field-control" value={option.description} maxLength={512} required
                   onChange={(e) => editQuestion(q.id, { options: q.options.map((o, i) => i === optionIndex ? { ...o, description: e.target.value } : o) })} /></label>
-              <button type="button" disabled={q.options.length === 2} aria-label={`Remove ${q.type === "choice" ? "option" : "level"} ${optionIndex + 1} from question ${index + 1}`}
+              <button className="btn" type="button" disabled={q.options.length === 2} aria-label={`Remove ${q.type === "choice" ? "option" : "level"} ${optionIndex + 1} from question ${index + 1}`}
                 onClick={() => editQuestion(q.id, { options: q.options.filter((_, i) => i !== optionIndex) })}>Remove</button>
             </div>)}
-            <button type="button" disabled={q.options.length >= (q.type === "choice" ? 12 : 10)}
+            <button className="btn" type="button" disabled={q.options.length >= (q.type === "choice" ? 12 : 10)}
               onClick={() => editQuestion(q.id, { options: [...q.options, { label: `option_${q.options.length + 1}`, description: "" }] })}>
               Add {q.type === "choice" ? "option" : "level"}
             </button>
           </>}
         </fieldset>)}
-        <button type="button" disabled={questions.length >= 8} onClick={() => {
+        <button className="btn" type="button" disabled={questions.length >= 8} onClick={() => {
           const question = emptyQuestion(nextId.current++); setQuestions((current) => [...current, question]); setResult(null);
         }}>Add question</button>
       </fieldset>
       <div className={styles.actions}>
-        <button type="submit" className={styles.primary} disabled={busy || !model}>{busy ? "Running..." : "Run decision"}</button>
-        {busy && <button type="button" onClick={() => active.current?.abort()}>Cancel run</button>}
+        <button type="submit" className="btn btn-primary" disabled={busy || !model}>{busy ? "Running..." : "Run decision"}</button>
+        {busy && <button className="btn" type="button" onClick={() => active.current?.abort()}>Cancel run</button>}
         <span className={styles.note}>One explicit call. No automatic retry.</span>
       </div>
     </form>
-    {busy && <p role="status">Evaluating your questions...</p>}
-    {error && <p role="alert" className={styles.error}>{error}</p>}
-    {notice && <p role="status">{notice}</p>}
+    {busy && <p role="status" className="ui-state">Evaluating your questions...</p>}
+    {error && <p role="alert" className="ui-state">{error}</p>}
+    {notice && <p role="status" className="ui-state">{notice}</p>}
     {result && <section aria-label="Decision results">
       <h3 ref={resultHeading} tabIndex={-1}>Results</h3>
       <p className={styles.note}>Reported model: {result.response.reportedModel} · {(result.response.latencyMs / 1000).toFixed(2)} s · {result.response.region} · {result.response.residency.toUpperCase()} processing</p>

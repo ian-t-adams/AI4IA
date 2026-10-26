@@ -38,6 +38,14 @@ async function example() {
 describe("Decision playground", () => {
   it("waits for explicit Run, sends all native question shapes and renders typed results", async () => {
     await example();
+    const form = screen.getByRole("form", { name: "Decision input" });
+    for (const field of form.querySelectorAll("input, select, textarea")) {
+      expect(field).toHaveClass("field-control");
+    }
+    for (const button of form.querySelectorAll("button")) {
+      expect(button).toHaveClass("btn");
+    }
+    expect(screen.getByRole("button", { name: "Run decision" })).toHaveClass("btn-primary");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Run decision" }));
     expect(await screen.findByRole("heading", { name: "Results" })).toHaveFocus();

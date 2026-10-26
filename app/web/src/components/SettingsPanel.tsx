@@ -98,16 +98,10 @@ export function AppearanceSettings() {
                 aria-label={`Accent ${c.label}`}
                 aria-pressed={accent === c.value}
                 title={c.label}
+                className="accent-swatch"
                 style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: "50%",
-                  background: c.swatch,
-                  border:
-                    accent === c.value
-                      ? "3px solid var(--fg)"
-                      : "1px solid var(--border)",
-                }}
+                  "--swatch-color": c.swatch,
+                } as React.CSSProperties}
               />
             ))}
           </div>

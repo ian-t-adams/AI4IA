@@ -45,17 +45,9 @@ export function Pill({
 }) {
   return (
     <span
+      className="status-pill"
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        fontSize: "0.72em",
-        padding: "2px 8px",
-        borderRadius: 999,
-        border: "1px solid var(--border)",
-        background: "var(--bg)",
         color: pillToneColor(tone),
-        whiteSpace: "nowrap",
       }}
     >
       {label}

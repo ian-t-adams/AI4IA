@@ -849,7 +849,7 @@ export function WorkflowBuilder({
           {loading && <li role="status">Loading your workflows...</li>}
           {listUnavailable && <li role="status">Your workflows could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
           {!loading && !listUnavailable && mine.length === 0 && (
-            <li style={{ color: "var(--fg-muted)", fontSize: "0.85em", padding: 8 }}>
+            <li className="studio-empty">
               Save your first workflow to reuse its steps here.
             </li>
           )}
