@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -477,6 +478,37 @@ class NonbillableOptionsTests(unittest.TestCase):
             os.environ["AI4IA_API_NETWORK_PHASE"] = "legacy"
             self.assertTrue(VERIFIER._canary_failures(args, "https://candidate.test"))
             http.assert_not_called()
+
+
+class ReleaseModeOutputTests(unittest.TestCase):
+    """deploy.yml's app-only output check consumes these exact release-mode outputs."""
+
+    def run_release_mode(self, values):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "github_output"
+            env = {key: value for key, value in os.environ.items() if key not in ("GITHUB_ENV", "GITHUB_OUTPUT")}
+            env["GITHUB_OUTPUT"] = str(output)
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["check-api-private-network.py", "--release-mode"]), \
+                    patch.object(MODULE, "admission", return_value=values) as admission, \
+                    patch.object(MODULE, "deployment_operation", return_value="ordinary") as operation:
+                self.assertEqual(MODULE.main(), 0)
+            admission.assert_called_once()
+            self.assertTrue(admission.call_args.kwargs["preview"])
+            return operation, output.read_text(encoding="utf-8").splitlines()
+
+    def test_release_mode_reports_the_validated_api_target_and_blockers(self):
+        operation, lines = self.run_release_mode({
+            "AZURE_API_APP_NAME": "ca-api-private-test", "AI4IA_PRIVATE_MIGRATION_PENDING": "false",
+            "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]"})
+        self.assertEqual(lines, ["operation=ordinary", "migration_pending=false",
+                                 "api_app_name=ca-api-private-test", "execution_blockers=[]"])
+        self.assertEqual(operation.call_args.kwargs, {"pending": False, "blocked": False})
+        _, lines = self.run_release_mode({
+            "AZURE_API_APP_NAME": "ca-api-private-test", "AI4IA_PRIVATE_MIGRATION_PENDING": "true",
+            "AI4IA_PRIVATE_EXECUTION_BLOCKERS": '["candidate_not_activated"]'})
+        self.assertEqual(lines[2:], ["api_app_name=ca-api-private-test",
+                                     'execution_blockers=["candidate_not_activated"]'])
 
 
 if __name__ == "__main__":

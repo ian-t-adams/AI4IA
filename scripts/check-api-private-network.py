@@ -398,6 +398,8 @@ def main() -> int:
             with Path(target).open("a", encoding="utf-8") as file:
                 file.write(f"operation={operation}\n")
                 file.write(f"migration_pending={pending}\n")
+                file.write(f"api_app_name={values['AZURE_API_APP_NAME']}\n")
+                file.write(f"execution_blockers={values['AI4IA_PRIVATE_EXECUTION_BLOCKERS']}\n")
         if args.azd_env and any(os.environ.get(key) != value for key, value in values.items()):
             descriptor, path = tempfile.mkstemp(prefix="ai4ia-api-target-", suffix=".env")
             try:

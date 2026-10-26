@@ -57,6 +57,41 @@ verification, health/domain checks, canary, revision capture and rollback.
 Unknown changed-file coverage stops the release rather than choosing either a
 provisioning fallback or an image-only success.
 
+A fresh runner's azd environment has no Bicep outputs unless provisioning ran,
+so every admitted release with `provision` not `true` first runs
+`azd env refresh --no-prompt`. In the pinned azd this only reads the newest
+completed subscription deployment tagged with the same `azd-env-name`, using
+the job's `AZURE_ENV_NAME`, `AZURE_SUBSCRIPTION_ID` and `AZURE_LOCATION`, and
+writes its outputs to the local `.env`; it creates or modifies no deployment and
+runs no provision hooks. Because it succeeds even when no deployment exists, the
+step then fails closed unless the resource group, location, container registry
+endpoint and web/API/proxy app names are present, the group is
+`rg-<workload>-<environment>`, the location matches `AZURE_LOCATION` and, with
+the Claude gateway enabled, `AZURE_APIM_RESOURCE_ID` names an APIM service in
+that subscription and group. The gateway route check itself also refuses an
+empty APIM ID. Release mode reports its validated API app target, migration
+state and execution blockers for this check. When the deployment reports
+`AZURE_API_NETWORK_PHASE`, it must equal the job's phase and its API app must
+equal that target.
+
+One phase-less shape is accepted: the last root deployment predates the private
+recovery, which used reviewed packets and template-only PATCHes rather than a
+root provision. This requires the output API app to be the legacy
+`ca-api-<environment>`, the job phase `private`, migration pending `false`, no
+execution blockers, and a release target of `ca-api-private-<environment>`.
+Only then does the step run `azd env set AZURE_API_APP_NAME` to that target in
+the runner's local `.env`. It re-reads the value and refuses on a mismatch, so
+`azd deploy api` resolves the validated private app and never the drained legacy
+app. No other output is rewritten and Azure is not changed. Any other
+phase-less shape, a different reported phase, another API app name, or pending
+migration refuses. There is no provisioning fallback.
+
+After this step the workflow reads only `AZURE_APIM_RESOURCE_ID` from the azd
+environment, plus `AZURE_FOUNDRY_PROJECT_ENDPOINT` after a successful provision.
+The image registry comes from `az acr list` in the derived group. The stale
+`AZURE_API_URL` output is read only by the postprovision hook, which does not run
+here, and `azure.yaml` declares no deploy hooks.
+
 The provisioning step uses `azd provision --no-prompt --no-state`. In the pinned
 azd, unchanged templates and parameters can otherwise produce a successful
 "There are no changes to provision" result without reconciling live resources.

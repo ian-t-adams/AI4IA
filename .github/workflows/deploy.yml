@@ -949,6 +949,99 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
+      # A proven app/-only push skips `azd provision`, so this fresh runner's azd
+      # environment never receives the Bicep outputs that the gateway check and
+      # `azd deploy` consume (run 40319731138 failed on AZURE_APIM_RESOURCE_ID).
+      # azd 1.29 `env refresh` is read-only (cmd/env.go envRefreshAction): it
+      # compiles the template locally to find its scope, lists the subscription's
+      # completed deployments, picks the newest one tagged with this
+      # AZURE_ENV_NAME, and writes its outputs to the local .env. It creates or
+      # modifies no deployment and runs no provision hooks. Environment,
+      # subscription and location resolve from the same job env as provisioning.
+      # It exits 0 when no deployment exists, and a failed deployment carries no
+      # outputs, so the checks below fail closed rather than trusting the exit
+      # code. Never fall back to provisioning here. The only local write is the
+      # bounded pre-recovery AZURE_API_APP_NAME retarget below (`azd env set`
+      # edits this runner's .env, not Azure).
+      - name: Load existing infrastructure outputs without provisioning
+        id: outputs
+        if: ${{ steps.execution.outputs.allowed == 'true' && (steps.reconciliation.outputs.provision != 'true') }}
+        shell: bash
+        env:
+          RELEASE_API_APP_NAME: ${{ steps.release_mode.outputs.api_app_name }}
+          RELEASE_MIGRATION_PENDING: ${{ steps.release_mode.outputs.migration_pending }}
+          RELEASE_EXECUTION_BLOCKERS: ${{ steps.release_mode.outputs.execution_blockers }}
+        run: |
+          set -euo pipefail
+          azd env refresh --no-prompt
+          output_value() {
+            local value
+            if ! value="$(azd env get-value "$1" 2>/dev/null)"; then
+              value=""
+            fi
+            printf '%s' "$value"
+          }
+          refuse() {
+            echo "::error::$1 This app-only release will not provision; reconcile the root deployment through a separately approved change."
+            exit 1
+          }
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+          for name in AZURE_RESOURCE_GROUP AZURE_LOCATION AZURE_CONTAINER_REGISTRY_ENDPOINT \
+                      AZURE_API_APP_NAME AZURE_WEB_APP_NAME AZURE_PROXY_APP_NAME; do
+            if [ -z "$(output_value "$name")" ]; then
+              refuse "The existing deployment for ${AZURE_ENV_NAME} has no ${name} output."
+            fi
+          done
+          rg="rg-${AI4IA_WORKLOAD:-ai4ia}-${AZURE_ENV_NAME}"
+          if [ "$(output_value AZURE_RESOURCE_GROUP)" != "$rg" ]; then
+            refuse "The existing deployment's resource group does not match ${rg}."
+          fi
+          if [ "$(lower "$(output_value AZURE_LOCATION)")" != "$(lower "${AZURE_LOCATION:-}")" ]; then
+            refuse "The existing deployment's location does not match AZURE_LOCATION."
+          fi
+          # azure.yaml resolves the api service from AZURE_API_APP_NAME in the
+          # azd .env, so it must name the target release mode validated.
+          if [ -z "${RELEASE_API_APP_NAME:-}" ]; then
+            refuse "Release mode did not report its validated API app target."
+          fi
+          output_phase="$(output_value AZURE_API_NETWORK_PHASE)"
+          output_api="$(output_value AZURE_API_APP_NAME)"
+          if [ -n "$output_phase" ]; then
+            if [ "$output_phase" != "${AI4IA_API_NETWORK_PHASE:-legacy}" ]; then
+              refuse "The existing deployment's API network phase does not match AI4IA_API_NETWORK_PHASE."
+            fi
+            if [ "$output_api" != "$RELEASE_API_APP_NAME" ]; then
+              refuse "The existing deployment's API app does not match the validated release target."
+            fi
+          else
+            # The only accepted phase-less shape: the last root deployment predates
+            # the private recovery (which used reviewed packets and template-only
+            # PATCHes, never a root provision), and release mode has observed a
+            # completed, unblocked private cutover. Retarget only the api service
+            # to the validated private app; the drained legacy app is never used.
+            if [ "$output_api" != "ca-api-${AZURE_ENV_NAME}" ] \
+              || [ "${AI4IA_API_NETWORK_PHASE:-}" != "private" ] \
+              || [ "${RELEASE_MIGRATION_PENDING:-}" != "false" ] \
+              || [ "${RELEASE_EXECUTION_BLOCKERS:-}" != "[]" ] \
+              || [ "$RELEASE_API_APP_NAME" != "ca-api-private-${AZURE_ENV_NAME}" ]; then
+              refuse "The existing deployment for ${AZURE_ENV_NAME} has no AZURE_API_NETWORK_PHASE output and is not the completed pre-recovery shape."
+            fi
+            azd env set AZURE_API_APP_NAME "$RELEASE_API_APP_NAME"
+            if [ "$(output_value AZURE_API_APP_NAME)" != "$RELEASE_API_APP_NAME" ]; then
+              refuse "Could not retarget the api service to the validated private app."
+            fi
+            echo "The existing deployment predates the private recovery; retargeted only AZURE_API_APP_NAME in the local .env to ${RELEASE_API_APP_NAME}."
+          fi
+          if [ "${AI4IA_CLAUDE_GATEWAY_ENABLED:-}" = "true" ]; then
+            apim_id="$(output_value AZURE_APIM_RESOURCE_ID)"
+            apim_pattern="$(lower "^/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourcegroups/${rg}/providers/microsoft\.apimanagement/service/[a-z0-9-]+$")"
+            if ! [[ "$(lower "$apim_id")" =~ $apim_pattern ]]; then
+              refuse "The existing deployment has no valid AZURE_APIM_RESOURCE_ID for the Claude gateway check."
+            fi
+          fi
+          echo "Loaded the existing ${AZURE_ENV_NAME} infrastructure outputs read-only; no provisioning ran."
+
       # Preserve the endpoint produced by THIS successful provision for the
       # workflow_run consumer. A GitHub variable can fall back across scopes and
       # therefore cannot prove which deployment it names.
@@ -1394,7 +1487,12 @@ jobs:
       - name: Verify upstream Claude gateway routes before image rollout
         if: ${{ steps.execution.outputs.allowed == 'true' && (env.AI4IA_CLAUDE_GATEWAY_ENABLED == 'true') }}
         run: |
+          set -euo pipefail
           apim_id="$(azd env get-value AZURE_APIM_RESOURCE_ID)"
+          if [ -z "$apim_id" ]; then
+            echo "::error::The azd environment has no AZURE_APIM_RESOURCE_ID; refusing to skip the Claude gateway route check."
+            exit 1
+          fi
           python scripts/check-claude-binding.py --routed --source-apim-resource-id "${apim_id}"
 
       - name: Deploy application
