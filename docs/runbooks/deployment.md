@@ -2428,6 +2428,10 @@ Do not run the following transitions merely because the source exists:
    active **or any replica remains**, then reconciles the new API with its
    already-observed serving digest and normal workers. Web/voice still target
    the old API. Keep the resulting outage window supervised and short.
+   Obtain terminal raw ARM inventory before deactivation and require exactly the
+   owner-approved active revision. Deactivate only that revision, then obtain a
+   new complete inventory with every retained row inactive and at integer zero
+   replicas. Never delete, truncate or skip historical revisions to fit a guard.
 4. **Activated proof and cutover approval.** Observe stable healthy activated
    API, unchanged identity/account and current-owner options again. Only then
    authorize `private`, which switches web backend and voice endpoint together.
@@ -2453,10 +2457,31 @@ CLI writes no cloud state; the explicit `--azd-env` preprovision hook stores onl
 validated nonsecret target/image values in local azd state. It refuses incomplete
 inventory, unapproved/mismatched PE/DNS, different identity/account, unsettled
 images, active/terminating legacy workers or public DNS. It bounds reads to
-64 calls, 32 retained legacy revisions, a 120-second admission budget and
-45 seconds/512 KiB per CLI result; exhaustion is unknown, never drained.
+64 calls, a 120-second admission budget and 45 seconds/512 KiB per CLI result;
+each call's timeout also respects the remaining overall deadline. Legacy
+inventory uses the raw `2024-10-02-preview` revisions endpoint with `pageSize=20`,
+including inactive rows. Continuation must keep HTTPS `management.azure.com`,
+the exact app path, API version and page size; only one bounded opaque
+`skipToken` may be added. Unknown/duplicate query keys, repeated cursors and
+duplicate revision names fail. Completion requires a terminal page without a
+next link and totals strictly below 32 pages, 640 rows and 120 seconds.
+Each row retains its own activity, replica count, running and provisioning
+states. Inactive rows need Boolean false and integer zero, not null, a string,
+or an inferred zero. Only active/missing/nonzero rows receive replica-list
+checks (at most four); those checks cannot overwrite unknown or contradictory
+inactive metadata. The page/row counts and stable row digest are bound into
+preview and execution receipts and compared again immediately before apply.
+Exhaustion or incomplete coverage is unknown, never drained.
 It preserves the current private API and web/proxy image digests across
 reconciliation, while normal production image signing/promotion stays intact.
+An existing API-image receipt may survive a script-only source correction only
+when its producer commit is an ancestor of the current clean main checkout and
+the complete Git changed-path list contains no API, Dockerfile, image-workflow,
+lockfile or build-context input. Both predicates still verify against the
+original producer commit/run/image and original SPDX fingerprint. Successful
+reuse records `imageReuse: "ancestor, no image inputs changed"` and the complete
+changed-path list; an unproven ancestor, protected input change or signature
+mismatch refuses reuse and requires a separately approved rebuild/fresh candidate.
 `AZURE_API_APP_NAME` explicitly selects the deployment/capture/rollback target.
 `AZURE_API_URL` remains the serving backend; `AZURE_API_TARGET_URL` is the
 candidate/active target used during recovery.

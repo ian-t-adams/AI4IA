@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from _api_private import api_name, deployment_operation, from_environment
 
@@ -41,9 +42,9 @@ def require(value: bool, message: str) -> None:
         raise AdmissionError(message)
 
 
-def cli(args: list[str], *, absent: bool = False):
+def cli(args: list[str], *, absent: bool = False, timeout: float = 45):
     result = subprocess.run(["az", *args, "--only-show-errors", "-o", "json"],
-                            capture_output=True, timeout=45, check=False)
+                            capture_output=True, timeout=timeout, check=False)
     if result.returncode:
         if absent and any(result.stderr.startswith(f"ERROR: ({code})".encode())
                           for code in ("ResourceNotFound", "ResourceGroupNotFound")):
@@ -51,6 +52,124 @@ def cli(args: list[str], *, absent: bool = False):
         raise AdmissionError("Private API scoped metadata read failed.")
     require(len(result.stdout) <= 512 * 1024, "Private API metadata exceeds bound.")
     return json.loads(result.stdout)
+
+
+REVISION_API_VERSION = "2024-10-02-preview"
+REVISION_PAGE_SIZE = "20"
+MAX_REVISION_PAGES = 32
+MAX_REVISION_ROWS = 640
+REVISION_QUERY_FIELDS = (
+    "{rows:map(&{name:name,active:properties.active,replicas:properties.replicas,"
+    "runningState:properties.runningState,provisioningState:properties.provisioningState},value),nextLink:nextLink}"
+)
+
+
+def revision_continuation(link: object, path: str) -> str:
+    require(isinstance(link, str) and 0 < len(link) <= 16384 and re.fullmatch(r"[\x21-\x7e]+", link) is not None
+            and "#" not in link and re.search(r"%(?![0-9a-fA-F]{2})", link) is None,
+            "Invalid legacy revision continuation.")
+    assert isinstance(link, str)
+    try:
+        parsed = urlsplit(link)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True, errors="strict", max_num_fields=3)
+    except ValueError as exc:
+        raise AdmissionError("Invalid legacy revision continuation.") from exc
+    require(parsed.scheme == "https" and parsed.netloc.casefold() == "management.azure.com"
+            and parsed.path == path and not parsed.fragment, "Legacy revision continuation changed scope.")
+    parameters = dict(pairs)
+    require(len(pairs) == 3 and set(parameters) == {"api-version", "pageSize", "skipToken"}
+            and {part.split("=", 1)[0] for part in parsed.query.split("&")} == set(parameters)
+            and parameters["api-version"] == REVISION_API_VERSION and parameters["pageSize"] == REVISION_PAGE_SIZE,
+            "Legacy revision continuation changed query.")
+    cursor = parameters["skipToken"]
+    require(0 < len(cursor) <= 8192 and re.fullmatch(r"[\x21-\x7e]+", cursor) is not None,
+            "Legacy revision cursor is unknown.")
+    return cursor
+
+
+def legacy_revision_inventory(
+    subscription: str, group: str, name: str, read=cli, *,
+    expected_active: str | None = None, require_drained: bool = False, clock=time.monotonic,
+) -> dict:
+    """Complete scalar list proof; no inactive-row detail sweep or scope fallback."""
+    require(re.fullmatch(r"[0-9a-fA-F-]{36}", subscription) is not None
+            and re.fullmatch(r"rg-[a-z0-9-]{3,64}", group) is not None
+            and re.fullmatch(r"ca-api-[a-z0-9-]{2,20}", name) is not None and not name.startswith("ca-api-private-"),
+            "Legacy revision inventory target is invalid.")
+    path = f"/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.App/containerApps/{name}/revisions"
+    query = {"api-version": REVISION_API_VERSION, "pageSize": REVISION_PAGE_SIZE}
+    started = clock()
+    rows: list[dict] = []
+    names, cursors = set(), set()
+    pages = 0
+
+    def bounded(args):
+        remaining = 120 - (clock() - started)
+        require(remaining > 0, "Legacy revision inventory exceeded its time cap.")
+        result = read(args, timeout=min(45, remaining))
+        require(clock() - started < 120, "Legacy revision inventory exceeded its time cap.")
+        return result
+
+    while True:
+        require(pages + 1 < MAX_REVISION_PAGES, "Legacy revision inventory reached its page cap.")
+        page = bounded([
+            "rest", "--method", "get", "--subscription", subscription,
+            "--url", "https://management.azure.com" + path + "?" + urlencode(query),
+            "--query", REVISION_QUERY_FIELDS,
+        ])
+        pages += 1
+        require(isinstance(page, dict) and isinstance(page.get("rows"), list),
+                "Legacy revision page is incomplete.")
+        page_rows = page["rows"]
+        require(len(rows) + len(page_rows) < MAX_REVISION_ROWS, "Legacy revision inventory reached its row cap.")
+        for row in page_rows:
+            require(isinstance(row, dict) and set(row) == {"name", "active", "replicas", "runningState", "provisioningState"},
+                    "Legacy revision row is incomplete.")
+            revision = row["name"]
+            require(isinstance(revision, str) and re.fullmatch(re.escape(name) + r"--[a-z0-9-]{1,80}", revision) is not None
+                    and revision not in names and type(row["active"]) is bool,
+                    "Legacy revision identity or activity is invalid or duplicated.")
+            require(row["replicas"] is None or type(row["replicas"]) is int and row["replicas"] >= 0,
+                    "Legacy replica count is invalid.")
+            require(all(isinstance(row[key], str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", row[key]) is not None
+                        for key in ("runningState", "provisioningState")), "Legacy revision state is unknown.")
+            names.add(revision)
+            rows.append(row)
+        link = page.get("nextLink")
+        if link is None:
+            break
+        require(bool(page_rows), "Empty nonterminal legacy revision page.")
+        cursor = revision_continuation(link, path)
+        require(cursor not in cursors, "Repeated legacy revision cursor.")
+        cursors.add(cursor)
+        query = {**query, "skipToken": cursor}
+    require(bool(rows), "Legacy revision inventory is empty.")
+    active = [row["name"] for row in rows if row["active"]]
+    require(len(active) <= 1 and (expected_active is None or active == [expected_active]),
+            "Legacy active revision does not match the approved drain.")
+    probes = [row for row in rows if row["active"] or row["replicas"] is None or row["replicas"] != 0]
+    require(len(probes) <= 4, "Legacy replica checks exceed their cap.")
+    for row in probes:
+        replicas = bounded([
+            "containerapp", "replica", "list", "--subscription", subscription, "-g", group, "-n", name,
+            "--revision", row["name"], "--query", "[].name",
+        ])
+        require(isinstance(replicas, list) and len(replicas) <= 1000
+                and all(isinstance(replica, str) and 0 < len(replica) <= 256 for replica in replicas),
+                "Legacy replica inventory is unavailable.")
+        if not row["active"]:
+            require(not replicas, "An inactive legacy revision still has replicas.")
+    require(all(row["active"] or type(row["replicas"]) is int and row["replicas"] == 0 for row in rows),
+            "Inactive legacy replica count is nonzero or unknown.")
+    require(not require_drained or not active, "Legacy revisions must be inactive before activation.")
+    proof = {
+        "appId": path.removesuffix("/revisions"), "pageCount": pages, "rowCount": len(rows),
+        "digest": hashlib.sha256(json.dumps(sorted(rows, key=lambda row: row["name"]),
+                                          sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
+        "activeRevisions": active, "replicaReadCount": len(probes),
+    }
+    require(clock() - started < 120, "Legacy revision inventory exceeded its time cap.")
+    return {"rows": rows, "proof": proof}
 
 
 def prove_ready(origin: str) -> bool:
@@ -73,8 +192,11 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
         nonlocal calls
         calls += 1
         require(calls <= 64 and time.monotonic() - started < 120, "Private API admission exhausted its bounded read budget.")
+        remaining = 120 - (time.monotonic() - started)
+        require(remaining > 0, "Private API admission exhausted its bounded read budget.")
+        kwargs["timeout"] = min(kwargs.get("timeout", 45), remaining)
         result = transport(args, **kwargs)
-        require(time.monotonic() - started <= 120, "Private API admission exhausted its bounded read budget.")
+        require(time.monotonic() - started < 120, "Private API admission exhausted its bounded read budget.")
         return result
 
     read = bounded_read
@@ -204,28 +326,16 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
         require(current.get("active") is True and current.get("healthState") == "Healthy"
                 and current.get("provisioningState") == "Provisioned", "Candidate is not healthy/provisioned.")
     blockers = []
+    inventory_proof = None
     if selected == "candidate":
         require(staged, "Refuse to demote an active private API through candidate staging.")
     else:
-        old = read(["containerapp", "revision", "list", *scope, "-n", api_name(environment, "legacy"),
-                    "--query", "[].{name:name,properties:{active:properties.active}}"])
-        require(isinstance(old, list) and 0 < len(old) <= 32
-                and all(type(row.get("properties", {}).get("active")) is bool for row in old),
-                "Legacy revision activity metadata is incomplete.")
-        drained = all(row["properties"]["active"] is False for row in old)
-        require(preview or drained,
-                "All legacy API revisions/workers must be explicitly drained and inactive before activation.")
-        if not drained:
+        inventory = legacy_revision_inventory(subscription, group, api_name(environment, "legacy"), read,
+                                               require_drained=not preview)
+        inventory_proof = inventory["proof"]
+        if inventory_proof["activeRevisions"]:
+            require(inventory_proof["activeRevisions"] == [legacy_revision], "Unapproved legacy revision is active.")
             blockers.append("legacy_revisions_active")
-        for row in old:
-            require(isinstance(row.get("name"), str) and row["name"].startswith(api_name(environment, "legacy") + "--"),
-                    "Legacy revision inventory contains an unexpected identity.")
-            replicas = read(["containerapp", "replica", "list", *scope, "-n", api_name(environment, "legacy"),
-                             "--revision", row["name"], "--query", "[].name"])
-            require(isinstance(replicas, list), "Legacy replica inventory is incomplete.")
-            require(preview or replicas == [], "Legacy API still has running/terminating replicas; worker drain is incomplete.")
-            if replicas and "legacy_replicas_present" not in blockers:
-                blockers.append("legacy_replicas_present")
         if selected == "private":
             require(preview or not staged, "Activate and verify private API before web/voice endpoint cutover.")
             if staged:
@@ -264,7 +374,9 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
     return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": image,
             "AI4IA_PRIVATE_MIGRATION_PENDING": "false" if completed else "true",
             "AI4IA_PRIVATE_EXECUTION_BLOCKERS": json.dumps(blockers, separators=(",", ":")),
-            "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, "AI4IA_PRIVATE_API_ORIGIN": origin, **preserved}
+            "AI4IA_PRIVATE_COSMOS_ENDPOINT": old_cosmos, "AI4IA_PRIVATE_API_ORIGIN": origin,
+            **({"AI4IA_PRIVATE_LEGACY_INVENTORY": json.dumps(inventory_proof, separators=(",", ":"))} if inventory_proof else {}),
+            **preserved}
 
 
 def main() -> int:

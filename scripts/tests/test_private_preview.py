@@ -231,7 +231,7 @@ class PreviewTests(unittest.TestCase):
                     self.assertEqual(args[args.index("-n") + 1], "ca-api-private-test")
                     if fault == "containment":
                         raise PREVIEW.PreviewError("Containment inventory unavailable.")
-                    return [{"name": "ca-api-private-test--candidate", "active": active}]
+                    return [{"name": "ca-api-private-test--candidate", "active": active}] if active or "--all" in args else []
 
                 def execute(args, **kwargs):
                     nonlocal active
@@ -270,6 +270,7 @@ class PreviewTests(unittest.TestCase):
                     else:
                         self.assertEqual(sequence, ["create", "metadata", "deactivate"])
                         self.assertFalse(active)
+                        self.assertEqual(receipt["candidateContainment"]["status"], "inactive")
                         self.assertFalse(receipt["candidateContainment"]["legacyTouched"])
 
     def test_exact_foundation_echoes_preserve_reported_deltas_and_binding(self):
@@ -973,7 +974,8 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(PREVIEW.main(), 1)
 
     def test_exact_frozen_packet_applies_once_and_refuses_claim_drift(self):
-        for fault in ("none", "parameters", "main", "claimed", "unknown-claim", "admission", "nsg-rules", "nsg-etag"):
+        for fault in ("none", "parameters", "main", "claimed", "unknown-claim", "admission", "nsg-rules", "nsg-etag",
+                      "inventory", "inventory-drift", "cutover-inventory", "cutover-inventory-drift"):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 packet = root / "ai4ia-private-packet-123-test"
@@ -986,6 +988,18 @@ class PreviewTests(unittest.TestCase):
                 bound.update(packet="foundation", template=PREVIEW.digest(template),
                              parameters=PREVIEW.digest(parameters))
                 preview = PREVIEW.scope_preview(raw, bound, expected)
+                inventory = {
+                    "appId": f"/subscriptions/{bound['subscription']}/resourceGroups/{bound['resourceGroup']}"
+                             "/providers/Microsoft.App/containerApps/ca-api-test",
+                    "pageCount": 11, "rowCount": 201, "digest": "a" * 64,
+                    "activeRevisions": [], "replicaReadCount": 0,
+                }
+                if "inventory" in fault:
+                    bound.update(packet="cutover" if fault.startswith("cutover") else "activate",
+                                 legacyInventory=inventory, imageReuse="ancestor, no image inputs changed",
+                                 imageSourceChanges=["scripts/check-api-private-network.py"])
+                current_inventory = {**inventory, "digest": "b" * 64} if fault.endswith("-drift") else inventory
+                succeeds = fault in ("none", "inventory", "cutover-inventory")
                 nsg = {
                     "id": raw["changes"][6]["resourceId"].casefold(), "location": "eastus2", "etag": "initial",
                     "state": "Succeeded", "rulesPresent": True, "rules": [],
@@ -1029,16 +1043,22 @@ class PreviewTests(unittest.TestCase):
                      patch.object(PREVIEW, "cloud_read", return_value=current_nsg), \
                      patch.object(PREVIEW.subprocess, "run", return_value=claim), \
                      patch.object(PREVIEW.ADMISSION, "admission",
+                                  return_value={"AI4IA_PRIVATE_LEGACY_INVENTORY": json.dumps(current_inventory)},
                                   side_effect=ValueError("blocked") if fault == "admission" else None), \
                      redirect_stdout(stdout), patch.object(sys, "stderr", stderr):
-                    self.assertEqual(PREVIEW.main(), 0 if fault == "none" else 1)
-                self.assertEqual(len(writes), 1 if fault == "none" else 0)
+                    self.assertEqual(PREVIEW.main(), 0 if succeeds else 1)
+                self.assertEqual(len(writes), 1 if succeeds else 0)
                 evidence = (output / "execution.json").read_text() if (output / "execution.json").exists() else ""
                 self.assertNotIn("private-value-never-publish", evidence + stdout.getvalue() + stderr.getvalue())
                 self.assertNotIn("sensitive-provider-message", stderr.getvalue())
-                if fault == "none":
+                if succeeds:
                     self.assertEqual(json.loads(evidence)["runtimeAcceptance"], "not_yet_observed")
                     self.assertEqual(len(json.loads(evidence)["nsgReads"]), 1)
+                    if "inventory" in fault:
+                        context = json.loads(evidence)["context"]
+                        self.assertEqual(context["legacyInventory"], inventory)
+                        self.assertEqual(context["imageReuse"], "ancestor, no image inputs changed")
+                        self.assertEqual(context["imageSourceChanges"], ["scripts/check-api-private-network.py"])
                 self.assertFalse((packet / "parameters.json").exists())
 
     def test_binding_is_same_head_phase_scope_inputs_delta_and_fresh(self):
@@ -1365,7 +1385,7 @@ class OperationTests(unittest.TestCase):
 
     def test_preview_can_describe_a_blocked_transition_but_never_admit_it(self):
         cloud = Cloud()
-        cloud.old[0]["properties"]["active"] = True
+        cloud.old[0]["active"] = True
         env = {**ENV, "AI4IA_API_NETWORK_PHASE": "activate"}
         observed = MODULE.admission(env, cloud.read, lambda _: True, preview=True)
         self.assertIn("legacy_revisions_active", observed["AI4IA_PRIVATE_EXECUTION_BLOCKERS"])

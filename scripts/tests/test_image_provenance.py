@@ -317,6 +317,75 @@ def tool_stub(directory: Path, tool: str, implementation: Path) -> None:
         )
 
 
+def fixture_git(root: Path, *args: str) -> str:
+    result = subprocess.run([
+        "git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+        "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *args,
+    ], capture_output=True, timeout=30, check=True)
+    return result.stdout.decode().strip()
+
+
+def fixture_commit(root: Path, path: str, content: str = "synthetic\n") -> str:
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    fixture_git(root, "add", "--all")
+    fixture_git(root, "commit", "-qm", "fixture")
+    return fixture_git(root, "rev-parse", "HEAD")
+
+
+class ApiImageInputTests(unittest.TestCase):
+    def test_nonancestor_with_only_allowed_path_differences_still_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(provenance, "ROOT", Path(tmp)):
+            root = Path(tmp)
+            fixture_git(root, "init", "-q", "--initial-branch=main")
+            source = fixture_commit(root, "scripts/initial.py")
+            current = fixture_commit(root, "scripts/recovery.py")
+            self.assertEqual(provenance.unchanged_api_image_inputs(source, current), ["scripts/recovery.py"])
+            fixture_git(root, "switch", "--orphan", "unrelated")
+            unrelated = fixture_commit(root, "scripts/unrelated.py")
+            with self.assertRaises(provenance.ProvenanceError):
+                provenance.unchanged_api_image_inputs(source, unrelated)
+
+    def test_real_git_ancestor_and_complete_protected_input_diff(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(provenance, "ROOT", Path(tmp)):
+            root = Path(tmp)
+            fixture_git(root, "init", "-q", "--initial-branch=main")
+            source = fixture_commit(root, "scripts/initial.py")
+            current = fixture_commit(root, "scripts/recovery.py")
+            self.assertEqual(provenance.unchanged_api_image_inputs(source, current), ["scripts/recovery.py"])
+            self.assertIsNone(provenance.unchanged_api_image_inputs(current, current))
+            for path in ("app/api/src/api.py", "app/api/.dockerignore", "app/web/Dockerfile",
+                         "proxy/Dockerfile.release", "build/api.Dockerfile", ".github/workflows/deploy.yml",
+                         ".github/workflows/docker-build.yml", "app/web/package-lock.json",
+                         "app/api/uv.lock", "proxy/packages.lock.json", ".gitattributes", ".gitmodules"):
+                with self.subTest(path=path):
+                    source, current = current, fixture_commit(root, path)
+                    with self.assertRaisesRegex(provenance.ProvenanceError, "image inputs changed"):
+                        provenance.unchanged_api_image_inputs(source, current)
+            source = fixture_commit(root, "app/api/src/moved.py")
+            fixture_git(root, "mv", "app/api/src/moved.py", "scripts/moved.py")
+            fixture_git(root, "commit", "-qm", "rename")
+            current = fixture_git(root, "rev-parse", "HEAD")
+            with self.assertRaisesRegex(provenance.ProvenanceError, "image inputs changed"):
+                provenance.unchanged_api_image_inputs(source, current)
+            fixture_git(root, "switch", "--orphan", "unrelated")
+            unrelated = fixture_commit(root, "scripts/unrelated.py")
+            with self.assertRaises(provenance.ProvenanceError):
+                provenance.unchanged_api_image_inputs(source, unrelated)
+            with self.assertRaisesRegex(provenance.ProvenanceError, "checkout differs"):
+                provenance.unchanged_api_image_inputs(source, current)
+
+    def test_incomplete_unknown_or_overbound_git_paths_refuse(self):
+        source, current = "a" * 40, "b" * 40
+        for raw in (b"scripts/new.py", b"\xff\0", b"scripts/x\0scripts/x\0", b"../outside\0",
+                    b"scripts/x\nbad\0", b"\0", b"x" * 257 + b"\0"):
+            with self.subTest(raw=raw), patch.object(provenance, "run_bounded",
+                    side_effect=[current.encode(), b"", b"", b"", raw]):
+                with self.assertRaises(provenance.ProvenanceError):
+                    provenance.unchanged_api_image_inputs(source, current)
+
+
 @unittest.skipIf(BASH is None, "bash is unavailable on this machine")
 class PrivateApiProofTests(unittest.TestCase):
     def fixture(self):
@@ -334,10 +403,13 @@ class PrivateApiProofTests(unittest.TestCase):
             rows[0]["verificationResult"]["signature"]["certificate"]["buildTrigger"] = "workflow_dispatch"
         return env, receipt, proofs
 
-    def consume(self, env, receipt, proofs):
+    def consume(self, env, receipt, proofs, *, git_root=None):
         calls = []
+        real_run = provenance.run_bounded
 
         def run(command, **kwargs):
+            if command[0] == "git":
+                return real_run(command, **kwargs)
             calls.append(command)
             if command[-1] == "--version":
                 return f"gh version {provenance.GH_VERSION} (test)\n".encode()
@@ -348,6 +420,7 @@ class PrivateApiProofTests(unittest.TestCase):
             return json.dumps(proofs[kind]).encode()
 
         with patch.object(provenance.shutil, "which", return_value="gh"), \
+                patch.object(provenance, "ROOT", git_root or provenance.ROOT), \
                 patch.object(provenance, "run_bounded", side_effect=run), \
                 patch.object(provenance, "validate_verification", wraps=provenance.validate_verification) as shared:
             result = provenance.consume_private_api(receipt, env)
@@ -357,7 +430,8 @@ class PrivateApiProofTests(unittest.TestCase):
             self.assertNotIn("--bundle", command)
             self.assertIn("--bundle-from-oci", command)
             self.assertIn("--deny-self-hosted-runners", command)
-            self.assertEqual(command[command.index("--source-digest") + 1], COMMIT)
+            self.assertEqual(command[command.index("--source-digest") + 1], receipt["sourceCommit"])
+            self.assertEqual(command[command.index("--signer-digest") + 1], receipt["sourceCommit"])
             self.assertEqual(command[command.index("--cert-identity") + 1], WORKFLOW_ID)
         return result
 
@@ -366,6 +440,30 @@ class PrivateApiProofTests(unittest.TestCase):
         result = self.consume(env, receipt, proofs)
         self.assertEqual(result["receipt"], receipt)
         self.assertEqual(set(result["statements"]), set(provenance.PREDICATES))
+
+    def test_ancestor_reuse_still_verifies_original_signer_image_and_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture_git(root, "init", "-q", "--initial-branch=main")
+            source = fixture_commit(root, "scripts/initial.py")
+            current = fixture_commit(root, "scripts/inventory.py")
+            env, receipt, proofs = self.fixture()
+            env.update(GITHUB_SHA=current, GITHUB_WORKFLOW_SHA=current)
+            receipt["sourceCommit"] = source
+            proofs = json.loads(json.dumps(proofs).replace(COMMIT, source))
+            for rows in proofs.values():
+                rows[0]["attestation"]["bundle"]["dsseEnvelope"]["payload"] = base64.b64encode(
+                    json.dumps(rows[0]["verificationResult"]["statement"]).encode()).decode()
+            result = self.consume(env, receipt, proofs, git_root=root)
+            self.assertEqual(result["imageReuse"], "ancestor, no image inputs changed")
+            self.assertEqual(result["changedPaths"], ["scripts/inventory.py"])
+            wrong = copy.deepcopy(proofs)
+            wrong["sbom"][0]["verificationResult"]["signature"]["certificate"]["buildSignerDigest"] = current
+            with self.assertRaises(provenance.ProvenanceError):
+                self.consume(env, receipt, wrong, git_root=root)
+            with self.assertRaises(provenance.ProvenanceError):
+                self.consume(env, {**receipt, "image": IMAGES["api"].replace("b" * 64, "d" * 64)},
+                             proofs, git_root=root)
 
     def test_oci_only_producer_requires_registry_retrieval_without_changing_local_bundles(self):
         env, receipt, proofs = self.fixture()

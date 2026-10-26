@@ -10,6 +10,8 @@ import subprocess
 import sys
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlencode, urlsplit
+import jmespath
 from scripts._api_private import api_name, validate_prefixes
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +46,11 @@ def image(service):
     return f"synthetic.azurecr.io/ai4ia/{service}-test@sha256:" + "1" * 64
 
 
+def revision(index, *, active=False, replicas=0):
+    return {"name": f"ca-api-test--r{index}", "active": active, "replicas": replicas,
+            "runningState": "Running" if active else "Stopped", "provisioningState": "Provisioned"}
+
+
 class Cloud:
     def __init__(self, *, staged=True):
         self.calls = []
@@ -68,7 +75,7 @@ class Cloud:
                     {"name": "AI4IA_PRIVATE_COSMOS_REQUIRED", "value": "true"},
                 ]}]},
             }}
-        self.old = [{"name": "ca-api-test--ready", "properties": {"active": False}}]
+        self.old = [{**revision(0), "name": "ca-api-test--ready"}]
         self.details["ca-web-test"]["properties"]["template"]["containers"][0]["env"] = [
             {"name": key, "value": "https://ca-api-test.synthetic.azurecontainerapps.io"}
             for key in ("API_BASE_URL", "API_PUBLIC_URL")
@@ -85,9 +92,12 @@ class Cloud:
         self.links = [{"virtualNetwork": {"id": VNET}, "registrationEnabled": False,
                        "virtualNetworkLinkState": "Completed"}]
 
-    def read(self, args, *, absent=False):
+    def read(self, args, *, absent=False, timeout=45):
         self.calls.append(args)
         assert args[args.index("--subscription") + 1] == SUB
+        assert 0 < timeout <= 45
+        if args[:3] == ["rest", "--method", "get"]:
+            return {"rows": copy.deepcopy(self.old)}
         if args[:3] == ["network", "vnet", "list"]:
             return copy.deepcopy(self.networks)
         assert args[args.index("-g") + 1] == "rg-ai4ia-test"
@@ -120,6 +130,10 @@ class PrivateAdmissionTests(unittest.TestCase):
                     urls.append(url)
                     return True
                 result = MODULE.admission({**ENV, "AI4IA_API_NETWORK_PHASE": selected}, cloud.read, ready)
+                if selected != "candidate":
+                    inventory = json.loads(result.pop("AI4IA_PRIVATE_LEGACY_INVENTORY"))
+                    self.assertEqual((inventory["pageCount"], inventory["rowCount"]), (1, 1))
+                    self.assertEqual(inventory["activeRevisions"], [])
                 self.assertEqual(result, {
                     "AZURE_API_APP_NAME": "ca-api-private-test",
                     "AI4IA_API_PRIVATE_INITIAL_IMAGE": image("api"),
@@ -192,14 +206,15 @@ class PrivateAdmissionTests(unittest.TestCase):
             MODULE.admission({**ENV, "AI4IA_API_NETWORK_PHASE": "private"}, cloud.read, lambda _: True)
         for phase in ("activate", "private"):
             cloud = Cloud(staged=phase == "activate")
-            cloud.old[0]["properties"]["active"] = True
-            with self.assertRaisesRegex(ValueError, "drained and inactive"):
+            cloud.old[0]["active"] = True
+            with self.assertRaisesRegex(ValueError, "inactive before activation"):
                 MODULE.admission({**ENV, "AI4IA_API_NETWORK_PHASE": phase}, cloud.read, lambda _: True)
         with self.assertRaisesRegex(ValueError, "demote"):
             MODULE.admission(ENV, Cloud(staged=False).read, lambda _: True)
         cloud = Cloud()
+        cloud.old[0]["replicas"] = 1
         cloud.replicas = ["terminating"]
-        with self.assertRaisesRegex(ValueError, "drain is incomplete"):
+        with self.assertRaisesRegex(ValueError, "still has replicas"):
             MODULE.admission({**ENV, "AI4IA_API_NETWORK_PHASE": "activate"}, cloud.read, lambda _: True)
 
     def test_interrupted_first_stage_can_replace_only_its_inert_placeholder(self):
@@ -308,6 +323,124 @@ class PrivateAdmissionTests(unittest.TestCase):
         for name in ("AI4IA_API_PRIVATE_INITIAL_IMAGE", "AI4IA_PRIVATE_WEB_IMAGE", "AI4IA_PRIVATE_PROXY_IMAGE"):
             self.assertIn(f"      {name}: ''", workflow)
             self.assertNotIn(f"vars.{name}", workflow)
+
+
+class LegacyRevisionInventoryTests(unittest.TestCase):
+    path = f"/subscriptions/{SUB}/resourceGroups/rg-ai4ia-test/providers/Microsoft.App/containerApps/ca-api-test/revisions"
+
+    def link(self, cursor, **overrides):
+        query = {"api-version": MODULE.REVISION_API_VERSION, "pageSize": "20", "skipToken": cursor, **overrides}
+        return "https://management.azure.com" + self.path + "?" + urlencode(query)
+
+    def collect(self, pages, **kwargs):
+        calls = []
+        def read(args, **options):
+            calls.append(args)
+            self.assertGreater(options["timeout"], 0)
+            self.assertLessEqual(options["timeout"], 45)
+            if args[0] != "rest":
+                return []
+            self.assertEqual(args[args.index("--query") + 1], MODULE.REVISION_QUERY_FIELDS)
+            parsed = urlsplit(args[args.index("--url") + 1])
+            self.assertEqual(parsed.path, self.path)
+            query = parse_qs(parsed.query)
+            self.assertEqual(query["api-version"], [MODULE.REVISION_API_VERSION])
+            self.assertEqual(query["pageSize"], ["20"])
+            index = int(query.get("skipToken", ["0"])[0])
+            return copy.deepcopy(pages[index])
+        result = MODULE.legacy_revision_inventory(SUB, "rg-ai4ia-test", "ca-api-test", read, **kwargs)
+        return result, calls
+
+    def test_complete_201_rows_no_inactive_detail_sweep_and_exact_drain(self):
+        rows = [revision(index) for index in range(201)]
+        rows[-1]["active"] = True
+        rows[-1]["replicas"] = 1
+        pages = [{"rows": rows[offset:offset + 20], **(
+            {"nextLink": self.link(str(offset // 20 + 1))} if offset + 20 < len(rows) else {}
+        )} for offset in range(0, len(rows), 20)]
+        result, calls = self.collect(pages, expected_active="ca-api-test--r200")
+        self.assertEqual((result["proof"]["pageCount"], result["proof"]["rowCount"]), (11, 201))
+        self.assertEqual(result["proof"]["replicaReadCount"], 1)
+        self.assertEqual(len(calls), 12)
+        before = result["proof"]["digest"]
+        rows[-1].update(active=False, replicas=0)
+        result, calls = self.collect(pages, require_drained=True)
+        self.assertEqual(len(calls), 11)
+        self.assertNotEqual(result["proof"]["digest"], before)
+        self.assertEqual(result["proof"]["activeRevisions"], [])
+        self.assertEqual(result["proof"]["replicaReadCount"], 0)
+
+    def test_actual_projection_cannot_drop_unknown_rows(self):
+        good = {"name": "ca-api-test--r0", "properties": {
+            "active": False, "replicas": 0, "runningState": "Stopped", "provisioningState": "Provisioned",
+        }}
+        projected = jmespath.search(MODULE.REVISION_QUERY_FIELDS, {"value": [good]})
+        self.collect([projected], require_drained=True)
+        for bad in (None, {}, [good], {"name": "ca-api-test--r1", "properties": {"active": False}}):
+            projected = jmespath.search(MODULE.REVISION_QUERY_FIELDS, {"value": [good, bad]})
+            with self.subTest(bad=bad), self.assertRaises(MODULE.AdmissionError):
+                self.collect([projected], require_drained=True)
+        with patch.object(MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, b"{}", b"")) as run:
+            MODULE.cli(["rest", "--method", "get"], timeout=1.25)
+            self.assertEqual(run.call_args.kwargs["timeout"], 1.25)
+
+    def test_continuation_rejects_scope_query_and_cursor_tampering(self):
+        good = self.link("opaque+/=")
+        self.assertEqual(MODULE.revision_continuation(good, self.path), "opaque+/=")
+        bad = [
+            good.replace("https:", "http:"), good.replace("management.azure.com", "other.test"),
+            good.replace("/ca-api-test/", "/ca-api-other/"), good.replace("2024-10-02-preview", "2025-01-01"),
+            good + "&extra=1", good + "&skipToken=again", good + "#fragment",
+            good.replace("pageSize=20", "pageSize=21"), self.link(""), self.link("\n"),
+            good.replace("skipToken=", "$skiptoken="), good.replace("skipToken=", "skip%54oken="),
+            good.replace("management.azure.com", "management.azure.com:443"),
+        ]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(MODULE.AdmissionError):
+                MODULE.revision_continuation(value, self.path)
+        for value in ("", False, {}, []):
+            with self.subTest(value=value), self.assertRaises(MODULE.AdmissionError):
+                self.collect([{"rows": [revision(0)], "nextLink": value}])
+
+    def test_duplicates_repeated_cursor_and_all_caps_refuse(self):
+        cases = [
+            [{"rows": [revision(0), revision(0)]}],
+            [{"rows": [revision(0)], "nextLink": self.link("1")},
+             {"rows": [revision(1)], "nextLink": self.link("1")}],
+            [{"rows": [revision(index)], "nextLink": self.link(str(index + 1))} for index in range(32)],
+            [{"rows": [revision(index) for index in range(640)]}],
+            [{"rows": [revision(0)], "nextLink": self.link("1")}, {"rows": [revision(0)]}],
+        ]
+        for pages in cases:
+            with self.subTest(pages=len(pages)), self.assertRaises(MODULE.AdmissionError):
+                self.collect(pages)
+        self.collect([{"rows": [revision(index) for index in range(639)]}], require_drained=True)
+        self.collect([{"rows": [revision(index)], **(
+            {"nextLink": self.link(str(index + 1))} if index < 30 else {}
+        )} for index in range(31)], require_drained=True)
+        times = iter((0, 0, 120, 120))
+        with self.assertRaisesRegex(MODULE.AdmissionError, "time cap"):
+            self.collect([{"rows": [revision(0)]}], clock=lambda: next(times))
+        times = iter((0, 0, 119, 120))
+        with self.assertRaisesRegex(MODULE.AdmissionError, "time cap"):
+            self.collect([{"rows": [revision(0)]}], clock=lambda: next(times))
+        times = iter((0, 0, 119, 119))
+        self.collect([{"rows": [revision(0)]}], clock=lambda: next(times))
+        self.collect([{"rows": [revision(0)]}], require_drained=True)
+        self.collect([{"rows": [revision(0)], "nextLink": None}], require_drained=True)
+
+    def test_unknown_nonzero_and_multiple_active_rows_refuse(self):
+        for value in (None, False, True, 0.0, "0", 1, -1):
+            with self.subTest(value=value), self.assertRaises(MODULE.AdmissionError):
+                self.collect([{"rows": [revision(0, replicas=value)]}], require_drained=True)
+        with self.assertRaisesRegex(MODULE.AdmissionError, "approved drain"):
+            self.collect([{"rows": [revision(0, active=True), revision(1, active=True)]}])
+        with self.assertRaisesRegex(MODULE.AdmissionError, "approved drain"):
+            self.collect([{"rows": [revision(0, active=True)]}], expected_active="ca-api-test--different")
+        with self.assertRaisesRegex(MODULE.AdmissionError, "checks exceed"):
+            self.collect([{"rows": [revision(index, replicas=None) for index in range(5)]}])
+        with self.assertRaisesRegex(MODULE.AdmissionError, "inactive before activation"):
+            self.collect([{"rows": [revision(0, active=True)]}], require_drained=True)
 
 
 class NonbillableOptionsTests(unittest.TestCase):

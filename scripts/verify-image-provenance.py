@@ -41,6 +41,7 @@ MAX_VERIFY_BYTES = 64 * 1024 * 1024
 MAX_METADATA_BYTES = 64 * 1024
 VERIFY_TIMEOUT = 120
 HEX256 = re.compile(r"[0-9a-f]{64}\Z")
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProvenanceError(ValueError):
@@ -398,6 +399,45 @@ def file_hashes(directory: Path, services: Sequence[str] = SERVICES) -> dict[str
             for name in evidence_names(services)}
 
 
+def unchanged_api_image_inputs(source: str, current: str) -> list[str] | None:
+    if source == current:
+        return None
+    require(re.fullmatch(r"[0-9a-f]{40}", source) is not None and re.fullmatch(r"[0-9a-f]{40}", current) is not None,
+            "invalid image source commits")
+
+    def git(*args: str, limit: int = 4096) -> bytes:
+        return run_bounded(["git", "--no-pager", "-C", str(ROOT), *args], limit=limit, timeout=30)
+
+    require(git("rev-parse", "HEAD").decode("ascii").strip() == current, "image reuse checkout differs from main")
+    git("cat-file", "-e", source + "^{commit}")
+    git("merge-base", "--is-ancestor", source, current)
+    git("diff", "--quiet", "HEAD", "--")
+    raw = git("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z",
+              source, current, "--", limit=32768)
+    require(not raw or raw.endswith(b"\0"), "image input diff is incomplete")
+    try:
+        paths = [] if not raw else [value.decode("utf-8") for value in raw[:-1].split(b"\0")]
+    except UnicodeError as exc:
+        raise ProvenanceError("image input path encoding is unknown") from exc
+    require(len(paths) <= 256 and len(paths) == len(set(paths))
+            and all(path and len(path) <= 256 and not path.startswith("/") and "\\" not in path and ".." not in path.split("/")
+                    and all(32 <= ord(char) < 127 for char in path) for path in paths),
+            "image input diff exceeds its scope or bounds")
+    protected = {".github/workflows/deploy.yml", ".github/workflows/docker-build.yml",
+                 ".github/workflows/deploy.yaml", ".github/workflows/docker-build.yaml",
+                 ".gitattributes", ".gitmodules", "azure.yaml"}
+    lock_names = {"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lockb",
+                  "go.sum", "packages.lock.json"}
+    for path in paths:
+        lowered = path.casefold()
+        name = lowered.rsplit("/", 1)[-1]
+        require(not (lowered == "app/api" or lowered.startswith("app/api/") or lowered in protected
+                     or name.startswith("dockerfile") or name.endswith(".dockerfile")
+                     or name == ".dockerignore" or name.endswith(".lock") or name in lock_names),
+                "image inputs changed; rebuild and a fresh candidate are required")
+    return sorted(paths)
+
+
 def consume_private_api(receipt: dict, env: Mapping[str, str]) -> dict:
     """Verify published evidence against an explicitly reviewed producer receipt."""
     current = identity(env)
@@ -409,15 +449,16 @@ def consume_private_api(receipt: dict, env: Mapping[str, str]) -> dict:
             and type(receipt["schemaVersion"]) is int and receipt["schemaVersion"] == 1
             and receipt["operation"] == "private-api-image"
             and receipt["repository"] == current["repository"]
-            and receipt["sourceCommit"] == current["sourceCommit"]
+            and isinstance(receipt["sourceCommit"], str) and re.fullmatch(r"[0-9a-f]{40}", receipt["sourceCommit"]) is not None
             and isinstance(receipt["runId"], str) and re.fullmatch(r"[1-9][0-9]{0,19}", receipt["runId"]) is not None
             and receipt["runId"] != env["GITHUB_RUN_ID"]
             and isinstance(receipt["runAttempt"], str) and re.fullmatch(r"[1-9][0-9]{0,5}", receipt["runAttempt"]) is not None
             and isinstance(receipt["sbomCanonicalSha256"], str) and HEX256.fullmatch(receipt["sbomCanonicalSha256"]) is not None,
             "invalid or changed API image producer receipt")
+    changed_paths = unchanged_api_image_inputs(receipt["sourceCommit"], current["sourceCommit"])
     image = release_images([f"api={receipt['image']}"], env.get("AZURE_ENV_NAME", ""), private_api=True)["api"]
     expected = {
-        **current, "event": "workflow_dispatch",
+        **current, "sourceCommit": receipt["sourceCommit"], "event": "workflow_dispatch",
         "runInvocation": f"https://github.com/{current['repository']}/actions/runs/"
                          f"{receipt['runId']}/attempts/{receipt['runAttempt']}",
     }
@@ -455,13 +496,16 @@ def consume_private_api(receipt: dict, env: Mapping[str, str]) -> dict:
             "published SPDX differs from the reviewed producer inventory")
     for kind, value in selected.items():
         validate_verification(value, image, kind, expected, sbom)
-    return {
+    result = {
         "receipt": receipt,
         "statements": {
             kind: hashlib.sha256(encode(value[0]["verificationResult"]["statement"])).hexdigest()
             for kind, value in selected.items()
         },
     }
+    if changed_paths is not None:
+        result.update(imageReuse="ancestor, no image inputs changed", changedPaths=changed_paths)
+    return result
 
 
 def github_output(env: Mapping[str, str], values: dict[str, str]) -> None:
