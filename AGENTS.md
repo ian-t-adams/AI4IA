@@ -688,8 +688,8 @@ approved transition; never add a model call, public restore or automatic drain.
 See `docs/runbooks/deployment.md#api-only-private-cosmos-recovery`.
 Pending migration pushes are terminal previews on trusted main, not resource
 deployment. Every later mutation/canary/rollback step needs the separate
-execution gate. Foundation, candidate and web cutover use direct RG modules,
-not the short-circuited full root. Activation alone uses the exact template PATCH
+execution gate. Foundation and candidate use direct RG modules,
+not the short-circuited full root. Activation and web cutover use the exact template PATCH
 below. Every apply uses its frozen packet after fresh source/phase/current-state/
 payload binding and strict admission.
 API/web modes preserve existing certificate/diagnostic resources; activation
@@ -784,7 +784,17 @@ then require the exact ready revision and unchanged protected/metadata digests.
 Owner Decision-options acceptance is a separate mandatory authenticated read;
 the deploy actor must not gain model categories to perform it. No cutover before
 that succeeds. Post-check failures leave the app as-is for disposition; no
-automatic rollback or patch replay. These permissions are activation-only.
+automatic rollback or patch replay.
+Web cutover reuses that transport only for API_BASE_URL and the already-present
+API_PUBLIC_URL row, targeting the freshly verified activated private origin.
+Never add an absent voice URL or change voice flags. Preserve every other raw
+template field, including probes, resources, scale and volumes; only the same
+read-only field projection and deterministic suffix differ. Require the API
+still activated/ready and legacy still drained immediately before sending.
+Web configuration may explicitly report secrets:null; configuration_intent
+treats only null as[], not arbitrary falsey/unknown values. The raw protected
+snapshot remains unchanged. Verify the exact ready web revision, web200 and
+authenticated same-origin Decision options before browser acceptance.
 
 `infra-validate` runs:
 
