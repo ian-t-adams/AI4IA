@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import { MODEL_CATEGORY_HELP } from "@/lib/modelHelp";
 import type { AgentSummary, ModelEntry, UserAgent } from "@/lib/types";
@@ -35,6 +35,7 @@ import {
 import { Pill } from "./Pill";
 import { PublicationControls } from "./PublicationControls";
 import { useStudioDraft } from "./useStudioDraft";
+import { useOptionalCurrentOwner } from "./MemoryPreferenceProvider";
 import {
   checkRow,
   fieldset,
@@ -116,6 +117,37 @@ export function AgentBuilder({
   const instructionsInput = useRef<HTMLTextAreaElement>(null);
   const dirty = JSON.stringify(form) !== JSON.stringify(savedAgent ? formFrom(savedAgent) : blankForm());
   const confirmDiscard = useStudioDraft(dirty, busy);
+  // Agents belong to the signed-in owner. An account change can't be blocked
+  // by a confirmation, so the previous owner's list, selection and draft are
+  // cleared before the next render shows them, and late responses are ignored.
+  // Outside an owner-scoped provider the key is undefined and never changes.
+  const ownerKey = useOptionalCurrentOwner()?.key;
+  const signedOut = ownerKey === null;
+  const [scopedOwner, setScopedOwner] = useState(ownerKey);
+  if (scopedOwner !== ownerKey) {
+    setScopedOwner(ownerKey);
+    setMine([]);
+    setMcpServers([]);
+    setOfficialMcpServers([]);
+    setEditing(null);
+    setSavedAgent(null);
+    setForm(blankForm());
+    setBusy(false);
+    setError(null);
+    setToolError(null);
+    setOfficialToolError(null);
+    setListUnavailable(false);
+    setLoading(true);
+    setNotice(dirty ? "Unsaved agent changes were cleared because the signed-in account changed." : null);
+  }
+  const ownerGeneration = useRef(0);
+  useLayoutEffect(() => {
+    ownerGeneration.current += 1;
+  }, [ownerKey]);
+  const isCurrentOwner = useCallback(
+    (generation: number) => ownerGeneration.current === generation,
+    [],
+  );
   const newName = form.name || suggestedStudioName(form.displayName, [...agents, ...mine].map((a) => a.name), "agent");
   const tryUnavailable = tryDisabledReason || (error || listUnavailable
     ? "Resolve the save or refresh error above, then save again before trying this agent."
@@ -173,50 +205,65 @@ export function AgentBuilder({
   }, [form.tools, mcpTools]);
 
   const refreshMine = useCallback(async (failurePrefix = "") => {
+    const generation = ownerGeneration.current;
     try {
-      setMine(await api.listMyAgents());
+      const list = await api.listMyAgents();
+      if (!isCurrentOwner(generation)) return;
+      setMine(list);
       setListUnavailable(false);
     } catch (e) {
+      if (!isCurrentOwner(generation)) return;
       setListUnavailable(true);
       setError(`${failurePrefix}${(e as Error).message}`);
     } finally {
-      setLoading(false);
+      if (isCurrentOwner(generation)) setLoading(false);
     }
-  }, []);
+  }, [isCurrentOwner]);
 
   const refreshMcp = useCallback(async () => {
     if (!customToolsEnabled) return;
+    const generation = ownerGeneration.current;
     try {
-      setMcpServers(await api.listMcpServers());
+      const servers = await api.listMcpServers();
+      if (!isCurrentOwner(generation)) return;
+      setMcpServers(servers);
       setToolError(null);
     } catch {
+      if (!isCurrentOwner(generation)) return;
       setToolError("Custom tools could not be loaded. Existing selections are retained; reopen this editor to retry.");
     }
-  }, [customToolsEnabled]);
+  }, [customToolsEnabled, isCurrentOwner]);
 
   const refreshOfficialMcp = useCallback(async () => {
+    const generation = ownerGeneration.current;
     try {
-      setOfficialMcpServers(await api.listOfficialMcpServers());
+      const servers = await api.listOfficialMcpServers();
+      if (!isCurrentOwner(generation)) return;
+      setOfficialMcpServers(servers);
       setOfficialToolError(null);
     } catch {
+      if (!isCurrentOwner(generation)) return;
       setOfficialToolError("Official tools could not be loaded. Existing selections are retained; reopen this editor to retry.");
     }
-  }, []);
+  }, [isCurrentOwner]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
+    if (signedOut) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch on mount and owner change; setState only runs after the awaited call resolves
     void refreshMine();
-  }, [refreshMine]);
+  }, [refreshMine, signedOut, ownerKey]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch that also re-runs when `customToolsEnabled` flips; kept separate from the other refreshes so toggling it doesn't re-fetch unrelated data
+    if (signedOut) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch that also re-runs when `customToolsEnabled` flips or the owner changes; kept separate from the other refreshes so toggling it doesn't re-fetch unrelated data
     void refreshMcp();
-  }, [refreshMcp]);
+  }, [refreshMcp, signedOut, ownerKey]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
+    if (signedOut) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch on mount and owner change; setState only runs after the awaited call resolves
     void refreshOfficialMcp();
-  }, [refreshOfficialMcp]);
+  }, [refreshOfficialMcp, signedOut, ownerKey]);
 
   const startNew = useCallback(() => {
     setEditing(null);
@@ -274,22 +321,25 @@ export function AgentBuilder({
       enabled: form.enabled,
     };
     setBusy(true);
+    const generation = ownerGeneration.current;
     try {
       const saved = editing
         ? await api.updateAgent(editing, { ...body, expectedRevision: savedAgent?.revision })
         : await api.createAgent({ name: newName, ...body });
+      if (!isCurrentOwner(generation)) return;
       setSavedAgent(saved);
       setEditing(saved.name);
       setForm(formFrom(saved)); // reflect server-sanitized links
       setNotice(`Saved. Use @${saved.name} in a chat or select it in a workflow.`);
       await refreshMine();
+      if (!isCurrentOwner(generation)) return;
       await onChanged(); // keep the @-mention menu + link pickers fresh
     } catch (e) {
-      setError((e as Error).message);
+      if (isCurrentOwner(generation)) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (isCurrentOwner(generation)) setBusy(false);
     }
-  }, [editing, form, newName, savedAgent, refreshMine, onChanged]);
+  }, [editing, form, newName, savedAgent, refreshMine, onChanged, isCurrentOwner]);
 
   const remove = useCallback(
     async (name: string) => {
@@ -303,23 +353,30 @@ export function AgentBuilder({
       }
       setBusy(true);
       setError(null);
+      const generation = ownerGeneration.current;
       let deleted = false;
       try {
         await api.deleteAgent(name);
         deleted = true;
+        if (!isCurrentOwner(generation)) return;
         setMine((current) => current.filter((agent) => agent.name !== name));
         if (editing === name) startNew();
         setNotice(`Deleted "${label}".`);
         await refreshMine("Agent deleted, but refreshing your saved agents failed: ");
+        if (!isCurrentOwner(generation)) return;
         await onChanged();
       } catch (e) {
-        setError(`${deleted ? "Agent deleted, but refreshing available agents failed: " : ""}${(e as Error).message}`);
+        if (isCurrentOwner(generation)) {
+          setError(`${deleted ? "Agent deleted, but refreshing available agents failed: " : ""}${(e as Error).message}`);
+        }
       } finally {
-        if (deleted) setMine((current) => current.filter((agent) => agent.name !== name));
-        setBusy(false);
+        if (isCurrentOwner(generation)) {
+          if (deleted) setMine((current) => current.filter((agent) => agent.name !== name));
+          setBusy(false);
+        }
       }
     },
-    [editing, mine, refreshMine, onChanged, startNew],
+    [editing, mine, refreshMine, onChanged, startNew, isCurrentOwner],
   );
 
   return (
@@ -331,7 +388,7 @@ export function AgentBuilder({
         </button>
         <h3 className="studio-list-heading">Your agents</h3>
         <ul className="studio-list-scroll">
-          {loading && <li role="status">Loading your agents...</li>}
+          {loading && <li role="status">{signedOut ? "Sign in to load your agents." : "Loading your agents..."}</li>}
           {listUnavailable && <li role="status">Your agents could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
           {mine.map((a) => (
             <li key={a.id} className="studio-list-row">

@@ -123,6 +123,7 @@ import { VIEW_TITLES, type WorkspaceView } from "@/lib/workspaceView";
 // so the two settle around the same time for voice's own call; send/upload
 // have no timeout of their own today and rely entirely on this bound.
 const SESSION_CREATION_TIMEOUT_MS = 20_000;
+const NO_AGENTS: AgentSummary[] = [];
 
 // A single in-flight (or just-settled but not yet evicted) lazy session
 // creation, shared across every ensureSession() caller whose current
@@ -306,7 +307,11 @@ export function ChatApp() {
     previousViewRef.current = view;
   }, [view]);
   const [models, setModels] = useState<ModelEntry[]>([]);
-  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [agentCatalog, setAgentCatalog] = useState<{ owner: CurrentOwner; list: AgentSummary[] } | null>(null);
+  const agents = useMemo(
+    () => (agentCatalog?.owner === owner ? agentCatalog.list : NO_AGENTS),
+    [agentCatalog, owner],
+  );
   const [sessions, setSessions] = useState<Session[]>([]);
   const [toolConsentInspection, setToolConsentInspection] = useState<{
     sessionId: string;
@@ -846,12 +851,6 @@ export function ChatApp() {
         ),
       ]);
       void loadAttachmentCapabilities();
-      // Agents are an optional enhancement (the @-menu); never block chat on them.
-      try {
-        setAgents(await api.listAgents());
-      } catch {
-        /* non-fatal: no @-mention menu */
-      }
     })();
   }, [filterRemovedSessions, loadAttachmentCapabilities]);
 
@@ -1108,8 +1107,20 @@ export function ChatApp() {
   }, [owner, resetConversationView, updateDeletionFeedback]);
 
   const refreshAgents = useCallback(async () => {
-    setAgents(await api.listAgents());
-  }, []);
+    if (owner.key === null) return;
+    const list = await api.listAgents();
+    if (owner.isCurrent()) setAgentCatalog({ owner, list });
+  }, [owner]);
+
+  // Agents are an optional enhancement (the @-menu); never block chat on them.
+  // The catalog belongs to the signed-in owner and is reloaded on every change.
+  useEffect(() => {
+    if (owner.key === null) return;
+    void api.listAgents().then(
+      (list) => { if (owner.isCurrent()) setAgentCatalog({ owner, list }); },
+      () => { /* non-fatal: no @-mention menu */ },
+    );
+  }, [owner]);
 
   const openWorkflowRun = useCallback(
     (sessionId: string) => {
@@ -3732,6 +3743,7 @@ export function ChatApp() {
                 customToolsEnabled={customToolsEnabled}
                 onAgentsChanged={refreshAgents}
                 onTryAgent={(name) => {
+                  if (!owner.isCurrent() || owner.key === null) return;
                   if (streaming || inlineVoice.active || voiceExitLocked || inlineVoice.saving) return;
                   navigate("chat");
                   setComposerPrefill((current) => ({ id: (current?.id ?? 0) + 1, text: `@${name} ` }));
