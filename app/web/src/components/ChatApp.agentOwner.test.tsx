@@ -204,6 +204,87 @@ describe("agents follow the signed-in account", () => {
     expect(mocks.updateSession).not.toHaveBeenCalled();
   });
 
+  async function draftUnderA(user: ReturnType<typeof userEvent.setup>, text: string) {
+    render(<MemoryPreferenceProvider owner={owner}><ChatApp /></MemoryPreferenceProvider>);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const composer = await screen.findByRole("combobox", { name: "Message" });
+    await waitFor(() => expect(composer).toBeEnabled());
+    if (text) await user.type(composer, text);
+    return composer;
+  }
+
+  it("refuses to pair another account's unsent message with the new owner's agent and keeps it", async () => {
+    const user = userEvent.setup();
+    await draftUnderA(user, "Owner A private draft");
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    switchTo("owner-b");
+    await user.click(await screen.findByRole("button", { name: "Owner B helper" }));
+    const tryButton = screen.getByRole("button", { name: "Try it in chat" });
+    expect(tryButton).toBeDisabled();
+    expect(screen.getByText(/unsent chat message was started under a different account/)).toBeVisible();
+    await user.click(tryButton);
+    expect(window.location.hash).not.toBe("");
+    act(() => { window.history.back(); });
+    expect(await screen.findByRole("combobox", { name: "Message" })).toHaveValue("Owner A private draft");
+    expect(mocks.streamChat).not.toHaveBeenCalled();
+  });
+
+  it("refuses to pair another account's open conversation, even with an empty draft", async () => {
+    const user = userEvent.setup();
+    await draftUnderA(user, "");
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    switchTo("owner-b");
+    await user.click(await screen.findByRole("button", { name: "Owner B helper" }));
+    expect(screen.getByRole("button", { name: "Try it in chat" })).toBeDisabled();
+    expect(screen.getByText(/open conversation belongs to a different account/)).toBeVisible();
+  });
+
+  it("allows Try again once the same owner returns, keeping and prefixing their draft", async () => {
+    const user = userEvent.setup();
+    await draftUnderA(user, "Owner A private draft");
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    switchTo("owner-b");
+    await screen.findByRole("button", { name: "Owner B helper" });
+    switchTo("owner-a");
+    await user.click(await screen.findByRole("button", { name: "Owner A helper" }));
+    const tryButton = screen.getByRole("button", { name: "Try it in chat" });
+    expect(tryButton).toBeEnabled();
+    await user.click(tryButton);
+    await waitFor(() => expect(window.location.hash).toBe(""));
+    expect(await screen.findByRole("combobox", { name: "Message" })).toHaveValue("@a-helper Owner A private draft");
+    expect(mocks.streamChat).not.toHaveBeenCalled();
+  });
+
+  it("lets the new owner try an agent in a fresh empty chat", async () => {
+    const user = userEvent.setup();
+    render(<MemoryPreferenceProvider owner={owner}><ChatApp /></MemoryPreferenceProvider>);
+    await screen.findByRole("button", { name: "Session A" });
+    switchTo("owner-b");
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    await user.click(await screen.findByRole("button", { name: "Owner B helper" }));
+    await user.click(screen.getByRole("button", { name: "Try it in chat" }));
+    await waitFor(() => expect(window.location.hash).toBe(""));
+    expect(await screen.findByRole("combobox", { name: "Message" })).toHaveValue("@b-helper ");
+    expect(mocks.streamChat).not.toHaveBeenCalled();
+  });
+
+  it("keeps a fresh mention catalog when an older same-account request resolves after A→B→A", async () => {
+    const stale = deferred<AgentSummary[]>();
+    mocks.listAgents.mockImplementationOnce(() => stale.promise);
+    const user = userEvent.setup();
+    render(<MemoryPreferenceProvider owner={owner}><ChatApp /></MemoryPreferenceProvider>);
+    await screen.findByRole("button", { name: "Session A" });
+    switchTo("owner-b");
+    switchTo("owner-a");
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const composer = await screen.findByRole("combobox", { name: "Message" });
+    await waitFor(() => expect(composer).toBeEnabled());
+    await user.type(composer, "@");
+    expect(await screen.findByRole("option", { name: /@a-helper/ })).toBeVisible();
+    await act(async () => { stale.resolve([]); await stale.promise; });
+    expect(screen.getByRole("option", { name: /@a-helper/ })).toBeVisible();
+  });
+
   it("offers only the current owner's agents in the @-mention menu", async () => {
     const late = deferred<AgentSummary[]>();
     mocks.listAgents.mockImplementationOnce(() => late.promise);
