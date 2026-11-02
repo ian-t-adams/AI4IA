@@ -70,6 +70,11 @@ export function useCurrentOwner(): CurrentOwner {
   return owner;
 }
 
+/** The current owner, or undefined when rendered outside an owner-scoped provider. */
+export function useOptionalCurrentOwner(): CurrentOwner | undefined {
+  return useContext(OwnerContext);
+}
+
 export function useMemoryPreferenceStore() {
   const store = useContext(PreferenceContext);
   if (store === undefined) {

@@ -121,9 +121,124 @@ describe("AgentBuilder", () => {
     expect(await screen.findByText(/Your agents could not be loaded/)).toBeInTheDocument();
     expect(screen.queryByText(/Your saved agents will appear here/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText(/Your saved agents will appear here/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/Your agents could not be loaded/)).toBeNull());
+    expect(screen.getByLabelText("Agent name")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "New agent" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
+  it("starts with just task and name, using session defaults and no extra tools", async () => {
+    mocks.listMyAgents.mockResolvedValue([]);
+    mocks.createAgent.mockImplementation(async (body) => ({ ...MINE[0], ...body }));
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);
+    await waitFor(() => expect(screen.queryByText("Loading your agents...")).toBeNull());
+    expect(screen.queryByText("Your agents")).toBeNull();
+    const task = screen.getByLabelText("What should this agent do?");
+    const name = screen.getByLabelText("Agent name");
+    expect(task).toBeVisible();
+    expect(name).toBeVisible();
+    expect(screen.getByLabelText("Preferred model")).not.toBeVisible();
+    expect(screen.getByLabelText("Description")).not.toBeVisible();
+    await user.type(task, "Help turn notes into next steps.");
+    await user.type(name, "Notes helper");
+    await user.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() => expect(mocks.createAgent).toHaveBeenCalledWith({
+      name: "notes-helper", displayName: "Notes helper", description: "",
+      systemPrompt: "Help turn notes into next steps.", defaultModel: null,
+      tools: [], links: [], enabled: true,
+    }));
+  });
+
+  it("can start over on the first draft without discarding it until confirmed", async () => {
+    mocks.listMyAgents.mockResolvedValue([]);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);
+    const task = screen.getByLabelText("What should this agent do?");
+    await user.type(task, "Help with notes.");
+    await user.click(screen.getByRole("button", { name: "Start over" }));
+    expect(task).toHaveValue("Help with notes.");
+    await user.click(screen.getByRole("button", { name: "Start over" }));
+    expect(task).toHaveValue("");
+    expect(task).toHaveFocus();
+    expect(mocks.createAgent).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("offers only the saved enabled version to try, with unsaved edits blocked until saved", async () => {
+    const user = userEvent.setup();
+    const onTry = vi.fn();
+    mocks.updateAgent.mockImplementation(async (name, body) => ({ ...MINE[0], ...body, name, revision: 8 }));
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} onTry={onTry} />);
+    expect(screen.queryByRole("button", { name: "Try it in chat" })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    const tryIt = screen.getByRole("button", { name: "Try it in chat" });
+    expect(tryIt).toBeEnabled();
+    await user.click(tryIt);
+    expect(onTry).toHaveBeenCalledExactlyOnceWith("helper");
+    await user.type(screen.getByLabelText("What should this agent do?"), " More detail.");
+    expect(tryIt).toBeDisabled();
+    expect(screen.getByText("Save your changes before trying this version.")).toBeVisible();
+    await user.click(tryIt);
+    expect(onTry).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(tryIt).toBeEnabled());
+    await user.click(tryIt);
+    expect(onTry).toHaveBeenCalledTimes(2);
+    expect(mocks.updateAgent).toHaveBeenCalledWith("helper", expect.objectContaining({ expectedRevision: 7 }));
+  });
+
+  it.each([
+    { enabled: false, reason: null, explanation: "Enable and save this agent before trying it." },
+    { enabled: true, reason: "Finish your live session first.", explanation: "Finish your live session first." },
+  ])("explains why trying the saved agent is unavailable: $explanation", async ({ enabled, reason, explanation }) => {
+    mocks.listMyAgents.mockResolvedValue([{ ...MINE[0], enabled }]);
+    const onTry = vi.fn();
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} onTry={onTry} tryDisabledReason={reason} />);
+    await user.click(await screen.findByRole("button", { name: /^Helper/ }));
+    expect(screen.getByRole("button", { name: "Try it in chat" })).toBeDisabled();
+    expect(screen.getByText(explanation)).toBeVisible();
+    expect(onTry).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed save editable and blocks trying the stale version until recovery", async () => {
+    mocks.updateAgent.mockRejectedValueOnce(new Error("Save unavailable. Try again.")).mockImplementationOnce(async (name, body) => ({ ...MINE[0], ...body, name }));
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} onTry={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    const task = screen.getByLabelText("What should this agent do?");
+    await user.type(task, " More detail.");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Save unavailable. Try again.");
+    expect(task).toHaveValue("Be helpful. More detail.");
+    expect(screen.getByRole("button", { name: "Try it in chat" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try it in chat" })).toBeEnabled());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it.each(["mine", "catalog"])("shows a %s refresh failure after creation without creating again on recovery", async (source) => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    mocks.createAgent.mockImplementation(async (body) => ({ ...MINE[0], ...body, revision: 1 }));
+    mocks.updateAgent.mockImplementation(async (name, body) => ({ ...MINE[0], ...body, name, revision: 2 }));
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={onChanged} onTry={vi.fn()} />);
+    await screen.findByRole("button", { name: "Helper" });
+    if (source === "mine") mocks.listMyAgents.mockRejectedValueOnce(new Error("Agent list unavailable."));
+    else onChanged.mockRejectedValueOnce(new Error("Agent list unavailable."));
+    await user.type(screen.getByLabelText("What should this agent do?"), "Summarize notes.");
+    await user.type(screen.getByLabelText("Agent name"), "Notes helper");
+    await user.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Agent list unavailable.");
+    expect(screen.getByRole("button", { name: "Try it in chat" })).toBeDisabled();
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("Summarize notes.");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try it in chat" })).toBeEnabled());
+    expect(mocks.createAgent).toHaveBeenCalledTimes(1);
+    expect(mocks.updateAgent).toHaveBeenCalledWith("notes-helper", expect.objectContaining({ expectedRevision: 1 }));
+  });
+
   it("creates from name and instructions, then renames without changing its ID or tools", async () => {
     const user = userEvent.setup();
     mocks.createAgent.mockImplementation(async (body) => ({ ...MINE[0], ...body, id: body.name, revision: 1 }));
@@ -135,7 +250,7 @@ describe("AgentBuilder", () => {
     await user.click(screen.getByRole("button", { name: "Create agent" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Instructions are required");
     expect(mocks.createAgent).not.toHaveBeenCalled();
-    await user.type(screen.getByLabelText("Instructions"), "Summarize the user's notes.");
+    await user.type(screen.getByLabelText("What should this agent do?"), "Summarize the user's notes.");
     await user.click(screen.getByText("Tools", { selector: "summary" }));
     await user.click(screen.getByRole("checkbox", { name: "Calculator" }));
     await user.click(screen.getByRole("button", { name: "Create agent" }));
@@ -155,15 +270,15 @@ describe("AgentBuilder", () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
-    await user.type(screen.getByLabelText("Instructions"), "Draft instructions");
+    await user.type(screen.getByLabelText("What should this agent do?"), "Draft instructions");
     await user.click(await screen.findByRole("button", { name: "Helper" }));
-    expect(screen.getByLabelText("Instructions")).toHaveValue("Draft instructions");
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("Draft instructions");
     confirm.mockReturnValueOnce(true);
     await user.click(screen.getByRole("button", { name: "Helper" }));
-    expect(screen.getByLabelText("Instructions")).toHaveValue("Be helpful.");
-    await user.type(screen.getByLabelText("Instructions"), " Edited");
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("Be helpful.");
+    await user.type(screen.getByLabelText("What should this agent do?"), " Edited");
     await user.click(screen.getByRole("button", { name: "New agent" }));
-    expect(screen.getByLabelText("Instructions")).toHaveValue("Be helpful. Edited");
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("Be helpful. Edited");
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
@@ -206,7 +321,7 @@ describe("AgentBuilder", () => {
     };
     await fillPublication();
     expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeEnabled();
-    await user.type(screen.getByLabelText("Instructions"), " More detail.");
+    await user.type(screen.getByLabelText("What should this agent do?"), " More detail.");
     expect(screen.getByRole("button", { name: "Submit for independent review" })).toBeDisabled();
     expect(screen.getByText(/Unsaved edits\. Save changes first/)).toBeInTheDocument();
     expect(mocks.submitPublication).not.toHaveBeenCalled();
@@ -246,6 +361,42 @@ describe("AgentBuilder", () => {
     await user.click(remove);
     await waitFor(() => expect(mocks.deleteAgent).toHaveBeenCalledWith("helper"));
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  it.each(["mine", "catalog"])("clears the deleted editor even if the %s refresh fails", async (source) => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    mocks.deleteAgent.mockResolvedValue(undefined);
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={onChanged} onTry={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    expect(screen.getByRole("button", { name: "Try it in chat" })).toBeEnabled();
+    if (source === "mine") mocks.listMyAgents.mockRejectedValueOnce(new Error("List unavailable."));
+    else onChanged.mockRejectedValueOnce(new Error("List unavailable."));
+    await user.click(screen.getByRole("button", { name: "Delete helper" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Agent deleted, but refreshing .* failed: List unavailable/);
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("");
+    expect(screen.getByLabelText("Agent name")).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try it in chat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Helper" })).toBeNull();
+    expect(mocks.deleteAgent).toHaveBeenCalledExactlyOnceWith("helper");
+    confirm.mockRestore();
+  });
+
+  it("keeps the saved editor when deletion itself fails", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.deleteAgent.mockRejectedValueOnce(new Error("Delete unavailable."));
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={onChanged} onTry={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    await user.click(screen.getByRole("button", { name: "Delete helper" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Delete unavailable.");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("Be helpful.");
+    expect(onChanged).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   it("explains what a built-in tool does, when to use it, and its risk level", async () => {
@@ -486,6 +637,7 @@ describe("AgentBuilder", () => {
     ];
     render(<AgentBuilder agents={[]} models={models} onChanged={async () => {}} />);
 
+    await user.click(screen.getByText("Agent settings", { selector: "summary" }));
     const select = screen.getByRole("combobox", { name: "Preferred model" });
     // Grouped by category; capability (non-conversational) models excluded.
     expect(select.querySelector('optgroup[label="chat-fast"]')).not.toBeNull();
@@ -513,6 +665,7 @@ describe("AgentBuilder", () => {
   it("describes the preferred-model default as a fallback, not an override", async () => {
     const user = userEvent.setup();
     render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);
+    await user.click(screen.getByText("Agent settings", { selector: "summary" }));
     await user.click(screen.getByRole("button", { name: "Help: Preferred model" }));
     const tooltip = screen.getByRole("tooltip");
     // Backend precedence is body.model (chat header) > session.model >
@@ -521,5 +674,20 @@ describe("AgentBuilder", () => {
     expect(tooltip).toHaveTextContent(/fallback/i);
     expect(tooltip).toHaveTextContent(/take priority over this/i);
     expect(tooltip).not.toHaveTextContent(/overrides the model/i);
+  });
+
+  it("keeps unavailable saved model choices explicit instead of showing the session default", async () => {
+    mocks.listMyAgents.mockResolvedValue([{ ...MINE[0], defaultModel: "retired-fixture" }]);
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    expect(screen.getByText(/Preferred model: retired-fixture \(unavailable\)/)).toBeVisible();
+    await user.click(screen.getByText("Agent settings", { selector: "summary" }));
+    expect(screen.getByRole("combobox", { name: "Preferred model" })).toHaveValue("retired-fixture");
+    expect(screen.getByRole("option", { name: "retired-fixture (unavailable)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(mocks.updateAgent).toHaveBeenCalledWith(
+      "helper", expect.objectContaining({ defaultModel: "retired-fixture", expectedRevision: 7 }),
+    ));
   });
 });
