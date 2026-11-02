@@ -296,7 +296,7 @@ export function ChatApp() {
   // Photo avatars follow the server's own /config (default off, and only for
   // the current owner). Visibility only: the API enforces the gate itself.
   const photoAvatarsEnabled = usePhotoAvatarsEnabled(owner.key);
-  const decisionsAvailable = useDecisionsAvailable(owner.key);
+  const decisionsAvailability = useDecisionsAvailable(owner.key);
   // Closing the gallery refreshes the avatars live voice may offer.
   const [liveAvatarRefresh, setLiveAvatarRefresh] = useState(0);
   const [liveAvatarFocusRequest, setLiveAvatarFocusRequest] = useState(0);
@@ -3436,7 +3436,9 @@ export function ChatApp() {
             onNavigate={navigate}
             libraryAvailable={libraryEnabled}
             photoAvatarsAvailable={photoAvatarsEnabled}
-            decisionsAvailable={decisionsAvailable}
+            decisionsAvailable={decisionsAvailability.status === "available"}
+            decisionsAvailabilityError={decisionsAvailability.status === "error"}
+            onRetryDecisions={decisionsAvailability.retry}
             onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })}
             onBeforeSignOut={prepareSignOut}
             onCollapse={toggleLeftPanel}

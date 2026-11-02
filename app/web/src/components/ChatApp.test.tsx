@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,10 @@ import { ChatApp } from "./ChatApp";
 import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 
 function render(ui: ReactElement) {
-  return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+  const result = rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+  const utilities = screen.queryByRole("button", { name: "Settings & more" });
+  if (utilities) fireEvent.click(utilities);
+  return result;
 }
 
 // Deleting asks on the sidebar row first; confirm it there.
@@ -1595,6 +1598,7 @@ describe("ChatApp uploads", () => {
       overflowY: "auto",
       overflowX: "hidden",
     });
+    await user.click(screen.getByRole("button", { name: "Settings & more" }));
     const statusLink = screen.getByRole("link", {
       name: "Status (opens in new tab)",
     });

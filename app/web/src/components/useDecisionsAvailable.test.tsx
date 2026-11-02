@@ -17,24 +17,26 @@ describe("Decision navigation availability", () => {
   it.each([{ models: [] }, { models: available }])("uses only the authenticated eligible models ($models)", async ({ models }) => {
     vi.mocked(decisionModels).mockResolvedValue(models);
     const { result } = renderHook(() => useDecisionsAvailable("owner-a"));
-    expect(result.current).toBe(false);
+    expect(result.current.status).toBe("loading");
     await act(async () => {});
-    expect(result.current).toBe(models.length > 0);
+    expect(result.current.status).toBe(models.length > 0 ? "available" : "unavailable");
     expect(decisionModels).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal));
   });
 
-  it("hides unavailable reads and reports the failure without payloads", async () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.mocked(decisionModels).mockRejectedValue(new Error("Unavailable"));
+  it("distinguishes failed reads from absence and recovers after retry", async () => {
+    vi.mocked(decisionModels).mockRejectedValueOnce(new Error("Unavailable"))
+      .mockResolvedValueOnce(available);
     const { result } = renderHook(() => useDecisionsAvailable("owner-a"));
-    await waitFor(() => expect(warning).toHaveBeenCalledOnce());
-    expect(result.current).toBe(false);
-    expect(warning.mock.calls[0]).toHaveLength(1);
+    await waitFor(() => expect(result.current.status).toBe("error"));
+    act(() => result.current.retry());
+    expect(result.current.status).toBe("loading");
+    await waitFor(() => expect(result.current.status).toBe("available"));
+    expect(decisionModels).toHaveBeenCalledTimes(2);
   });
 
   it("does not read options without an owner", () => {
     const { result } = renderHook(() => useDecisionsAvailable(null));
-    expect(result.current).toBe(false);
+    expect(result.current.status).toBe("unavailable");
     expect(decisionModels).not.toHaveBeenCalled();
   });
 
@@ -47,16 +49,16 @@ describe("Decision navigation availability", () => {
       ({ owner }: { owner: string | null }) => useDecisionsAvailable(owner),
       { initialProps: { owner: "owner-a" as string | null } },
     );
-    await waitFor(() => expect(result.current).toBe(true));
+    await waitFor(() => expect(result.current.status).toBe("available"));
     rerender({ owner: "owner-b" });
-    expect(result.current).toBe(false);
+    expect(result.current.status).toBe("loading");
     const signal = vi.mocked(decisionModels).mock.calls[1][0];
     rerender({ owner: "owner-c" });
     expect(signal.aborted).toBe(true);
     await act(async () => { finish(available); });
-    expect(result.current).toBe(false);
+    expect(result.current.status).toBe("unavailable");
     rerender({ owner: null });
-    expect(result.current).toBe(false);
+    expect(result.current.status).toBe("unavailable");
     unmount();
     expect(vi.mocked(decisionModels).mock.calls[2][0].aborted).toBe(true);
   });

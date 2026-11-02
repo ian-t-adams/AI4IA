@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,9 @@ import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 import { CHAT_MODEL_CATALOG, resetChatAppMocks } from "./chatTestFixtures";
 
 function render(ui: ReactElement) {
-  return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+  const result = rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+  fireEvent.click(screen.getByRole("button", { name: "Settings & more" }));
+  return result;
 }
 
 const mocks = vi.hoisted(() => ({

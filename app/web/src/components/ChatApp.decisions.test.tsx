@@ -120,4 +120,26 @@ describe("Decisions workspace", () => {
     expect(screen.queryByRole("button", { name: "Decisions" })).toBeNull();
     expect(screen.getByRole("button", { name: "Run decision" })).toBeDisabled();
   });
+
+  it("recovers a failed startup availability read without reloading or granting access early", async () => {
+    let attempts = 0;
+    mocks.apiFetch.mockImplementation(async (path) => {
+      if (path === "/api/decisions/options") {
+        attempts += 1;
+        if (attempts === 1) throw new Error("Synthetic outage");
+        return Response.json({ models: offered });
+      }
+      return Response.json({ enabled: false });
+    });
+    const user = userEvent.setup();
+    mount();
+    const retry = await screen.findByRole("button", { name: "Retry Decision availability" });
+    expect(screen.getByText("Decision availability could not be checked.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Decisions" })).toBeNull();
+    await user.click(retry);
+    await user.click(await screen.findByRole("button", { name: "Decisions" }));
+    expect(await screen.findByRole("heading", { name: "Decision playground" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry Decision availability" })).toBeNull();
+    expect(mocks.streamChat).not.toHaveBeenCalled();
+  });
 });

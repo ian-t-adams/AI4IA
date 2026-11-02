@@ -10,8 +10,9 @@ Inspector makes those choices visible; the API enforces them.
 1. Open your environment's web app and sign in with Microsoft Entra ID.
    Local development may instead use a configured development identity.
 2. Start a conversation with **New chat**, or reopen one from the sidebar. The
-   sidebar groups conversations by how recently they changed and offers a search
-   field once the list is long. Its panel button collapses it to a slim rail.
+   sidebar puts **Chat**, **Decisions** (when available), and **Studio** first,
+   followed by conversations grouped by recency. A search field appears once the
+   list is long. Its panel button collapses it to a slim rail.
 3. Open the Conversation Inspector with the settings button in the conversation
    header, or select the model name there to go straight to its controls.
    **Setup** controls the model, instructions, agent, tools, and voice;
@@ -19,12 +20,22 @@ Inspector makes those choices visible; the API enforces them.
    consumption.
 4. Describe the outcome you need and attach or select only the relevant sources.
 
-**Document library**, **Photo avatars**, **Agents & workflows** and **Settings**
-open as pages in the same workspace. The browser's back button returns to the
+**Settings & more** at the foot of the sidebar holds **Document library**,
+**Photo avatars**, **Settings**, deletion status, documentation, deployment status,
+and account/admin actions when offered. **Workflow approvals** stays beside it,
+including its pending-count badge. On the collapsed rail, **Settings & more**
+expands the sidebar with those actions open. **Usage** remains in the Conversation
+Inspector, not a second sidebar destination.
+
+**Studio** opens **Agents & workflows**. It, **Decisions**, the resource pages and
+**Settings** open in the same workspace. The browser's back button returns to the
 conversation, and a live voice session keeps running in a small player while a
 page is open. **Settings** holds appearance and accessibility options, deletion
 status, and links to help. On a phone, the menu button opens the sidebar and the
-inspector opens over the conversation.
+inspector opens over the conversation. The whole sidebar scrolls on short screens
+or with enlarged text, so history and utilities stay reachable. **Escape** inside
+the expanded utilities closes just that section and returns focus to
+**Settings & more**; another Escape closes a phone drawer.
 
 Features vary by deployment. A hidden control can mean the operator disabled the
 capability or the selected model cannot use it; it is not a permission you can
@@ -155,6 +166,10 @@ read-only, non-recursive, and compatible with that execution path.
 Open **Decisions** in the sidebar (or the navigation menu on a phone) to try
 Microsoft Decision 1 (Preview). This is a separate typed-decision capability, not a chat model,
 agent, workflow or explanation generator.
+
+If availability cannot be checked, the sidebar says so and offers **Retry Decision
+availability**, rather than treating a failed read as a disabled feature. The
+`#/decisions` link also opens the playground's own availability and reload states.
 
 Enter text, or choose **JSON (parsed)** to evaluate a JSON value. Add uniquely
 named questions and their instructions. **Yes/no** returns the probability that

@@ -23,7 +23,8 @@ The top-level **Decisions** workspace in the sidebar is admitted by the
 runtime-enabled `decision` catalog category, eligible residency options and
 authenticated model policy, not a browser flag. Sidebar visibility reads the
 authenticated `/api/decisions/options` endpoint, as does the playground; failed
-availability reads hide the entry rather than granting access. The `#/decisions`
+availability reads show a retry state, not confirmed absence or a grant. Only
+successful nonempty options advertise the destination. The `#/decisions`
 link still opens the playground's availability and reload states. The desired
 inventory adds only Microsoft-Decision-1 version `1`
 in eastus2 `DataZoneStandard`, capacity `5` raw units. The offering's advertised
