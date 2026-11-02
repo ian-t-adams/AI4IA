@@ -48,6 +48,7 @@ export function Sidebar({
   onNavigate,
   libraryAvailable = false,
   photoAvatarsAvailable = false,
+  decisionsAvailable = false,
   onOpenDeletionStatus,
   onBeforeSignOut,
   onCollapse,
@@ -74,6 +75,8 @@ export function Sidebar({
   libraryAvailable?: boolean;
   /** Present only while the server reports photo avatars enabled. */
   photoAvatarsAvailable?: boolean;
+  /** Present only while the authenticated Decision options offer a model. */
+  decisionsAvailable?: boolean;
   onOpenDeletionStatus: () => void;
   onBeforeSignOut?: () => boolean | void;
   onCollapse?: () => void;
@@ -156,6 +159,9 @@ export function Sidebar({
       ? [{ view: "avatars" as const, label: "Photo avatars", icon: "avatar" as const, lockable: false }]
       : []),
     { view: "studio", label: "Agents & workflows", icon: "studio", lockable: true },
+    ...(decisionsAvailable
+      ? [{ view: "decisions" as const, label: "Decisions", icon: "sliders" as const, lockable: true }]
+      : []),
   ];
 
   const visible = useMemo(

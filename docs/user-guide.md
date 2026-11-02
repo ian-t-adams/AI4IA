@@ -152,8 +152,8 @@ read-only, non-recursive, and compatible with that execution path.
 
 ### Decision playground
 
-Open **Agents & workflows**, then **Decisions** to try Microsoft Decision 1
-(Preview). This is a separate typed-decision capability, not a chat model,
+Open **Decisions** in the sidebar (or the navigation menu on a phone) to try
+Microsoft Decision 1 (Preview). This is a separate typed-decision capability, not a chat model,
 agent, workflow or explanation generator.
 
 Enter text, or choose **JSON (parsed)** to evaluate a JSON value. Add uniquely

@@ -183,6 +183,7 @@ function json(body: unknown, status = 200): Response {
 function serve(config: PhotoAvatarConfig | Error, avatars: PhotoAvatar[] = []) {
   mocks.apiFetch.mockImplementation(async (input: RequestInfo | URL) => {
     const path = String(input);
+    if (path === "/api/decisions/options") return json({ models: [] });
     if (path === "/api/photo-avatars/config") {
       if (config instanceof Error) throw config;
       return json(config);
@@ -246,6 +247,7 @@ describe("photo avatars in the workspace", () => {
     expect(screen.queryByRole("region", { name: "Photo avatars" })).toBeNull();
     expect(mocks.apiFetch.mock.calls.map(([input]) => String(input))).toEqual([
       "/api/photo-avatars/config",
+      "/api/decisions/options",
     ]);
   });
 
@@ -477,4 +479,3 @@ describe("gallery-to-voice integration", () => {
     expect(screen.queryByRole("complementary", { name: "Conversation inspector" })).toBeNull();
   });
 });
-

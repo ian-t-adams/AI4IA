@@ -69,9 +69,10 @@ describe("StudioPanel", () => {
       overflow: "hidden",
     });
     expect(screen.getByRole("tablist", { name: "Studio sections" })).toHaveStyle({
-      gridTemplateColumns: `repeat(var(--studio-tab-columns, ${customToolsEnabled ? 4 : 3}), minmax(0, 1fr))`,
+      gridTemplateColumns: `repeat(var(--studio-tab-columns, ${customToolsEnabled ? 3 : 2}), minmax(0, 1fr))`,
     });
     expect(screen.getByRole("tablist")).toHaveClass("studio-tabs");
+    expect(screen.queryByRole("tab", { name: "Decisions" })).toBeNull();
     for (const tab of screen.getAllByRole("tab")) {
       expect(tab).toHaveClass("workspace-tab");
       expect(tab.style.minHeight).toBe("");
