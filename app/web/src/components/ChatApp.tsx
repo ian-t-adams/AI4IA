@@ -123,6 +123,7 @@ import { VIEW_TITLES, type WorkspaceView } from "@/lib/workspaceView";
 // so the two settle around the same time for voice's own call; send/upload
 // have no timeout of their own today and rely entirely on this bound.
 const SESSION_CREATION_TIMEOUT_MS = 20_000;
+const NO_AGENTS: AgentSummary[] = [];
 
 // A single in-flight (or just-settled but not yet evicted) lazy session
 // creation, shared across every ensureSession() caller whose current
@@ -306,7 +307,11 @@ export function ChatApp() {
     previousViewRef.current = view;
   }, [view]);
   const [models, setModels] = useState<ModelEntry[]>([]);
-  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [agentCatalog, setAgentCatalog] = useState<{ owner: CurrentOwner; list: AgentSummary[] } | null>(null);
+  const agents = useMemo(
+    () => (agentCatalog?.owner === owner ? agentCatalog.list : NO_AGENTS),
+    [agentCatalog, owner],
+  );
   const [sessions, setSessions] = useState<Session[]>([]);
   const [toolConsentInspection, setToolConsentInspection] = useState<{
     sessionId: string;
@@ -314,6 +319,9 @@ export function ChatApp() {
   } | null>(null);
   const consentInspectionRequestRef = useRef<symbol | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // The account the open conversation was opened under. Try it in chat must not
+  // pair one account's agent with another account's conversation.
+  const [activeOwnerKey, setActiveOwnerKey] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   // Library docs attached via the paperclip this view (only used when
@@ -846,12 +854,6 @@ export function ChatApp() {
         ),
       ]);
       void loadAttachmentCapabilities();
-      // Agents are an optional enhancement (the @-menu); never block chat on them.
-      try {
-        setAgents(await api.listAgents());
-      } catch {
-        /* non-fatal: no @-mention menu */
-      }
     })();
   }, [filterRemovedSessions, loadAttachmentCapabilities]);
 
@@ -922,7 +924,11 @@ export function ChatApp() {
       // creation silently skip activation.
       activeIntentKeyRef.current = null;
       activeActivationSequenceRef.current = 0;
+      // Unconfirmed until this owner's own load succeeds: a pending, denied or
+      // stale selection must never be relabeled as the current account's.
+      const selectingOwner = deletionOwnerRef.current;
       setActiveId(id);
+      setActiveOwnerKey(null);
       setSessionLoading(true);
       setError(null);
       // Session-bound state must switch atomically. Keeping A's transcript,
@@ -943,6 +949,12 @@ export function ChatApp() {
           api.listDocuments(id).catch(() => [] as DocumentSummary[]),
         ]);
         if (generation !== selectionGenerationRef.current) return;
+        if (
+          deletionOwnerRef.current === selectingOwner &&
+          selectingOwner.isCurrent()
+        ) {
+          setActiveOwnerKey(selectingOwner.key);
+        }
         setMessages((previous) =>
           reconcileMessages(
             previous.filter((message) => message.sessionId === id),
@@ -1043,6 +1055,7 @@ export function ChatApp() {
     activeIntentKeyRef.current = null;
     activeActivationSequenceRef.current = 0;
     setActiveId(null);
+    setActiveOwnerKey(null);
     setMessages([]);
     setDocuments([]);
     setLibraryDocs([]);
@@ -1107,13 +1120,28 @@ export function ChatApp() {
     updateDeletionFeedback(owner, id, () => null);
   }, [owner, resetConversationView, updateDeletionFeedback]);
 
+  // A late response for an earlier owner object must not replace the current
+  // one's catalog, even after A→B→A makes the external key match again.
+  const isLiveOwner = useCallback(
+    (candidate: CurrentOwner) => deletionOwnerRef.current === candidate && candidate.isCurrent(),
+    [],
+  );
+
   const refreshAgents = useCallback(async () => {
-    try {
-      setAgents(await api.listAgents());
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, []);
+    if (owner.key === null || !isLiveOwner(owner)) return;
+    const list = await api.listAgents();
+    if (isLiveOwner(owner)) setAgentCatalog({ owner, list });
+  }, [owner, isLiveOwner]);
+
+  // Agents are an optional enhancement (the @-menu); never block chat on them.
+  // The catalog belongs to the signed-in owner and is reloaded on every change.
+  useEffect(() => {
+    if (owner.key === null) return;
+    void api.listAgents().then(
+      (list) => { if (isLiveOwner(owner)) setAgentCatalog({ owner, list }); },
+      () => { /* non-fatal: no @-mention menu */ },
+    );
+  }, [owner, isLiveOwner]);
 
   const openWorkflowRun = useCallback(
     (sessionId: string) => {
@@ -1745,6 +1773,9 @@ export function ChatApp() {
           consumedSessionIdRef.current = id;
         }
         setActiveId(id);
+        setActiveOwnerKey(
+          owner.isCurrent() && deletionOwnerRef.current === owner ? owner.key : null,
+        );
         // See markConsumedIfOwning above: marked in this SAME synchronous
         // block, atomically with activation. Voice's own initial call
         // (which DOES supply isStillWanted) deliberately does NOT get
@@ -2335,9 +2366,21 @@ export function ChatApp() {
           ? "Reload when your uploads finish."
           : null;
   const composerDraftRef = useRef(false);
+  // The account under which the unsent message was started; kept until the
+  // composer is emptied so Try it in chat never prefixes another account's text.
+  const [composerDraftOwnerKey, setComposerDraftOwnerKey] = useState<string | null>(null);
   const onComposerDraftChange = useCallback((hasDraft: boolean) => {
     composerDraftRef.current = hasDraft;
+    setComposerDraftOwnerKey((current) => (hasDraft ? current ?? deletionOwnerRef.current.key : null));
   }, []);
+  const tryAgentOwnerConflict =
+    composerDraftOwnerKey !== null && composerDraftOwnerKey !== owner.key
+      ? "Your unsent chat message was started under a different account. Switch back to that account or clear the message before trying this agent."
+      : activeId !== null && activeOwnerKey === null
+        ? "The open conversation hasn't been confirmed for this account. Open one of your conversations or start a new chat before trying this agent."
+        : activeId !== null && activeOwnerKey !== owner.key
+        ? "The open conversation belongs to a different account. Start a new chat before trying this agent."
+        : null;
   const reloadForNewVersion = useCallback(() => {
     if (
       composerDraftRef.current &&
@@ -3735,6 +3778,18 @@ export function ChatApp() {
                 runModel={selectedModel}
                 customToolsEnabled={customToolsEnabled}
                 onAgentsChanged={refreshAgents}
+                onTryAgent={(name) => {
+                  if (!isLiveOwner(owner) || owner.key === null || tryAgentOwnerConflict) return;
+                  if (streaming || inlineVoice.active || voiceExitLocked || inlineVoice.saving) return;
+                  navigate("chat");
+                  setComposerPrefill((current) => ({ id: (current?.id ?? 0) + 1, text: `@${name} ` }));
+                }}
+                tryAgentDisabledReason={
+                  inlineVoice.active || voiceExitLocked || inlineVoice.saving
+                    ? "Finish your live session and save its transcript before trying an agent in text chat."
+                    : streaming ? "Wait for the current reply to finish before trying an agent."
+                      : tryAgentOwnerConflict
+                }
                 onRun={openWorkflowRun}
                 onClose={() => navigate("chat")}
               />
