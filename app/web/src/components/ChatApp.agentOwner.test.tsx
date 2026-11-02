@@ -221,12 +221,73 @@ describe("agents follow the signed-in account", () => {
     await user.click(await screen.findByRole("button", { name: "Owner B helper" }));
     const tryButton = screen.getByRole("button", { name: "Try it in chat" });
     expect(tryButton).toBeDisabled();
-    expect(screen.getByText(/unsent chat message was started under a different account/)).toBeVisible();
+    expect(screen.getByText(/unsent chat message was started under a different account\. Switch back to that account or clear the message/)).toBeVisible();
+    expect(screen.queryByText(/Send or clear/)).toBeNull();
     await user.click(tryButton);
     expect(window.location.hash).not.toBe("");
     act(() => { window.history.back(); });
     expect(await screen.findByRole("combobox", { name: "Message" })).toHaveValue("Owner A private draft");
     expect(mocks.streamChat).not.toHaveBeenCalled();
+  });
+
+  async function selectUnderB(user: ReturnType<typeof userEvent.setup>) {
+    render(<MemoryPreferenceProvider owner={owner}><ChatApp /></MemoryPreferenceProvider>);
+    await screen.findByRole("button", { name: "Session A" });
+    switchTo("owner-b");
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+  }
+  async function bTryButton(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    await user.click(await screen.findByRole("button", { name: "Owner B helper" }));
+    return screen.getByRole("button", { name: "Try it in chat" });
+  }
+
+  it("keeps Try unavailable when the new owner's conversation selection is denied", async () => {
+    mocks.listMessages.mockRejectedValueOnce(new Error("Conversation unavailable"));
+    const user = userEvent.setup();
+    await selectUnderB(user);
+    expect(await screen.findByText("Conversation unavailable")).toBeVisible();
+    expect(await bTryButton(user)).toBeDisabled();
+    expect(screen.getByText(/open conversation hasn't been confirmed for this account/)).toBeVisible();
+  });
+
+  it("keeps Try unavailable until the new owner's selection has loaded", async () => {
+    const pending = deferred<never[]>();
+    mocks.listMessages.mockImplementationOnce(() => pending.promise);
+    const user = userEvent.setup();
+    await selectUnderB(user);
+    const tryButton = await bTryButton(user);
+    expect(tryButton).toBeDisabled();
+    expect(screen.getByText(/hasn't been confirmed for this account/)).toBeVisible();
+    await act(async () => { pending.resolve([]); await pending.promise; });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try it in chat" })).toBeEnabled());
+  });
+
+  it("does not relabel a selection that finishes loading after the account changed", async () => {
+    const pending = deferred<never[]>();
+    mocks.listMessages.mockImplementationOnce(() => pending.promise);
+    const user = userEvent.setup();
+    render(<MemoryPreferenceProvider owner={owner}><ChatApp /></MemoryPreferenceProvider>);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    switchTo("owner-b");
+    await act(async () => { pending.resolve([]); await pending.promise; });
+    expect(await bTryButton(user)).toBeDisabled();
+    expect(screen.getByText(/hasn't been confirmed for this account/)).toBeVisible();
+  });
+
+  it("does not confirm an earlier same-account selection that finishes after A→B→A", async () => {
+    const pending = deferred<never[]>();
+    mocks.listMessages.mockImplementationOnce(() => pending.promise);
+    const user = userEvent.setup();
+    render(<MemoryPreferenceProvider owner={owner}><ChatApp /></MemoryPreferenceProvider>);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    switchTo("owner-b");
+    switchTo("owner-a");
+    await act(async () => { pending.resolve([]); await pending.promise; });
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    await user.click(await screen.findByRole("button", { name: "Owner A helper" }));
+    expect(screen.getByRole("button", { name: "Try it in chat" })).toBeDisabled();
+    expect(screen.getByText(/hasn't been confirmed for this account/)).toBeVisible();
   });
 
   it("refuses to pair another account's open conversation, even with an empty draft", async () => {

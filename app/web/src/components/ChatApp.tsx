@@ -924,8 +924,11 @@ export function ChatApp() {
       // creation silently skip activation.
       activeIntentKeyRef.current = null;
       activeActivationSequenceRef.current = 0;
+      // Unconfirmed until this owner's own load succeeds: a pending, denied or
+      // stale selection must never be relabeled as the current account's.
+      const selectingOwner = deletionOwnerRef.current;
       setActiveId(id);
-      setActiveOwnerKey(deletionOwnerRef.current.key);
+      setActiveOwnerKey(null);
       setSessionLoading(true);
       setError(null);
       // Session-bound state must switch atomically. Keeping A's transcript,
@@ -946,6 +949,12 @@ export function ChatApp() {
           api.listDocuments(id).catch(() => [] as DocumentSummary[]),
         ]);
         if (generation !== selectionGenerationRef.current) return;
+        if (
+          deletionOwnerRef.current === selectingOwner &&
+          selectingOwner.isCurrent()
+        ) {
+          setActiveOwnerKey(selectingOwner.key);
+        }
         setMessages((previous) =>
           reconcileMessages(
             previous.filter((message) => message.sessionId === id),
@@ -1764,7 +1773,9 @@ export function ChatApp() {
           consumedSessionIdRef.current = id;
         }
         setActiveId(id);
-        setActiveOwnerKey(deletionOwnerRef.current.key);
+        setActiveOwnerKey(
+          owner.isCurrent() && deletionOwnerRef.current === owner ? owner.key : null,
+        );
         // See markConsumedIfOwning above: marked in this SAME synchronous
         // block, atomically with activation. Voice's own initial call
         // (which DOES supply isStillWanted) deliberately does NOT get
@@ -2364,8 +2375,10 @@ export function ChatApp() {
   }, []);
   const tryAgentOwnerConflict =
     composerDraftOwnerKey !== null && composerDraftOwnerKey !== owner.key
-      ? "Your unsent chat message was started under a different account. Send or clear it in chat before trying this agent."
-      : activeId !== null && activeOwnerKey !== owner.key
+      ? "Your unsent chat message was started under a different account. Switch back to that account or clear the message before trying this agent."
+      : activeId !== null && activeOwnerKey === null
+        ? "The open conversation hasn't been confirmed for this account. Open one of your conversations or start a new chat before trying this agent."
+        : activeId !== null && activeOwnerKey !== owner.key
         ? "The open conversation belongs to a different account. Start a new chat before trying this agent."
         : null;
   const reloadForNewVersion = useCallback(() => {
