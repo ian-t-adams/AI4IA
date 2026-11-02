@@ -219,4 +219,22 @@ describe("agents follow the signed-in account", () => {
     expect(await screen.findByRole("option", { name: /@b-helper/ })).toBeVisible();
     expect(screen.queryByRole("option", { name: /@a-helper/ })).toBeNull();
   });
+
+  it("hides the previous owner's mention catalog while the new owner's is still loading", async () => {
+    const user = userEvent.setup();
+    render(<MemoryPreferenceProvider owner={owner}><ChatApp /></MemoryPreferenceProvider>);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    const composer = await screen.findByRole("combobox", { name: "Message" });
+    await waitFor(() => expect(composer).toBeEnabled());
+    await user.type(composer, "@");
+    expect(await screen.findByRole("option", { name: /@a-helper/ })).toBeVisible();
+    await user.clear(composer);
+
+    const catalogCalls = mocks.listAgents.mock.calls.length;
+    mocks.listAgents.mockImplementationOnce(() => new Promise<AgentSummary[]>(() => {}));
+    switchTo("owner-b");
+    await waitFor(() => expect(mocks.listAgents.mock.calls.length).toBeGreaterThan(catalogCalls));
+    await user.type(composer, "@");
+    expect(screen.queryByRole("option", { name: /@a-helper/ })).toBeNull();
+  });
 });

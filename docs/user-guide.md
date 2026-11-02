@@ -120,7 +120,9 @@ execution approval. **Agent settings** holds the optional preferred model
 stable `@mention` ID. New IDs are suggested from the name and can be adjusted
 before saving. Renaming a saved display name never changes its ID or references.
 Choose a saved agent to edit it in the same panel and use **Save changes**.
-The save state remains visible; failed saves retain your draft.
+The save state remains visible; failed saves retain your draft. If the signed-in
+account changes, the agent list and any unsaved agent draft are cleared and a
+notice says so; only the new account's agents are listed or offered for trying.
 
 After saving, **Try it in chat** returns to the current conversation and adds the
 saved agent's `@mention` before your draft, without sending anything or replacing
