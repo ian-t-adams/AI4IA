@@ -57,6 +57,8 @@ interface AgentForm {
   enabled: boolean;
 }
 
+const ACCOUNT_CHANGED = "The signed-in account changed. Wait for your agents to reload, then try again.";
+
 function blankForm(): AgentForm {
   return {
     name: "",
@@ -121,7 +123,8 @@ export function AgentBuilder({
   // by a confirmation, so the previous owner's list, selection and draft are
   // cleared before the next render shows them, and late responses are ignored.
   // Outside an owner-scoped provider the key is undefined and never changes.
-  const ownerKey = useOptionalCurrentOwner()?.key;
+  const ownerScope = useOptionalCurrentOwner();
+  const ownerKey = ownerScope?.key;
   const signedOut = ownerKey === null;
   const [scopedOwner, setScopedOwner] = useState(ownerKey);
   if (scopedOwner !== ownerKey) {
@@ -144,9 +147,11 @@ export function AgentBuilder({
   useLayoutEffect(() => {
     ownerGeneration.current += 1;
   }, [ownerKey]);
+  // The external account can change before the provider re-renders, so the
+  // rendered owner's live check runs too; the generation also rejects A→B→A.
   const isCurrentOwner = useCallback(
-    (generation: number) => ownerGeneration.current === generation,
-    [],
+    (generation: number) => ownerGeneration.current === generation && (ownerScope?.isCurrent() ?? true),
+    [ownerScope],
   );
   const newName = form.name || suggestedStudioName(form.displayName, [...agents, ...mine].map((a) => a.name), "agent");
   const tryUnavailable = tryDisabledReason || (error || listUnavailable
@@ -206,6 +211,7 @@ export function AgentBuilder({
 
   const refreshMine = useCallback(async (failurePrefix = "") => {
     const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) return;
     try {
       const list = await api.listMyAgents();
       if (!isCurrentOwner(generation)) return;
@@ -223,6 +229,7 @@ export function AgentBuilder({
   const refreshMcp = useCallback(async () => {
     if (!customToolsEnabled) return;
     const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) return;
     try {
       const servers = await api.listMcpServers();
       if (!isCurrentOwner(generation)) return;
@@ -236,6 +243,7 @@ export function AgentBuilder({
 
   const refreshOfficialMcp = useCallback(async () => {
     const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) return;
     try {
       const servers = await api.listOfficialMcpServers();
       if (!isCurrentOwner(generation)) return;
@@ -320,8 +328,12 @@ export function AgentBuilder({
       links: form.links,
       enabled: form.enabled,
     };
-    setBusy(true);
     const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) {
+      setError(ACCOUNT_CHANGED);
+      return;
+    }
+    setBusy(true);
     try {
       const saved = editing
         ? await api.updateAgent(editing, { ...body, expectedRevision: savedAgent?.revision })
@@ -343,17 +355,20 @@ export function AgentBuilder({
 
   const remove = useCallback(
     async (name: string) => {
+      const generation = ownerGeneration.current;
       const label = mine.find((agent) => agent.name === name)?.displayName || name;
-      if (
-        !window.confirm(
-          `Permanently delete agent "${label}"? This can't be undone.`,
-        )
-      ) {
+      if (!isCurrentOwner(generation)) {
+        setError(ACCOUNT_CHANGED);
+        return;
+      }
+      if (!window.confirm(`Permanently delete agent "${label}"? This can't be undone.`)) return;
+      // The account may have changed while the confirmation was open.
+      if (!isCurrentOwner(generation)) {
+        setError(ACCOUNT_CHANGED);
         return;
       }
       setBusy(true);
       setError(null);
-      const generation = ownerGeneration.current;
       let deleted = false;
       try {
         await api.deleteAgent(name);
