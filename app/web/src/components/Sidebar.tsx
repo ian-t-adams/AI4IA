@@ -103,6 +103,13 @@ export function Sidebar({
   const [utilitiesOpen, setUtilitiesOpen] = useState(false);
   const utilitiesId = useId();
   const utilitiesButton = useRef<HTMLButtonElement>(null);
+  const onUtilitiesKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape" || !utilitiesOpen || event.defaultPrevented) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setUtilitiesOpen(false);
+    utilitiesButton.current?.focus();
+  };
 
   // Deleting asks on the row itself: one proportionate, keyboard-reachable
   // confirmation, never a native dialog (a browser can silently suppress
@@ -530,6 +537,7 @@ export function Sidebar({
               aria-expanded={utilitiesOpen}
               aria-controls={utilitiesId}
               onClick={() => setUtilitiesOpen((open) => !open)}
+              onKeyDown={onUtilitiesKeyDown}
             >
               <Icon name="settings" />
               <span>Settings & more</span>
@@ -541,13 +549,7 @@ export function Sidebar({
             id={utilitiesId}
             hidden={!utilitiesOpen}
             className="sidebar-utilities"
-            onKeyDown={(event) => {
-              if (event.key !== "Escape") return;
-              event.preventDefault();
-              event.stopPropagation();
-              setUtilitiesOpen(false);
-              utilitiesButton.current?.focus();
-            }}
+            onKeyDown={onUtilitiesKeyDown}
           >
             {resources.length > 0 ? (
               <ul className="sidebar-nav" aria-label="Resources">

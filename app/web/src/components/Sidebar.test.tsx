@@ -84,6 +84,24 @@ describe("responsive sidebar", () => {
     expect(screen.queryByRole("button", { name: "Deletion status" })).toBeNull();
   });
 
+  it.each(["expanded", "drawer"] as const)("closes open utilities before the drawer when Escape starts on their toggle (%s)", async (mode) => {
+    const onCollapse = vi.fn();
+    const user = userEvent.setup();
+    render(<Sidebar mode={mode} sessions={[]} activeId={null} onSelect={vi.fn()}
+      onNewChat={vi.fn()} onDelete={vi.fn()} onRename={vi.fn()}
+      onOpenDeletionStatus={vi.fn()} onCollapse={onCollapse} />);
+    const toggle = screen.getByRole("button", { name: "Settings & more" });
+    await user.click(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+    expect(onCollapse).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(onCollapse).toHaveBeenCalledTimes(mode === "drawer" ? 1 : 0);
+  });
+
   it("opens utilities directly when the rail expands and Escape closes only utilities in a drawer", async () => {
     const onCollapse = vi.fn();
     function Harness() {
