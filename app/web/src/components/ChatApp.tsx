@@ -1108,11 +1108,7 @@ export function ChatApp() {
   }, [owner, resetConversationView, updateDeletionFeedback]);
 
   const refreshAgents = useCallback(async () => {
-    try {
-      setAgents(await api.listAgents());
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    setAgents(await api.listAgents());
   }, []);
 
   const openWorkflowRun = useCallback(
@@ -3735,6 +3731,16 @@ export function ChatApp() {
                 runModel={selectedModel}
                 customToolsEnabled={customToolsEnabled}
                 onAgentsChanged={refreshAgents}
+                onTryAgent={(name) => {
+                  if (streaming || inlineVoice.active || voiceExitLocked || inlineVoice.saving) return;
+                  navigate("chat");
+                  setComposerPrefill((current) => ({ id: (current?.id ?? 0) + 1, text: `@${name} ` }));
+                }}
+                tryAgentDisabledReason={
+                  inlineVoice.active || voiceExitLocked || inlineVoice.saving
+                    ? "Finish your live session and save its transcript before trying an agent in text chat."
+                    : streaming ? "Wait for the current reply to finish before trying an agent." : null
+                }
                 onRun={openWorkflowRun}
                 onClose={() => navigate("chat")}
               />

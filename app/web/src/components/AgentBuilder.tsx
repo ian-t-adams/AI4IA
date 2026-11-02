@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import { MODEL_CATEGORY_HELP } from "@/lib/modelHelp";
 import type { AgentSummary, ModelEntry, UserAgent } from "@/lib/types";
@@ -87,11 +87,15 @@ export function AgentBuilder({
   models,
   customToolsEnabled = false,
   onChanged,
+  onTry,
+  tryDisabledReason,
 }: {
   agents: AgentSummary[];
   models: ModelEntry[];
   customToolsEnabled?: boolean;
   onChanged: () => Promise<void>;
+  onTry?: (name: string) => void;
+  tryDisabledReason?: string | null;
 }) {
   const [mine, setMine] = useState<UserAgent[]>([]);
   const [mcpServers, setMcpServers] = useState<UserMcpServer[]>([]);
@@ -108,9 +112,14 @@ export function AgentBuilder({
   const [listUnavailable, setListUnavailable] = useState(false);
   const [toolError, setToolError] = useState<string | null>(null);
   const [officialToolError, setOfficialToolError] = useState<string | null>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const instructionsInput = useRef<HTMLTextAreaElement>(null);
   const dirty = JSON.stringify(form) !== JSON.stringify(savedAgent ? formFrom(savedAgent) : blankForm());
   const confirmDiscard = useStudioDraft(dirty, busy);
   const newName = form.name || suggestedStudioName(form.displayName, [...agents, ...mine].map((a) => a.name), "agent");
+  const tryUnavailable = tryDisabledReason || (error || listUnavailable
+    ? "Resolve the save or refresh error above, then save again before trying this agent."
+    : null);
 
   const groupedModels = useMemo(
     () => groupConversationalModels(models),
@@ -240,6 +249,7 @@ export function AgentBuilder({
     if (!editing) {
       if (!form.displayName.trim()) {
         setError("Agent name is required.");
+        nameInput.current?.focus();
         return;
       }
       const ne = nameError(newName);
@@ -250,6 +260,7 @@ export function AgentBuilder({
     }
     if (!form.systemPrompt.trim()) {
       setError("Instructions are required. Describe what this agent should do.");
+      instructionsInput.current?.focus();
       return;
     }
     const body = {
@@ -306,7 +317,8 @@ export function AgentBuilder({
   );
 
   return (
-    <div className="studio-pane">
+    <div className={`studio-pane agent-builder${!loading && !listUnavailable && mine.length === 0 ? " agent-builder-empty" : ""}`}>
+      {(loading || listUnavailable || mine.length > 0) && (
       <div className="studio-list">
         <button onClick={() => { if (confirmDiscard()) startNew(); }} disabled={busy || loading} style={secondaryBtn}>
           New agent
@@ -315,11 +327,6 @@ export function AgentBuilder({
         <ul className="studio-list-scroll">
           {loading && <li role="status">Loading your agents...</li>}
           {listUnavailable && <li role="status">Your agents could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
-          {!loading && !listUnavailable && mine.length === 0 && (
-            <li className="studio-empty">
-              Your saved agents will appear here. Create your first one in the editor.
-            </li>
-          )}
           {mine.map((a) => (
             <li key={a.id} className="studio-list-row">
               <button
@@ -344,81 +351,72 @@ export function AgentBuilder({
           ))}
         </ul>
       </div>
+      )}
 
       <fieldset className="studio-workpanel studio-form" disabled={busy}>
         <div className="studio-editor-header">
           <div>
             <h3>{editing ? `Edit ${savedAgent?.displayName || editing}` : "Create an agent"}</h3>
-            <p className="studio-help">An agent is one assistant with its own instructions and optional tools.</p>
+            <p className="studio-help">Describe the help you want, give it a name, and save. You can try it in chat next.</p>
           </div>
           <button onClick={submit} disabled={busy || loading} style={primaryBtn}>
             {busy ? "Saving…" : editing ? "Save changes" : "Create agent"}
           </button>
           {error && <p role="alert" className="studio-alert">{error}</p>}
-          <p role="status" className="studio-save-status">{dirty ? "Unsaved changes" : notice}</p>
+          <p role="status" className="studio-save-status">{busy ? "Saving your agent..." : dirty ? "Unsaved changes" : notice || (savedAgent ? "Saved" : "Only the task and name are required.")}</p>
         </div>
 
         <div>
-          <label style={labelStyle} htmlFor="ag-display">Agent name</label>
-          <input
-            id="ag-display"
-            value={form.displayName}
-            maxLength={MAX_DISPLAY_NAME_LEN}
-            placeholder="e.g. Research assistant"
-            onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
-            style={inputStyle}
-          />
-        </div>
-
-        <div>
-          <label style={labelStyle} htmlFor="ag-sys">Instructions</label>
+          <label style={labelStyle} htmlFor="ag-sys">What should this agent do?</label>
           <textarea
             id="ag-sys"
+            ref={instructionsInput}
             value={form.systemPrompt}
             maxLength={MAX_SYSTEM_PROMPT_LEN}
             rows={5}
-            placeholder="Describe the job, how the assistant should respond, and any boundaries."
+            placeholder="e.g. Turn my meeting notes into a short summary, decisions, and next steps. Ask when an owner or deadline is missing."
             onChange={(e) => setForm((f) => ({ ...f, systemPrompt: e.target.value }))}
             style={{ ...inputStyle, resize: "vertical" }}
           />
         </div>
 
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <label style={{ ...labelStyle, marginBottom: 0 }} htmlFor="ag-model">
-              Preferred model
-            </label>
-            <HelpTooltip label="Preferred model" size="sm">
-              A fallback only, used when a conversation has no model chosen
-              yet. An explicit chat-header pick or the session&apos;s current
-              model both take priority over this. Leave as &quot;Session
-              default&quot; to always defer to whatever model the user picked
-              there instead.
-            </HelpTooltip>
-          </div>
-          <select
-            id="ag-model"
-            value={form.defaultModel}
-            onChange={(e) => setForm((f) => ({ ...f, defaultModel: e.target.value }))}
+          <label style={labelStyle} htmlFor="ag-display">Agent name</label>
+          <input
+            id="ag-display"
+            ref={nameInput}
+            value={form.displayName}
+            maxLength={MAX_DISPLAY_NAME_LEN}
+            placeholder="e.g. Notes helper"
+            onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
             style={inputStyle}
-            aria-describedby={modelCategoryHelp ? modelNoteId : undefined}
-          >
-            <option value="">Session default</option>
-            {Object.entries(groupedModels).map(([category, entries]) => (
-              <optgroup key={category} label={category}>
-                {entries.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.displayName}
-                    {m.contextWindow != null
-                      ? ` — ${formatContextWindow(m.contextWindow)} ctx`
-                      : ""}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-          <ModelCategoryNote id={modelNoteId} category={selectedModel?.category} />
+          />
         </div>
+
+        <p className="studio-help">
+          {form.defaultModel
+            ? `Preferred model: ${selectedModel?.displayName || `${form.defaultModel} (unavailable)`}. Your chat's chosen model takes priority.`
+            : "Uses your chat's chosen model."}{" "}
+          {form.tools.length === 0 ? "No extra tools selected." : `${form.tools.length} tools selected.`} Optional choices are below.
+        </p>
+
+        {savedAgent && onTry && (
+          <div className="agent-try">
+            <button
+              onClick={() => { if (!dirty && savedAgent.enabled && !tryUnavailable) onTry(savedAgent.name); }}
+              disabled={busy || dirty || !savedAgent.enabled || !!tryUnavailable}
+              aria-describedby="ag-try-help"
+              style={secondaryBtn}
+            >
+              Try it in chat
+            </button>
+            <p id="ag-try-help" className="studio-help">
+              {dirty ? "Save your changes before trying this version."
+                : !savedAgent.enabled ? "Enable and save this agent before trying it."
+                : tryUnavailable || "Adds this agent's @mention to your current chat draft. Nothing is sent until you press Send."}
+            </p>
+          </div>
+        )}
 
         <details className="studio-details">
           <summary>Tools <span>({form.tools.length} selected, optional)</span></summary>
@@ -626,7 +624,43 @@ export function AgentBuilder({
         </details>
 
         <details className="studio-details">
-          <summary>Agent settings <span>Description, ID and availability</span></summary>
+          <summary>Agent settings <span>Model, description, ID and availability</span></summary>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <label style={{ ...labelStyle, marginBottom: 0 }} htmlFor="ag-model">
+                Preferred model
+              </label>
+              <HelpTooltip label="Preferred model" size="sm">
+                A fallback only, used when a conversation has no model chosen
+                yet. An explicit chat-header pick or the session&apos;s current
+                model both take priority over this. Leave as &quot;Session
+                default&quot; to defer to the model chosen in chat.
+              </HelpTooltip>
+            </div>
+            <select
+              id="ag-model"
+              value={form.defaultModel}
+              onChange={(e) => setForm((f) => ({ ...f, defaultModel: e.target.value }))}
+              style={inputStyle}
+              aria-describedby={modelCategoryHelp ? modelNoteId : undefined}
+            >
+              <option value="">Session default</option>
+              {form.defaultModel && !selectedModel && (
+                <option value={form.defaultModel}>{form.defaultModel} (unavailable)</option>
+              )}
+              {Object.entries(groupedModels).map(([category, entries]) => (
+                <optgroup key={category} label={category}>
+                  {entries.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.displayName}
+                      {m.contextWindow != null ? ` — ${formatContextWindow(m.contextWindow)} ctx` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <ModelCategoryNote id={modelNoteId} category={selectedModel?.category} />
+          </div>
           <div>
             <label style={labelStyle} htmlFor="ag-desc">Description</label>
             <input id="ag-desc" value={form.description} maxLength={MAX_DESCRIPTION_LEN}
