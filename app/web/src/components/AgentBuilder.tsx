@@ -172,13 +172,13 @@ export function AgentBuilder({
     return form.tools.filter((t) => isMcpToolName(t) && !known.has(t));
   }, [form.tools, mcpTools]);
 
-  const refreshMine = useCallback(async () => {
+  const refreshMine = useCallback(async (failurePrefix = "") => {
     try {
       setMine(await api.listMyAgents());
       setListUnavailable(false);
     } catch (e) {
       setListUnavailable(true);
-      setError((e as Error).message);
+      setError(`${failurePrefix}${(e as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -224,6 +224,7 @@ export function AgentBuilder({
     setForm(blankForm());
     setError(null);
     setNotice(null);
+    instructionsInput.current?.focus();
   }, []);
 
   const startEdit = useCallback((a: UserAgent) => {
@@ -302,14 +303,19 @@ export function AgentBuilder({
       }
       setBusy(true);
       setError(null);
+      let deleted = false;
       try {
         await api.deleteAgent(name);
-        await refreshMine();
-        await onChanged();
+        deleted = true;
+        setMine((current) => current.filter((agent) => agent.name !== name));
         if (editing === name) startNew();
+        setNotice(`Deleted "${label}".`);
+        await refreshMine("Agent deleted, but refreshing your saved agents failed: ");
+        await onChanged();
       } catch (e) {
-        setError((e as Error).message);
+        setError(`${deleted ? "Agent deleted, but refreshing available agents failed: " : ""}${(e as Error).message}`);
       } finally {
+        if (deleted) setMine((current) => current.filter((agent) => agent.name !== name));
         setBusy(false);
       }
     },
@@ -362,6 +368,11 @@ export function AgentBuilder({
           <button onClick={submit} disabled={busy || loading} style={primaryBtn}>
             {busy ? "Saving…" : editing ? "Save changes" : "Create agent"}
           </button>
+          {!editing && dirty && !loading && !listUnavailable && mine.length === 0 && (
+            <button onClick={() => { if (confirmDiscard()) startNew(); }} style={secondaryBtn}>
+              Start over
+            </button>
+          )}
           {error && <p role="alert" className="studio-alert">{error}</p>}
           <p role="status" className="studio-save-status">{busy ? "Saving your agent..." : dirty ? "Unsaved changes" : notice || (savedAgent ? "Saved" : "Only the task and name are required.")}</p>
         </div>

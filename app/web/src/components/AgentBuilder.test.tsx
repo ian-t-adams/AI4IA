@@ -149,6 +149,22 @@ describe("AgentBuilder", () => {
     }));
   });
 
+  it("can start over on the first draft without discarding it until confirmed", async () => {
+    mocks.listMyAgents.mockResolvedValue([]);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={[]} models={[]} onChanged={async () => {}} />);
+    const task = screen.getByLabelText("What should this agent do?");
+    await user.type(task, "Help with notes.");
+    await user.click(screen.getByRole("button", { name: "Start over" }));
+    expect(task).toHaveValue("Help with notes.");
+    await user.click(screen.getByRole("button", { name: "Start over" }));
+    expect(task).toHaveValue("");
+    expect(task).toHaveFocus();
+    expect(mocks.createAgent).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
   it("offers only the saved enabled version to try, with unsaved edits blocked until saved", async () => {
     const user = userEvent.setup();
     const onTry = vi.fn();
@@ -345,6 +361,42 @@ describe("AgentBuilder", () => {
     await user.click(remove);
     await waitFor(() => expect(mocks.deleteAgent).toHaveBeenCalledWith("helper"));
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  it.each(["mine", "catalog"])("clears the deleted editor even if the %s refresh fails", async (source) => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    mocks.deleteAgent.mockResolvedValue(undefined);
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={onChanged} onTry={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    expect(screen.getByRole("button", { name: "Try it in chat" })).toBeEnabled();
+    if (source === "mine") mocks.listMyAgents.mockRejectedValueOnce(new Error("List unavailable."));
+    else onChanged.mockRejectedValueOnce(new Error("List unavailable."));
+    await user.click(screen.getByRole("button", { name: "Delete helper" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Agent deleted, but refreshing .* failed: List unavailable/);
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("");
+    expect(screen.getByLabelText("Agent name")).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try it in chat" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Helper" })).toBeNull();
+    expect(mocks.deleteAgent).toHaveBeenCalledExactlyOnceWith("helper");
+    confirm.mockRestore();
+  });
+
+  it("keeps the saved editor when deletion itself fails", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mocks.deleteAgent.mockRejectedValueOnce(new Error("Delete unavailable."));
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={onChanged} onTry={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    await user.click(screen.getByRole("button", { name: "Delete helper" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Delete unavailable.");
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    expect(screen.getByLabelText("What should this agent do?")).toHaveValue("Be helpful.");
+    expect(onChanged).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   it("explains what a built-in tool does, when to use it, and its risk level", async () => {

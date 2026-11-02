@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   getLibrarySummary: vi.fn(), createMemory: vi.fn(), updateMemory: vi.fn(),
   deleteMemory: vi.fn(), appendVoiceTurns: vi.fn(), getImageOptions: vi.fn(),
   voiceActive: false, saving: false, exitLocked: false,
+  refreshError: vi.fn(),
 }));
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/api")>(), ...mocks,
@@ -44,11 +45,12 @@ vi.mock("./InlineVoiceLive", () => ({
   }),
 }));
 vi.mock("./AgentBuilder", () => ({
-  AgentBuilder: ({ onTry, tryDisabledReason }: {
-    onTry?: (name: string) => void; tryDisabledReason?: string | null;
+  AgentBuilder: ({ onTry, tryDisabledReason, onChanged }: {
+    onTry?: (name: string) => void; tryDisabledReason?: string | null; onChanged: () => Promise<void>;
   }) => (
     <>
       <button disabled={!!tryDisabledReason} onClick={() => onTry?.("notes-helper")}>Try saved agent</button>
+      <button onClick={() => { void onChanged().catch(mocks.refreshError); }}>Refresh saved agents</button>
       {tryDisabledReason && <p>{tryDisabledReason}</p>}
     </>
   ),
@@ -68,6 +70,19 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe("trying an agent from Studio", () => {
+  it("returns catalog refresh errors to the editor instead of swallowing them in hidden chat", async () => {
+    const user = userEvent.setup();
+    render(<ChatApp />, { wrapper: MemoryPreferenceProvider });
+    await screen.findByRole("button", { name: "Session A" });
+    await waitFor(() => expect(mocks.listAgents).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
+    mocks.listAgents.mockRejectedValueOnce(new Error("Catalog temporarily unavailable."));
+    await user.click(screen.getByRole("button", { name: "Refresh saved agents" }));
+    await waitFor(() => expect(mocks.refreshError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Catalog temporarily unavailable." }),
+    ));
+  });
+
   it("prepares the existing composer and focuses it, without sending, saving settings or replacing a draft", async () => {
     const user = userEvent.setup();
     render(<ChatApp />, { wrapper: MemoryPreferenceProvider });
@@ -75,7 +90,7 @@ describe("trying an agent from Studio", () => {
     const composer = await screen.findByRole("combobox", { name: "Message" });
     await waitFor(() => expect(composer).toBeEnabled());
     await user.type(composer, "Summarize these notes");
-    await user.click(screen.getByRole("button", { name: "Agents & workflows" }));
+    await user.click(screen.getByRole("button", { name: /Agents & workflows/ }));
     await user.click(screen.getByRole("button", { name: "Try saved agent" }));
     await waitFor(() => expect(window.location.hash).toBe(""));
     expect(composer).toHaveValue("@notes-helper Summarize these notes");
@@ -89,13 +104,13 @@ describe("trying an agent from Studio", () => {
       expect.any(Object),
     ));
     expect(mocks.createSession).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Agents & workflows" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: /Agents & workflows/ })).toHaveAttribute("aria-disabled", "true");
   });
 
   it.each(["voiceActive", "saving", "exitLocked"] as const)("keeps the handoff unavailable during %s", async (key) => {
     const user = userEvent.setup();
     const view = render(<ChatApp />, { wrapper: MemoryPreferenceProvider });
-    await user.click(await screen.findByRole("button", { name: "Agents & workflows" }));
+    await user.click(await screen.findByRole("button", { name: /Agents & workflows/ }));
     mocks[key] = true;
     view.rerender(<ChatApp />);
     const tryIt = screen.getByRole("button", { name: "Try saved agent" });
