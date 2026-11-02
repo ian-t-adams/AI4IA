@@ -9,7 +9,15 @@ type Availability = "loading" | "available" | "unavailable" | "error";
 
 export function useDecisionsAvailable(ownerKey: string | null) {
   const [attempt, setAttempt] = useState(0);
-  const [state, setState] = useState<{ owner: string; attempt: number; status: Availability } | null>(null);
+  const [state, setState] = useState<{ owner: string | null; attempt: number; status: Availability }>({
+    owner: ownerKey, attempt, status: ownerKey === null ? "unavailable" : "loading",
+  });
+
+  // Invalidate during the owner transition, including sign-out and a return to
+  // the same key, rather than allowing a previous result to match again.
+  if (state.owner !== ownerKey || state.attempt !== attempt) {
+    setState({ owner: ownerKey, attempt, status: ownerKey === null ? "unavailable" : "loading" });
+  }
 
   useEffect(() => {
     if (ownerKey === null) return;
@@ -27,6 +35,6 @@ export function useDecisionsAvailable(ownerKey: string | null) {
   }, [ownerKey, attempt]);
 
   const status: Availability = ownerKey === null ? "unavailable"
-    : state?.owner === ownerKey && state.attempt === attempt ? state.status : "loading";
+    : state.owner === ownerKey && state.attempt === attempt ? state.status : "loading";
   return { status, retry: () => setAttempt((value) => value + 1) };
 }

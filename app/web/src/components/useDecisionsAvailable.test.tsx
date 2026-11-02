@@ -40,6 +40,53 @@ describe("Decision navigation availability", () => {
     expect(decisionModels).not.toHaveBeenCalled();
   });
 
+  it.each([null, "owner-b"])("requires a fresh result when owner A returns through %s", async (intermediateOwner) => {
+    let finishPrevious!: (models: DecisionModel[]) => void;
+    let finishFresh!: (models: DecisionModel[]) => void;
+    vi.mocked(decisionModels).mockResolvedValueOnce(available);
+    if (intermediateOwner !== null) {
+      vi.mocked(decisionModels).mockImplementationOnce(() => new Promise((resolve) => { finishPrevious = resolve; }));
+    }
+    vi.mocked(decisionModels).mockImplementationOnce(() => new Promise((resolve) => { finishFresh = resolve; }));
+    const { result, rerender } = renderHook(
+      ({ owner }: { owner: string | null }) => useDecisionsAvailable(owner),
+      { initialProps: { owner: "owner-a" as string | null } },
+    );
+    await waitFor(() => expect(result.current.status).toBe("available"));
+    const originalSignal = vi.mocked(decisionModels).mock.calls[0][0];
+    rerender({ owner: intermediateOwner });
+    expect(originalSignal.aborted).toBe(true);
+    expect(result.current.status).toBe(intermediateOwner === null ? "unavailable" : "loading");
+    const previousSignal = vi.mocked(decisionModels).mock.calls.at(-1)![0];
+    rerender({ owner: "owner-a" });
+    expect(previousSignal.aborted).toBe(true);
+    expect(result.current.status).toBe("loading");
+    if (intermediateOwner !== null) {
+      await act(async () => { finishPrevious(available); });
+      expect(result.current.status).toBe("loading");
+    }
+    await act(async () => { finishFresh([]); });
+    expect(result.current.status).toBe("unavailable");
+    expect(decisionModels).toHaveBeenCalledTimes(intermediateOwner === null ? 2 : 3);
+  });
+
+  it("ignores an aborted same-owner request's late failure after a fresh result", async () => {
+    let failPrevious!: (error: Error) => void;
+    vi.mocked(decisionModels).mockImplementationOnce(() => new Promise((_, reject) => { failPrevious = reject; }))
+      .mockResolvedValueOnce(available);
+    const { result, rerender } = renderHook(
+      ({ owner }: { owner: string | null }) => useDecisionsAvailable(owner),
+      { initialProps: { owner: "owner-a" as string | null } },
+    );
+    const originalSignal = vi.mocked(decisionModels).mock.calls[0][0];
+    rerender({ owner: null });
+    rerender({ owner: "owner-a" });
+    expect(originalSignal.aborted).toBe(true);
+    await waitFor(() => expect(result.current.status).toBe("available"));
+    await act(async () => { failPrevious(new Error("Late failure")); });
+    expect(result.current.status).toBe("available");
+  });
+
   it("clears visibility on account changes and ignores late responses after abort", async () => {
     let finish!: (models: DecisionModel[]) => void;
     vi.mocked(decisionModels).mockResolvedValueOnce(available)
