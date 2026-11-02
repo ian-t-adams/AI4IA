@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 import json
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -130,9 +131,10 @@ def test_signed_actor_categories_preserve_runtime_protocol_and_default_routing(
     setup_exchange(client, ordinary, model_id)
     config["realtimeCanaryActor"]["restrictions"]["models"] = ["realtime"]
     state.settings.group_policy_json = json.dumps(config)
-    with monkeypatch.context() as patch:
-        patch.setattr(state, "realtime_canary_dispatch_guard", None)
+    original_guard = state.realtime_canary_dispatch_guard
+    with patch.object(state, "realtime_canary_dispatch_guard", None):
         setup_exchange(client, actor, model_id, allowed=False)
+    assert state.realtime_canary_dispatch_guard is original_guard
     setup_exchange(client, actor, model_id)
     assert not calls
 
