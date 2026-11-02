@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
 import { MODEL_CATEGORY_HELP } from "@/lib/modelHelp";
 import type { AgentSummary, ModelEntry, UserAgent } from "@/lib/types";
@@ -35,6 +35,7 @@ import {
 import { Pill } from "./Pill";
 import { PublicationControls } from "./PublicationControls";
 import { useStudioDraft } from "./useStudioDraft";
+import { useOptionalCurrentOwner } from "./MemoryPreferenceProvider";
 import {
   checkRow,
   fieldset,
@@ -55,6 +56,8 @@ interface AgentForm {
   links: string[];
   enabled: boolean;
 }
+
+const ACCOUNT_CHANGED = "The signed-in account changed. Wait for your agents to reload, then try again.";
 
 function blankForm(): AgentForm {
   return {
@@ -87,11 +90,15 @@ export function AgentBuilder({
   models,
   customToolsEnabled = false,
   onChanged,
+  onTry,
+  tryDisabledReason,
 }: {
   agents: AgentSummary[];
   models: ModelEntry[];
   customToolsEnabled?: boolean;
   onChanged: () => Promise<void>;
+  onTry?: (name: string) => void;
+  tryDisabledReason?: string | null;
 }) {
   const [mine, setMine] = useState<UserAgent[]>([]);
   const [mcpServers, setMcpServers] = useState<UserMcpServer[]>([]);
@@ -108,9 +115,48 @@ export function AgentBuilder({
   const [listUnavailable, setListUnavailable] = useState(false);
   const [toolError, setToolError] = useState<string | null>(null);
   const [officialToolError, setOfficialToolError] = useState<string | null>(null);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const instructionsInput = useRef<HTMLTextAreaElement>(null);
   const dirty = JSON.stringify(form) !== JSON.stringify(savedAgent ? formFrom(savedAgent) : blankForm());
   const confirmDiscard = useStudioDraft(dirty, busy);
+  // Agents belong to the signed-in owner. An account change can't be blocked
+  // by a confirmation, so the previous owner's list, selection and draft are
+  // cleared before the next render shows them, and late responses are ignored.
+  // Outside an owner-scoped provider the key is undefined and never changes.
+  const ownerScope = useOptionalCurrentOwner();
+  const ownerKey = ownerScope?.key;
+  const signedOut = ownerKey === null;
+  const [scopedOwner, setScopedOwner] = useState(ownerKey);
+  if (scopedOwner !== ownerKey) {
+    setScopedOwner(ownerKey);
+    setMine([]);
+    setMcpServers([]);
+    setOfficialMcpServers([]);
+    setEditing(null);
+    setSavedAgent(null);
+    setForm(blankForm());
+    setBusy(false);
+    setError(null);
+    setToolError(null);
+    setOfficialToolError(null);
+    setListUnavailable(false);
+    setLoading(true);
+    setNotice(dirty ? "Unsaved agent changes were cleared because the signed-in account changed." : null);
+  }
+  const ownerGeneration = useRef(0);
+  useLayoutEffect(() => {
+    ownerGeneration.current += 1;
+  }, [ownerKey]);
+  // The external account can change before the provider re-renders, so the
+  // rendered owner's live check runs too; the generation also rejects A→B→A.
+  const isCurrentOwner = useCallback(
+    (generation: number) => ownerGeneration.current === generation && (ownerScope?.isCurrent() ?? true),
+    [ownerScope],
+  );
   const newName = form.name || suggestedStudioName(form.displayName, [...agents, ...mine].map((a) => a.name), "agent");
+  const tryUnavailable = tryDisabledReason || (error || listUnavailable
+    ? "Resolve the save or refresh error above, then save again before trying this agent."
+    : null);
 
   const groupedModels = useMemo(
     () => groupConversationalModels(models),
@@ -163,51 +209,69 @@ export function AgentBuilder({
     return form.tools.filter((t) => isMcpToolName(t) && !known.has(t));
   }, [form.tools, mcpTools]);
 
-  const refreshMine = useCallback(async () => {
+  const refreshMine = useCallback(async (failurePrefix = "") => {
+    const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) return;
     try {
-      setMine(await api.listMyAgents());
+      const list = await api.listMyAgents();
+      if (!isCurrentOwner(generation)) return;
+      setMine(list);
       setListUnavailable(false);
     } catch (e) {
+      if (!isCurrentOwner(generation)) return;
       setListUnavailable(true);
-      setError((e as Error).message);
+      setError(`${failurePrefix}${(e as Error).message}`);
     } finally {
-      setLoading(false);
+      if (isCurrentOwner(generation)) setLoading(false);
     }
-  }, []);
+  }, [isCurrentOwner]);
 
   const refreshMcp = useCallback(async () => {
     if (!customToolsEnabled) return;
+    const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) return;
     try {
-      setMcpServers(await api.listMcpServers());
+      const servers = await api.listMcpServers();
+      if (!isCurrentOwner(generation)) return;
+      setMcpServers(servers);
       setToolError(null);
     } catch {
+      if (!isCurrentOwner(generation)) return;
       setToolError("Custom tools could not be loaded. Existing selections are retained; reopen this editor to retry.");
     }
-  }, [customToolsEnabled]);
+  }, [customToolsEnabled, isCurrentOwner]);
 
   const refreshOfficialMcp = useCallback(async () => {
+    const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) return;
     try {
-      setOfficialMcpServers(await api.listOfficialMcpServers());
+      const servers = await api.listOfficialMcpServers();
+      if (!isCurrentOwner(generation)) return;
+      setOfficialMcpServers(servers);
       setOfficialToolError(null);
     } catch {
+      if (!isCurrentOwner(generation)) return;
       setOfficialToolError("Official tools could not be loaded. Existing selections are retained; reopen this editor to retry.");
     }
-  }, []);
+  }, [isCurrentOwner]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
+    if (signedOut) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch on mount and owner change; setState only runs after the awaited call resolves
     void refreshMine();
-  }, [refreshMine]);
+  }, [refreshMine, signedOut, ownerKey]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch that also re-runs when `customToolsEnabled` flips; kept separate from the other refreshes so toggling it doesn't re-fetch unrelated data
+    if (signedOut) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch that also re-runs when `customToolsEnabled` flips or the owner changes; kept separate from the other refreshes so toggling it doesn't re-fetch unrelated data
     void refreshMcp();
-  }, [refreshMcp]);
+  }, [refreshMcp, signedOut, ownerKey]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch-on-mount; setState only runs after the awaited call resolves
+    if (signedOut) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch on mount and owner change; setState only runs after the awaited call resolves
     void refreshOfficialMcp();
-  }, [refreshOfficialMcp]);
+  }, [refreshOfficialMcp, signedOut, ownerKey]);
 
   const startNew = useCallback(() => {
     setEditing(null);
@@ -215,6 +279,7 @@ export function AgentBuilder({
     setForm(blankForm());
     setError(null);
     setNotice(null);
+    instructionsInput.current?.focus();
   }, []);
 
   const startEdit = useCallback((a: UserAgent) => {
@@ -240,6 +305,7 @@ export function AgentBuilder({
     if (!editing) {
       if (!form.displayName.trim()) {
         setError("Agent name is required.");
+        nameInput.current?.focus();
         return;
       }
       const ne = nameError(newName);
@@ -250,6 +316,7 @@ export function AgentBuilder({
     }
     if (!form.systemPrompt.trim()) {
       setError("Instructions are required. Describe what this agent should do.");
+      instructionsInput.current?.focus();
       return;
     }
     const body = {
@@ -261,65 +328,83 @@ export function AgentBuilder({
       links: form.links,
       enabled: form.enabled,
     };
+    const generation = ownerGeneration.current;
+    if (!isCurrentOwner(generation)) {
+      setError(ACCOUNT_CHANGED);
+      return;
+    }
     setBusy(true);
     try {
       const saved = editing
         ? await api.updateAgent(editing, { ...body, expectedRevision: savedAgent?.revision })
         : await api.createAgent({ name: newName, ...body });
+      if (!isCurrentOwner(generation)) return;
       setSavedAgent(saved);
       setEditing(saved.name);
       setForm(formFrom(saved)); // reflect server-sanitized links
       setNotice(`Saved. Use @${saved.name} in a chat or select it in a workflow.`);
       await refreshMine();
+      if (!isCurrentOwner(generation)) return;
       await onChanged(); // keep the @-mention menu + link pickers fresh
     } catch (e) {
-      setError((e as Error).message);
+      if (isCurrentOwner(generation)) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (isCurrentOwner(generation)) setBusy(false);
     }
-  }, [editing, form, newName, savedAgent, refreshMine, onChanged]);
+  }, [editing, form, newName, savedAgent, refreshMine, onChanged, isCurrentOwner]);
 
   const remove = useCallback(
     async (name: string) => {
+      const generation = ownerGeneration.current;
       const label = mine.find((agent) => agent.name === name)?.displayName || name;
-      if (
-        !window.confirm(
-          `Permanently delete agent "${label}"? This can't be undone.`,
-        )
-      ) {
+      if (!isCurrentOwner(generation)) {
+        setError(ACCOUNT_CHANGED);
+        return;
+      }
+      if (!window.confirm(`Permanently delete agent "${label}"? This can't be undone.`)) return;
+      // The account may have changed while the confirmation was open.
+      if (!isCurrentOwner(generation)) {
+        setError(ACCOUNT_CHANGED);
         return;
       }
       setBusy(true);
       setError(null);
+      let deleted = false;
       try {
         await api.deleteAgent(name);
-        await refreshMine();
-        await onChanged();
+        deleted = true;
+        if (!isCurrentOwner(generation)) return;
+        setMine((current) => current.filter((agent) => agent.name !== name));
         if (editing === name) startNew();
+        setNotice(`Deleted "${label}".`);
+        await refreshMine("Agent deleted, but refreshing your saved agents failed: ");
+        if (!isCurrentOwner(generation)) return;
+        await onChanged();
       } catch (e) {
-        setError((e as Error).message);
+        if (isCurrentOwner(generation)) {
+          setError(`${deleted ? "Agent deleted, but refreshing available agents failed: " : ""}${(e as Error).message}`);
+        }
       } finally {
-        setBusy(false);
+        if (isCurrentOwner(generation)) {
+          if (deleted) setMine((current) => current.filter((agent) => agent.name !== name));
+          setBusy(false);
+        }
       }
     },
-    [editing, mine, refreshMine, onChanged, startNew],
+    [editing, mine, refreshMine, onChanged, startNew, isCurrentOwner],
   );
 
   return (
-    <div className="studio-pane">
+    <div className={`studio-pane agent-builder${!loading && !listUnavailable && mine.length === 0 ? " agent-builder-empty" : ""}`}>
+      {(loading || listUnavailable || mine.length > 0) && (
       <div className="studio-list">
         <button onClick={() => { if (confirmDiscard()) startNew(); }} disabled={busy || loading} style={secondaryBtn}>
           New agent
         </button>
         <h3 className="studio-list-heading">Your agents</h3>
         <ul className="studio-list-scroll">
-          {loading && <li role="status">Loading your agents...</li>}
+          {loading && <li role="status">{signedOut ? "Sign in to load your agents." : "Loading your agents..."}</li>}
           {listUnavailable && <li role="status">Your agents could not be loaded. <button onClick={() => { setError(null); void refreshMine(); }} style={secondaryBtn}>Retry</button></li>}
-          {!loading && !listUnavailable && mine.length === 0 && (
-            <li className="studio-empty">
-              Your saved agents will appear here. Create your first one in the editor.
-            </li>
-          )}
           {mine.map((a) => (
             <li key={a.id} className="studio-list-row">
               <button
@@ -344,81 +429,77 @@ export function AgentBuilder({
           ))}
         </ul>
       </div>
+      )}
 
       <fieldset className="studio-workpanel studio-form" disabled={busy}>
         <div className="studio-editor-header">
           <div>
             <h3>{editing ? `Edit ${savedAgent?.displayName || editing}` : "Create an agent"}</h3>
-            <p className="studio-help">An agent is one assistant with its own instructions and optional tools.</p>
+            <p className="studio-help">Describe the help you want, give it a name, and save. You can try it in chat next.</p>
           </div>
           <button onClick={submit} disabled={busy || loading} style={primaryBtn}>
             {busy ? "Saving…" : editing ? "Save changes" : "Create agent"}
           </button>
+          {!editing && dirty && !loading && !listUnavailable && mine.length === 0 && (
+            <button onClick={() => { if (confirmDiscard()) startNew(); }} style={secondaryBtn}>
+              Start over
+            </button>
+          )}
           {error && <p role="alert" className="studio-alert">{error}</p>}
-          <p role="status" className="studio-save-status">{dirty ? "Unsaved changes" : notice}</p>
+          <p role="status" className="studio-save-status">{busy ? "Saving your agent..." : dirty ? "Unsaved changes" : notice || (savedAgent ? "Saved" : "Only the task and name are required.")}</p>
         </div>
 
         <div>
-          <label style={labelStyle} htmlFor="ag-display">Agent name</label>
-          <input
-            id="ag-display"
-            value={form.displayName}
-            maxLength={MAX_DISPLAY_NAME_LEN}
-            placeholder="e.g. Research assistant"
-            onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
-            style={inputStyle}
-          />
-        </div>
-
-        <div>
-          <label style={labelStyle} htmlFor="ag-sys">Instructions</label>
+          <label style={labelStyle} htmlFor="ag-sys">What should this agent do?</label>
           <textarea
             id="ag-sys"
+            ref={instructionsInput}
             value={form.systemPrompt}
             maxLength={MAX_SYSTEM_PROMPT_LEN}
             rows={5}
-            placeholder="Describe the job, how the assistant should respond, and any boundaries."
+            placeholder="e.g. Turn my meeting notes into a short summary, decisions, and next steps. Ask when an owner or deadline is missing."
             onChange={(e) => setForm((f) => ({ ...f, systemPrompt: e.target.value }))}
             style={{ ...inputStyle, resize: "vertical" }}
           />
         </div>
 
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <label style={{ ...labelStyle, marginBottom: 0 }} htmlFor="ag-model">
-              Preferred model
-            </label>
-            <HelpTooltip label="Preferred model" size="sm">
-              A fallback only, used when a conversation has no model chosen
-              yet. An explicit chat-header pick or the session&apos;s current
-              model both take priority over this. Leave as &quot;Session
-              default&quot; to always defer to whatever model the user picked
-              there instead.
-            </HelpTooltip>
-          </div>
-          <select
-            id="ag-model"
-            value={form.defaultModel}
-            onChange={(e) => setForm((f) => ({ ...f, defaultModel: e.target.value }))}
+          <label style={labelStyle} htmlFor="ag-display">Agent name</label>
+          <input
+            id="ag-display"
+            ref={nameInput}
+            value={form.displayName}
+            maxLength={MAX_DISPLAY_NAME_LEN}
+            placeholder="e.g. Notes helper"
+            onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
             style={inputStyle}
-            aria-describedby={modelCategoryHelp ? modelNoteId : undefined}
-          >
-            <option value="">Session default</option>
-            {Object.entries(groupedModels).map(([category, entries]) => (
-              <optgroup key={category} label={category}>
-                {entries.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.displayName}
-                    {m.contextWindow != null
-                      ? ` — ${formatContextWindow(m.contextWindow)} ctx`
-                      : ""}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-          <ModelCategoryNote id={modelNoteId} category={selectedModel?.category} />
+          />
         </div>
+
+        <p className="studio-help">
+          {form.defaultModel
+            ? `Preferred model: ${selectedModel?.displayName || `${form.defaultModel} (unavailable)`}. Your chat's chosen model takes priority.`
+            : "Uses your chat's chosen model."}{" "}
+          {form.tools.length === 0 ? "No extra tools selected." : `${form.tools.length} tools selected.`} Optional choices are below.
+        </p>
+
+        {savedAgent && onTry && (
+          <div className="agent-try">
+            <button
+              onClick={() => { if (!dirty && savedAgent.enabled && !tryUnavailable) onTry(savedAgent.name); }}
+              disabled={busy || dirty || !savedAgent.enabled || !!tryUnavailable}
+              aria-describedby="ag-try-help"
+              style={secondaryBtn}
+            >
+              Try it in chat
+            </button>
+            <p id="ag-try-help" className="studio-help">
+              {dirty ? "Save your changes before trying this version."
+                : !savedAgent.enabled ? "Enable and save this agent before trying it."
+                : tryUnavailable || "Adds this agent's @mention to your current chat draft. Nothing is sent until you press Send."}
+            </p>
+          </div>
+        )}
 
         <details className="studio-details">
           <summary>Tools <span>({form.tools.length} selected, optional)</span></summary>
@@ -626,7 +707,43 @@ export function AgentBuilder({
         </details>
 
         <details className="studio-details">
-          <summary>Agent settings <span>Description, ID and availability</span></summary>
+          <summary>Agent settings <span>Model, description, ID and availability</span></summary>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <label style={{ ...labelStyle, marginBottom: 0 }} htmlFor="ag-model">
+                Preferred model
+              </label>
+              <HelpTooltip label="Preferred model" size="sm">
+                A fallback only, used when a conversation has no model chosen
+                yet. An explicit chat-header pick or the session&apos;s current
+                model both take priority over this. Leave as &quot;Session
+                default&quot; to defer to the model chosen in chat.
+              </HelpTooltip>
+            </div>
+            <select
+              id="ag-model"
+              value={form.defaultModel}
+              onChange={(e) => setForm((f) => ({ ...f, defaultModel: e.target.value }))}
+              style={inputStyle}
+              aria-describedby={modelCategoryHelp ? modelNoteId : undefined}
+            >
+              <option value="">Session default</option>
+              {form.defaultModel && !selectedModel && (
+                <option value={form.defaultModel}>{form.defaultModel} (unavailable)</option>
+              )}
+              {Object.entries(groupedModels).map(([category, entries]) => (
+                <optgroup key={category} label={category}>
+                  {entries.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.displayName}
+                      {m.contextWindow != null ? ` — ${formatContextWindow(m.contextWindow)} ctx` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <ModelCategoryNote id={modelNoteId} category={selectedModel?.category} />
+          </div>
           <div>
             <label style={labelStyle} htmlFor="ag-desc">Description</label>
             <input id="ag-desc" value={form.description} maxLength={MAX_DESCRIPTION_LEN}

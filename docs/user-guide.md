@@ -121,12 +121,30 @@ Open **Agents & workflows** and choose a tab. Your saved items are listed beside
 the editor; **New agent**, **New workflow**, or **New connection** starts a draft.
 Switching items, tabs, or pages asks before discarding unsaved changes.
 
-For an agent, enter an **Agent name** and **Instructions**, then **Create agent**.
-The preferred model is optional and defaults to the conversation's choice.
+For an agent, start with **What should this agent do?** in your own words, add an
+**Agent name**, then **Create agent**. These are the only required fields; no
+generation step or model call is needed to create one. With no saved agents, the
+editor opens directly without an empty list in the way.
 Expand **Tools** or **Delegation** only when needed; selecting tools never grants
-execution approval. **Agent settings** holds its description, availability, and
+execution approval. **Agent settings** holds the optional preferred model
+(the conversation's choice takes priority), description, availability, and
 stable `@mention` ID. New IDs are suggested from the name and can be adjusted
 before saving. Renaming a saved display name never changes its ID or references.
+Choose a saved agent to edit it in the same panel and use **Save changes**.
+The save state remains visible; failed saves retain your draft. If the signed-in
+account changes, the agent list and any unsaved agent draft are cleared and a
+notice says so; only the new account's agents are listed or offered for trying.
+
+After saving, **Try it in chat** returns to the current conversation and adds the
+saved agent's `@mention` before your draft, without sending anything or replacing
+your conversation settings. Review the message and press **Send** when ready.
+Normal model, tool, approval and availability checks still apply. Save edits and
+enable the agent first; during a live session or streaming reply, finish that
+work before trying the agent in text chat. If your unsent message or open
+conversation was started under a different account, **Try it in chat** stays
+unavailable and explains why; switch back to that account or clear the message,
+or open one of your own conversations or start a new chat, first. The message is
+kept, never deleted.
 
 For a workflow, enter a **Workflow name**, or choose a template to review first.
 Choose an agent and instructions for each numbered step. **Insert run input**

@@ -23,6 +23,8 @@ export function StudioPanel({
   runModel,
   customToolsEnabled = false,
   onAgentsChanged,
+  onTryAgent,
+  tryAgentDisabledReason,
   onRun,
   onClose,
   variant = "dialog",
@@ -32,6 +34,8 @@ export function StudioPanel({
   runModel: string | null;
   customToolsEnabled?: boolean;
   onAgentsChanged: () => Promise<void>;
+  onTryAgent?: (name: string) => void;
+  tryAgentDisabledReason?: string | null;
   onRun: (sessionId: string) => void;
   onClose: () => void;
   /** "page" renders the studio as a destination page inside the shell. */
@@ -162,6 +166,8 @@ export function StudioPanel({
             models={models}
             customToolsEnabled={customToolsEnabled}
             onChanged={onAgentsChanged}
+            onTry={onTryAgent}
+            tryDisabledReason={tryAgentDisabledReason}
           />
         ) : tab === "tools" ? (
           <McpServerBuilder />
