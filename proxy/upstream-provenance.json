@@ -48,7 +48,7 @@
     },
     {
       "path": "Shared-parser/Shared-parser.csproj",
-      "reason": "Remove unused runtime packages and update Microsoft.Extensions.Logging.Abstractions to 10.0.13 for the parser."
+      "reason": "Remove unused runtime packages and update Microsoft.Extensions.Logging.Abstractions to 10.0.14 for the parser."
     },
     {
       "path": "Shared-parser/StreamProcessor/JsonStreamProcessor.cs",
@@ -136,7 +136,7 @@
     },
     {
       "path": "SimpleL7Proxy/SimpleL7Proxy.csproj",
-      "reason": "Keep runtime dependencies current, including IdentityModel 8.23.0, OpenTelemetry 1.20.1, Azure.Storage.Blobs 12.30.1 and Application Insights 3.2.0; remove unsupported Application Insights 2.x packages and declare the OpenTelemetry processor API."
+      "reason": "Keep runtime dependencies current, including IdentityModel 8.23.0, OpenTelemetry 1.20.1, Azure.Storage.Blobs 12.30.1 and Application Insights 3.2.0; update Azure.Core to 1.64.0 and Microsoft.Extensions.Configuration.AzureAppConfiguration to 8.6.1; remove unsupported Application Insights 2.x packages and declare the OpenTelemetry processor API."
     },
     {
       "path": "SimpleL7Proxy/packages.lock.json",
@@ -1645,7 +1645,7 @@
       "upstreamCanonicalSha256": "07c8298796c898e9d947ee77feffdd10cfb08e0c142976f5388f6913c72b8bdd"
     },
     "Shared-parser/Shared-parser.csproj": {
-      "localCanonicalSha256": "fa7352d8d2b21daba939d5e3c11ba68091308121113ca51b3b752ca28c3cde32",
+      "localCanonicalSha256": "0be0a116e4a9ca0589a8d36ee357e54376bf3e435b2e7532fbb3f952e006994d",
       "upstreamRawSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
       "upstreamCanonicalSha256": "8d81dc6920f493e0d5a425b7f73b5808d7c24f4103cd5b443832d710d88b6591",
       "disposition": "ai4ia-patched"
@@ -1711,7 +1711,7 @@
       "disposition": "upstream-equivalent"
     },
     "Shared-parser/packages.lock.json": {
-      "localCanonicalSha256": "80bd2bd3700168ae8644c5c6f3281d6e9d78c22c2e5bed35e13a57092a5b1609",
+      "localCanonicalSha256": "514f0b432ea8c08a17b2e3c157cd8f9cd950614c80d686598f919f41ba36a80b",
       "disposition": "ai4ia-added"
     },
     "Shared/HealthProbe/HealthStatusEnum.cs": {
@@ -2655,7 +2655,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "939c930ee281f180c91f1decf1c2f60c87383e5412d7a656880d2634b9296f82",
+      "localCanonicalSha256": "8b672f0032039555e8e198ff520b0570a6f61794b8453ddb809813cec0fd803d",
       "upstreamRawSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "upstreamCanonicalSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "disposition": "ai4ia-patched"
@@ -2733,7 +2733,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/packages.lock.json": {
-      "localCanonicalSha256": "296da511cc839733c302a8d78b2285d4df0ff2e9534fb28750c6b8fbd62476a7",
+      "localCanonicalSha256": "ed4518ea87d0d8cab05cda210d698315afd3d93bc2a1887c8d3915370a7ebd0d",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/sample-deployment.yaml": {
