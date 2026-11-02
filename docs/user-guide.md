@@ -129,7 +129,10 @@ saved agent's `@mention` before your draft, without sending anything or replacin
 your conversation settings. Review the message and press **Send** when ready.
 Normal model, tool, approval and availability checks still apply. Save edits and
 enable the agent first; during a live session or streaming reply, finish that
-work before trying the agent in text chat.
+work before trying the agent in text chat. If your unsent message or open
+conversation was started under a different account, **Try it in chat** stays
+unavailable and explains why; send or clear that message, or start a new chat,
+first. The message is kept, never deleted.
 
 For a workflow, enter a **Workflow name**, or choose a template to review first.
 Choose an agent and instructions for each numbered step. **Insert run input**
