@@ -33,7 +33,7 @@ class StatusSnapshotLabelTests(unittest.TestCase):
         if not cls.pwsh:
             raise RuntimeError("pwsh is required to exercise status-snapshot.ps1")
 
-    def _run_snapshot(self, mode: str, out_dir: Path) -> subprocess.CompletedProcess[str]:
+    def _run_snapshot(self, mode: str, out_dir: Path, *, public: bool = False) -> subprocess.CompletedProcess[str]:
         resource_id = (
             "/subscriptions/sub-test/resourceGroups/rg-test/providers/"
             "Microsoft.Storage/storageAccounts/sttest"
@@ -170,6 +170,7 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 throw "Unexpected az invocation: $joined"
             }}
             & {_ps_quote(str(fixture_script))} `
+                -Public:${str(public).lower()} `
                 -Subscription 'sub-test' `
                 -ResourceGroup 'rg-test' `
                 -OutDir {_ps_quote(str(out_dir))}
@@ -201,6 +202,24 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             text=True,
             check=False,
         )
+
+    def test_public_snapshot_removes_identifiers_from_outputs_and_logs(self) -> None:
+        for mode in ("api-healthy", "api-store-unavailable", "health-available",
+                     "health-query-failure", "malformed", "nonzero", "empty"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                result = self._run_snapshot(mode, root, public=True)
+                exported = result.stdout + result.stderr
+                if mode not in {"malformed", "nonzero", "empty"}:
+                    self.assertEqual(result.returncode, 0, exported)
+                    exported += (root / "inventory.js").read_text(encoding="utf-8-sig")
+                    exported += (root / "status.js").read_text(encoding="utf-8-sig")
+                    self.assertIn("Storage Account", exported)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                for private in ("sub-test", "rg-test", "sttest", "eastus",
+                                "arbitrary-name", "https://api.example.test"):
+                    self.assertNotIn(private, exported)
 
     def test_required_inventory_failures_do_not_touch_either_output(self) -> None:
         for mode in (

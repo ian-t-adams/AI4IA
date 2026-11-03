@@ -147,11 +147,10 @@
     if (envfacts) {
       var e = m.environment;
       var rows = [
-        ["Environment", e.envName + " (" + e.appEnvironment + ")"],
         ["Authentication", e.authProvider],
-        ["Primary region", e.primaryRegion],
-        ["Resource group", e.resourceGroup],
-        ["Subscription", e.subscription],
+        ["Hosting", "Managed Azure services"],
+        ["Routing", "Catalog-driven regional models"],
+        ["Public evidence", "Generic service health; deployment identifiers withheld"],
       ];
       envfacts.innerHTML = rows.map(function (r) {
         return "<tr><td>" + esc(r[0]) + '</td><td class="mono">' + esc(r[1]) + "</td></tr>";
@@ -163,11 +162,8 @@
   function renderStatus() {
     var s = window.AI4IA_STATUS;
     var host = el("status-stats");
-    var resourceGroup = el("status-resource-group");
-    if (resourceGroup && s) resourceGroup.textContent = s.resourceGroup || "unknown";
     if (!host) return;
     if (!s) {
-      if (resourceGroup) resourceGroup.textContent = "unavailable";
       var updated = el("updated");
       if (updated) {
         updated.innerHTML = stateBadge("unavailable", "data unavailable") +
@@ -176,7 +172,7 @@
       renderUnavailable(host, "The deployment summary did not load.");
       renderUnavailable(el("health-source"), "The Resource Health source status did not load.");
       renderUnavailable(el("endpoints"), "Endpoint probe results did not load.");
-      renderUnavailableRow(el("resources-body"), 5, "The Azure resource inventory did not load.");
+      renderUnavailableRow(el("resources-body"), 4, "The Azure service inventory did not load.");
       return;
     }
     renderSnapshotFreshness(el("updated"), s.generatedAt);
@@ -282,8 +278,8 @@
         if (typeof e.latencyMs === "number" && isFinite(e.latencyMs) && e.latencyMs >= 0) {
           timing += " · " + e.latencyMs + " ms";
         }
-        return '<div class="card"><h3>' + b + " " + esc(e.name) + '</h3><p class="mono">' + esc(e.url || "") +
-          "</p><p>HTTP " + esc(e.httpStatus || "—") + (e.note ? " · " + esc(e.note) : "") +
+        return '<div class="card"><h3>' + b + " " + esc(e.name) +
+          "</h3><p>HTTP " + esc(e.httpStatus || "—") + (e.note ? " · " + esc(e.note) : "") +
           '</p><p class="meta">' + esc(timing) + "</p></div>";
       }).join("");
     }
@@ -291,17 +287,16 @@
     var body = el("resources-body");
     if (body) {
       if (!hasInventory) {
-        renderUnavailableRow(body, 5, "The Azure resource inventory did not load.");
+        renderUnavailableRow(body, 4, "The Azure service inventory did not load.");
         return;
       }
       var groups = groupBy(resources, "group");
       var html = "";
       Object.keys(groups).sort().forEach(function (g) {
-        html += '<tr class="grouprow"><td colspan="5"><strong>' + esc(g) + "</strong></td></tr>";
+        html += '<tr class="grouprow"><td colspan="4"><strong>' + esc(g) + "</strong></td></tr>";
         groups[g].forEach(function (r) {
           html += "<tr><td>" + stateBadge(effectiveState(r)) + "</td><td><strong>" + esc(r.label) +
-            '</strong><br><span class="mono">' + esc(r.name) + "</span></td><td>" + esc(r.location) +
-            '</td><td class="mono">' + esc(r.provisioningState) + "</td><td>" +
+            '</strong></td><td class="mono">' + esc(r.provisioningState) + "</td><td>" +
             esc(displayAvailability(r)) + "</td></tr>";
         });
       });
@@ -330,23 +325,12 @@
     var countFreshnessLabel = freshness.state === "unknown"
       ? "snapshot (freshness unknown)"
       : freshness.label;
-    // Match on BOTH the Azure type and the service's own name pattern. Matching
-    // type alone made every service sharing a type report the same count, so the
-    // web app, API and model proxy each claimed three instances when exactly one
-    // container app matches each of ca-web-*, ca-api-* and ca-proxy-*.
-    // `resourcePattern` uses shell-style `*` plus `{a,b}`/`{region}` placeholders,
-    // both of which become "any run of characters" here -- deliberately loose,
-    // because this is a display hint, not an authorization decision.
-    function patternToRegExp(pattern) {
-      var escaped = String(pattern).replace(/[.+^$()|[\]\\]/g, "\\$&");
-      var body = escaped.replace(/\{[^}]*\}/g, "*").replace(/\*/g, ".*");
-      return new RegExp("^" + body + "$", "i");
-    }
     function snapshotCount(service) {
       var t = String(service.azureType).toLowerCase();
-      var rx = patternToRegExp(service.resourcePattern);
+      // Public inventory deliberately cannot distinguish named app instances.
+      if (t === "microsoft.app/containerapps") return 0;
       return inv.filter(function (r) {
-        return String(r.type).toLowerCase() === t && rx.test(String(r.name));
+        return String(r.type).toLowerCase() === t;
       }).length;
     }
     var groups = groupBy(svc, "group");
@@ -360,7 +344,7 @@
           (n ? ' <span class="tag snapshot-' + esc(freshness.state) + '">' + n + " in " + esc(countFreshnessLabel) + "</span>" : "") + "</h3>" +
           "<p>" + esc(s.summary) + "</p>" +
           '<p class="meta"><strong>Azure type:</strong> <span class="mono">' + esc(s.azureType) + "</span></p>" +
-          '<p class="meta"><strong>IaC:</strong> <span class="mono">' + esc(s.module) + '</span> · <strong>Names:</strong> <span class="mono">' + esc(s.resourcePattern) + "</span></p>" +
+          '<p class="meta"><strong>IaC:</strong> <span class="mono">' + esc(s.module) + "</span></p>" +
           '<p class="meta"><strong>Identity/RBAC:</strong> ' + esc(s.identity) + "</p>" +
           (docs ? '<p class="meta">📚 ' + docs + "</p>" : "") + "</div>";
       });
@@ -453,7 +437,7 @@
     var checked = report && typeof report.checkedAt === "string" ? Date.parse(report.checkedAt) : NaN;
     var age = Date.now() - checked;
     var fresh = Number.isFinite(age) && age >= 0 && age <= UPTIME_STALE_MS;
-    var rows = report && report.version === 1 && Array.isArray(report.endpoints)
+    var rows = report && report.version === 2 && Array.isArray(report.endpoints)
       && report.endpoints.length === UPTIME_ENDPOINTS.length ? report.endpoints : [];
     updated.innerHTML = fresh && rows.length
       ? stateBadge("current", "observations current") + "<span>Checked " + esc(fmtDate(report.checkedAt)) + "</span>"

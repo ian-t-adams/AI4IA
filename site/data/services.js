@@ -53,9 +53,9 @@ window.AI4IA_SERVICES = [
     docs: [["Expose MCP servers in APIM", "https://learn.microsoft.com/azure/api-management/export-rest-mcp-server"]],
   },
   {
-    key: "foundry", name: "Azure AI Foundry accounts (×3)", azureType: "Microsoft.CognitiveServices/accounts",
-    group: "AI", icon: "🧠", module: "foundry.bicep + models.bicep", resourcePattern: "mf-aiforia-slurmfactory-{region}",
-    summary: "Azure AI Services (Foundry) accounts in East US 2, Sweden Central and West US, each with a default " +
+    key: "foundry", name: "Azure AI Foundry accounts", azureType: "Microsoft.CognitiveServices/accounts",
+    group: "AI", icon: "🧠", module: "foundry.bicep + models.bicep", resourcePattern: "mf-{workload}-{environment}-{region}",
+    summary: "Regional Azure AI Services (Foundry) accounts, each with a default " +
       "project. They serve chat/embedding/realtime/speech/image/video models (deployed from infra/models.json) and " +
       "Content Understanding. APIM reaches normal model deployments with MI; Content Understanding is a native data plane, while Responses Code Interpreter is the explicit direct model-inference exception.",
     identity: "APIM system MI reaches normal deployments; the API identity directly reaches CU and the exceptional Responses sandbox; the proxy has no Foundry RBAC",

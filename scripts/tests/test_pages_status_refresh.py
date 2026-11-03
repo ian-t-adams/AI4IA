@@ -16,7 +16,8 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-WORKFLOW = REPO / ".github" / "workflows" / "pages.yml"
+WORKFLOW = REPO / ".github" / "workflows" / "pages-publish.yml"
+CALLER = REPO / ".github" / "workflows" / "pages.yml"
 APP_JS = REPO / "site" / "assets" / "app.js"
 STATUS_HTML = REPO / "site" / "status.html"
 INDEX_HTML = REPO / "site" / "index.html"
@@ -316,18 +317,19 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertNotIn("live health", public_copy)
         self.assertNotIn("live status", public_copy)
 
-    def test_status_page_renders_the_snapshot_resource_group(self) -> None:
+    def test_status_page_omits_the_snapshot_resource_group(self) -> None:
         status = STATUS_HTML.read_text(encoding="utf-8")
         app = APP_JS.read_text(encoding="utf-8")
-        self.assertIn('id="status-resource-group"', status)
+        self.assertNotIn('id="status-resource-group"', status)
         self.assertNotIn("rg-ai4ia-slurmfactory", status)
-        self.assertIn("resourceGroup.textContent = s.resourceGroup", app)
+        self.assertNotIn("s.resourceGroup", app)
 
     def test_status_uses_shared_inventory_without_duplicating_resources(self) -> None:
         rendered = self._render_status()
 
         self.assertIn("Storage", rendered["resources"])
-        self.assertIn("st-one", rendered["resources"])
+        self.assertNotIn("st-one", rendered["resources"])
+        self.assertNotIn("eastus", rendered["resources"])
         self.assertIn("1", rendered["stats"])
 
     def test_status_surfaces_a_resource_health_source_outage(self) -> None:
@@ -485,7 +487,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", escaped["endpoints"])
 
     def test_api_status_helper_changes_trigger_the_existing_pages_refresh(self) -> None:
-        document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        document = yaml.safe_load(CALLER.read_text(encoding="utf-8"))
         triggers = document.get("on", document.get(True))
         self.assertIn("scripts/status-endpoints.ps1", triggers["push"]["paths"])
         self.assertIn(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -12,7 +13,14 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 
-from scripts.http_contract import HttpError, public_origin, stamp, strict_json, timestamp
+from scripts import public_status
+from scripts.http_contract import (
+    HttpError,
+    public_origin,
+    stamp,
+    strict_json,
+    timestamp,
+)
 from scripts.http_transport import Response, Transport
 
 PORTAL = "https://ian-t-adams.github.io/AI4IA"
@@ -36,7 +44,7 @@ Transition = Literal["none", "firing", "recovered"]
 
 class Observation(TypedDict):
     id: str
-    url: str | None
+    targetKey: str | None
     state: State
     reason: str
     observedAt: str | None
@@ -57,6 +65,11 @@ class Report(TypedDict):
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def target_key(url: str | None) -> str | None:
+    # Opaque continuity binding, not a reversible URL or a resource-name suffix.
+    return hashlib.sha256(url.encode("utf-8")).hexdigest() if url is not None else None
 
 
 def origins(environment: dict[str, str]) -> dict[str, str | None]:
@@ -89,7 +102,7 @@ def accepted(identifier: str, response: Response) -> bool:
 
 async def probe(client: Transport, identifier: str, url: str | None) -> Observation:
     row: Observation = {
-        "id": identifier, "url": url, "state": "unknown",
+        "id": identifier, "targetKey": target_key(url), "state": "unknown",
         "reason": "invalid_configuration", "observedAt": None,
         "httpStatus": None, "latencyMs": None, "failureStreak": 0,
         "alerting": False, "transition": "none",
@@ -120,7 +133,7 @@ def parse_report(raw: bytes) -> Report:
     if (
         not isinstance(value, dict)
         or set(value) != {"version", "checkedAt", "history", "overall", "endpoints"}
-        or type(value["version"]) is not int or value["version"] != 1
+        or type(value["version"]) is not int or value["version"] not in (1, 2)
         or value["overall"] not in ("up", "down", "unknown")
         or value["history"] not in ("available", "unavailable", "stale", "scope_changed")
         or not isinstance(value["endpoints"], list)
@@ -130,6 +143,19 @@ def parse_report(raw: bytes) -> Report:
     timestamp(value["checkedAt"])
     rows: list[Observation] = []
     for item, (identifier, _, path) in zip(value["endpoints"], ENDPOINTS, strict=True):
+        if isinstance(item, dict) and value["version"] == 1:
+            if set(item) != (set(Observation.__annotations__) - {"targetKey"}) | {"url"}:
+                raise HttpError("invalid_response")
+            url = item["url"]
+            if url is not None:
+                try:
+                    parsed = urlsplit(url) if isinstance(url, str) else None
+                    if parsed is None or url != public_origin(f"https://{parsed.netloc}") + path:
+                        raise HttpError("invalid_response")
+                except ValueError as exc:
+                    raise HttpError("invalid_response") from exc
+            item = {key: val for key, val in item.items() if key != "url"}
+            item["targetKey"] = target_key(url)
         if (
             not isinstance(item, dict) or set(item) != set(Observation.__annotations__)
             or item["id"] != identifier or item["state"] not in ("up", "down", "unknown")
@@ -143,17 +169,15 @@ def parse_report(raw: bytes) -> Report:
             or (item["state"] != "up" and item["failureStreak"] == 0)
             or (item["state"] == "up" and (
                 item["reason"] != "healthy" or item["httpStatus"] != 200
-                or item["url"] is None or item["observedAt"] is None
+                or item["targetKey"] is None or item["observedAt"] is None
             ))
         ):
             raise HttpError("invalid_response")
-        if item["url"] is not None:
-            try:
-                parsed = urlsplit(item["url"]) if isinstance(item["url"], str) else None
-                if parsed is None or item["url"] != public_origin(f"https://{parsed.netloc}") + path:
-                    raise HttpError("invalid_response")
-            except ValueError as exc:
-                raise HttpError("invalid_response") from exc
+        if item["targetKey"] is not None and (
+            not isinstance(item["targetKey"], str)
+            or re.fullmatch(r"[a-f0-9]{64}", item["targetKey"]) is None
+        ):
+            raise HttpError("invalid_response")
         if item["observedAt"] is not None:
             timestamp(item["observedAt"])
         for field in ("latencyMs", "httpStatus"):
@@ -162,13 +186,13 @@ def parse_report(raw: bytes) -> Report:
             if number is not None and (type(number) is not int or not 0 <= number <= maximum):
                 raise HttpError("invalid_response")
         rows.append(Observation(
-            id=identifier, url=item["url"], state=item["state"], reason=item["reason"],
+            id=identifier, targetKey=item["targetKey"], state=item["state"], reason=item["reason"],
             observedAt=item["observedAt"], httpStatus=item["httpStatus"],
             latencyMs=item["latencyMs"], failureStreak=item["failureStreak"],
             alerting=item["alerting"], transition=item["transition"],
         ))
     return Report(
-        version=1, checkedAt=value["checkedAt"], history=value["history"],
+        version=2, checkedAt=value["checkedAt"], history=value["history"],
         overall=value["overall"], endpoints=rows,
     )
 
@@ -183,7 +207,7 @@ def finish(rows: list[Observation], previous: Report | None, observed: datetime)
             prior = previous["endpoints"]
     for index, row in enumerate(rows):
         old = prior[index] if prior else None
-        if old is not None and old["url"] != row["url"]:
+        if old is not None and old["targetKey"] != row["targetKey"]:
             old, history = None, "scope_changed"
         row["failureStreak"] = (
             0 if row["state"] == "up"
@@ -198,7 +222,7 @@ def finish(rows: list[Observation], previous: Report | None, observed: datetime)
     states = {row["state"] for row in rows}
     overall: State = "down" if "down" in states else "unknown" if "unknown" in states else "up"
     return Report(
-        version=1, checkedAt=stamp(observed), history=history, overall=overall, endpoints=rows,
+        version=2, checkedAt=stamp(observed), history=history, overall=overall, endpoints=rows,
     )
 
 
@@ -244,7 +268,8 @@ async def carry_snapshots(client: Transport, directory: Path) -> None:
                 raise HttpError("invalid_response")
             if name == "status" and not isinstance(data.get("summary"), dict):
                 raise HttpError("invalid_response")
-        except (HttpError, ValueError, UnicodeError):
+            data = public_status.inventory(data) if name == "inventory" else public_status.status(data)
+        except (HttpError, ValueError, UnicodeError, TypeError):
             data = None
             print(f"::warning::Published Azure {name} snapshot unavailable; no committed seed will be substituted.")
         (directory / f"{name}.js").write_text(
@@ -255,7 +280,7 @@ async def carry_snapshots(client: Transport, directory: Path) -> None:
 
 def write_report(directory: Path, report: Report | None) -> None:
     missing = {
-        "version": 1, "checkedAt": None, "history": "unavailable",
+        "version": 2, "checkedAt": None, "history": "unavailable",
         "overall": "unknown", "endpoints": [],
     }
     directory.mkdir(parents=True, exist_ok=True)

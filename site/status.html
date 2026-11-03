@@ -56,7 +56,7 @@
       <div class="container">
         <p class="eyebrow">Deployment health</p>
         <h2>Deployment snapshot</h2>
-        <p class="lede">The deployed footprint of AI4IA in <span class="mono" id="status-resource-group">the configured resource group</span>, generated
+        <p class="lede">Generic service observations for the hosted AI4IA deployment, generated
           from Azure Resource Graph (the authoritative inventory), Azure Resource Health, and probes of the public
           web and model-proxy endpoints plus direct API liveness and canonical session-store readiness.</p>
         <p class="updated" id="updated" aria-live="polite">Loading snapshot…</p>
@@ -91,15 +91,15 @@
 
     <section style="padding-top:6px">
       <div class="container">
-        <h2 class="section-title">Azure resources</h2>
-        <p class="section-sub">Every resource in the resource group, grouped by role. <strong>Health reported</strong>
+        <h2 class="section-title">Azure service health</h2>
+        <p class="section-sub">Service categories grouped by role, without resource names, regions, identifiers or backend URLs. <strong>Health reported</strong>
           means Azure Resource Health positively reported the resource as available; <strong>provisioned</strong>
           means it exists and has not failed, but no positive availability state was received. Most Azure resource
           types never publish one. A Resource Health source outage is reported separately above rather than presented
           as 0 healthy resources. Existence is not evidence of health.</p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Health</th><th>Resource</th><th>Location</th><th>Provisioning</th><th>Availability</th></tr></thead>
+            <thead><tr><th>Health</th><th>Service category</th><th>Provisioning</th><th>Availability</th></tr></thead>
             <tbody id="resources-body"></tbody>
           </table>
         </div>

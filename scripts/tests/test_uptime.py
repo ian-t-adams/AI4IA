@@ -44,7 +44,7 @@ def rows(state: uptime.State = "up") -> list[uptime.Observation]:
     return [
         uptime.Observation(
             id=identifier,
-            url=f"https://{'api' if identifier.startswith('api_') else identifier}.example.test{path}",
+            targetKey=uptime.target_key(f"https://{'api' if identifier.startswith('api_') else identifier}.example.test{path}"),
             state=state, reason="healthy" if state == "up" else "http_error",
             observedAt=stamp(NOW), httpStatus=200 if state == "up" else 503,
             latencyMs=10, failureStreak=0, alerting=False, transition="none",
@@ -87,12 +87,22 @@ def replies() -> dict[str, Response | HttpError]:
         "/health/ready": response({"status": "ok", "stage": "session_store"}),
         "/AI4IA/data/inventory.js": response(
             ("// generated\nwindow.AI4IA_INVENTORY = " + json.dumps({
-                "generatedAt": stamp(NOW - timedelta(hours=2)), "resources": [{"name": "observed"}],
+                "generatedAt": stamp(NOW - timedelta(hours=2)), "resources": [{
+                    "name": "observed", "type": "microsoft.storage/storageaccounts",
+                    "availability": "Unknown", "provisioningState": "Succeeded",
+                }],
             }) + ";\n").encode(), content_type="text/javascript",
         ),
         "/AI4IA/data/status.js": response(
             ("window.AI4IA_STATUS = " + json.dumps({
-                "generatedAt": stamp(NOW - timedelta(hours=2)), "summary": {"total": 1},
+                "generatedAt": stamp(NOW - timedelta(hours=2)),
+                "summary": {"total": 1, "healthy": 0, "provisioned": 1, "degraded": 0,
+                            "unavailable": 0, "endpointsUp": 0, "endpointsTot": 4},
+                "healthSource": {"status": "available"},
+                "endpoints": [
+                    {"state": "unknown", "outcome": "target_unresolved"}
+                    for _ in range(4)
+                ],
             }) + ";\n").encode(), content_type="text/javascript",
         ),
     }
@@ -137,7 +147,7 @@ class UptimeStateTests(unittest.TestCase):
                 failed = uptime.finish(rows("down"), missing, NOW)
                 self.assertTrue(all(row["failureStreak"] == 1 for row in failed["endpoints"]))
         changed = rows("down")
-        changed[0]["url"] = "https://replacement.example.test/"
+        changed[0]["targetKey"] = uptime.target_key("https://replacement.example.test/")
         current = uptime.finish(changed, active, NOW)
         self.assertEqual(current["history"], "scope_changed")
         self.assertEqual(current["endpoints"][0]["failureStreak"], 1)
@@ -163,7 +173,7 @@ class UptimeStateTests(unittest.TestCase):
         ):
             with self.subTest(field=field, value=value):
                 malformed = copy.deepcopy(valid)
-                malformed["endpoints"][0][field] = value
+                malformed["endpoints"][0]["targetKey" if field == "url" else field] = value
                 with self.assertRaises(HttpError):
                     uptime.parse_report(json.dumps(malformed).encode())
         with self.assertRaises(HttpError):
@@ -398,14 +408,15 @@ class UptimeTransportTests(unittest.IsolatedAsyncioTestCase):
 
 class UptimeWorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "uptime.yml").read_text())
+        self.caller = yaml.safe_load((ROOT / ".github" / "workflows" / "uptime.yml").read_text())
+        self.workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "uptime-publish.yml").read_text())
 
     def test_monitor_is_main_only_every_15_minutes_and_has_no_model_authority(self):
-        triggers = self.workflow.get("on", self.workflow.get(True))
+        triggers = self.caller.get("on", self.caller.get(True))
         self.assertEqual(triggers["schedule"], [{"cron": "7,22,37,52 * * * *"}])
         self.assertNotIn("pull_request", triggers)
         self.assertEqual(self.workflow["permissions"], {})
-        self.assertEqual(self.workflow["concurrency"], {"group": "pages", "cancel-in-progress": False})
+        self.assertEqual(self.caller["concurrency"], {"group": "pages", "cancel-in-progress": False})
         observer = self.workflow["jobs"]["observe"]
         self.assertIn("refs/heads/main", observer["if"])
         self.assertEqual(observer["permissions"], {"contents": "read"})
@@ -427,8 +438,9 @@ class UptimeWorkflowTests(unittest.TestCase):
         self.assertEqual(recovery["if"], "needs.observe.outputs.recovered == 'true'")
         self.assertNotIn("exit 1", recovery["run"])
         page_workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "pages.yml").read_text())
-        self.assertEqual(page_workflow["concurrency"], self.workflow["concurrency"])
-        names = [step["name"] for step in page_workflow["jobs"]["build"]["steps"]]
+        self.assertEqual(page_workflow["concurrency"], self.caller["concurrency"])
+        publisher = yaml.safe_load((ROOT / ".github" / "workflows" / "pages-publish.yml").read_text())
+        names = [step["name"] for step in publisher["jobs"]["build"]["steps"]]
         self.assertLess(names.index("Refresh deployment status snapshot"),
                         names.index("Preserve independently collected uptime observations"))
         self.assertLess(names.index("Preserve independently collected uptime observations"), names.index("Upload site artifact"))
