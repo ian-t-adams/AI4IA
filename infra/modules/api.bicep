@@ -97,6 +97,13 @@ param modelGatewayApiKeyHeader string = 'Ocp-Apim-Subscription-Key'
 @description('Infrastructure staging posture only. Default OFF; runtime selection still requires independently verified deployment compatibility.')
 param gatewayAttemptsV1Staged bool = false
 
+@description('Select the AI4IA stateless shared-gateway route only with a resolved v2 manifest and after separate canary approval. Default OFF.')
+param sharedGatewayEnabled bool = false
+
+@secure()
+@description('Private resolved activation manifest for AI4IA shared gateway v2. Empty unless privately supplied after approved synthetic proof.')
+param sharedGatewayActivationManifest string = ''
+
 @description('Cosmos DB account endpoint for canonical session and memory data.')
 param cosmosEndpoint string
 
@@ -431,6 +438,23 @@ var gatewaySecrets = hasGatewayKey ? [
     value: modelGatewayApiKey
   }
 ] : []
+var sharedGatewayManifestSecrets = !empty(sharedGatewayActivationManifest) ? [
+  {
+    name: 'shared-gateway-activation-manifest'
+    value: sharedGatewayActivationManifest
+  }
+] : []
+var sharedGatewayEnv = concat([
+  {
+    name: 'AI4IA_SHARED_GATEWAY_ENABLED'
+    value: string(sharedGatewayEnabled)
+  }
+], !empty(sharedGatewayActivationManifest) ? [
+  {
+    name: 'AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST'
+    secretRef: 'shared-gateway-activation-manifest'
+  }
+] : [])
 var gatewayKeyEnv = hasGatewayKey ? [
   {
     name: 'AI4IA_MODEL_GATEWAY_API_KEY'
@@ -1108,7 +1132,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, photoAvatarEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, sharedGatewayEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, photoAvatarEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName
@@ -1126,7 +1150,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: inheritsSecrets ? inheritedSecrets : concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets)
+      secrets: inheritsSecrets ? concat(inheritedSecrets, sharedGatewayManifestSecrets) : concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets, sharedGatewayManifestSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

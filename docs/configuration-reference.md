@@ -260,40 +260,66 @@ Treat skipping either phase as an outage risk, not as a harmless omission.
 
 ## Model gateway direction and trust
 
-### Shared gateway preparation only
+### Shared gateway canary (default OFF)
 
-The API reserves `AI4IA_SHARED_GATEWAY_ENABLED` (default `false`),
-`AI4IA_SHARED_GATEWAY_CONTRACT_VERSION`, `AI4IA_SHARED_GATEWAY_URL`,
-`AI4IA_SHARED_GATEWAY_ISSUER` and `AI4IA_SHARED_GATEWAY_AUDIENCE` (all default
-unset). These are **API-only preparation settings**, not azd/CI variables,
-provisioning parameters, a working transport or activation authority. No
-production endpoint, audience, credential or header is supplied by this source.
-Contract version `1` aligns with the upstream
-[proposed v1 contract](https://github.com/ian-t-adams/planetexpress-gateway/blob/7c6c83974fb4ae872d2bba0a6501c70614c50ff2/docs/integration-contract-v1.md),
-not a verified runtime capability. When disabled, even populated preparation values do not change any request,
-credential, conversation or specialist route. When enabled, startup and direct
-client construction both refuse: missing values are reported explicitly, and
-an absent/unknown version refuses, and even fully populated v1 values cannot
-bypass the missing verified contract.
-There is no emergency bypass or silent fallback.
+`AI4IA_SHARED_GATEWAY_ENABLED` defaults to `false`. The private resolved
+contract is supplied as raw JSON through
+`AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`; the existing deploy/preprovision JSON
+transport derives `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64`. Do not set the
+transport variable directly. The manifest is limited to 64 KiB.
+When OFF, the manifest is not selected and the existing model-gateway route,
+request shaping, credentials, conversation persistence and specialty paths
+remain unchanged. When ON, preprovision validation and API startup require a
+strict `contractVersion: "2.0.0"` manifest with `status: "resolved"`; the API
+also verifies that `callerClientId` matches its assigned `AZURE_CLIENT_ID`.
+Only the exact HTTPS host, OAuth issuer/audience/scope, operation and model
+allowlists in that manifest are used. No endpoint, tenant, audience, identity
+or deployment value is supplied by this repository. A manifest is not proof of
+gateway reachability or permission to activate a canary.
 
-Before stateless HTTP/SSE selection can ship, the gateway owner must establish
-the exact endpoint/path and catalog mapping, application authentication audience
-and app allowlist, authenticated user/profile binding with anti-spoof controls,
-and server-enforced no-capture behavior. Transport compatibility still needs
-error/Retry-After, cancellation, stream termination and no-duplicate-retry
-evidence. Existing production proxy authentication remains unchanged.
+The selector is limited to the standard chat router's final model dispatch:
 
-Additional review/study capture is unavailable, including on error, retry,
-stream and bypass paths; there is no collector or sink. Settings displays an
-unchecked disabled control and does not save consent. Future capture requires
-separate versioned owner consent with revocation, a verified cross-app personal
-global deny that always wins, exact identity-based exclusions, approved reviewer
-group enforcement and a sink with automatic 30-day deletion. Missing or
-unavailable evidence must prohibit capture without blocking ordinary inference.
-No display name, browser identity header, memory preference or app-local toggle
-can substitute for that contract. Ordinary conversation persistence, receipts,
-cost/usage metadata and content-free telemetry remain unchanged.
+| API operation | Eligibility |
+| --- | --- |
+| `POST /openai/v1/chat/completions` | Exact lowercase deployment name or alias, selected deployment SKU, and operation in the manifest; streaming only when that operation permits it |
+| `POST /openai/v1/responses` | Exact lowercase deployment name or alias, selected deployment SKU, and operation in the manifest; explicit `store=false` and no `previous_response_id`, `background`, or `conversation`; streaming only when permitted |
+
+The manifest can further narrow these operations by model. Embeddings, images,
+speech, Anthropic, tool/service endpoints, Agent Service, Content Understanding,
+Search, realtime/Voice Live, specialist clients, and every other direct or
+stateful/background route are not eligible. The factory's current base URL is
+not changed. An eligible request sent to the shared gateway gets no automatic
+direct-path fallback. The gateway owns retries; AI4IA configures zero SDK
+retries, does not fail over or retry after stream bytes, and does not repeat the
+ordinary-path `stream_options` compatibility retry. Upstream status and bounded
+`Retry-After` are preserved. Client disconnect closes the upstream SSE stream.
+The existing `AI4IA_GATEWAY_TIMEOUT_SECONDS` profile (120 seconds by default)
+applies; HTTPX phase/read timeouts are not a total wall-clock deadline.
+
+This source is not live activation evidence. A canary still requires a reviewed
+deployment plan, a separately identified canary environment, a resolved
+owner-issued manifest, synthetic authentication/routing/SSE proof, and explicit
+operator approval. The current `deploy.yml` is production-scoped and does not
+pass these shared-gateway settings; it is not an approved canary executor. After
+the canary environment and plan are approved, the proposed executor is an
+authorized operator using a separate `azd` environment: set
+`AI4IA_SHARED_GATEWAY_ENABLED=true` and the private
+`AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run `azd provision` under that
+approved plan so the existing hook derives the bounded secret transport and
+preflight validates the manifest before provisioning. Verify only with the
+separately approved synthetic canary. Do not change production variables,
+dispatch the production workflow, deploy, or send live model traffic from this
+change. Rollback is a configuration change in that same isolated `azd`
+environment: set `AI4IA_SHARED_GATEWAY_ENABLED=false` and run the approved
+operator provision again. The API then uses its normal route; it never silently
+falls back while enabled. No hot in-process emergency bypass is implemented.
+
+Additional review/study capture and per-user gateway attribution remain
+unavailable. The Settings notice is an unchecked disabled control and saves no
+consent. There is no capture hook, collector or sink. Ordinary conversation
+persistence, receipts, cost/usage metadata and content-free telemetry remain
+unchanged. No display name, browser identity header, memory preference or
+app-local toggle authorizes capture.
 
 ### Current production route
 

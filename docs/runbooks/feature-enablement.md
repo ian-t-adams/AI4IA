@@ -727,17 +727,38 @@ acceptance case rather than adding a retry/probe loop.
 
 ## Enablement notes
 
-### Shared gateway preparation
+### Shared gateway canary
 
-There is no approved activation procedure for the proposed cross-app gateway.
-The [API-only preparation settings](../configuration-reference.md#shared-gateway-preparation-only)
-default off and refuse selection even when URL/audience values are supplied.
-Do not change the shared client base URL, use profile headers as identity proof,
-reuse automatic-memory consent, or provision a review sink. The Settings notice
-is an unavailable-state disclosure, not saved opt-in or live capture evidence.
-The gateway and AI4IA owners must complete the transport/identity/no-capture
-contract before implementing selection; capture additionally requires global
-deny, explicit informed consent, reviewer enforcement and automatic retention.
+The [shared-gateway configuration reference](../configuration-reference.md#shared-gateway-canary-default-off)
+documents the default-OFF stateless selector, manifest requirements, exclusions,
+retry/timeout/cancellation contract and rollback. Do not set
+`AI4IA_SHARED_GATEWAY_ENABLED=true` until the gateway owner has supplied the
+resolved v2 manifest, synthetic authentication/routing/SSE proof is complete,
+and the canary environment and deployment plan have separate operator approval.
+The preprovision validator rejects an enabled flag without a resolved manifest;
+API startup rechecks the contract and caller managed-identity client ID.
+
+The current `deploy.yml` is production-scoped, does not pass these settings, and
+is not an approved canary executor. After a separate canary environment and
+plan are approved, the proposed executor is an authorized operator using that
+isolated `azd` environment: set `AI4IA_SHARED_GATEWAY_ENABLED=true` and the
+private `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run `azd provision`.
+The preprovision hook derives the bounded secret transport and the validator
+rejects an incomplete/unresolved manifest before provisioning. Verify only
+through the separately approved synthetic canary. No production values are
+documented or inferred here. To roll back, set
+`AI4IA_SHARED_GATEWAY_ENABLED=false` in that same environment and run the
+approved operator provision again; the API resumes its normal route. There is
+no silent fallback or hot in-process emergency bypass when the flag is on. Do
+not dispatch the production workflow, change settings, or send traffic without
+that approval.
+
+Do not change the shared factory base URL, use profile headers as user identity
+proof, reuse automatic-memory consent, or provision a review sink. The Settings
+notice is an unavailable-state disclosure, not saved opt-in or live capture
+evidence. Review/study capture and user attribution remain unavailable pending
+separate verified identity, global-deny, consent, reviewer and retention
+controls.
 
 ### Group policy and reviewed publishing
 

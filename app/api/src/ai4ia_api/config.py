@@ -134,12 +134,15 @@ class Settings(BaseSettings):
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
-    # Preparation only: no shipping shared-route contract or capture capability.
+    # Versioned, default-OFF stateless HTTP/SSE transport. The private manifest is
+    # required and validated before the selector can be enabled; capture remains
+    # unavailable in contract v2.
     shared_gateway_enabled: bool = False
-    shared_gateway_contract_version: str | None = None
-    shared_gateway_url: str | None = None
-    shared_gateway_issuer: str | None = None
-    shared_gateway_audience: str | None = None
+    shared_gateway_activation_manifest: str | None = None
+    api_identity_client_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AZURE_CLIENT_ID"),
+    )
     # Staging is not capability issuance or runtime selection.
     gateway_attempts_v1_staged: bool = False
     # Image generation has its own api-version + timeout: image models
@@ -1037,31 +1040,22 @@ class Settings(BaseSettings):
         )
 
     def validate_shared_gateway(self) -> None:
-        """Refuse selection until the shared gateway's contract is implemented."""
+        """Validate the resolved, versioned shared gateway contract before selection."""
         if not self.shared_gateway_enabled:
             return
-        if self.shared_gateway_contract_version != "1":
+        if self.env == Environment.local or self.auth_provider != AuthProviderKind.entra:
             raise RuntimeError(
-                "AI4IA_SHARED_GATEWAY_CONTRACT_VERSION must explicitly select 1; "
-                "shared routing is not available in this build."
+                "Shared gateway routing requires a non-local Entra-authenticated API."
             )
-        if not all((
-            self.shared_gateway_url,
-            self.shared_gateway_issuer,
-            self.shared_gateway_audience,
-        )):
-            raise RuntimeError(
-                "AI4IA_SHARED_GATEWAY_ENABLED requires an explicitly configured "
-                "AI4IA_SHARED_GATEWAY_URL, AI4IA_SHARED_GATEWAY_ISSUER and "
-                "AI4IA_SHARED_GATEWAY_AUDIENCE; "
-                "shared routing is not available in this build."
+        from .shared_gateway_contract import load_shared_gateway_manifest
+
+        try:
+            load_shared_gateway_manifest(
+                self.shared_gateway_activation_manifest,
+                api_identity_client_id=self.api_identity_client_id,
             )
-        raise RuntimeError(
-            "Shared gateway routing is unavailable: verified application authentication, "
-            "user-claim binding, stateless route mapping and server-side no-capture "
-            "enforcement have not been implemented. URL and audience configuration "
-            "do not authorize activation; the existing route will not be used as a fallback."
-        )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _validate_model_gateway_posture(self) -> None:
         """Require the deployed HTTP/SSE path to terminate at SimpleL7Proxy."""
@@ -1290,6 +1284,7 @@ class Settings(BaseSettings):
 
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
+        self.validate_shared_gateway()
         if self.claude_external_enabled and self.claude_gateway_enabled:
             raise RuntimeError("Claude gateway-key and federated authentication modes are mutually exclusive.")
         if self.claude_enabled and not (self.claude_external_enabled or self.claude_gateway_enabled):

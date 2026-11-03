@@ -79,22 +79,26 @@ that header. A browser-supplied development identity is not trusted in productio
 
 ### Credential map
 
-The proposed cross-application shared gateway is **not an active AI4IA route**.
-The current factory-owned client also serves embeddings, images, REST speech and
-specialist operations; changing its base URL is not a stateless-chat migration.
-The safe future selection seam is the adapted HTTP/SSE chat dispatch, before
-admission, with an independently verified transport contract. It must preserve
-catalog identity, cancellation, provider errors and the existing retry rules.
-Stateful Responses, background/store, realtime/Voice Live, Agent Service, CU,
-Search and specialist paths are outside that first slice.
+The shared-gateway route is an explicit, default-OFF selector on only the
+ordinary chat router's final stateless HTTP/SSE model dispatch. A resolved v2
+manifest binds the private HTTPS endpoint, managed-identity audience and app
+client ID, exact operations, and lowercase deployment/alias plus SKU mapping;
+startup also matches the manifest caller ID to `AZURE_CLIENT_ID`. The existing factory base URL is
+unchanged, and a selected shared request never silently falls back to it.
+Stateful Responses (`store=true`, prior response, background, or conversation),
+embeddings, images, speech, Anthropic, realtime/Voice Live, Agent Service, CU,
+Search, and specialist routes remain on their existing paths.
 
-AI4IA currently refuses shared-route activation and exposes no additional
-review/study capture or consent-writing path. Ordinary owner conversation
-persistence, execution receipts and content-free telemetry are separate and
-unchanged. The upstream foundation is tracked in
-[planetexpress-gateway#1](https://github.com/ian-t-adams/planetexpress-gateway/pull/1);
-profile/header enrichment and queue identity do not establish bearer-claim
-binding. See [the preparation boundary](configuration-reference.md#shared-gateway-preparation-only).
+The gateway owns retries. AI4IA makes one attempt, preserves upstream status and
+bounded `Retry-After`, and closes SSE when the caller disconnects. Streaming and
+non-streaming calls use the existing gateway timeout profile. This source
+prepares a canary selector only; resolved values, synthetic hub proof, a
+reviewed deployment plan and approval remain prerequisites to activation.
+Additional review/study capture and user attribution are still disabled and
+unavailable; ordinary owner conversation persistence, receipts and content-free
+telemetry remain separate and unchanged. The upstream foundation is tracked in
+[planetexpress-gateway#1](https://github.com/ian-t-adams/planetexpress-gateway/pull/1).
+See [the canary configuration and rollback boundary](configuration-reference.md#shared-gateway-canary-default-off).
 
 | Credential | Holder and allowed use |
 | --- | --- |

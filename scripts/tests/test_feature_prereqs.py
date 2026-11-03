@@ -398,6 +398,25 @@ class RetiredConfigurationTests(unittest.TestCase):
 
 
 class CommittedParametersTests(unittest.TestCase):
+    def test_shared_gateway_flag_defaults_off_and_enabled_requires_resolved_manifest(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        self.assertEqual(
+            parameters["sharedGatewayEnabled"]["value"],
+            "${AI4IA_SHARED_GATEWAY_ENABLED=false}",
+        )
+        self.assertEqual(
+            parameters["sharedGatewayActivationManifestBase64"]["value"],
+            "${AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64=}",
+        )
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, _, err = _run(REAL_PARAMETERS)
+            self.assertEqual(code, 0, err)
+            code, _, err = _run(_write_parameters(tmp, {
+                "sharedGatewayEnabled": True,
+            }))
+            self.assertEqual(code, 1)
+            self.assertIn("resolved shared gateway contract v2 manifest is required", err)
+
     def test_versioned_gateway_staging_is_default_off_and_never_activates_hard_quota(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
         self.assertEqual(parameters["gatewayAttemptsV1Staged"]["value"], "${AI4IA_GATEWAY_ATTEMPTS_V1_STAGED=false}")
@@ -1263,6 +1282,7 @@ SECRET_JSON = '{"label": "synthetic \\"secret\\" configuration"}'
 RAW_JSON = {
     "AI4IA_GROUP_POLICY_JSON": INCIDENT_POLICY,
     "AI4IA_CLAUDE_BINDING_JSON": AWKWARD_JSON,
+    "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST": SECRET_JSON,
 }
 AZD_TOKEN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(=([^}]*))?\}")
 
@@ -1442,7 +1462,8 @@ class DeriveJsonTransportTests(unittest.TestCase):
         for transport in TRANSPORTS:
             self.assertEqual(decode(lines[transport.transport_variable]), RAW_JSON[transport.variable])
         for transport in TRANSPORTS:
-            self.assertNotIn(lines[transport.transport_variable], result.stdout)
+            if not transport.secret:
+                self.assertNotIn(lines[transport.transport_variable], result.stdout)
             self.assertNotIn(RAW_JSON[transport.variable], result.stdout + result.stderr)
 
     def test_the_mask_is_emitted_before_the_secret_is_written(self) -> None:
@@ -1661,8 +1682,9 @@ class JsonTransportValidationTests(unittest.TestCase):
     def test_raw_json_substitution_and_misnamed_transports_are_refused(self) -> None:
         old = json.loads(_pre_fix_parameters_text())["parameters"]
         errors = self.transport_errors(old, {})
-        self.assertEqual(len(errors), len(TRANSPORTS), errors)
-        for transport in TRANSPORTS:
+        old_transports = [transport for transport in TRANSPORTS if transport.parameter in old]
+        self.assertEqual(len(errors), len(old_transports), errors)
+        for transport in old_transports:
             self.assertTrue(any(f"substitutes {transport.variable} directly" in e for e in errors))
         misnamed = {**self.committed(), "groupPolicyJsonBase64": {"value": "${AI4IA_OTHER_B64=}"}}
         self.assertEqual(

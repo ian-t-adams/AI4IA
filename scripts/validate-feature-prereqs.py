@@ -18,17 +18,23 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app" / "api" / "src"))
 from _capacity_evidence import EvidenceError
 from _claude_binding import configured_binding
 from _json_transport import TRANSPORTS, TransportError, decode
 from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
 from _api_private import validate_prefixes
+from ai4ia_api.shared_gateway_contract import load_shared_gateway_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS_FILE = ROOT / "infra" / "main.parameters.json"
 MODELS_FILE = ROOT / "infra" / "models.json"
 PLACEHOLDER_RE = re.compile(r"^\$\{(?P<name>[A-Z0-9_]+)(?:=(?P<default>.*))?\}$")
-RAW_JSON_TOKEN_RE = re.compile(r"\$\{([A-Z0-9_]+_JSON)(?:=[^}]*)?\}")
+RAW_JSON_TOKEN_RE = re.compile(
+    r"\$\{("
+    + "|".join(re.escape(transport.variable) for transport in TRANSPORTS)
+    + r")(?:=[^}]*)?\}"
+)
 
 
 def parameter_value(parameters: dict[str, Any], name: str, default: Any = None) -> Any:
@@ -182,6 +188,20 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     except ValueError as exc:
         errors.append(str(exc))
     json_values = transported_json(parameters, errors)
+    if truthy(parameter_value(parameters, "sharedGatewayEnabled", False)):
+        if text(parameter_value(parameters, "apiAuthProvider", "dev")).lower() != "entra":
+            errors.append("Shared gateway routing requires apiAuthProvider=entra.")
+        if text(parameter_value(parameters, "appEnvironment", "dev")).lower() == "local":
+            errors.append("Shared gateway routing is unavailable in the local environment.")
+        try:
+            # The deployed API compares this caller id with its actual AZURE_CLIENT_ID.
+            load_shared_gateway_manifest(
+                json_values.get("sharedGatewayActivationManifest"),
+                api_identity_client_id=None,
+                require_api_identity=False,
+            )
+        except ValueError as exc:
+            errors.append(f"Shared gateway activation: {exc}")
     model_capacity_profile = text(
         parameter_value(parameters, "modelCapacityProfile", "baseline")
     ).lower()

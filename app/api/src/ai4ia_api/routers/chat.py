@@ -2947,12 +2947,19 @@ async def chat(
             await memory_guard.prepare(payload_messages)
             if continuation is not None:
                 await continuation.begin_fallback()
+            shared_gateway_options: dict[str, Any] = {}
+            if request.app.state.settings.shared_gateway_enabled:
+                shared_gateway_options = {
+                    "shared_gateway_eligible": api in {"chat", "responses"},
+                    "shared_gateway_sku": deployment.sku,
+                }
             result = await model_evidence.observe(gateway.complete(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
                 params=effective_params,
                 correlation_id=correlation_id,
                 api=api,
+                **shared_gateway_options,
             ))
             if continuation is not None:
                 await continuation.finish_fallback()
@@ -3165,6 +3172,7 @@ async def chat(
                 receipt_draft=receipt_draft,
                 safety_provider=safety_provider,
                 prepare_model_context=memory_guard.prepare,
+                shared_gateway_enabled=request.app.state.settings.shared_gateway_enabled,
             ),
         ),
         media_type="text/event-stream",
