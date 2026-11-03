@@ -1215,45 +1215,12 @@ catalogs contain no video route. The generation tool, gateway create/poll/conten
 client, generation configuration and clip-container provisioning are removed.
 Do not restore the retired flag: it no longer controls anything.
 
-Existing owner-scoped clip reads and browser playback remain for historical
-conversations, without any generation or upload endpoint. The API still reads
-`AI4IA_VIDEO_BLOB_ACCOUNT_URL` and `AI4IA_VIDEO_BLOB_CONTAINER`; the root template
-supplies the shared image/avatar account and the existing `videos` container.
-These settings are no longer tied to a generation gate. Greenfield installs do
-not create a video container. Keep the existing account/container and API access
-for playback. **Before upgrading a video-only environment** (images and avatars
-both disabled), set the supported root-template overrides below; without them
-there is no shared-media output and historical playback would return 404.
-
-```powershell
-# Local azd configuration only; substitute the exact existing account/container.
-azd env set AI4IA_LEGACY_VIDEO_BLOB_ACCOUNT_URL "https://<existing-account>.blob.core.windows.net/"
-azd env set AI4IA_LEGACY_VIDEO_BLOB_CONTAINER "<existing-container>"
-```
-
-For CI, configure repository Actions variables with those same names and values
-before the separately approved release. `deploy.yml` transports both variables;
-`main.parameters.json` binds them to `legacyVideoBlobAccountUrl` and
-`legacyVideoBlobContainer`. The URL must be an HTTPS Azure Blob account root
-without credentials, SAS/query, fragment or container path. The container uses
-Azure's lowercase 3-63 character naming rules. These are nonsecret metadata,
-never a storage key or SAS. The explicit URL wins over a shared-media output;
-an empty override keeps normal image/avatar shared-account behavior. A fresh
-environment with neither feature nor override has no clip storage configuration,
-and does not assume or create an account/container.
-
-**Required pre-release verification:** read back the current API's nonsecret
-Blob URL/container metadata, verify the exact existing container and the API
-identity's existing read access with the approved scoped reader, and bind the
-override to that evidence. Preview the intended root parameters and API env:
-the existing URL/container must survive with images/avatars both off, without
-adding storage or role assignments. Do not fetch secrets, infer an account from
-naming, or create access as a fallback. Retain the source account/container and
-permissions unchanged. After the separately approved rollout, the owner must
-load a known historical clip through the authenticated app and confirm playback;
-offline tests alone do not prove live storage reachability. If evidence or access
-is missing, stop release for owner disposition rather than silently accepting
-404s or an empty in-memory fallback.
+Historical clip playback is removed too: there is no `/api/videos` route, video
+artifact store, `AI4IA_VIDEO_BLOB_*` setting or root/API video Blob parameter.
+Stored conversations keep their `kind: "video"` attachment records unchanged; the
+web app shows an inert "Video unavailable" notice for them and makes no request.
+Greenfield installs create no video container. Retained clip containers and blobs
+stay in place, unread, until a separately approved data disposition.
 
 No user data,
 stored clip, account, model deployment, secret or role is deleted by this source
@@ -1272,8 +1239,9 @@ tool-override PATCH. Catalog
 and offered-tool changes invalidate affected consent and publication environment
 digests: renew consent and review/republish affected published versions. Do not
 silently rewrite persisted definitions or replay held operations. Historical tool
-results and MP4 references remain readable; video understanding, attachments,
-WebIQ video search and avatar streaming are unrelated and unchanged.
+results and attachment records remain in history but clips are not playable;
+video understanding, uploads, WebIQ video search and avatar streaming are
+unrelated and unchanged.
 
 **Release boundary:** merging app/infra changes to `main` normally starts
 `deploy.yml`, including provisioning unless its existing admission/phase rules

@@ -231,12 +231,6 @@ param workflowSchedulingEnabled bool = false
 param imageGenerationEnabled bool = false
 @description('Enable governed image editing (edit_image tool and the image-edit endpoint) for catalog models that declare imageEditing. Default OFF. Requires imageGenerationEnabled: edits read and store generated-image artifacts in the same durable storage.')
 param imageEditingEnabled bool = false
-@description('Existing HTTPS Azure Blob account URL for read-only legacy clip playback. Empty uses the shared image/avatar account when provisioned. Does not create storage or grant access; set explicitly before upgrading a video-only environment.')
-param legacyVideoBlobAccountUrl string = ''
-@description('Existing container for read-only legacy clip playback. No container is provisioned.')
-@minLength(3)
-@maxLength(63)
-param legacyVideoBlobContainer string = 'videos'
 @description('Enable custom photo avatars generated from a text description. Default OFF. When on: a photoAvatars Cosmos container, an avatars container on the shared generated-media account, and the exact-operation photo avatar APIM API with its proxy host. Creation additionally requires the Limited Access capability at runtime; see docs/photo-avatars.md.')
 param photoAvatarsEnabled bool = false
 
@@ -1011,9 +1005,6 @@ module api 'modules/api.bicep' = {
     imageEditingEnabled: imageEditingEnabled
     imageBlobAccountUrl: data.outputs.imageBlobAccountUrl
     imageBlobContainer: data.outputs.imageBlobContainerName
-    // Retained owner-only playback uses the existing media account, never generation.
-    videoBlobAccountUrl: !empty(legacyVideoBlobAccountUrl) ? legacyVideoBlobAccountUrl : data.outputs.imageBlobAccountUrl
-    videoBlobContainer: legacyVideoBlobContainer
     photoAvatarsEnabled: photoAvatarsEnabled
     photoAvatarBlobAccountUrl: data.outputs.photoAvatarBlobAccountUrl
     photoAvatarBlobContainer: data.outputs.photoAvatarBlobContainerName

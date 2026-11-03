@@ -594,13 +594,6 @@ export async function editImage(request: ImageEditRequest): Promise<ImageEditRes
   );
 }
 
-// Fetches a tool-generated video's MP4 bytes from the authenticated serve
-// endpoint (mirrors fetchImageArtifact). The caller wraps the Blob in an object
-// URL for a <video> element, since a raw src would not carry the bearer token.
-export async function fetchVideoArtifact(artifactId: string): Promise<Blob> {
-  return fetchBlob(`/api/videos/artifacts/${artifactId}`, "failed to load video");
-}
-
 // Fetches an over-cap process_document result's markdown text from the
 // authenticated serve endpoint (mirrors fetchImageArtifact). Returns text rather
 // than a Blob since the result is rendered inline as Markdown.

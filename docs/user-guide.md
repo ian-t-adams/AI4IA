@@ -482,10 +482,10 @@ in the conversation; the source is never changed. You can also type
 `edit_image` tool to an agent. Region edits are unavailable for rotated phone
 photos; edit the whole image instead.
 
-Video generation has been removed. Previously generated clips remain viewable
-in old conversations while their existing storage is configured; no saved clips
-or conversations are deleted. Video uploads, analysis and live avatars are
-unchanged.
+Video generation and playback of previously generated clips have been removed.
+Old conversations still show where a clip was, marked "Video unavailable", but
+it can no longer be played; no saved clips or conversations are deleted. Video
+uploads, analysis and live avatars are unchanged.
 
 If a conversation, agent or workflow still selects the retired
 `generate_video` tool, the app refuses to run it and asks you to remove that

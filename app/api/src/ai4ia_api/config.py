@@ -492,15 +492,6 @@ class Settings(BaseSettings):
     image_blob_container: str = "images"
 
     # --- Legacy video blob storage (read-only) ---
-    # Retained MP4 clips remain owner-readable after generation retirement.
-    # Each artifact lives under ``{userId}/generated/{id}.mp4`` and is reached
-    # ONLY via the api managed identity (AAD) through an authenticated serve
-    # endpoint, never a public blob URL. Unset locally/in tests, where a
-    # process-local in-memory store is used instead. May reuse the image storage
-    # account (a distinct container) or a dedicated one.
-    video_blob_account_url: str | None = None
-    video_blob_container: str = "videos"
-
     # --- Custom photo avatars (Phase 1, default OFF) ---
     # Create, status, preview, list, delete and report for avatars generated
     # from a text description. The home account, api-version, attribute enums

@@ -310,12 +310,6 @@ param imageBlobAccountUrl string = ''
 @description('Blob container tool-generated images are written to.')
 param imageBlobContainer string = 'images'
 
-@description('Blob account URL for read-only access to legacy generated clips. No video generation is supported.')
-param videoBlobAccountUrl string = ''
-
-@description('Existing Blob container holding legacy clips. This module never creates or writes clips.')
-param videoBlobContainer string = 'videos'
-
 @description('Enable custom photo avatars. Default OFF. The Boolean is always emitted; the Blob and limit settings only while it is on.')
 param photoAvatarsEnabled bool = false
 
@@ -850,17 +844,6 @@ var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
   }
 ] : []
 
-var videoEnv = !empty(videoBlobAccountUrl) ? [
-  {
-    name: 'AI4IA_VIDEO_BLOB_ACCOUNT_URL'
-    value: videoBlobAccountUrl
-  }
-  {
-    name: 'AI4IA_VIDEO_BLOB_CONTAINER'
-    value: videoBlobContainer
-  }
-] : []
-
 // Always emit the Boolean so a deployed API can never fall back to an implicit
 // default; storage and limits reach the API only while the feature is on.
 var photoAvatarEnv = concat([
@@ -1125,7 +1108,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, photoAvatarEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, photoAvatarEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

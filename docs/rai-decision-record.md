@@ -29,7 +29,8 @@
 > [video generation removal](runbooks/deployment.md#video-generation-removal).
 > Video references in this record describe the originally approved scope and the
 > evidence gaps as recorded. Video output is no longer a currently served
-> generation path; retained historical clips remain owner-readable only.
+> generation path, and historical clip playback is also removed; stored clips
+> are retained untouched but are not served.
 
 ## Decision
 

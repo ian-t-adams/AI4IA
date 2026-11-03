@@ -436,8 +436,8 @@ resource documentStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-
 
 // ---------------- Generated-media blob storage ----------------
 // Shared by image generation and photo avatar previews, independently of the
-// document library. Existing legacy clip containers are retained by incremental
-// ARM deployments but are no longer provisioned. AAD-only, private, TLS 1.2+.
+// document library. Existing legacy clip containers are retained (unread) by
+// incremental ARM deployments but are no longer provisioned. AAD-only, private, TLS 1.2+.
 // Artifacts live under {userId}/generated/{id}.{ext} — the userId prefix is the
 // per-user isolation boundary enforced by the authenticated serve endpoints.
 var imageStorageName = 'sti${uniqueString(resourceGroup().id)}'

@@ -1,4 +1,4 @@
-"""Video generation is retired; existing clips remain private and read-only."""
+"""Video generation and clip playback are retired; stored records stay untouched."""
 from __future__ import annotations
 
 import asyncio
@@ -17,18 +17,11 @@ from ai4ia_api.agents.tool_exec import (
     build_tools,
 )
 from ai4ia_api.agents.user_agents import UserAgent
-from ai4ia_api.auth.base import AuthError
-from ai4ia_api.catalog import DeploymentOption, ModelCatalog, ModelEntry
+from ai4ia_api.catalog import DeploymentOption, ModelEntry
 from ai4ia_api.config import Settings
 from ai4ia_api.gateway.client import ModelGatewayClient
-from ai4ia_api.library.blob_store import InMemoryBlobStore
 from ai4ia_api.main import create_app
-from ai4ia_api.videos.artifacts import (
-    VIDEO_CONTENT_TYPE,
-    VideoArtifactStore,
-    artifact_path,
-    build_video_blob_store,
-)
+from ai4ia_api.sessions.models import MessageAttachment
 from ai4ia_api.workflows.models import Workflow, WorkflowStep
 from tests.conftest import make_settings
 
@@ -66,15 +59,12 @@ def test_generation_code_settings_and_transport_are_absent(monkeypatch):
     settings = make_settings()
     assert not hasattr(settings, "video_generation_enabled")
     assert not any(name.startswith("gateway_video_") for name in Settings.model_fields)
-    for module in ("service", "capability", "availability"):
-        assert importlib.util.find_spec(f"ai4ia_api.videos.{module}") is None
+    assert importlib.util.find_spec("ai4ia_api.videos") is None
     gateway = ModelGatewayClient(settings)
     for name in ("_video_url", "create_video_job", "get_video_job", "get_video_content"):
         assert not hasattr(gateway, name)
     for name in ("generate_image", "edit_image", "synthesize_speech", "transcribe"):
         assert callable(getattr(gateway, name))
-    assert not hasattr(VideoArtifactStore, "put")
-    assert callable(VideoArtifactStore.get)
 
 
 def test_video_has_no_tool_registration_or_consent_contract():
@@ -310,59 +300,33 @@ def test_owned_inherited_retired_tool_can_be_excluded_without_editing_agent(tool
         assert asyncio.run(app.state.agent_service._store.get(owner, agent.name)) == agent
 
 
-def test_legacy_playback_owner_auth_and_read_only_lifecycle(monkeypatch):
-    class Blob(InMemoryBlobStore):
-        closed = False
-
-        async def close(self):
-            self.closed = True
-            await super().close()
-
-    blob = Blob()
-    monkeypatch.setattr("ai4ia_api.main.build_video_blob_store", lambda _: blob)
-    app = create_app(make_settings())
+def test_playback_route_store_and_settings_are_removed(monkeypatch):
+    monkeypatch.setenv("AI4IA_VIDEO_BLOB_ACCOUNT_URL", "https://retained.blob.core.windows.net")
+    monkeypatch.setenv("AI4IA_VIDEO_BLOB_CONTAINER", "legacy-videos")
+    settings = make_settings()
+    assert not any(name.startswith("video_blob_") for name in Settings.model_fields)
+    assert importlib.util.find_spec("ai4ia_api.videos") is None
+    assert importlib.util.find_spec("ai4ia_api.routers.videos") is None
+    app = create_app(settings)
     gateway = RetirementGateway()
     with TestClient(app) as client:
         app.state.gateway = gateway
-        session = client.post("/api/sessions", json={"model": "gpt-5.2"}).json()
-        asyncio.run(blob.put(artifact_path(session["userId"], ARTIFACT), MP4, VIDEO_CONTENT_TYPE))
-        app.state.catalog = ModelCatalog(models=[])
-        path = f"/api/videos/artifacts/{ARTIFACT}"
-        response = client.get(path)
-        assert response.status_code == 200
-        assert response.content == MP4
-        assert response.headers["content-type"] == VIDEO_CONTENT_TYPE
-        assert response.headers["cache-control"].startswith("private")
-        assert client.get(path, headers={"X-Dev-User": "other-owner"}).status_code == 404
-        for invalid in ("missing", "b" * 32, "A" * 32, "." * 32):
-            assert client.get(f"/api/videos/artifacts/{invalid}").status_code == 404
-        for method in ("POST", "PUT", "DELETE", "PATCH"):
-            assert client.request(method, path).status_code == 405
+        assert not hasattr(app.state, "video_artifacts")
+        assert not any(
+            getattr(route, "path", "").startswith("/api/videos") for route in app.routes
+        )
+        for method in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+            assert client.request(method, f"/api/videos/artifacts/{ARTIFACT}").status_code == 404
         assert client.post("/api/videos/generations", json={"prompt": "clip"}).status_code == 404
+        assert client.get("/health/live").status_code == 200
         assert gateway.calls == 0
 
-        class NoAuth:
-            async def authenticate(self, credentials):
-                raise AuthError("No credentials.")
 
-        app.state.auth_provider = NoAuth()
-        assert client.get(path).status_code == 401
-    assert blob.closed
-
-
-def test_legacy_blob_factory_preserves_configured_account_and_container(monkeypatch):
-    blob = InMemoryBlobStore()
-    calls = []
-
-    def factory(account, container):
-        calls.append((account, container))
-        return blob
-
-    monkeypatch.setattr("ai4ia_api.videos.artifacts.AzureBlobStore", factory)
-    settings = make_settings(
-        video_blob_account_url="https://retained.blob.core.windows.net",
-        video_blob_container="legacy-videos",
-    )
-    assert build_video_blob_store(settings) is blob
-    assert calls == [(settings.video_blob_account_url, "legacy-videos")]
-    assert isinstance(build_video_blob_store(make_settings()), InMemoryBlobStore)
+def test_stored_video_attachment_history_round_trips_unchanged():
+    stored = {
+        "id": ARTIFACT, "kind": "video", "mimeType": "video/mp4",
+        "prompt": "private prompt", "durationSeconds": 4, "status": "succeeded",
+    }
+    attachment = MessageAttachment.model_validate(stored)
+    dumped = attachment.model_dump(exclude_none=True)
+    assert {key: dumped[key] for key in stored} == stored

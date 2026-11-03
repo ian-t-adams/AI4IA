@@ -293,7 +293,7 @@ capability backed by the disabled model must ask the same availability question.
 
 The desired catalog no longer includes Sora 2 or video-generation deployments.
 The app and generated gateway policies no longer offer generation. Historical
-clips retain owner-only playback through existing storage, and video uploads,
+clip playback is removed too (stored clips are retained, not served); video uploads,
 understanding and live avatar streaming are unchanged. Removing source inventory
 does not delete live Azure deployments or free quota; cleanup requires separate
 approval. See the

@@ -900,9 +900,10 @@ call. Its behavioral tests must record stub calls even while preview mode is on.
 
 Runtime media gates must be explicit Booleans, not inferred from artifact-store
 construction or Blob URLs. Enabled image generation outside local requires
-durable storage. Video generation and its Sora desired deployments are removed;
-retain only owner-authenticated legacy clip reads and their Blob configuration,
-independently of generation. Do not delete retained clips or cloud resources.
+durable storage. Video generation, clip playback and the Sora desired deployments
+are removed; stored `kind: "video"` attachments render as an inert unavailable
+notice with no serve route or Blob configuration. Do not delete retained clips,
+records or cloud resources without separate approval.
 Regional batch metrics must follow each resource's location;
 Search may differ from the API/Cosmos region. Preprovision naming validation
 preserves the full uniqueness suffix without renaming existing resources.

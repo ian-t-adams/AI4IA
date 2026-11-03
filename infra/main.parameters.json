@@ -165,12 +165,6 @@
     "imageEditingEnabled": {
       "value": "${AI4IA_IMAGE_EDITING_ENABLED=false}"
     },
-    "legacyVideoBlobAccountUrl": {
-      "value": "${AI4IA_LEGACY_VIDEO_BLOB_ACCOUNT_URL=}"
-    },
-    "legacyVideoBlobContainer": {
-      "value": "${AI4IA_LEGACY_VIDEO_BLOB_CONTAINER=videos}"
-    },
     "photoAvatarsEnabled": {
       "value": "${AI4IA_PHOTO_AVATARS_ENABLED=false}"
     },
