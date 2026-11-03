@@ -8,7 +8,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from ai4ia_api.agents.user_agents import UserAgentCreate, UserAgentUpdate
+from ai4ia_api.agents.user_agents import UserAgent, UserAgentCreate, UserAgentUpdate
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.auth.policy_claims import verified_policy_claims
 from ai4ia_api.main import create_app
@@ -55,6 +55,29 @@ async def actor(service, name, role):
             "roles": [role] if role else [], "exp": int(time.time()) + 3600,
         }),
     ))
+
+
+async def test_retired_video_reference_cannot_compile_a_publication(publication):
+    from ai4ia_api.publishing.compiler import PublicationCompiler
+
+    author = await actor(publication, "author", "Author")
+    source = UserAgent(
+        id="legacy-creator", userId=author.owner_id, name="legacy-creator",
+        displayName="Legacy creator", systemPrompt="Create a clip.", tools=["generate_video"],
+    )
+    compiler = PublicationCompiler(publication.state, publication)
+    model = next(entry.id for entry in publication.state.catalog.models if entry.supportsTools)
+    with pytest.raises(PublicationError, match="publication_tool_unavailable"):
+        await compiler.profile(
+            author, source, mode="chat", model_id=model,
+            composed=publication.state.agents, skill_mode="excluded",
+        )
+    source.tools = ["calculator"]
+    profile = await compiler.profile(
+        author, source, mode="chat", model_id=model,
+        composed=publication.state.agents, skill_mode="excluded",
+    )
+    assert "calculator" in {tool.alias for tool in profile.tools}
 
 
 async def submit(service, *, audience=None, groups=()):

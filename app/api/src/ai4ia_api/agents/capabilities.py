@@ -25,7 +25,7 @@ steps by construction), ``run_code`` / ``export_document`` and
 ``analyze_attachment`` (gated on a per-turn classification and on inline session
 attachments), MCP tools (they replace the registry/executor pair rather than add
 to it), ``run_workflow`` (chat-only to prevent recursion), and
-``generate_image`` / ``generate_video`` / ``process_document``. The media/document
+``generate_image`` / ``process_document``. The media/document
 tools write into a *sink* list that the chat router drains onto the
 assistant message; a durable workflow activity finishes in a different process
 from the one that persists the run's message, so a sink filled there would be

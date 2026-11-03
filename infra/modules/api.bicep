@@ -310,13 +310,10 @@ param imageBlobAccountUrl string = ''
 @description('Blob container tool-generated images are written to.')
 param imageBlobContainer string = 'images'
 
-@description('Enable the agent-callable generate_video tool. Default OFF. When on (and a video blob account is provisioned) any agent may attach generate_video; produced clips persist to blob storage and serve through an authenticated endpoint.')
-param videoGenerationEnabled bool = false
-
-@description('Blob account URL backing generated videos. Required for enabled video generation outside local development.')
+@description('Blob account URL for read-only access to legacy generated clips. No video generation is supported.')
 param videoBlobAccountUrl string = ''
 
-@description('Blob container tool-generated videos are written to.')
+@description('Existing Blob container holding legacy clips. This module never creates or writes clips.')
 param videoBlobContainer string = 'videos'
 
 @description('Enable custom photo avatars. Default OFF. The Boolean is always emitted; the Blob and limit settings only while it is on.')
@@ -840,10 +837,6 @@ var mediaFeatureEnv = [
     name: 'AI4IA_IMAGE_EDITING_ENABLED'
     value: string(imageEditingEnabled)
   }
-  {
-    name: 'AI4IA_VIDEO_GENERATION_ENABLED'
-    value: string(videoGenerationEnabled)
-  }
 ]
 
 var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
@@ -857,7 +850,7 @@ var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
   }
 ] : []
 
-var videoEnv = (videoGenerationEnabled && !empty(videoBlobAccountUrl)) ? [
+var videoEnv = !empty(videoBlobAccountUrl) ? [
   {
     name: 'AI4IA_VIDEO_BLOB_ACCOUNT_URL'
     value: videoBlobAccountUrl

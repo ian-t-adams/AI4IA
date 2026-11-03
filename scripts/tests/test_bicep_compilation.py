@@ -720,7 +720,6 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         for parameter, env_name in (
             ("imageGenerationEnabled", "AI4IA_IMAGE_GENERATION_ENABLED"),
             ("imageEditingEnabled", "AI4IA_IMAGE_EDITING_ENABLED"),
-            ("videoGenerationEnabled", "AI4IA_VIDEO_GENERATION_ENABLED"),
         ):
             self.assertFalse(self.template["parameters"][parameter]["defaultValue"])
             self.assertEqual(
@@ -732,6 +731,25 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             )
         self.assertEqual(api["variables"].get("mediaFeatureEnv"), expected)
         self.assertIn("variables('mediaFeatureEnv')", api["variables"]["apiEnv"])
+
+    def test_legacy_clip_reads_are_independent_of_removed_generation(self) -> None:
+        module = self.template["resources"]["api"]["properties"]
+        api = module["template"]
+        self.assertNotIn("videoGenerationEnabled", self.template["parameters"])
+        self.assertNotIn("videoGenerationEnabled", api["parameters"])
+        self.assertEqual(
+            module["parameters"]["videoBlobAccountUrl"]["value"],
+            "[reference('data').outputs.imageBlobAccountUrl.value]",
+        )
+        self.assertIn("AI4IA_VIDEO_BLOB_ACCOUNT_URL", json.dumps(api["variables"]["videoEnv"]))
+        self.assertNotIn("videoGenerationEnabled", json.dumps(api["variables"]["videoEnv"]))
+        self.assertIn("variables('videoEnv')", api["variables"]["apiEnv"])
+        self.assertTrue(api["variables"]["videoEnv"].startswith(
+            "[if(not(empty(parameters('videoBlobAccountUrl'))),"
+        ))
+        data = self.template["resources"]["data"]["properties"]["template"]
+        self.assertNotIn("deployVideoStorage", data["parameters"])
+        self.assertNotIn("videoContainer", data["resources"])
 
     def test_openapi_false_is_emitted_rather_than_treated_as_unset(self) -> None:
         module = self.template["resources"]["api"]["properties"]

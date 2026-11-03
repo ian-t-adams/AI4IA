@@ -1,11 +1,7 @@
-"""Durable storage for generated videos.
+"""Read-only storage for legacy generated videos.
 
-A generated MP4 is far too large to flow back through the agent tool-result
-channel (the runtime caps a tool result at 8 KB, and even a short clip is several
-MB), so the ``generate_video`` tool persists the bytes here and returns only a
-small reference. The bytes are served back to the browser through an
-authenticated endpoint (``GET /api/videos/artifacts/{id}``), never a public blob
-URL.
+Retained MP4 bytes are served through ``GET /api/videos/artifacts/{id}``,
+never a public blob URL. Video generation and artifact writes are retired.
 
 Layout mirrors the generated-image store's per-user isolation: every artifact
 lives under ``{userId}/generated/{artifactId}.mp4``. The ``userId`` prefix is the
@@ -61,16 +57,10 @@ def build_video_blob_store(settings: Settings) -> BlobStore:
 
 
 class VideoArtifactStore:
-    """Persists and reads generated-video bytes, scoped to the owning user."""
+    """Reads legacy generated-video bytes, scoped to the owning user."""
 
     def __init__(self, blob: BlobStore) -> None:
         self._blob = blob
-
-    async def put(self, user_id: str, artifact_id: str, data: bytes) -> str:
-        """Store ``data`` as the user's artifact ``artifact_id``; return its path."""
-        return await self._blob.put(
-            artifact_path(user_id, artifact_id), data, VIDEO_CONTENT_TYPE
-        )
 
     async def get(self, user_id: str, artifact_id: str) -> bytes:
         """Read the user's artifact bytes; raise :class:`BlobNotFoundError` if absent."""

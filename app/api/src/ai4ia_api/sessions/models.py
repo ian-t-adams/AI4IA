@@ -65,8 +65,8 @@ class MessageAttachment(BaseModel):
     message text.
 
     ``kind="image"`` is a generated image persisted by the ``generate_image``
-    tool; ``kind="video"`` is a generated MP4 persisted by the ``generate_video``
-    tool; ``kind="document"`` is an over-cap ``process_document`` result persisted
+    tool; ``kind="video"`` is a legacy generated MP4 (read-only after retirement);
+    ``kind="document"`` is an over-cap ``process_document`` result persisted
     as markdown. The bytes are NOT inlined — ``id`` references a durable,
     user-scoped blob fetched through the matching authenticated serve endpoint
     (``GET /api/images/artifacts/{id}``, ``GET /api/videos/artifacts/{id}``, or

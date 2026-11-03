@@ -1,6 +1,6 @@
 """The agent-callable ``process_document`` capability + shared service + serve endpoint.
 
-Mirrors ``test_image_tool``/``test_video_tool``: covers the shared governance core
+Mirrors ``test_image_tool``: covers the shared governance core
 (:class:`DocumentProcessingService` — instruction/mode validation, the ready-library
 reuse gate, upstream-error sanitization, output cap, anti-injection fence), the
 synthetic capability's contract (inline vs over-cap-artifact, per-turn cap,

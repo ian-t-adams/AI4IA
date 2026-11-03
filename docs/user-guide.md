@@ -461,7 +461,7 @@ entitlements, metering, or tool governance.
 
 ## Generated artifacts
 
-Image, video, processing, and export tools create durable artifacts when enabled.
+Image, processing, and export tools create durable artifacts when enabled.
 Downloads use authenticated API routes, not anonymous Blob links.
 
 For images, open **Setup > Agent & tools > Image generation** in a saved
@@ -482,14 +482,11 @@ in the conversation; the source is never changed. You can also type
 `edit_image` tool to an agent. Region edits are unavailable for rotated phone
 photos; edit the whole image instead.
 
-Video generation is asynchronous and slower than a text reply. Supported clip
-lengths are 4, 8, or 12 seconds, with 4 seconds as the default.
-
-Video generation is offered only while a video model is enabled. The source
-subscription extended Sora 2 to November 2, 2026, so the catalog restores it
-temporarily; it becomes available after the matching app/gateway rollout.
-There is no verified successor. Clips you already generated remain viewable,
-including if generation is disabled again.
+Video generation has been removed. Previously generated clips remain viewable
+in old conversations while their existing storage is configured; no saved clips
+or conversations are deleted. Video uploads, analysis and live avatars are
+unchanged. Agents or workflows that selected the retired generation tool must
+be edited to remove it before running again.
 
 **Cost estimate unavailable** is not free. Published estimates can differ from
 Azure billing, especially for provider-specific media meters.

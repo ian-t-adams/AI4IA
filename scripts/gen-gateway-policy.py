@@ -128,7 +128,7 @@ IMAGE_GENERATIONS_OPERATION = "images/generations"
 IMAGE_EDITS_OPERATION = "images/edits"
 
 # Model categories the gateway can actually route. Each one corresponds to a
-# surface the app calls: chat completions, embeddings, images, video, speech,
+# surface the app calls: chat completions, embeddings, images, speech,
 # transcription, realtime, or the Mistral document/OCR path.
 #
 # This is an allowlist because `provider_path` defaults to "openai" for any
@@ -154,7 +154,6 @@ ROUTABLE_CATEGORIES = frozenset(
         "router",
         "transcription",
         "tts",
-        "video",
     }
 )
 
@@ -171,7 +170,7 @@ def deployment_name(
 
 
 def timeout_seconds(category: str) -> int:
-    if category in {"image", "video"}:
+    if category == "image":
         return 240
     return 120
 
@@ -285,8 +284,6 @@ def render_catalog(models: dict[str, Any]) -> tuple[list[str], int]:
             operation_path = "systemone"
         elif api == "mai" and category == "image":
             operation_path = "v1/images/generations"
-        elif category == "video":
-            operation_path = "v1/videos"
         resolved = [
             {
                 "region": deployment["region"],

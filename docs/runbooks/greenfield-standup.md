@@ -260,7 +260,7 @@ explicit value `false` allows the deploy job to skip successfully.
 
 The showcase features that default on are individually overridable without a
 code change (`AI4IA_IMAGE_GENERATION_ENABLED`,
-`AI4IA_VIDEO_GENERATION_ENABLED`, `AI4IA_SEARCH_ENABLED`,
+`AI4IA_SEARCH_ENABLED`,
 `AI4IA_VOICE_LIVE_ENABLED`, the document-compute flags, official MCP/toolbox/API
 Center, custom tools, Web IQ, and summarization). Use the complete table in the
 [configuration reference](../configuration-reference.md#feature-flags-and-prerequisites)

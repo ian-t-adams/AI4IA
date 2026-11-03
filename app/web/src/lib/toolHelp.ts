@@ -3,7 +3,7 @@
 // and is grounded in — the exact descriptions and risk levels the API
 // registers server-side (agents/tool_exec.py's ToolSpec entries and
 // routers/tools.py's _SYNTHETIC_DESCRIPTIONS + ToolRisk.safe assignment for
-// generate_image/generate_video/process_document/recall_memory/remember_memory).
+// generate_image/process_document/recall_memory/remember_memory).
 // Keeping one
 // typed copy here means every checkbox/row that lets a user attach a
 // built-in tool can show the same accurate what/when/tradeoffs explanation
@@ -30,7 +30,6 @@ export const TOOL_LABELS: Record<string, string> = {
   get_current_time: "Current time",
   generate_image: "Generate image",
   edit_image: "Edit image",
-  generate_video: "Generate video",
   process_document: "Process document",
   run_workflow: "Run workflow",
   recall_memory: "Recall memory",
@@ -66,12 +65,6 @@ export const BUILT_IN_TOOL_HELP: Record<string, ToolHelpCopy> = {
     what: "Runs one of your saved workflows and returns its final result to this chat.",
     when: "Use when a repeatable, multi-step process should handle the current request.",
     tradeoffs: "Only workflows whose resolved step tools are safe and read-only are available; one workflow can run per chat turn.",
-    risk: "safe",
-  },
-  generate_video: {
-    what: "Generates a video and attaches the resulting file to the chat.",
-    when: "Use when the user asks for a short video clip or animation.",
-    tradeoffs: "Counts toward usage like any model call; usually the slowest built-in tool — reach for it only when a still image won't do.",
     risk: "safe",
   },
   process_document: {

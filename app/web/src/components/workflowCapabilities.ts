@@ -48,7 +48,6 @@ export interface CapabilityChip {
 export const NOT_IN_WORKFLOW_STEPS = new Set([
   "generate_image",
   "edit_image",
-  "generate_video",
   "process_document",
   "analyze_attachment",
   "run_code",

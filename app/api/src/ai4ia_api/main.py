@@ -378,9 +378,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # image_blob_account_url is set; an in-memory store locally/in tests.
         # Independent of the document library (image generation ships live).
         app.state.image_artifacts = ImageArtifactStore(build_image_blob_store(settings))
-        # Durable store for tool-generated videos. Same
-        # shared-instance rationale as images; durable AzureBlobStore when
-        # video_blob_account_url is set, else an in-memory store.
+        # Read-only access to legacy clips; keep the existing storage layout and
+        # lifecycle independent of model/catalog availability.
         app.state.video_artifacts = VideoArtifactStore(build_video_blob_store(settings))
         # Custom photo avatars (default OFF). None while the flag is off, so every
         # route except /config answers 404 and no provider client, store or Blob

@@ -5,10 +5,9 @@ The agent-callable ``process_document`` tool
 :class:`DocumentProcessingService` so the instruction/mode validation, the reuse of
 the user's already-extracted library content, the single model-gateway call, and the
 upstream-error sanitization live in exactly one place — mirroring
-:class:`ai4ia_api.images.service.ImageGenerationService` and
-:class:`ai4ia_api.videos.service.VideoGenerationService`.
+:class:`ai4ia_api.images.service.ImageGenerationService`.
 
-Unlike images/video (which call a capability model), document processing reuses two
+Unlike images (which call a capability model), document processing reuses two
 existing pieces and never re-ingests:
 
 * The **ready-library read** (:meth:`DocumentRetrievalService.read_parsed`) supplies

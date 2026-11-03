@@ -1170,9 +1170,9 @@ Retained choices are alternatives to evaluate, **not aliases or equivalent outpu
 | `FLUX.1-Kontext-pro`, `FLUX-1.1-pro` | `FLUX.2-pro`, `FLUX.2-flex` |
 | `gpt-audio` | `gpt-audio-1.5` |
 
-Keep `sora-2` by explicit owner choice and `gpt-image-1.5` for its distinct
-DataZoneStandard image capability. (`sora-2` is later runtime-disabled ahead of
-its own retirement; see [Sora 2 runtime retirement](#sora-2-runtime-retirement).)
+Keep `gpt-image-1.5` for its distinct DataZoneStandard image capability.
+Video generation was subsequently removed; see
+[video generation removal](#video-generation-removal).
 Content Understanding's `gpt-5.2`,
 memory/Code Interpreter's `gpt-5.4-mini`, `text-embedding-3-large` and its
 3072-dimensional vectors, the `gpt-5-mini` canary, preview `gpt-realtime`,
@@ -1207,39 +1207,41 @@ Application-image rollback does not restore deleted deployments, and repinning
 TTS back to a preview version is not guaranteed. Source review and green CI do
 not authorize cleanup, tenant/Claude changes, capacity-profile changes or release.
 
-### Sora 2 runtime retirement
+### Video generation removal
 
-The owner requested re-admission after the source subscription extended
-`sora-2` `2025-12-08` to **`2026-11-02T00:00:00Z`**. Fresh model-list reads on
-2026-10-21 report that date for both the model inference deadline and the
-GlobalStandard SKU in East US 2 and Sweden Central. Both existing deployments
-remain `Succeeded` at capacity 9. The model lifecycle is still `Deprecated`;
-this is temporary availability, not a successor or a new long-term offering.
-The public October 15 schedule and OpenAI's own API retirement are separate
-evidence and do not override the explicit subscription observation.
+Video generation is removed, not runtime-disabled. The desired catalog no longer
+contains Sora 2 `2025-12-08` in East US 2 or Sweden Central, and generated APIM
+catalogs contain no video route. The generation tool, gateway create/poll/content
+client, generation configuration and clip-container provisioning are removed.
+Do not restore the retired flag: it no longer controls anything.
 
-The catalog now admits the existing row again, restoring its two APIM routes
-and the normal `generate_video` availability predicate. No version, capacity,
-account or region is changed. Source preparation is not live provider acceptance;
-deploy the new catalog/policies together, then verify advertisement and any
-separately approved generation through the app.
+Existing owner-scoped clip reads and browser playback remain for historical
+conversations, without any generation or upload endpoint. The API still reads
+`AI4IA_VIDEO_BLOB_ACCOUNT_URL` and `AI4IA_VIDEO_BLOB_CONTAINER`; the root template
+supplies the shared image/avatar account and the existing `videos` container.
+These settings are no longer tied to a generation gate. Greenfield installs do
+not create a video container. Keep the existing account/container and API access
+for playback; environments disabling both images and avatars must preserve
+legacy storage configuration separately before reconciliation. No user data,
+stored clip, account, model deployment, secret or role is deleted by this source
+change. Shared media-account permissions remain needed by images and avatars.
 
-Keep `AI4IA_VIDEO_GENERATION_ENABLED=true`. `api.bicep` emits
-`AI4IA_VIDEO_BLOB_ACCOUNT_URL` only while the flag is on. Turning it off would
-leave the API with an empty in-memory video store, so existing clips would return
-404. To retire it again, set only `runtimeEnabled=false`, regenerate the catalogs
-and policies, and deploy. This hides the tool and refuses direct execution while
-preserving stored clips and desired inventory.
+Saved drafts selecting `generate_video` must be edited before execution. Catalog
+and offered-tool changes invalidate affected consent and publication environment
+digests: renew consent and review/republish affected published versions. Do not
+silently rewrite persisted definitions or replay held operations. Historical tool
+results and MP4 references remain readable; video understanding, attachments,
+WebIQ video search and avatar streaming are unrelated and unchanged.
 
-Changing the catalog changes the consent environment digest, like any catalog
-edit. Users renew session/run tool consent. Published versions whose recorded
-environment differs must be reviewed and republished before they run again.
-
-The seven-day lifecycle policy remains unchanged: from October 26, additions or
-changed deployment targets are blocked; exact `Succeeded` reconciles only warn.
-There is no new automatic runtime date cutoff. Make the next retirement decision
-before November 2 using fresh subscription evidence. Physical deletion remains
-separately approved [coordinated cleanup](#coordinated-catalog-retirement).
+**Release boundary:** merging app/infra changes to `main` normally starts
+`deploy.yml`, including provisioning unless its existing admission/phase rules
+skip it. Source review is not rollout approval. Incremental ARM retains omitted
+live deployments and the strict desired-inventory check can reject those retained
+Sora children. Obtain exact-resource inventory and separate owner-approved
+cleanup/release coordination before merging; do not weaken that check or add
+automatic deletion to make deployment pass. Cleanup can be irreversible and
+application-image rollback cannot recreate a deprecated deployment. See
+[coordinated cleanup](#coordinated-catalog-retirement).
 
 ### Read-only model retirement reporting
 

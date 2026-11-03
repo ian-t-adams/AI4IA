@@ -13,20 +13,11 @@ from ai4ia_api.entitlements.models import EntitlementDecision
 from ai4ia_api.images.capability import build_image_capability
 from ai4ia_api.images.service import ImageGenerationService
 from ai4ia_api.main import create_app
-from ai4ia_api.videos.capability import build_video_capability
-from ai4ia_api.videos.service import VideoGenerationService
 from tests.conftest import make_settings
 from tests.test_image_api import TINY_PNG_B64
-from tests.test_video_tool import FAKE_MP4
-from tests.video_catalog import video_catalog_path
 
 
-def _media_settings(kind: str, enabled: bool, tmp_path, **extra):
-    """Flag-gate settings. Video runs on a catalog whose video model is
-    runtime-available, so these cases isolate the flag; the model gate has its
-    own paired controls in test_video_model_availability.py."""
-    if kind == "video":
-        extra.setdefault("model_catalog_path", video_catalog_path(tmp_path, runtime_enabled=True))
+def _media_settings(kind: str, enabled: bool, **extra):
     return make_settings(**{f"{kind}_generation_enabled": enabled}, **extra)
 
 
@@ -57,28 +48,17 @@ class MediaGateway:
         self.paid_calls.append("image")
         return {"data": [{"b64_json": TINY_PNG_B64}]}
 
-    async def create_video_job(self, **kwargs):
-        self.paid_calls.append("video")
-        return {"id": "job", "status": "completed"}
-
-    async def get_video_content(self, **kwargs):
-        return FAKE_MP4
-
 
 def test_media_settings_are_default_off_and_read_explicit_env(monkeypatch):
     monkeypatch.delenv("AI4IA_IMAGE_GENERATION_ENABLED", raising=False)
-    monkeypatch.delenv("AI4IA_VIDEO_GENERATION_ENABLED", raising=False)
     settings = make_settings()
     assert settings.image_generation_enabled is False
-    assert settings.video_generation_enabled is False
     monkeypatch.setenv("AI4IA_IMAGE_GENERATION_ENABLED", "true")
-    monkeypatch.setenv("AI4IA_VIDEO_GENERATION_ENABLED", "false")
     settings = make_settings()
     assert settings.image_generation_enabled is True
-    assert settings.video_generation_enabled is False
 
 
-@pytest.mark.parametrize("kind", ["image", "video"])
+@pytest.mark.parametrize("kind", ["image"])
 @pytest.mark.parametrize("env", ["local", "prod"])
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("blob_url", [None, "https://media.blob.core.windows.net"])
@@ -115,11 +95,11 @@ def test_direct_image_creation_and_options_follow_generation_flag(enabled):
         assert bool(options.json()["models"]) is enabled
 
 
-@pytest.mark.parametrize("kind", ["image", "video"])
+@pytest.mark.parametrize("kind", ["image"])
 @pytest.mark.parametrize("enabled", [False, True])
-def test_tool_catalog_inspector_and_consent_follow_media_flag(kind, enabled, tmp_path):
+def test_tool_catalog_inspector_and_consent_follow_media_flag(kind, enabled):
     tool = f"generate_{kind}"
-    app = create_app(_media_settings(kind, enabled, tmp_path))
+    app = create_app(_media_settings(kind, enabled))
     with TestClient(app) as client:
         assert getattr(app.state, f"{kind}_artifacts") is not None
         catalog = client.get("/api/tools").json()
@@ -141,12 +121,12 @@ def test_tool_catalog_inspector_and_consent_follow_media_flag(kind, enabled, tmp
         assert (tool in asyncio.run(snapshot()).contracts) is enabled
 
 
-@pytest.mark.parametrize("kind", ["image", "video"])
+@pytest.mark.parametrize("kind", ["image"])
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("invocation", ["command", "agent"])
-def test_chat_only_advertises_and_executes_enabled_media(kind, enabled, invocation, tmp_path):
+def test_chat_only_advertises_and_executes_enabled_media(kind, enabled, invocation):
     tool = f"generate_{kind}"
-    settings = _media_settings(kind, enabled, tmp_path)
+    settings = _media_settings(kind, enabled)
     app = create_app(settings)
     gateway = MediaGateway(kind)
     with TestClient(app) as client:
@@ -178,10 +158,10 @@ def test_chat_only_advertises_and_executes_enabled_media(kind, enabled, invocati
             assert client.get(path, headers={"X-Dev-User": "another-user"}).status_code == 404
 
 
-@pytest.mark.parametrize("kind", ["image", "video"])
+@pytest.mark.parametrize("kind", ["image"])
 @pytest.mark.parametrize("disable_at", [None, "before_handler", "during_entitlement"])
-def test_stale_media_handler_rechecks_enabled_flag(kind, disable_at, tmp_path):
-    settings = _media_settings(kind, True, tmp_path)
+def test_stale_media_handler_rechecks_enabled_flag(kind, disable_at):
+    settings = _media_settings(kind, True)
     app = create_app(settings)
     gateway = MediaGateway(kind)
     with TestClient(app):
@@ -191,16 +171,10 @@ def test_stale_media_handler_rechecks_enabled_flag(kind, disable_at, tmp_path):
                     setattr(settings, f"{kind}_generation_enabled", False)
                 return EntitlementDecision.allow()
 
-        if kind == "image":
-            service = ImageGenerationService(
-                settings=settings, catalog=app.state.catalog, gateway=gateway,
-            )
-            build = build_image_capability
-        else:
-            service = VideoGenerationService(
-                settings=settings, catalog=app.state.catalog, gateway=gateway,
-            )
-            build = build_video_capability
+        service = ImageGenerationService(
+            settings=settings, catalog=app.state.catalog, gateway=gateway,
+        )
+        build = build_image_capability
         args = {
             f"{kind}_service": service,
             "artifact_store": getattr(app.state, f"{kind}_artifacts"),

@@ -289,25 +289,16 @@ projections apply the same eligibility restriction.
 Runtime disablement is not deletion and does not free quota; removing
 the deployment is a separate, approved live cleanup. Seams that advertise a
 capability backed by the disabled model must ask the same availability question.
-Video does this through one shared predicate.
 
-### Sora 2 retirement extension (2026-11-02)
+### Video generation removed
 
-`sora-2` version `2025-12-08` is the only video model this subscription offers
-in the source subscription. Fresh 2026-10-21 model-list observations in East US 2
-and Sweden Central report inference and GlobalStandard SKU retirement at
-`2026-11-02T00:00:00Z`, with lifecycle `Deprecated` and both existing deployments
-still `Succeeded`. This supersedes the earlier subscription observation; the
-public October 15 schedule and OpenAI API shutdown are separately scoped.
-
-The owner requested temporary re-admission, so the catalog restores the existing
-row and generated video routes without changing capacity or provisioning new
-models. Source intent is not a live generation claim. The shared runtime gate
-still controls advertisement and execution. Keep `AI4IA_VIDEO_GENERATION_ENABLED`
-on so previous clips retain their durable Blob settings, including during a
-later runtime retirement. No automatic date cutoff or physical deletion is
-introduced; see the
-[deployment runbook](runbooks/deployment.md#sora-2-runtime-retirement).
+The desired catalog no longer includes Sora 2 or video-generation deployments.
+The app and generated gateway policies no longer offer generation. Historical
+clips retain owner-only playback through existing storage, and video uploads,
+understanding and live avatar streaming are unchanged. Removing source inventory
+does not delete live Azure deployments or free quota; cleanup requires separate
+approval. See the
+[deployment runbook](runbooks/deployment.md#video-generation-removal).
 
 ### Three-tier Model Router
 

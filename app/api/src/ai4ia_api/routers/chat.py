@@ -115,10 +115,6 @@ from ..images.capability import GENERATE_IMAGE_TOOL_NAME, build_image_capability
 from ..images.edit_capability import EDIT_IMAGE_TOOL_NAME, build_image_edit_capability
 from ..images.editing import ImageEditService
 from ..images.service import ImageGenerationService
-from ..videos.artifacts import VideoArtifactStore
-from ..videos.availability import NO_VIDEO_MODEL_DETAIL, video_generation_availability
-from ..videos.capability import GENERATE_VIDEO_TOOL_NAME, build_video_capability
-from ..videos.service import VideoGenerationService
 from ..docprocessing.artifacts import DocumentArtifactStore
 from ..docprocessing.capability import build_document_processing_capability
 from ..docprocessing.service import (
@@ -698,7 +694,7 @@ async def _local_reply(
 
 
 # --- Capability-tool slash commands -------------------------------------------
-# A "capability" tool (generate_image / generate_video / process_document) named
+# A "capability" tool (generate_image / process_document) named
 # directly via a slash command runs through the standard agent turn: we synthesize
 # an ephemeral, single-tool agent whose persona instructs the model to call that
 # one tool with the user's text. This reuses ALL the existing capability injection,
@@ -725,12 +721,6 @@ _TOOL_AGENT_PROMPTS: dict[str, str] = {
         "to edit the most recent image in this conversation, or the image or library "
         "document they name, exactly as they ask, then briefly confirm the requested "
         "change. Do not ask clarifying questions unless the request is empty."
-    ),
-    GENERATE_VIDEO_TOOL_NAME: (
-        "The user invoked the video generator directly. Call the generate_video "
-        "tool to create a short video from their request, then briefly describe "
-        "what you produced. Do not ask clarifying questions unless the request is "
-        "empty."
     ),
     PROCESS_DOCUMENT_TOOL_NAME: (
         "The user invoked document processing directly. Call the process_document "
@@ -769,10 +759,6 @@ _TOOL_COMMAND_USAGE: dict[str, str] = {
         "Usage: /edit_image <what to change> — edits the latest image in this "
         "conversation, e.g. /edit_image make the sky a warm sunset"
     ),
-    GENERATE_VIDEO_TOOL_NAME: (
-        "Usage: /generate_video <description> — e.g. /generate_video a timelapse of "
-        "city traffic at night"
-    ),
     PROCESS_DOCUMENT_TOOL_NAME: (
         "Usage: /process_document <what to do> — e.g. /process_document summarize "
         "the latest contract in my library"
@@ -797,7 +783,6 @@ def _capability_tool_available(
     *,
     settings: Settings,
     image_artifacts: ImageArtifactStore | None,
-    video_artifacts: VideoArtifactStore | None,
     document_artifacts: DocumentArtifactStore | None,
     retrieval: DocumentRetrievalService | None,
     web_search: WebSearchService | None = None,
@@ -820,12 +805,6 @@ def _capability_tool_available(
             editing_enabled=settings.image_editing_enabled,
             generation_enabled=settings.image_generation_enabled,
             artifact_store=image_artifacts,
-            catalog=catalog,
-        ) == "available"
-    if name == GENERATE_VIDEO_TOOL_NAME:
-        return video_generation_availability(
-            enabled=settings.video_generation_enabled,
-            artifact_store=video_artifacts,
             catalog=catalog,
         ) == "available"
     if name == PROCESS_DOCUMENT_TOOL_NAME:
@@ -932,11 +911,6 @@ async def chat(
     image_artifacts: ImageArtifactStore | None = getattr(
         request.app.state, "image_artifacts", None
     )
-    # Generated-video artifact store. Always present; backs the
-    # ``generate_video`` capability when an agent attaches that tool.
-    video_artifacts: VideoArtifactStore | None = getattr(
-        request.app.state, "video_artifacts", None
-    )
     # Processed-document artifact store. Always present; backs the
     # ``process_document`` capability's over-cap results when an agent attaches
     # that tool. The capability itself only runs when ``retrieval`` is also
@@ -988,7 +962,7 @@ async def chat(
     # into two execution classes:
     #   - DIRECT (calculator, get_current_time): deterministic, no-scope builtins
     #     that run locally via the executor — no model call, no entitlement spend.
-    #   - CAPABILITY (generate_image/video, process_document): service-backed, so
+    #   - CAPABILITY (generate_image, process_document): service-backed, so
     #     they run through the standard agent turn via an ephemeral single-tool
     #     agent (synthesized below), reusing all existing capability injection,
     #     entitlement, metering, and attachment plumbing with zero duplication.
@@ -1032,7 +1006,6 @@ async def chat(
             capability_tool,
             settings=request.app.state.settings,
             image_artifacts=image_artifacts,
-            video_artifacts=video_artifacts,
             document_artifacts=document_artifacts,
             retrieval=retrieval,
             web_search=web_search,
@@ -1043,14 +1016,6 @@ async def chat(
             if resume_message is not None:
                 raise HTTPException(409, "The original tool is no longer available. Send a fresh request.")
             unavailable_reply = f"/{capability_tool} isn't enabled in this environment yet."
-            if capability_tool == GENERATE_VIDEO_TOOL_NAME and video_generation_availability(
-                enabled=request.app.state.settings.video_generation_enabled,
-                artifact_store=video_artifacts,
-                catalog=catalog,
-            ) == "no_model":
-                # Enabled but with nothing routable (e.g. a retired model with no
-                # successor): say so rather than implying it is coming "yet".
-                unavailable_reply = f"/{capability_tool} is unavailable. {NO_VIDEO_MODEL_DETAIL}"
             if capability_tool == EDIT_IMAGE_TOOL_NAME and image_editing_availability(
                 editing_enabled=request.app.state.settings.image_editing_enabled,
                 generation_enabled=request.app.state.settings.image_generation_enabled,
@@ -1305,7 +1270,7 @@ async def chat(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"'{model_id}' is a {entry.category} model and can't be used for "
-                "chat. Image, video, speech, transcription, embedding and rerank "
+                "chat. Image, speech, transcription, embedding and rerank "
                 "models are available through their own tools and surfaces, not as "
                 "a raw chat model."
             ),
@@ -2166,38 +2131,9 @@ async def chat(
                 extra_handlers = {**extra_handlers, **e_handlers}
             except Exception:  # noqa: BLE001 - image tool must never break a turn
                 logger.warning("image edit capability build failed", exc_info=True)
-        # When the agent attaches the ``generate_video`` tool, inject
-        # the synthetic video-generation (Sora) capability — same closure-bound
-        # pattern as the image tool. Produced clips are collected in
-        # ``video_sink`` and attached to the assistant message below.
-        video_sink: list[MessageAttachment] = []
-        if GENERATE_VIDEO_TOOL_NAME in agent.tools and video_artifacts is not None:
-            try:
-                settings = request.app.state.settings
-                vid_service = VideoGenerationService(
-                    settings=settings,
-                    catalog=catalog,
-                    gateway=gateway,
-                    poll_interval_seconds=settings.gateway_video_poll_interval_seconds,
-                    max_wait_seconds=settings.gateway_video_max_wait_seconds,
-                )
-                v_tools, v_handlers = build_video_capability(
-                    video_service=vid_service,
-                    artifact_store=video_artifacts,
-                    entitlements=entitlements,
-                    metering=metering,
-                    catalog=catalog,
-                    user_id=user.internal_user_id,
-                    session_id=body.sessionId,
-                    sink=video_sink,
-                )
-                extra_tools = [*extra_tools, *v_tools]
-                extra_handlers = {**extra_handlers, **v_handlers}
-            except Exception:  # noqa: BLE001 - video tool must never break a turn
-                logger.warning("video capability build failed", exc_info=True)
         # When the agent attaches the ``process_document`` tool, inject
         # the synthetic document-processing capability — same closure-bound pattern
-        # as the image/video tools. It reuses the user's ready library (via
+        # as the image tools. It reuses the user's ready library (via
         # ``retrieval``) and runs one analysis call on THIS turn's deployment, so it
         # is only offered when document understanding is enabled (``retrieval`` is
         # present). Over-cap results are collected in ``doc_sink`` and attached to
@@ -2383,7 +2319,7 @@ async def chat(
                         content_for_model=content_for_model,
                         user_message_id=user_msg.id,
                         extra_usage=usage_sink,
-                        get_attachments=lambda: [*retained_attachments, *image_sink, *video_sink, *doc_sink],
+                        get_attachments=lambda: [*retained_attachments, *image_sink, *doc_sink],
                         get_approval_drafts=approval_sink.drafts,
                         stream_tokens=stream_tool_tokens,
                         receipt_draft=receipt_draft,
@@ -2439,7 +2375,7 @@ async def chat(
                 usage=TokenUsage.empty(),
                 agent_name=agent_name,
                 correlation_id=correlation_id,
-                attachments=[*image_sink, *video_sink, *doc_sink],
+                attachments=[*image_sink, *doc_sink],
                 sources=library_sources,
                 receipt=receipt_draft.build(
                     status="error",
@@ -2472,7 +2408,7 @@ async def chat(
                 agent_name=agent_name,
                 correlation_id=correlation_id,
                 content=partial.text or partial.streamed_text,
-                attachments=[*image_sink, *video_sink, *doc_sink],
+                attachments=[*image_sink, *doc_sink],
                 steps=persisted_run_trace(partial) or None,
                 sources=library_sources,
                 receipt=receipt_draft.build(
@@ -2512,7 +2448,7 @@ async def chat(
                 usage=TokenUsage.parse(None),
                 agent_name=agent_name,
                 correlation_id=correlation_id,
-                attachments=[*image_sink, *video_sink, *doc_sink],
+                attachments=[*image_sink, *doc_sink],
                 sources=library_sources,
                 receipt=receipt_draft.build(
                     status="error",
@@ -2546,7 +2482,7 @@ async def chat(
             status=MessageStatus.complete,
             model=deployment.deploymentName,
             agent=agent_name,
-            attachments=[*image_sink, *video_sink, *doc_sink],
+            attachments=[*image_sink, *doc_sink],
             steps=persisted_run_trace(run) or None,
             sources=library_sources,
             safety=attributed_safety(run.safety, safety_provider),

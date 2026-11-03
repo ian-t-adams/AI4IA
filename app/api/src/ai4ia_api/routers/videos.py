@@ -1,7 +1,6 @@
-"""Authenticated serve endpoint for tool-generated videos.
+"""Authenticated read-only endpoint for legacy generated videos.
 
-The ``generate_video`` agent tool persists each MP4 to per-user blob storage and
-returns only a small reference; the browser fetches the bytes here. Mirrors the
+Video generation is retired; existing clips remain readable. Mirrors the
 image serve endpoint (:mod:`ai4ia_api.routers.images`): the blob path is composed
 from the *authenticated* user's id, so a user can only ever read their own
 artifacts — an id belonging to another user resolves to a path that does not

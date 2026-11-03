@@ -421,7 +421,6 @@ SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "generate_image",
         "edit_image",
-        "generate_video",
         "process_document",
         "recall_memory",
         "remember_memory",
@@ -440,7 +439,6 @@ CHAT_ONLY_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "generate_image",
         "edit_image",
-        "generate_video",
         "process_document",
         "run_workflow",
     }

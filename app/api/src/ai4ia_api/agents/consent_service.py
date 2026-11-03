@@ -35,7 +35,6 @@ from ..policy.context import current_binding
 from ..policy.models import PolicyDecision, PolicyError
 from ..request_constraints import tools_allowed
 from ..images.availability import image_editing_available_for_state
-from ..videos.availability import video_generation_available_for_state
 
 _CREDENTIAL_FIELD = re.compile(
     r"(?:^|_)(?:key|secret|password|credential|credentials|connection_string|authorization|token)$",
@@ -43,7 +42,7 @@ _CREDENTIAL_FIELD = re.compile(
 )
 _SERVICES = (
     "web_search", "memory", "document_retrieval", "document_compute",
-    "inline_attachment_analysis", "image_artifacts", "video_artifacts",
+    "inline_attachment_analysis", "image_artifacts",
     "document_artifacts", "mcp_service", "official_mcp_service", "workflow_service",
 )
 logger = logging.getLogger(__name__)
@@ -284,23 +283,6 @@ async def _chat_schemas(
             session_id=session.id, sink=[], repo=state.session_repo,
             retrieval=getattr(state, "document_retrieval", None),
             policy_filter=not publication_metadata,
-        )
-        schemas.extend(extra)
-    if "generate_video" in tool_names and video_generation_available_for_state(
-        state, policy_filter=not publication_metadata,
-    ):
-        from ..videos.capability import build_video_capability
-        from ..videos.service import VideoGenerationService
-
-        extra, _ = build_video_capability(
-            video_service=VideoGenerationService(
-                settings=state.settings, catalog=state.catalog, gateway=state.gateway,
-                poll_interval_seconds=state.settings.gateway_video_poll_interval_seconds,
-                max_wait_seconds=state.settings.gateway_video_max_wait_seconds,
-            ),
-            artifact_store=state.video_artifacts, entitlements=state.entitlements,
-            metering=state.usage, catalog=state.catalog, user_id=user_id,
-            session_id=session.id, sink=[], policy_filter=not publication_metadata,
         )
         schemas.extend(extra)
     if (
