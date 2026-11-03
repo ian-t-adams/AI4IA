@@ -89,7 +89,8 @@ def test_decision_resource_alias_preserves_provider_identity_and_all_legacy_name
     source = json.loads(_MODELS.read_text(encoding="utf-8"))
     rows = {row["name"]: row for row in source["catalog"]}
     assert rows["Microsoft-Decision-1"]["deploymentNameBase"] == "decision-1"
-    assert len(rows) >= 53
+    assert len(rows) >= 52
+    assert "sora-2" not in rows
     generated = _load_gen().build_catalog(source)
     fallback = _transform_infra_models(source)
     assert [(m["id"], m["options"]) for m in generated["models"]] == [

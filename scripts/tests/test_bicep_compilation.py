@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 from scripts._json_transport import TRANSPORTS
+from scripts._private_metadata import MetadataEvaluator
 from scripts.tests._production_fixture import production_document
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -738,8 +739,12 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         self.assertNotIn("videoGenerationEnabled", self.template["parameters"])
         self.assertNotIn("videoGenerationEnabled", api["parameters"])
         self.assertEqual(
-            module["parameters"]["videoBlobAccountUrl"]["value"],
-            "[reference('data').outputs.imageBlobAccountUrl.value]",
+            module["parameters"]["videoBlobAccountUrl"],
+            "[if(not(empty(parameters('legacyVideoBlobAccountUrl'))), createObject('value', parameters('legacyVideoBlobAccountUrl')), createObject('value', reference('data').outputs.imageBlobAccountUrl.value))]",
+        )
+        self.assertEqual(
+            module["parameters"]["videoBlobContainer"]["value"],
+            "[parameters('legacyVideoBlobContainer')]",
         )
         self.assertIn("AI4IA_VIDEO_BLOB_ACCOUNT_URL", json.dumps(api["variables"]["videoEnv"]))
         self.assertNotIn("videoGenerationEnabled", json.dumps(api["variables"]["videoEnv"]))
@@ -750,6 +755,59 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         data = self.template["resources"]["data"]["properties"]["template"]
         self.assertNotIn("deployVideoStorage", data["parameters"])
         self.assertNotIn("videoContainer", data["resources"])
+
+    def test_existing_clip_override_survives_video_only_upgrade_without_storage_creation(self) -> None:
+        root = self.template
+        data_module = root["resources"]["data"]["properties"]
+        api_module = root["resources"]["api"]["properties"]
+        shared_url = "https://sharedmedia.blob.core.windows.net/"
+        legacy_url = "https://retainedclips.blob.core.windows.net/"
+
+        class OutputEvaluator(MetadataEvaluator):
+            def evaluate(self, node: tuple, mode: str, scope: dict):
+                if node == ("call", "reference", [("literal", "data")]):
+                    return {"outputs": {"imageBlobAccountUrl": {"value": self.shared_url}}}
+                return super().evaluate(node, mode, scope)
+
+        for images, avatars, override, container, expected in (
+            (False, False, legacy_url, "old-clips", legacy_url),
+            (True, False, "", "videos", shared_url),
+            (False, True, "", "videos", shared_url),
+            (True, True, legacy_url, "old-clips", legacy_url),
+            (False, False, "", "videos", ""),
+        ):
+            with self.subTest(images=images, avatars=avatars, override=bool(override)):
+                parameters = {
+                    name: {"value": value}
+                    for name, value in {
+                        "imageGenerationEnabled": images, "photoAvatarsEnabled": avatars,
+                        "legacyVideoBlobAccountUrl": override, "legacyVideoBlobContainer": container,
+                    }.items()
+                }
+                evaluator = OutputEvaluator(root, parameters, "", "", {})
+                data_parameters = {
+                    name: {"value": evaluator.value(row["value"])}
+                    for name, row in data_module["parameters"].items()
+                    if name in {"deployImageStorage", "deployPhotoAvatarStorage"}
+                }
+                data_evaluator = MetadataEvaluator(data_module["template"], data_parameters, "", "", {})
+                deployed = data_evaluator.value("[variables('deployMediaStorage')]")
+                self.assertEqual(deployed, images or avatars)
+                evaluator.shared_url = shared_url if deployed else ""
+                resolved = {
+                    name: evaluator.value(api_module["parameters"][name])
+                    for name in ("videoBlobAccountUrl", "videoBlobContainer")
+                }
+                self.assertEqual(resolved["videoBlobAccountUrl"]["value"], expected)
+                api_evaluator = MetadataEvaluator(api_module["template"], resolved, "", "", {})
+                env = api_evaluator.value("[variables('videoEnv')]")
+                self.assertEqual(env, [
+                    {"name": "AI4IA_VIDEO_BLOB_ACCOUNT_URL", "value": expected},
+                    {"name": "AI4IA_VIDEO_BLOB_CONTAINER", "value": container},
+                ] if expected else [])
+        self.assertEqual(root["parameters"]["legacyVideoBlobAccountUrl"]["defaultValue"], "")
+        self.assertEqual(root["parameters"]["legacyVideoBlobContainer"]["defaultValue"], "videos")
+        self.assertNotIn("legacyVideo", json.dumps(data_module))
 
     def test_openapi_false_is_emitted_rather_than_treated_as_unset(self) -> None:
         module = self.template["resources"]["api"]["properties"]

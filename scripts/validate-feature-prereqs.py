@@ -166,11 +166,32 @@ def retired_configuration_errors(parameters: dict[str, Any]) -> list[str]:
     ]
 
 
+def legacy_clip_configuration_errors(parameters: dict[str, Any]) -> list[str]:
+    """Validate existing-storage metadata without fetching or echoing its values."""
+    url = resolve_placeholder(parameter_value(parameters, "legacyVideoBlobAccountUrl", ""))
+    container = resolve_placeholder(parameter_value(parameters, "legacyVideoBlobContainer", "videos"))
+    errors = []
+    if not isinstance(url, str) or (
+        url and re.fullmatch(r"https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/?", url) is None
+    ):
+        errors.append(
+            "legacyVideoBlobAccountUrl must be empty or an HTTPS Azure Blob account "
+            "URL without credentials, path, query or fragment."
+        )
+    if not isinstance(container, str) or (
+        re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", container) is None
+        or "--" in container
+    ):
+        errors.append("legacyVideoBlobContainer must be a valid 3-63 character Azure container name.")
+    return errors
+
+
 def main(*, require_deployment_attestation: bool = False) -> int:
     raw = json.loads(PARAMETERS_FILE.read_text(encoding="utf-8"))
     parameters = raw.get("parameters", {})
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors = retired_configuration_errors(parameters)
+    errors.extend(legacy_clip_configuration_errors(parameters))
     warnings: list[str] = []
     try:
         validate_prefixes(

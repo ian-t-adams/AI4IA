@@ -135,6 +135,43 @@ def _write_parameters(tmpdir: str, overrides: dict[str, Any]) -> Path:
     return path
 
 
+class LegacyClipPrerequisiteTests(unittest.TestCase):
+    def test_existing_storage_override_reaches_azd_and_ci_and_validates_offline(self) -> None:
+        parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
+        workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        for parameter, variable, default in (
+            ("legacyVideoBlobAccountUrl", "AI4IA_LEGACY_VIDEO_BLOB_ACCOUNT_URL", ""),
+            ("legacyVideoBlobContainer", "AI4IA_LEGACY_VIDEO_BLOB_CONTAINER", "videos"),
+        ):
+            self.assertEqual(parameters[parameter]["value"], "${" + variable + "=" + default + "}")
+            self.assertIn(variable + ": ${{ vars." + variable + " }}", workflow)
+        with _environment(
+            AI4IA_IMAGE_GENERATION_ENABLED="false", AI4IA_PHOTO_AVATARS_ENABLED="false",
+            AI4IA_LEGACY_VIDEO_BLOB_ACCOUNT_URL="https://retainedclips.blob.core.windows.net/",
+            AI4IA_LEGACY_VIDEO_BLOB_CONTAINER="old-clips",
+        ):
+            code, _, err = _run(REAL_PARAMETERS)
+            self.assertEqual(code, 0, err)
+
+    def test_legacy_storage_rejects_malformed_or_credential_urls_without_echoing_values(self) -> None:
+        for value in (
+            "http://retainedclips.blob.core.windows.net", "https://user:secret@example.com",
+            "https://retainedclips.blob.core.windows.net/videos",
+            "https://retainedclips.blob.core.windows.net/?sig=private",
+            " https://retainedclips.blob.core.windows.net/", 123,
+        ):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp, _environment():
+                code, _, err = _run(_write_parameters(tmp, {"legacyVideoBlobAccountUrl": value}))
+                self.assertEqual(code, 1)
+                self.assertIn("legacyVideoBlobAccountUrl", err)
+                self.assertNotIn(str(value), err)
+        for value in ("ab", "bad--name", "Uppercase", "a" * 64, "bad/name", None):
+            with self.subTest(container=value), tempfile.TemporaryDirectory() as tmp, _environment():
+                code, _, err = _run(_write_parameters(tmp, {"legacyVideoBlobContainer": value}))
+                self.assertEqual(code, 1)
+                self.assertIn("legacyVideoBlobContainer", err)
+
+
 class GroupPolicyPrerequisiteTests(unittest.TestCase):
     def test_group_policy_and_publication_are_unconfigured_by_default(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
