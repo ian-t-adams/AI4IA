@@ -56,7 +56,7 @@ window.AI4IA_SERVICES = [
     key: "foundry", name: "Azure AI Foundry accounts", azureType: "Microsoft.CognitiveServices/accounts",
     group: "AI", icon: "🧠", module: "foundry.bicep + models.bicep", resourcePattern: "mf-{workload}-{environment}-{region}",
     summary: "Regional Azure AI Services (Foundry) accounts, each with a default " +
-      "project. They serve chat/embedding/realtime/speech/image/video models (deployed from infra/models.json) and " +
+      "project. They serve chat/embedding/realtime/speech/image models (deployed from infra/models.json) and " +
       "Content Understanding. APIM reaches normal model deployments with MI; Content Understanding is a native data plane, while Responses Code Interpreter is the explicit direct model-inference exception.",
     identity: "APIM system MI reaches normal deployments; the API identity directly reaches CU and the exceptional Responses sandbox; the proxy has no Foundry RBAC",
     docs: [["Azure AI Foundry", "https://learn.microsoft.com/azure/ai-foundry/"], ["Content Understanding", "https://learn.microsoft.com/azure/ai-services/content-understanding/"]],
@@ -80,7 +80,9 @@ window.AI4IA_SERVICES = [
   {
     key: "storage", name: "Storage accounts (×2 + optional async)", azureType: "Microsoft.Storage/storageAccounts",
     group: "Data", icon: "💾", module: "data.bicep + proxyasync.bicep", resourcePattern: "st*",
-    summary: "Blob storage for raw + parsed documents (library) and for generated media (images/videos). Identity-based " +
+    summary: "Blob storage for raw + parsed documents (library) and for generated images and photo-avatar media. " +
+      "The repository source removes video generation and historical clip serving while preserving stored clips; " +
+      "live capability depends on the deployed application version, not this portal publication. Identity-based " +
       "access only. Durable proxy async adds a dedicated default-off account; Defender for Storage V2 protects both application accounts.",
     identity: "id-api owns application blobs; id-proxy gets Blob Data Contributor only on the optional async account",
     docs: [["Azure Blob Storage", "https://learn.microsoft.com/azure/storage/blobs/storage-blobs-introduction"]],

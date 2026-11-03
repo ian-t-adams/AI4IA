@@ -325,7 +325,6 @@ jobs:
       AI4IA_ENABLE_PRIVATE_TOOL_CATALOG: ${{ vars.AI4IA_ENABLE_PRIVATE_TOOL_CATALOG }}
       AI4IA_IMAGE_GENERATION_ENABLED: ${{ vars.AI4IA_IMAGE_GENERATION_ENABLED }}
       AI4IA_IMAGE_EDITING_ENABLED: ${{ vars.AI4IA_IMAGE_EDITING_ENABLED }}
-      AI4IA_VIDEO_GENERATION_ENABLED: ${{ vars.AI4IA_VIDEO_GENERATION_ENABLED }}
       # Default OFF. Custom photo avatars also require the Limited Access
       # capability at runtime and the enablement prerequisites in
       # docs/runbooks/feature-enablement.md#custom-photo-avatars.

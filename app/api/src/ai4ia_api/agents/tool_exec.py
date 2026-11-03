@@ -39,6 +39,8 @@ from ..request_constraints import tools_still_allowed
 # may be sync or async; :meth:`ToolExecutor.execute` awaits awaitables.
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Any]
 
+RETIRED_VIDEO_TOOL = "generate_video"
+
 
 class ToolExecutionError(Exception):
     """A handler failed, optionally after an externally observable dispatch."""
@@ -421,7 +423,6 @@ SELECTABLE_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "generate_image",
         "edit_image",
-        "generate_video",
         "process_document",
         "recall_memory",
         "remember_memory",
@@ -440,7 +441,6 @@ CHAT_ONLY_SYNTHETIC_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "generate_image",
         "edit_image",
-        "generate_video",
         "process_document",
         "run_workflow",
     }

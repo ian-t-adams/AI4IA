@@ -9,7 +9,7 @@
  *   library is on. It is not user-attachable and must not appear in
  *   `extraTools` -- the server builds it from the retrieval service, not from
  *   the step's tool list.
- * * `process_document`, `generate_image`, `generate_video` and `run_workflow`
+ * * `process_document`, `generate_image` and `run_workflow`
  *   are **chat-only**. They deliver results through a per-turn attachment sink
  *   that a workflow run has no way to drain, so a step that names one gets
  *   nothing. Historically that failed silently: the model narrated work it had
@@ -41,7 +41,6 @@ export const WORKFLOW_STEP_TOOLS = [
  */
 export const CHAT_ONLY_TOOLS = [
   "generate_image",
-  "generate_video",
   "process_document",
   "run_workflow",
 ] as const;

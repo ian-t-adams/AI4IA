@@ -333,13 +333,6 @@ automatically a supported Speech Voice Live managed model.
   in `app/web/src/lib/avatarVideo.ts` and plays no PCM. The Content Security Policy
   in `app/web/src/proxy.ts` sets no `media-src` or `default-src`, so the player's
   `blob:` MediaSource URL needs no policy change. There is no `RTCPeerConnection`.
-- **Video generation.** The pattern for async provider jobs is in
-  `app/api/src/ai4ia_api/videos/service.py`,
-  `app/api/src/ai4ia_api/videos/artifacts.py` and
-  `app/api/src/ai4ia_api/videos/availability.py`: provider-side job state, bounded
-  polling, owner-scoped Blob artifacts and a shared availability predicate. Media
-  today arrives as base64 or through gateway content routes. No code fetches a
-  provider SAS link yet.
 - **APIM's permissions.** APIM's identity holds Azure OpenAI User and Cognitive
   Services User on every regional account, plus Foundry User on the Speech Voice
   Live account (`infra/modules/gateway.bicep`). Cognitive Services User grants all
@@ -991,8 +984,9 @@ avatar byte stays on the existing governed path: browser → FastAPI
 
 Only if the registered use case covers it.
 
-- **Reuse.** Reuse the video generation seams: the availability predicate,
-  durable owner-scoped Blob artifacts and bounded polling. `customized: true`,
+- **Separate implementation.** This remains an unbuilt proposal, not a supported
+  generation capability. It would require owner-scoped Blob artifacts, bounded
+  polling and a new reviewed availability contract. `customized: true`,
   `photoAvatarBaseModel` and the voice come from the catalog. Output is an h264
   MP4 with a time to live.
 - **Download.** `outputs.result` is fetched with the same bounded, validated fetch

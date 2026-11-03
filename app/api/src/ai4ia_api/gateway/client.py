@@ -30,7 +30,7 @@ from ..model_evidence import CapturedModelCall, begin_model_call
 from ..request_constraints import (
     constrain_tool_parameters, contains_tool_output, fresh_session_required, tools_allowed,
 )
-from ..http_retry import parse_retry_after, request_with_retry
+from ..http_retry import parse_retry_after
 from ..hard_quota.coverage import AttemptEnvelope
 from ..hard_quota.dispatch import DispatchLease, admitted_dispatch, current_dispatch_owner
 from ..hard_quota.models import QuotaError, Surface
@@ -529,14 +529,8 @@ class ModelGatewayClient:
         self._image_api_version = settings.gateway_image_api_version
         self._image_edit_api_version = settings.gateway_image_edit_api_version
         self._image_timeout = settings.gateway_image_timeout_seconds
-        self._video_api_version = settings.gateway_video_api_version
-        self._video_timeout = settings.gateway_video_timeout_seconds
         self._audio_api_version = settings.gateway_audio_api_version
         self._audio_timeout = settings.gateway_audio_timeout_seconds
-        # Transient-retry policy for the idempotent GET reads only (Sora job poll
-        # + content download). Writes on this client (chat/embed/image/audio/job
-        # create) are deliberately NOT retried — see ai4ia_api.http_retry.
-        self._retry_policy = settings.outbound_retry_policy()
         self._http = http_client
         self._hard_quota_enabled = settings.hard_quota_enabled
         self._model_telemetry = ModelTelemetry(settings)
@@ -1215,123 +1209,6 @@ class ModelGatewayClient:
                 raise ModelGatewayError(
                     502, "malformed provider document response"
                 ) from exc
-        finally:
-            if owned:
-                await client.aclose()
-
-    # --- Video generation ------------------------------------------------------
-    # Sora is an async job API (NOT a single round-trip like images): create a
-    # job, poll it to completion, then download the generation's MP4 bytes. The
-    # three primitives below are intentionally thin; the submit -> poll ->
-    # download orchestration (timeout, backoff, status interpretation) lives in
-    # :class:`~ai4ia_api.videos.service.VideoGenerationService` so the gateway
-    # stays a pure transport, mirroring the image gateway/service split.
-    def _video_url(self, deployment: str, suffix: str = "") -> str:
-        """Build the proxy-facing Sora URL.
-
-        The deployment stays in the path so SimpleL7Proxy can stamp its trusted
-        model header on bodyless status/content GETs. APIM then rewrites the
-        path to the provider's current ``/openai/v1/videos`` surface.
-        """
-        if self._style == GatewayProviderStyle.azure_openai_native:
-            url = f"{self._base}/deployments/{deployment}/videos{suffix}"
-        else:
-            url = f"{self._base}/videos{suffix}"
-        if self._style == GatewayProviderStyle.azure_openai_native:
-            sep = "&" if "?" in url else "?"
-            url = f"{url}{sep}api-version={self._video_api_version}"
-        return url
-
-    async def create_video_job(
-        self,
-        *,
-        deployment: str,
-        prompt: str,
-        width: int,
-        height: int,
-        n_seconds: int,
-        correlation_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Submit a Sora video-generation job; returns the parsed job JSON
-        (``{id, status, ...}``). The deployment is carried in the ``model`` body
-        field (Sora's create API keys off the body, not the path)."""
-        url = self._video_url(deployment)
-        body: dict[str, Any] = {
-            "model": deployment,
-            "prompt": prompt,
-            "size": f"{width}x{height}",
-            "seconds": str(n_seconds),
-        }
-        if self._http is not None:
-            client, owned = self._http, False
-        else:
-            client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
-        try:
-            resp = await self._post(
-                client, url, surface="video", deployment=deployment, payload=body,
-                headers=self._auth_headers(correlation_id),
-                json=body,
-                timeout=self._video_timeout,
-            )
-            if resp.status_code >= 400:
-                raise ModelGatewayError(resp.status_code, resp.text)
-            return resp.json()
-        finally:
-            if owned:
-                await client.aclose()
-
-    async def get_video_job(
-        self, *, deployment: str, job_id: str, correlation_id: str | None = None
-    ) -> dict[str, Any]:
-        """Poll a Sora video's status; returns the parsed video JSON."""
-        url = self._video_url(deployment, f"/{job_id}")
-        if self._http is not None:
-            client, owned = self._http, False
-        else:
-            client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
-        try:
-            resp = await request_with_retry(
-                lambda: client.get(
-                    url,
-                    headers=self._auth_headers(correlation_id),
-                    timeout=self._video_timeout,
-                ),
-                method="GET",
-                policy=self._retry_policy,
-            )
-            if resp.status_code >= 400:
-                raise ModelGatewayError(resp.status_code, resp.text)
-            return resp.json()
-        finally:
-            if owned:
-                await client.aclose()
-
-    async def get_video_content(
-        self,
-        *,
-        deployment: str,
-        video_id: str,
-        correlation_id: str | None = None,
-    ) -> bytes:
-        """Download a completed generation's MP4 bytes."""
-        url = self._video_url(deployment, f"/{video_id}/content")
-        if self._http is not None:
-            client, owned = self._http, False
-        else:
-            client, owned = httpx.AsyncClient(timeout=self._video_timeout), True
-        try:
-            resp = await request_with_retry(
-                lambda: client.get(
-                    url,
-                    headers=self._auth_headers(correlation_id),
-                    timeout=self._video_timeout,
-                ),
-                method="GET",
-                policy=self._retry_policy,
-            )
-            if resp.status_code >= 400:
-                raise ModelGatewayError(resp.status_code, resp.text)
-            return resp.content
         finally:
             if owned:
                 await client.aclose()

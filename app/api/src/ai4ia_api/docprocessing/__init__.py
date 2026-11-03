@@ -6,7 +6,7 @@ document the authenticated user already has in their library, reusing the
 already-extracted parsed content (Content Understanding / ingest) rather than
 re-implementing upload or ingestion.
 
-Layout mirrors :mod:`ai4ia_api.images` and :mod:`ai4ia_api.videos`:
+Layout mirrors :mod:`ai4ia_api.images`:
 
 * :mod:`service` — the shared, governed core (:class:`DocumentProcessingService`)
   that owns instruction/mode validation, the reuse of the ready-library read, the

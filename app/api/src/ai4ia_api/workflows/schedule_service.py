@@ -104,6 +104,7 @@ class WorkflowScheduleService:
     async def ensure_started(self, value: WorkflowSchedule) -> WorkflowSchedule:
         if not value.enabled or value.status not in {"pending", "acceptance_unknown"}:
             return value
+        self.automation.access.require_current_tools(value.bundle.workflow, value.bundle.agents)
         host = self.automation.host
         if host is None:
             raise AutomationError("automation_unavailable", "The durable host is unavailable.", status=503)

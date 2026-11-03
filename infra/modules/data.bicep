@@ -43,12 +43,6 @@ param deployImageStorage bool = false
 @description('Blob container holding tool-generated images, scoped per-user as {userId}/generated/{id}.png.')
 param imageBlobContainer string = 'images'
 
-@description('Provision the generated-video blob container. Gated on the video-generation flag. Reuses the generated-media storage account (shared with images) and adds a dedicated videos container — the account-scoped RBAC already covers it.')
-param deployVideoStorage bool = false
-
-@description('Blob container holding tool-generated videos, scoped per-user as {userId}/generated/{id}.mp4.')
-param videoBlobContainer string = 'videos'
-
 @description('Provision the photo avatar Cosmos container and preview Blob container. Gated on the photo avatar flag so nothing is created by default. The preview container reuses the generated-media account; its account-scoped RBAC already covers it.')
 param deployPhotoAvatarStorage bool = false
 
@@ -441,15 +435,13 @@ resource documentStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-
 }
 
 // ---------------- Generated-media blob storage ----------------
-// A single dedicated media account backs both the generate_image and
-// generate_video tools, fully independent of the document library so
-// enabling either tool never touches the library's storage. Provisioned when
-// EITHER tool is enabled; each tool's container is created only when its own flag
-// is on. Same hardening: AAD-only (no account keys), private containers, TLS 1.2+.
+// Shared by image generation and photo avatar previews, independently of the
+// document library. Existing legacy clip containers are retained (unread) by
+// incremental ARM deployments but are no longer provisioned. AAD-only, private, TLS 1.2+.
 // Artifacts live under {userId}/generated/{id}.{ext} — the userId prefix is the
 // per-user isolation boundary enforced by the authenticated serve endpoints.
 var imageStorageName = 'sti${uniqueString(resourceGroup().id)}'
-var deployMediaStorage = deployImageStorage || deployVideoStorage || deployPhotoAvatarStorage
+var deployMediaStorage = deployImageStorage || deployPhotoAvatarStorage
 
 resource imageStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deployMediaStorage) {
   name: imageStorageName
@@ -486,14 +478,6 @@ resource imageContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
   }
 }
 
-resource videoContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deployVideoStorage) {
-  parent: imageBlobService
-  name: videoBlobContainer
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
 resource photoAvatarContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deployPhotoAvatarStorage) {
   parent: imageBlobService
   name: photoAvatarBlobContainer
@@ -513,7 +497,7 @@ resource imageStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 }
 
 // Same cost-aware blob diagnostics as the document account, for the shared
-// generated-media account (images + videos). Created when either media tool is on.
+// generated-media account. Created with image or photo avatar storage.
 resource imageStorageDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployMediaStorage) {
   name: 'to-log-analytics'
   scope: imageBlobService
@@ -537,8 +521,6 @@ output documentBlobContainerName string = documentBlobContainer
 output inlineAttachmentBlobContainerName string = inlineAttachmentBlobContainer
 output imageBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
 output imageBlobContainerName string = imageBlobContainer
-output videoBlobAccountUrl string = imageStorage.?properties.primaryEndpoints.blob ?? ''
-output videoBlobContainerName string = videoBlobContainer
 output photoAvatarBlobAccountUrl string = deployPhotoAvatarStorage ? (imageStorage.?properties.primaryEndpoints.blob ?? '') : ''
 output photoAvatarBlobContainerName string = photoAvatarBlobContainer
 

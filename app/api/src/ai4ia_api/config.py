@@ -146,16 +146,6 @@ class Settings(BaseSettings):
     # 2025-04-01-preview inference version; GA 2024-10-21 has no edits
     # operation. Kept separate so the verified generation version is unchanged.
     gateway_image_edit_api_version: str = "2025-04-01-preview"
-    # Video generation (Sora 2) is an async job: create -> poll ->
-    # download. The Sora v1 REST surface accepts the optional ``preview``
-    # api-version. Each
-    # individual HTTP call uses ``gateway_video_timeout_seconds``; the service
-    # polls every ``gateway_video_poll_interval_seconds`` up to a hard
-    # ``gateway_video_max_wait_seconds`` ceiling so a turn can never hang.
-    gateway_video_api_version: str = "preview"
-    gateway_video_timeout_seconds: float = 60.0
-    gateway_video_poll_interval_seconds: float = 5.0
-    gateway_video_max_wait_seconds: float = 240.0
     # Voice — speech-to-text (whisper) and text-to-speech
     # (gpt-4o-mini-tts / tts-hd) ride the same gateway/auth path as chat. They
     # track their own api-version and a generous timeout (audio synthesis /
@@ -166,8 +156,8 @@ class Settings(BaseSettings):
     gateway_audio_timeout_seconds: float = 120.0
     # --- Outbound transient-retry (bespoke httpx clients) ---
     # Conservative retry for IDEMPOTENT outbound reads (GET) on our own httpx
-    # clients only — the model-gateway video poll/download and the Content
-    # Understanding result poll. Retries only transient failures
+    # clients only — e.g. the Content Understanding result poll.
+    # Retries only transient failures
     # (connection/timeout errors, HTTP 429/502/503/504), honoring Retry-After,
     # with capped exponential backoff + jitter. The two hard caps below bound the
     # blast radius so a dead dependency fails fast; writes are never retried.
@@ -486,7 +476,6 @@ class Settings(BaseSettings):
 
     # --- Media generation and retained artifacts ---
     image_generation_enabled: bool = False
-    video_generation_enabled: bool = False
     # Image editing reads and writes generated-image artifacts, so it requires
     # image generation (and therefore its durable storage outside local).
     image_editing_enabled: bool = False
@@ -502,16 +491,7 @@ class Settings(BaseSettings):
     image_blob_account_url: str | None = None
     image_blob_container: str = "images"
 
-    # --- Generated-video blob storage ---
-    # Durable home for MP4 clips produced by the ``generate_video`` agent tool.
-    # Each artifact lives under ``{userId}/generated/{id}.mp4`` and is reached
-    # ONLY via the api managed identity (AAD) through an authenticated serve
-    # endpoint, never a public blob URL. Unset locally/in tests, where a
-    # process-local in-memory store is used instead. May reuse the image storage
-    # account (a distinct container) or a dedicated one.
-    video_blob_account_url: str | None = None
-    video_blob_container: str = "videos"
-
+    # --- Legacy video blob storage (read-only) ---
     # --- Custom photo avatars (Phase 1, default OFF) ---
     # Create, status, preview, list, delete and report for avatars generated
     # from a text description. The home account, api-version, attribute enums
@@ -1354,17 +1334,16 @@ class Settings(BaseSettings):
                 )
         if self.memory_store == MemoryStoreKind.cosmos and not self.cosmos_endpoint:
             raise RuntimeError("AI4IA_COSMOS_ENDPOINT is required for the cosmos memory store.")
-        for media in ("image", "video"):
-            if (
-                self.env != Environment.local
-                and getattr(self, f"{media}_generation_enabled")
-                and not (getattr(self, f"{media}_blob_account_url") or "").strip()
-            ):
-                raise RuntimeError(
-                    f"AI4IA_{media.upper()}_GENERATION_ENABLED requires "
-                    f"AI4IA_{media.upper()}_BLOB_ACCOUNT_URL outside local "
-                    "so generated artifacts remain durable."
-                )
+        if (
+            self.env != Environment.local
+            and self.image_generation_enabled
+            and not (self.image_blob_account_url or "").strip()
+        ):
+            raise RuntimeError(
+                "AI4IA_IMAGE_GENERATION_ENABLED requires "
+                "AI4IA_IMAGE_BLOB_ACCOUNT_URL outside local "
+                "so generated artifacts remain durable."
+            )
         if self.image_editing_enabled and not self.image_generation_enabled:
             # Edits read generated/library sources and store their output as
             # image artifacts, whose durable storage is emitted with generation.

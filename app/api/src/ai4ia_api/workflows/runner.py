@@ -61,7 +61,8 @@ from ..sessions.models import ActivityStep
 from ..usage.models import TokenUsage
 from ..usage.pricing import PricingBook
 from ..publishing.execution import WorkflowPublicationBuilder, run_with_publication
-from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow, WorkflowStep
+from .models import INPUT_TOKEN, PREVIOUS_TOKEN, Workflow, WorkflowStep, WorkflowValidationError
+from .service import validate_workflow_execution_tools, validate_workflow_step_execution_tools
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,10 @@ async def run_workflow_step(
         )
 
     target = composed.get(step.agent)
+    try:
+        validate_workflow_step_execution_tools(step, target, index)
+    except WorkflowValidationError as exc:
+        return rejected(str(exc))
     if target is None or not target.enabled:
         err = f"Step {index + 1}: agent '{step.agent}' is unavailable."
         return rejected(err)
@@ -473,6 +478,10 @@ async def run_workflow(
     forwarded per step — see :func:`run_workflow_step`.
     """
     usage = TokenUsage.empty()
+    try:
+        validate_workflow_execution_tools(workflow, composed)
+    except WorkflowValidationError as exc:
+        return WorkflowRunResult(ok=False, text=str(exc))
     trace: list[WorkflowStepResult] = []
     previous = ""
 

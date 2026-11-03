@@ -38,7 +38,7 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
 ## Non-negotiable rules
 
 1. **Gateway-first model traffic.** Compatible HTTP/SSE calls (Chat Completions,
-   Responses, agents, embeddings, images, videos, REST speech, and Claude Messages) go
+   Responses, agents, embeddings, images, REST speech, and Claude Messages) go
    SimpleL7Proxy → APIM → Foundry. FastAPI translates provider schemas but never
    turns that into direct provider egress. Two explicit **SimpleL7Proxy**
    exceptions, both still pass through separately scoped APIM APIs:
@@ -66,8 +66,7 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    voice-provider projections all honor disablement.
    Never interpret runtime disablement as physical deletion or free quota. Every
    seam offering a capability backed by such a model shares one availability
-   predicate and still re-checks at execution (video:
-   `app/api/src/ai4ia_api/videos/availability.py`).
+   predicate and still re-checks at execution.
    Parameter profiles are catalog-owned too: `maxTokensParameter` selects the
    Chat Completions output-limit spelling; `defaultMaxOutputTokens` can leave
    input room below a shared context/output ceiling without falsifying that
@@ -900,11 +899,12 @@ through nested purges, and rejects all protected groups before the first Azure
 call. Its behavioral tests must record stub calls even while preview mode is on.
 
 Runtime media gates must be explicit Booleans, not inferred from artifact-store
-construction or Blob URLs. Enabled image/video generation outside local requires
-durable storage. `generate_video` additionally needs a runtime-enabled video
-model. Retire video through `runtimeEnabled`, not the flag: `api.bicep` emits the
-video Blob settings only while the flag is on, and those settings serve existing
-clips. Regional batch metrics must follow each resource's location;
+construction or Blob URLs. Enabled image generation outside local requires
+durable storage. Video generation, clip playback and the Sora desired deployments
+are removed; stored `kind: "video"` attachments render as an inert unavailable
+notice with no serve route or Blob configuration. Do not delete retained clips,
+records or cloud resources without separate approval.
+Regional batch metrics must follow each resource's location;
 Search may differ from the API/Cosmos region. Preprovision naming validation
 preserves the full uniqueness suffix without renaming existing resources.
 
@@ -1369,11 +1369,10 @@ The shipped Balanced pool is Astra/Sol/Luna, not a restriction on other app choi
    provider path just moves the failure later.
 6. Provider-native media routes are catalog-owned. MAI image models use the
    `.services.ai.azure.com/mai/v1/images/generations` surface with `width` and
-   `height`; Sora 2 uses the Azure OpenAI v1 `/videos` create/status/content
-   surface. Keep the deployment in the proxy-facing path so SimpleL7Proxy can
+   `height`. Keep the deployment in the proxy-facing path so SimpleL7Proxy can
    stamp the trusted model header, then let APIM rewrite to the fixed provider
    operation. Do not reuse the Azure OpenAI image route or the retired
-   `/v1/video/generations/jobs` contract.
+   video-generation contract.
    Every image row also carries a generated APIM operation allowlist:
    `images/generations`, plus `images/edits` only when the row declares the strict
    `imageEditing` Boolean (Azure OpenAI image rows only). Edits are

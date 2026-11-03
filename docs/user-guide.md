@@ -461,7 +461,7 @@ entitlements, metering, or tool governance.
 
 ## Generated artifacts
 
-Image, video, processing, and export tools create durable artifacts when enabled.
+Image, processing, and export tools create durable artifacts when enabled.
 Downloads use authenticated API routes, not anonymous Blob links.
 
 For images, open **Setup > Agent & tools > Image generation** in a saved
@@ -482,14 +482,34 @@ in the conversation; the source is never changed. You can also type
 `edit_image` tool to an agent. Region edits are unavailable for rotated phone
 photos; edit the whole image instead.
 
-Video generation is asynchronous and slower than a text reply. Supported clip
-lengths are 4, 8, or 12 seconds, with 4 seconds as the default.
+The repository source removes video generation and playback of previously
+generated clips. The behavior below applies to that application version; live
+capability depends on the deployed version, not publication of this guide.
+In that version, old conversations still show where a clip was, marked
+"Video unavailable", but it can no longer be played; no saved clips or
+conversations are deleted. Video uploads, analysis and live avatars are unchanged.
 
-Video generation is offered only while a video model is enabled. The source
-subscription extended Sora 2 to November 2, 2026, so the catalog restores it
-temporarily; it becomes available after the matching app/gateway rollout.
-There is no verified successor. Clips you already generated remain viewable,
-including if generation is disabled again.
+If a conversation, agent or workflow still selects the retired
+`generate_video` tool, the app refuses to run it and asks you to remove that
+tool. For direct chat with that conversation or agent, refusal happens before
+any model call and the refused chat message is not saved. Workflow runs and
+schedules refuse before execution or scheduling. For a delegated specialist,
+only the specialist's own model call and checkpoint are prevented: the parent
+model may already have run and its chat context may already be saved when it
+requests delegation. Turning conversation tools off avoids this retired-tool
+refusal, but the selected source must still satisfy the existing tool-free
+requirements: sources with other required tools, published tool selections or
+linked agents cannot run tool-free.
+
+To fix it, remove the tool from the conversation's tool settings, the agent
+editor or the workflow step. The agent and workflow editors list it under
+**Unavailable saved tools** with a **Remove** button; conversation tool
+settings show **Remove unavailable selection** while tools are on. In the
+agent and workflow editors, the stored definition doesn't change until you
+choose Save, and your other tools stay selected. In conversation tool
+settings, removing the tool saves the change right away; for a tool inherited
+from an agent, it records a removal for that conversation only. Retired tools
+can't be added again or run.
 
 **Cost estimate unavailable** is not free. Published estimates can differ from
 Azure billing, especially for provider-specific media meters.

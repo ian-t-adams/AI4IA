@@ -266,6 +266,43 @@ describe("AgentBuilder", () => {
     })));
   });
 
+  it("lets owners remove retired tools while preserving valid selections until save", async () => {
+    const legacyAgent = { ...MINE[0], tools: ["generate_video", "calculator"] };
+    mocks.listMyAgents.mockResolvedValue([legacyAgent]);
+    mocks.updateAgent.mockImplementation(async (name, body) => ({
+      ...legacyAgent,
+      ...body,
+      name,
+      revision: 8,
+    }));
+    const user = userEvent.setup();
+    render(<AgentBuilder agents={AGENTS} models={[]} onChanged={async () => {}} />);
+
+    await user.click(await screen.findByRole("button", { name: "Helper" }));
+    await user.click(screen.getByText("Tools", { selector: "summary" }));
+    expect(screen.queryByRole("checkbox", { name: "Generate video" })).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Calculator" })).toBeChecked();
+    expect(screen.getByText("generate_video", { selector: "code" })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Save memory" })).not.toBeChecked();
+    expect(mocks.updateAgent).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Remove unavailable tool generate_video" }));
+    expect(mocks.updateAgent).not.toHaveBeenCalled();
+    expect(legacyAgent.tools).toEqual(["generate_video", "calculator"]);
+    expect(screen.getByRole("checkbox", { name: "Calculator" })).toBeChecked();
+    expect(screen.queryByText("generate_video", { selector: "code" })).toBeNull();
+    await user.click(screen.getByRole("checkbox", { name: "Save memory" }));
+    expect(screen.getByRole("checkbox", { name: "Calculator" })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(mocks.updateAgent).toHaveBeenCalledWith(
+        "helper",
+        expect.objectContaining({ tools: ["calculator", "remember_memory"] }),
+      ),
+    );
+  });
+
   it("retains new and existing drafts when switching is cancelled", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);

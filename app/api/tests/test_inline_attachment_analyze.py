@@ -171,7 +171,7 @@ def test_capability_exposes_single_disjoint_tool():
     assert names == {ANALYZE_ATTACHMENT_TOOL_NAME}
     assert names.isdisjoint(
         {"calculator", "get_current_time", "delegate_to_agent", "fetch_document",
-         "run_code", "export_document", "generate_image", "generate_video",
+         "run_code", "export_document", "generate_image",
          "process_document"}
     )
     assert set(handlers) == names

@@ -19,7 +19,7 @@ SimpleL7Proxy.
   caps, optional rolling summarization, standing and one-turn agent routing,
   conversation tool/document selections, inspector snapshots, and slash commands.
 - Agents/tools: curated agents, user-defined agents, workflows, governed built-in
-  tools, generated image/video/document artifacts, Web IQ search tools when
+  tools, generated image/document artifacts, legacy read-only video artifacts, Web IQ search tools when
   enabled, and user-registered remote MCP servers. The default-off
   `AI4IA_TOOL_AUTO_APPROVE_ENABLED` gate permits explicit session/run consent for
   enabled tools without bypassing execution authorization or losing activity and

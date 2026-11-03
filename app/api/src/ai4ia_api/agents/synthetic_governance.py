@@ -135,16 +135,6 @@ _GENERATE_IMAGE = ToolSpec(
     # without the user asking. "Draw me a cat" should not raise a prompt.
 )
 
-_GENERATE_VIDEO = ToolSpec(
-    name="generate_video",
-    description="Generate a video from a model-written prompt and attach it to the reply.",
-    risk=ToolRisk.external,
-    injection_only_risk=True,
-    # As generate_image, and materially more expensive per call -- which is an
-    # argument for a spend control, not for an approval prompt. A prompt the user
-    # clicks through on every legitimate request teaches them to click through.
-)
-
 _EDIT_IMAGE = ToolSpec(
     name="edit_image",
     description="Edit an image already in this conversation and attach the result to the reply.",
@@ -257,7 +247,6 @@ SYNTHETIC_TOOL_SPECS: dict[str, ToolSpec] = {
         _ANALYZE_ATTACHMENT,
         _GENERATE_IMAGE,
         _EDIT_IMAGE,
-        _GENERATE_VIDEO,
         _REMEMBER_MEMORY,
         _EXPORT_DOCUMENT,
         *(_read_spec(n, d) for n, d in _READ_ONLY_DESCRIPTIONS.items()),

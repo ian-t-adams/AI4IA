@@ -40,7 +40,7 @@ per-operation replay identity and outcome recovery are implemented.
 | Plain chat, agent loops, child agents, in-request workflow steps, summaries and memory extraction | `ModelGatewayClient._post` and `_stream_request` | Application dispatch attempts; token/dollar caps refused without a proven downstream-attempt envelope |
 | Chat Completions, Responses, Claude SSE and non-streaming calls | The same gateway boundaries after provider adaptation | Every HTTP attempt is admitted separately, including the `stream_options` fallback |
 | Memory/library embeddings | Gateway `embed` POST | Request only; token/dollar caps refused |
-| Images, video job creation, Mistral OCR, REST transcription and synthesis | Gateway POST wrapper | Request only; corresponding token/dollar caps refused |
+| Images, Mistral OCR, REST transcription and synthesis | Gateway POST wrapper | Request only; corresponding token/dollar caps refused |
 | Content Understanding binary and inline analysis | `ContentUnderstandingClient._post_document` | Request only; page/downstream-model bounds unavailable |
 | Direct Code Interpreter execution | `CodeInterpreterClient._post`, compute surface | One request and one application compute attempt; token/dollar caps refused |
 | Code Interpreter file uploads | The same POST wrapper, external-tool surface | Request only; not a sandbox execution |
