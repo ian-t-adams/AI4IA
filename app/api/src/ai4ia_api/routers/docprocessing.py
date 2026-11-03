@@ -2,8 +2,7 @@
 
 The ``process_document`` agent tool persists each over-cap result to per-user blob
 storage and returns only a small reference; the browser fetches the text here.
-Mirrors the image/video serve endpoints (:mod:`ai4ia_api.routers.images`,
-:mod:`ai4ia_api.routers.videos`): the blob path is composed from the
+Mirrors the image serve endpoint (:mod:`ai4ia_api.routers.images`): the blob path is composed from the
 *authenticated* user's id, so a user can only ever read their own results — an id
 belonging to another user resolves to a path that does not exist for the caller
 (404), never a cross-user read.

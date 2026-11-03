@@ -1,12 +1,11 @@
 """The ``process_document`` synthetic capability.
 
-Mirrors the ``generate_image`` / ``generate_video`` capabilities
-(:mod:`ai4ia_api.images.capability`, :mod:`ai4ia_api.videos.capability`): a
+Mirrors the ``generate_image`` capability
+(:mod:`ai4ia_api.images.capability`): a
 function schema + an async handler injected into
 :func:`~ai4ia_api.agents.runtime.run_agent_turn` as ``extra_tools`` /
 ``extra_handlers``. This makes document processing a tool **any agent can attach** —
-decoupled from any single agent — completing the "videos, images, document
-processing" triad so users compose any combination into their own personas.
+decoupled from any single agent, so users compose it into their own personas.
 
 Why synthetic (closure-bound) rather than a registry tool: processing needs real
 services (the document retrieval consumer, the model gateway, the entitlement gate,

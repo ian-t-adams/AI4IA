@@ -69,6 +69,7 @@ from ..workflows.models import (
     WorkflowUpdate,
     WorkflowValidationError,
 )
+from ..workflows.service import validate_workflow_execution_tools
 from ..workflows.runner import run_workflow
 from ..workflows.persistence import persist_run_message
 from ..workflows.receipts import workflow_activity, workflow_receipt, workflow_safety
@@ -510,6 +511,10 @@ async def run_workflow_endpoint(
         agent for agent_name in dict.fromkeys(step.agent for step in workflow.steps)
         if (agent := composed.get(agent_name)) is not None
     ])
+    try:
+        validate_workflow_execution_tools(workflow, snapshot_agents)
+    except WorkflowValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     async def consent_for(
         run_id: str, existing: Message | None = None,

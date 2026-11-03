@@ -21,6 +21,23 @@ function tool(name: string, available = true): ToolCatalogItem {
 }
 
 describe("stepCapabilities", () => {
+  it("does not advertise a saved video-generation reference as a runnable capability", () => {
+    const attached = ["generate_video", "generate_image"];
+    const chips = stepCapabilities({
+      attached,
+      extra: [],
+      catalog: [tool("generate_video"), tool("generate_image")],
+      selectedDocCount: 0,
+      agentLabel: "Helper",
+    });
+
+    expect(chips.some((chip) => chip.key === "generate_video")).toBe(false);
+    expect(chips.find((chip) => chip.key === "generate_image")).toMatchObject({
+      state: "chat-only",
+    });
+    expect(attached).toEqual(["generate_video", "generate_image"]);
+  });
+
   it("marks only canonical mcp:<server>/<tool> names as MCP chat-only", () => {
     const chips = stepCapabilities({
       attached: ["mcp:calendar/create_event", "custom/tool"],

@@ -76,7 +76,7 @@ carries a :class:`~ai4ia_api.agents.tools.ToolSpec`. Two independent sources sup
 one: the registry, which covers every MCP tool on both planes (all ``external``),
 and :mod:`ai4ia_api.agents.synthetic_governance`, which covers the *synthetic*
 capabilities the runtime dispatches from ``extra_handlers`` — web search,
-``browse_url``, code execution, image/video generation, memory, document reads. A
+``browse_url``, code execution, image generation, memory, document reads. A
 synthetic capability with no entry in that table is **refused**
 (``DenyReason.ungoverned``) rather than run: acquiring an execution route without
 also acquiring a risk classification is the failure mode this closes.

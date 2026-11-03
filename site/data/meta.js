@@ -30,7 +30,7 @@ window.AI4IA_META = {
     tenant: "Contoso",
     primaryRegion: "East US 2",
     regions: [
-      { region: "East US 2", role: "Primary US model set, realtime, image/video, router, evaluations" },
+      { region: "East US 2", role: "Primary US model set, realtime, image, router, evaluations" },
       { region: "Sweden Central", role: "EU-resident model parity where available" },
       { region: "West US", role: "Targeted models such as MAI Image and deep research" },
     ],
@@ -69,8 +69,6 @@ window.AI4IA_META = {
       note: "Live under the non-blocking policy; provider-specific assessment visibility remains incomplete." },
     { name: "Image editing", templateOn: false, observedOn: false, param: "imageEditingEnabled",
       note: "New and default-off. Requires image generation; edits run on catalog models that declare imageEditing, with GPT Image 2.5 Sunburst preferred. Not yet observed live." },
-    { name: "Video generation", templateOn: true, observedOn: true, param: "videoGenerationEnabled",
-      note: "The flag stays on so existing clips stay viewable. The October 21 subscription read extended Sora 2 to November 2; catalog re-admission restores the existing routes after rollout, with no new capacity or verified successor." },
     { name: "Document & multimodal understanding (Content Understanding)", templateOn: true, observedOn: true, param: "documentUnderstandingEnabled" },
     { name: "Document compute (Responses API code interpreter)", templateOn: true, observedOn: true, param: "documentComputeEnabled" },
     { name: "Custom (bring-your-own) MCP tools", templateOn: true, observedOn: true, param: "customToolsEnabled",

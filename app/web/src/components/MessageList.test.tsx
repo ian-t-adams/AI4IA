@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { MessageList, type DisplayMessage } from "./MessageList";
-import { fetchImageArtifact } from "@/lib/api";
+import { fetchDocumentArtifact, fetchImageArtifact } from "@/lib/api";
 import type { ExecutionReceipt, ModelCallEvidence, RetrievedSource } from "@/lib/types";
 
 // Speech playback owns <audio> + object-URL plumbing and hits the TTS endpoint on
@@ -16,7 +16,6 @@ const { mockToggle, scrollIntoViewMock } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/api", () => ({
   fetchImageArtifact: vi.fn(() => new Promise<Blob>(() => {})),
-  fetchVideoArtifact: vi.fn(() => new Promise<Blob>(() => {})),
   fetchDocumentArtifact: vi.fn(() => new Promise<Blob>(() => {})),
 }));
 vi.mock("@/lib/voice", () => ({
@@ -49,6 +48,38 @@ function setScrollMetrics(
     scrollTop: { configurable: true, writable: true, value: scrollTop },
   });
 }
+describe("MessageList retired video history", () => {
+  it("shows stored clips as unavailable without fetching, while documents still load", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    vi.mocked(fetchDocumentArtifact).mockClear();
+    vi.mocked(fetchImageArtifact).mockClear();
+    const { container } = render(
+      <MessageList
+        messages={[
+          msg({
+            id: "a1",
+            role: "assistant",
+            content: "Earlier clip",
+            attachments: [
+              { id: "c".repeat(32), kind: "video", mimeType: "video/mp4", prompt: "A sunrise", model: "sora-2", size: "1280x720", durationSeconds: 4 },
+              { id: "d".repeat(32), kind: "document", mimeType: "text/markdown", filename: "notes.md", prompt: "", model: "", size: "" },
+            ],
+          }),
+        ]}
+      />,
+    );
+    const note = screen.getByRole("note", { name: "Video unavailable" });
+    expect(note).toHaveTextContent("can no longer be played");
+    expect(note).toHaveTextContent("Requested: A sunrise");
+    expect(container.querySelector("video")).toBeNull();
+    expect(screen.queryByLabelText("Loading video")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchImageArtifact).not.toHaveBeenCalled();
+    expect(fetchDocumentArtifact).toHaveBeenCalledWith("d".repeat(32));
+    fetchSpy.mockRestore();
+  });
+});
+
 describe("MessageList", () => {
   it("renders the empty-state prompt when there are no messages", () => {
     render(<MessageList messages={[]} />);

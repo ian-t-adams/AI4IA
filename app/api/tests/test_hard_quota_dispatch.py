@@ -99,7 +99,7 @@ def harness(request):
 
 CASES = [
     "chat", "responses", "anthropic", "chat-stream", "responses-stream", "anthropic-stream",
-    "embedding", "image", "image-edit", "video", "speech", "transcription", "ocr",
+    "embedding", "image", "image-edit", "speech", "transcription", "ocr",
     "cu-submit", "cu-inline", "compute", "compute-upload", "webiq", "mcp-tool", "mcp-resource",
     "photo-avatar-create",
 ]
@@ -206,10 +206,6 @@ async def outbound(request, harness):
                 return await gateway.edit_image(
                     deployment=DEPLOYMENT, prompt="hello", image=EDIT_SOURCE,
                     image_content_type="image/png",
-                )
-            if case == "video":
-                return await gateway.create_video_job(
-                    deployment=DEPLOYMENT, prompt="hello", width=1024, height=1024, n_seconds=4,
                 )
             if case == "speech":
                 return await gateway.synthesize_speech(

@@ -36,7 +36,6 @@ _CLEANUP_METHODS = {
     "document_library": "close",
     "document_compute": "close",
     "image_artifacts": "close",
-    "video_artifacts": "close",
     "document_artifacts": "close",
     "inline_attachment_analysis": "close",
     "inline_attachment_store": "close",

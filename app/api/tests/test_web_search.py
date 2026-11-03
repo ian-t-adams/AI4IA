@@ -180,7 +180,7 @@ def _caps(client=None, *, settings=None, entitlements=None, metering=None,
 
 _REGISTRY_NAMES = {
     "calculator", "get_current_time", "delegate_to_agent", "fetch_document",
-    "run_code", "export_document", "generate_image", "generate_video",
+    "run_code", "export_document", "generate_image",
     "process_document", "analyze_attachment",
 }
 

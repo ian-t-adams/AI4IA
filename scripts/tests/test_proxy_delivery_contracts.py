@@ -203,7 +203,6 @@ class AppConfigurationKeyPolicyContracts(unittest.TestCase):
             {
                 "gateway_timeout_seconds",
                 "gateway_image_timeout_seconds",
-                "gateway_video_timeout_seconds",
                 "gateway_audio_timeout_seconds",
             },
             set(waits),

@@ -1,6 +1,6 @@
 """The one server-side answer to "can image editing run here, now?".
 
-Mirrors :mod:`ai4ia_api.videos.availability`. Every seam that advertises, lists,
+Every seam that advertises, lists,
 attaches, authorizes, snapshots or executes ``edit_image`` / the image-edit
 endpoint asks this module: the tool catalog, conversation policy (and therefore
 the inspector), consent and publication snapshots, the ``/edit_image`` command,

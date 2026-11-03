@@ -10,14 +10,7 @@ from ai4ia_api.catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ai4ia_api.images.service import ImageGenerationError, ImageGenerationService
 from ai4ia_api.routers.voice import _resolve_model
 from ai4ia_api.sessions.models import ImageGenerationPreferences
-from ai4ia_api.videos.service import VideoGenerationError
 from tests.test_image_tool import _build_capability as image_capability, _client as image_client
-from tests.test_video_tool import (
-    _build_capability as video_capability,
-    _client as video_client,
-    _service as video_service,
-)
-from tests.video_catalog import video_catalog_path
 
 
 def _catalog(category: str) -> ModelCatalog:
@@ -47,23 +40,16 @@ def test_implicit_voice_default_skips_disabled_inventory_without_replacing_expli
     assert _resolve_model(catalog, None, categories={category}, kind=category)[0] == first.id
 
 
-@pytest.mark.parametrize("category", ["image", "video"])
-def test_media_service_defaults_and_tool_advertisements_share_runtime_availability(category, tmp_path):
-    client = image_client() if category == "image" else video_client(
-        video_catalog_path(tmp_path, runtime_enabled=True)
-    )
+def test_image_service_defaults_and_tool_advertisements_share_runtime_availability():
+    client = image_client()
     try:
-        catalog = _catalog(category)
+        catalog = _catalog("image")
         first, second = catalog.models
         client.app.state.catalog = catalog
-        if category == "image":
-            service = ImageGenerationService(
-                settings=client.app.state.settings, catalog=catalog, gateway=client.app.state.gateway,
-            )
-            build, error = image_capability, ImageGenerationError
-        else:
-            service = video_service(client)
-            build, error = video_capability, VideoGenerationError
+        service = ImageGenerationService(
+            settings=client.app.state.settings, catalog=catalog, gateway=client.app.state.gateway,
+        )
+        build, error = image_capability, ImageGenerationError
         tools, _ = build(client, "owner", [])
         assert first.id not in tools[0]["function"]["description"]
         assert second.id in tools[0]["function"]["description"]

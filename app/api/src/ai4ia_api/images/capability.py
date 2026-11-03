@@ -5,7 +5,7 @@ Mirrors the document ``run_code`` / ``export_document`` capabilities
 handler injected into :func:`~ai4ia_api.agents.runtime.run_agent_turn` as
 ``extra_tools`` / ``extra_handlers``. This makes image generation a tool **any
 agent can attach** — decoupled from any single agent — so users compose it into
-their own personas (the same pattern intended for video and document processing).
+their own personas (the same pattern used for document processing).
 
 Why synthetic (closure-bound) rather than a registry tool: generation needs
 real services (the model gateway, the catalog, the entitlement gate, the usage

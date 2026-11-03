@@ -75,6 +75,10 @@ describe("MediaPlayer", () => {
       await waitFor(() => expect(container.querySelector(modality)).toBeInTheDocument());
       await waitFor(() => expect(close).toHaveFocus());
       const player = container.querySelector(modality);
+      if (modality === "video") {
+        expect(player).toHaveAttribute("controls");
+        expect(media).toHaveBeenCalledWith("first");
+      }
 
       await userEvent.tab();
       expect(player).toHaveFocus();

@@ -9,7 +9,6 @@ from ..sessions.models import Session
 from ..policy.context import current_binding, tool_allowed
 from ..policy.models import PolicyDecision, PolicyError
 from ..publishing.models import PublicationError, PublicationExecutionMode
-from ..videos.availability import video_generation_available_for_state
 from ..websearch.contracts import WEBIQ_TOOL_NAMES
 
 
@@ -73,13 +72,10 @@ async def resolve_conversation_policy(
     )
     removed_set = set(session.toolOverrides.removed)
     settings = getattr(state, "settings", None)
-    # Video and image editing ask their shared predicates (flag, store and a
-    # routable model) so effective tools agree with every other seam that
-    # offers generate_video or edit_image.
+    # Image editing shares its availability predicate with execution.
     media_enabled = {
         "generate_image": getattr(settings, "image_generation_enabled", False),
         "edit_image": image_editing_available_for_state(state),
-        "generate_video": video_generation_available_for_state(state),
     }
     effective = tuple(
         name for name in (*inherited, *added)

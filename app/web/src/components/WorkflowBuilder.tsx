@@ -1098,6 +1098,34 @@ export function WorkflowBuilder({
                               {TOOL_LABELS[t] ?? t}
                             </label>
                           ))}
+                          {s.extraTools.some((tool) => !STEP_ATTACHABLE_TOOLS.includes(tool)) && (
+                            <div
+                              className="workflow-unavailable-tools"
+                              role="group"
+                              aria-label={`Unavailable saved tools for step ${i + 1}`}
+                            >
+                              <strong>Unavailable saved tools</strong>
+                              <p className="studio-help">
+                                These saved tools can’t be selected for new steps. Remove them here
+                                before saving; the saved workflow is unchanged until you save.
+                              </p>
+                              {s.extraTools
+                                .filter((tool) => !STEP_ATTACHABLE_TOOLS.includes(tool))
+                                .map((tool) => (
+                                  <div key={tool} className="workflow-step-tool">
+                                    <code>{tool}</code>
+                                    <button
+                                      type="button"
+                                      aria-label={`Remove unavailable tool ${tool} from step ${i + 1}`}
+                                      onClick={() => toggleStepTool(s.key, tool)}
+                                      style={ghostBtn}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                ))}
+                            </div>
+                          )}
                         </fieldset>
                         </details>
                       </li>

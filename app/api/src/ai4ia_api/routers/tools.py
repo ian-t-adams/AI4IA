@@ -17,7 +17,6 @@ from ..auth.dependencies import get_current_user
 from ..conversations.policy import default_conversation_tools, resolve_conversation_policy
 from ..images.availability import NO_IMAGE_EDIT_MODEL_DETAIL, state_image_edit_availability
 from ..memory.context import MemoryContextGuard
-from ..videos.availability import NO_VIDEO_MODEL_DETAIL, state_video_availability
 from ..websearch.contracts import MAX_CONTENT_CHARS, MAX_RESULTS, WEBIQ_TOOL_NAMES, tool_schema
 from ..policy.context import current_binding, tool_allowed
 
@@ -28,7 +27,6 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 _SYNTHETIC_DESCRIPTIONS = {
     "generate_image": "Generate an image and attach the authenticated artifact to the chat.",
     "edit_image": "Edit an image already in this conversation and attach the new artifact to the chat.",
-    "generate_video": "Generate a video and attach the authenticated artifact to the chat.",
     "process_document": "Process a ready library document with governed document tools.",
     "recall_memory": "Recall relevant memories owned by the current user.",
     "remember_memory": "Save a short, durable fact to the current user's own memory.",
@@ -108,11 +106,6 @@ async def list_tools(
                 detail = "Automatic memory is off or its preference is unavailable."
         elif name == "process_document":
             available = getattr(request.app.state, "document_retrieval", None) is not None
-        elif name == "generate_video":
-            video = state_video_availability(request.app.state)
-            available = video == "available"
-            if video == "no_model":
-                detail = NO_VIDEO_MODEL_DETAIL
         elif name == "generate_image":
             available = (
                 settings.image_generation_enabled

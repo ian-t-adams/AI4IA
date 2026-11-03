@@ -172,7 +172,6 @@ def test_capability_and_voice_models_are_not_chat_targets():
     catalog = load_catalog()
     for model_id in (
         "gpt-image-1.5",            # image
-        "sora-2",                   # video
         "gpt-4o-mini-tts",          # tts
         "whisper",                  # transcription
         "gpt-audio-1.5",            # audio
@@ -190,29 +189,6 @@ def test_conversational_models_helper_excludes_capability_models():
     assert "gpt-5.4" in conv_ids
     assert "gpt-image-1.5" not in conv_ids
     assert "whisper" not in conv_ids
-
-
-def test_sora_readmission_preserves_existing_deployments_and_the_runtime_gate(client):
-    """The subscription extended Sora to November 2; no replacement deployment is needed."""
-    catalog = load_catalog()
-    entry = catalog.get("sora-2")
-    assert entry is not None
-    assert entry.runtimeEnabled is True
-    assert [(o.region, o.sku, o.modelVersion) for o in entry.options] == [
-        ("eastus2", "GlobalStandard", "2025-12-08"),
-        ("swedencentral", "GlobalStandard", "2025-12-08"),
-    ]
-    assert catalog.available(entry)
-    assert catalog.resolve_deployment("sora-2") is not None
-    assert "sora-2" in {model["id"] for model in client.get("/api/models").json()["models"]}
-    entry.runtimeEnabled = False
-    try:
-        assert not catalog.available(entry)
-        assert catalog.resolve_deployment("sora-2") is None
-    finally:
-        entry.runtimeEnabled = True
-    assert [m.id for m in catalog.models if not m.runtimeEnabled] == ["gpt-realtime-2"]
-    assert catalog.resolve_deployment("gpt-5.4") is not None
 
 
 def test_conversational_is_serialized():
