@@ -961,10 +961,21 @@ JSON cannot pass API health; unresolved targets and historical missing coverage
 remain unknown. API probes are bounded to 20 seconds and 4 KiB with no redirects,
 cookies or default credentials. Never publish response bodies or exception text.
 
+Public Pages output crosses `scripts/public_status.py`'s allowlisted projection:
+only generic service labels/types, fixed outcomes, dates and bounded counts.
+Never publish Azure names/IDs/regions, backend URLs or provider free text.
+`status-snapshot.ps1 -Public` projects before writing; uptime carry reprojects
+legacy snapshots and migrates URL-bearing v1 reports to opaque-target v2.
+Both publishers validate the final site before upload. Entry workflows forward
+existing variables as explicit `workflow_call` secrets to local publisher jobs,
+masking them before runner input/env logging; do not move them to ordinary step
+inputs/env or broaden token grants. Private diagnostic output stays outside
+`site/` and public artifacts. This does not erase public Git/history/caches.
+
 `uptime.yml` is the normal 15-minute monitor: four anonymous GETs of web, proxy
 liveness and API live/ready, without model calls, user IO, Azure login, a monitor
 identity or a lease. Reuse the bounded DNS-pinned transport and lock-derived
-HTTP dependencies. Persist only public endpoint status/time/latency and small
+HTTP dependencies. Persist only generic service status/time/latency, opaque target bindings and small
 incident counters. Alert once after three non-passing observations, recover on
 the next pass, and continue probes when history is unavailable. Unknown coverage
 is never healthy. Workflow success means collection/publication, not endpoint

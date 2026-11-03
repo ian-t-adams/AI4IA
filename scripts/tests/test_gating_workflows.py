@@ -692,13 +692,26 @@ class WorkflowCheckoutCredentialTests(unittest.TestCase):
 
 class WorkflowPermissionBoundaryTests(unittest.TestCase):
     def required_permissions(self, job: dict) -> dict[str, str]:
-        self.assertNotIn("uses", job, "Review token forwarding before adding a reusable workflow.")
         required: dict[str, str] = {}
 
         def require(permissions: dict[str, str]) -> None:
             for scope, level in permissions.items():
                 if required.get(scope) != "write":
                     required[scope] = level
+
+        if "uses" in job:
+            self.assertIn(job["uses"], {
+                "./.github/workflows/pages-publish.yml",
+                "./.github/workflows/uptime-publish.yml",
+            }, "Only the reviewed local public publishers may forward a token.")
+            self.assertNotIn("with", job, "Private configuration must be workflow_call secrets.")
+            self.assertIsInstance(job.get("secrets"), dict, "Never inherit all secrets.")
+            target = yaml.safe_load((ROOT / job["uses"][2:]).read_text(encoding="utf-8"))
+            self.assert_permission_boundary(target)
+            for child in target["jobs"].values():
+                self.assertNotIn("uses", child, "Nested reusable workflow is unreviewed.")
+                require(self.required_permissions(child))
+            return required
 
         for step in job.get("steps", []):
             action = step.get("uses", "").split("@", 1)[0].lower()
@@ -777,7 +790,7 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
                     self.assert_permission_boundary(document)
 
     def test_tokenless_artifact_job_must_opt_out_of_checkout_defaults(self) -> None:
-        pages = yaml.safe_load((WORKFLOWS / "pages.yml").read_text(encoding="utf-8"))
+        pages = yaml.safe_load((WORKFLOWS / "pages-publish.yml").read_text(encoding="utf-8"))
         upload = next(
             step
             for job in pages["jobs"].values()
@@ -794,7 +807,7 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
         self.assert_permission_boundary(document)
 
     def test_oidc_permission_follows_the_consumer_when_jobs_change(self) -> None:
-        pages = yaml.safe_load((WORKFLOWS / "pages.yml").read_text(encoding="utf-8"))
+        pages = yaml.safe_load((WORKFLOWS / "pages-publish.yml").read_text(encoding="utf-8"))
         login = next(
             step
             for job in pages["jobs"].values()

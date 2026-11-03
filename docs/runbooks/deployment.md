@@ -818,6 +818,28 @@ snapshot is shown as unavailable. The Azure-backed publisher continues to
 require its normal successful inventory refresh and carries forward uptime
 observations without probing models.
 
+Public output is deliberately a generic service view, not an Azure inventory
+export. Both entry workflows forward their existing variables as explicit
+`workflow_call` secrets to their local publisher workflows, so runner input/env
+logging and Azure login cannot print the configured IDs or origins in clear text.
+The called jobs retain separate observer/build and Pages permissions, the same
+main-ref federation and the existing shared publisher lock. No repository
+settings or credentials need changing.
+
+The Azure refresh uses `status-snapshot.ps1 -Public`; the shared allowlist in
+`scripts/public_status.py` discards names, IDs, exact regions, suffixes, backend
+URLs and free-text provider notes before writing a site file. Uptime carry
+reprojects legacy snapshots through the same boundary. Invalid historical data
+is unavailable, never a healthy seed. Version-2 uptime reports use opaque
+SHA-256 target bindings rather than URLs, retaining incident continuity and
+per-target reset behavior when migrating a valid version-1 report. These hashes
+are continuity pseudonyms, not credentials or guaranteed hostname anonymity.
+Both publishers validate the final site before upload. See
+[the portal privacy boundary](../../site/README.md#public-privacy-boundary)
+for offline checks, private diagnostic handling and residual public history.
+An unreleased change does not fix live Pages; old logs/artifacts/caches and
+other public repository sources are not erased by publishing sanitized files.
+
 To pause this read-only monitor, disable the `uptime` workflow. Re-enabling it
 resumes health checks; there is no blocked lease to resolve.
 

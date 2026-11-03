@@ -33,7 +33,78 @@ class StatusSnapshotLabelTests(unittest.TestCase):
         if not cls.pwsh:
             raise RuntimeError("pwsh is required to exercise status-snapshot.ps1")
 
-    def _run_snapshot(self, mode: str, out_dir: Path) -> subprocess.CompletedProcess[str]:
+    def test_private_destination_guard_runs_before_discovery_or_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            script = scripts / SNAPSHOT.name
+            shutil.copyfile(SNAPSHOT, script)
+            site = root / "site"
+            site.mkdir()
+            sentinel = site / "sentinel"
+            sentinel.write_text("unchanged", encoding="utf-8")
+            for destination in (
+                None, site, site / "data", site / "data" / ".." / "other",
+                # Case variants are rejected on every OS (Windows/macOS are commonly case-insensitive).
+                root / "SITE" / "data", root / "Site",
+            ):
+                with self.subTest(destination=destination):
+                    argument = "" if destination is None else f"-OutDir {_ps_quote(str(destination))}"
+                    wrapper = f"""
+                    function az {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+                    function azd {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+                    & {_ps_quote(str(script))} {argument}
+                    """
+                    result = subprocess.run(
+                        [self.pwsh, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Private snapshots", result.stderr)
+                    self.assertNotIn("DISCOVERY_MUST_NOT_RUN", result.stdout + result.stderr)
+                    self.assertEqual(list(site.iterdir()), [sentinel])
+                    self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+
+    def test_legacy_powershell_is_refused_before_any_work(self) -> None:
+        first = SNAPSHOT.read_text(encoding="utf-8-sig").splitlines()[0]
+        self.assertEqual(first.strip(), "#Requires -Version 7.0")
+        legacy = shutil.which("powershell")
+        if not legacy:
+            self.skipTest("Windows PowerShell 5.1 is not installed")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            script = scripts / SNAPSHOT.name
+            shutil.copyfile(SNAPSHOT, script)
+            (root / "site" / "data").mkdir(parents=True)
+            wrapper = f"""
+            function az {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+            function azd {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+            & {_ps_quote(str(script))} -OutDir {_ps_quote(str(root / 'SITE' / 'data'))}
+            """
+            result = subprocess.run(
+                [legacy, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("DISCOVERY_MUST_NOT_RUN", result.stdout + result.stderr)
+            self.assertEqual(list((root / "site" / "data").iterdir()), [])
+
+    def test_explicit_private_destination_retains_operator_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = self._run_snapshot("valid", root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = (root / "inventory.js").read_text(encoding="utf-8-sig")
+            self.assertIn("sub-test", inventory)
+            self.assertIn("rg-test", inventory)
+            self.assertIn("sttest", inventory)
+
+    def _run_snapshot(
+        self, mode: str, out_dir: Path, *, public: bool = False, cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         resource_id = (
             "/subscriptions/sub-test/resourceGroups/rg-test/providers/"
             "Microsoft.Storage/storageAccounts/sttest"
@@ -95,10 +166,12 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 )
             }
         )
-        fixture_dir = out_dir / "fixture"
+        fixture_dir = out_dir / "scripts"
         fixture_dir.mkdir()
         fixture_script = fixture_dir / SNAPSHOT.name
         shutil.copyfile(SNAPSHOT, fixture_script)
+        for module in ("public_status.py", "http_contract.py"):
+            shutil.copyfile(SNAPSHOT.parent / module, fixture_dir / module)
         # Keep the entry point and classification code intact; replace only HTTP.
         (fixture_dir / ENDPOINTS.name).write_text(
             ENDPOINTS.read_text(encoding="utf-8") + """
@@ -169,10 +242,15 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 }}
                 throw "Unexpected az invocation: $joined"
             }}
+            $initialLocation = (Get-Location).Path
             & {_ps_quote(str(fixture_script))} `
+                -Public:${str(public).lower()} `
                 -Subscription 'sub-test' `
                 -ResourceGroup 'rg-test' `
                 -OutDir {_ps_quote(str(out_dir))}
+            if ((Get-Location).Path -cne $initialLocation) {{
+                throw 'Snapshot changed the caller location.'
+            }}
             ConvertTo-Json -InputObject @($global:healthUrls) |
                 Set-Content {_ps_quote(str(out_dir / "probes.json"))}
             if ($mode -eq 'valid') {{
@@ -200,7 +278,35 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
+            cwd=cwd,
         )
+
+    def test_public_projection_uses_script_repository_from_another_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as caller:
+            root = Path(temporary)
+            result = self._run_snapshot("api-healthy", root, public=True, cwd=Path(caller))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = (root / "inventory.js").read_text(encoding="utf-8-sig")
+            self.assertIn("Storage Account", inventory)
+            self.assertNotIn("sub-test", inventory)
+
+    def test_public_snapshot_removes_identifiers_from_outputs_and_logs(self) -> None:
+        for mode in ("api-healthy", "api-store-unavailable", "health-available",
+                     "health-query-failure", "malformed", "nonzero", "empty"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                result = self._run_snapshot(mode, root, public=True)
+                exported = result.stdout + result.stderr
+                if mode not in {"malformed", "nonzero", "empty"}:
+                    self.assertEqual(result.returncode, 0, exported)
+                    exported += (root / "inventory.js").read_text(encoding="utf-8-sig")
+                    exported += (root / "status.js").read_text(encoding="utf-8-sig")
+                    self.assertIn("Storage Account", exported)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                for private in ("sub-test", "rg-test", "sttest", "eastus",
+                                "arbitrary-name", "https://api.example.test"):
+                    self.assertNotIn(private, exported)
 
     def test_required_inventory_failures_do_not_touch_either_output(self) -> None:
         for mode in (
