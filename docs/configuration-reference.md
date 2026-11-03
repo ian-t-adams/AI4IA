@@ -299,10 +299,14 @@ applies; HTTPX phase/read timeouts are not a total wall-clock deadline.
 This source is not live activation evidence. A canary still requires a reviewed
 deployment plan, a separately identified canary environment, a resolved
 owner-issued manifest, synthetic authentication/routing/SSE proof, and explicit
-operator approval. The current `deploy.yml` is production-scoped and does not
-pass these shared-gateway settings; it is not an approved canary executor. After
-the canary environment and plan are approved, the proposed executor is an
-authorized operator using a separate `azd` environment: set
+operator approval. The current `deploy.yml` is production-scoped and is not an
+approved canary executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED` from a GitHub
+Actions repository variable and the activation manifest from a GitHub Actions
+secret; leave both unset in production so the parameter default remains false
+and the manifest empty. Do not configure production values or use this workflow
+for a canary. The operator and rollback owner remain unassigned until Ian
+approves the canary plan. If approved, the designated operator would use a
+separate `azd` environment: set
 `AI4IA_SHARED_GATEWAY_ENABLED=true` and the private
 `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run `azd provision` under that
 approved plan so the existing hook derives the bounded secret transport and

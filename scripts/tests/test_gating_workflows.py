@@ -25,8 +25,8 @@ and a required-check entry that no longer matches anything blocks every PR.
 
 from __future__ import annotations
 
-import base64
 import ast
+import base64
 import os
 import re
 import subprocess
@@ -44,6 +44,7 @@ from unittest import mock
 # exists to prevent. The workflow step installs it.
 import yaml
 
+from scripts._json_transport import TRANSPORTS
 from scripts.tests._platform import find_bash
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -541,6 +542,7 @@ DERIVE_COMMAND = "python scripts/derive-json-transport.py --github-env"
 TRANSPORT_RAW_VALUES = {
     "AI4IA_GROUP_POLICY_JSON": '{"version": 1, "domains": {}}',
     "AI4IA_CLAUDE_BINDING_JSON": '{"networkMode": "public-keyless"}',
+    "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST": '{"version": 2, "status": "resolved"}',
 }
 
 
@@ -646,11 +648,30 @@ class DeployJsonTransportTests(unittest.TestCase):
             written = dict(line.split("=", 1) for line in target.read_text(encoding="utf-8").splitlines())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(set(written), {f"{name}_B64" for name in TRANSPORT_RAW_VALUES})
+        manifest_transport = written["AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64"]
+        self.assertEqual(
+            result.stdout,
+            f"::add-mask::{manifest_transport}\n"
+            "Derived azd transports: AI4IA_CLAUDE_BINDING_JSON_B64 (set), "
+            "AI4IA_GROUP_POLICY_JSON_B64 (set), "
+            "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64 (set, masked).\n",
+        )
+        self.assertEqual(result.stderr, "")
+        secret_transports = {
+            transport.variable for transport in TRANSPORTS if transport.secret
+        }
         for name, raw in TRANSPORT_RAW_VALUES.items():
-            self.assertEqual(base64.b64decode(written[f"{name}_B64"], validate=True).decode("utf-8"), raw)
+            encoded = written[f"{name}_B64"]
+            self.assertEqual(base64.b64decode(encoded, validate=True).decode("utf-8"), raw)
+            self.assertNotIn(raw, result.stdout + result.stderr)
+            if name in secret_transports:
+                mask_directive = f"::add-mask::{encoded}\n"
+                self.assertEqual((result.stdout + result.stderr).count(mask_directive), 1)
+                safe_output = (result.stdout + result.stderr).replace(mask_directive, "")
+                self.assertNotIn(encoded, safe_output)
+            else:
+                self.assertNotIn(encoded, result.stdout + result.stderr)
         self.assertNotIn("AI4IA_PROXY_PROFILE_PROJECTION_JSON_B64", written)
-        for value in (*TRANSPORT_RAW_VALUES.values(), *written.values()):
-            self.assertNotIn(value, result.stdout + result.stderr)
 
     def test_the_step_needs_no_token_or_permission(self) -> None:
         step = next(step for step in self.steps if step.get("name") == DERIVE_TRANSPORTS)

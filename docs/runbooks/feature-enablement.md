@@ -738,11 +738,16 @@ and the canary environment and deployment plan have separate operator approval.
 The preprovision validator rejects an enabled flag without a resolved manifest;
 API startup rechecks the contract and caller managed-identity client ID.
 
-The current `deploy.yml` is production-scoped, does not pass these settings, and
-is not an approved canary executor. After a separate canary environment and
-plan are approved, the proposed executor is an authorized operator using that
-isolated `azd` environment: set `AI4IA_SHARED_GATEWAY_ENABLED=true` and the
-private `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run `azd provision`.
+The current `deploy.yml` is production-scoped and is not an approved canary
+executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED` from a GitHub Actions
+repository variable and the activation manifest from a GitHub Actions secret;
+leave both unset in production so the parameter default remains false and the
+manifest empty. Do not configure production values or use this workflow for a
+canary. The operator and rollback owner remain unassigned until Ian approves the
+canary plan. If approved, the designated operator would use that isolated `azd`
+environment: set
+`AI4IA_SHARED_GATEWAY_ENABLED=true` and the private
+`AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run `azd provision`.
 The preprovision hook derives the bounded secret transport and the validator
 rejects an incomplete/unresolved manifest before provisioning. Verify only
 through the separately approved synthetic canary. No production values are
