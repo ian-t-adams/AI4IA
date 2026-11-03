@@ -80,8 +80,9 @@ window.AI4IA_SERVICES = [
   {
     key: "storage", name: "Storage accounts (×2 + optional async)", azureType: "Microsoft.Storage/storageAccounts",
     group: "Data", icon: "💾", module: "data.bicep + proxyasync.bicep", resourcePattern: "st*",
-    summary: "Blob storage for raw + parsed documents (library) and for generated images and photo-avatar media; retained " +
-      "historical video clips are retained untouched but are no longer served or generated. Identity-based " +
+    summary: "Blob storage for raw + parsed documents (library) and for generated images and photo-avatar media. " +
+      "The repository source removes video generation and historical clip serving while preserving stored clips; " +
+      "live capability depends on the deployed application version, not this portal publication. Identity-based " +
       "access only. Durable proxy async adds a dedicated default-off account; Defender for Storage V2 protects both application accounts.",
     identity: "id-api owns application blobs; id-proxy gets Blob Data Contributor only on the optional async account",
     docs: [["Azure Blob Storage", "https://learn.microsoft.com/azure/storage/blobs/storage-blobs-introduction"]],
