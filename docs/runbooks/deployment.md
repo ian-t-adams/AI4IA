@@ -1504,11 +1504,16 @@ rewrites the catalog, registers providers or creates/updates/deletes deployments
 | `1` | Complete evidence needs attention; this includes warnings on exact existing deployments and safe migrations away from old versions |
 | `2` | Unknown/incomplete evidence, unavailable reads, empty coverage, or omitted records; inspect known findings too |
 
+The workflow treats exit `0` as success and exit `1` as success with a warning
+annotation directing readers to the job summary. Exit `2` and every other
+unexpected exit code still fail collection. The script's exit-code contract is
+unchanged for other callers; workflow success does not mean the inventory is clear.
+
 JSON (`model-retirements.json`), Markdown (`model-retirements.md`) and a generated
 `region-capability-matrix.md` **preview** share the same observations. The workflow
 retains these three files for 30 days and publishes the Markdown in its job
-summary even on a finding/partial-read failure. Failed login is followed by an
-explicit incomplete report when collection can run; missing artifacts fail
+summary even when findings need attention or collection fails. Failed login is
+followed by an explicit incomplete report when collection can run; missing artifacts fail
 publication rather than passing with an old snapshot. Check source timestamps
 and catalog SHA-256 before using an artifact; a successful collection is not a
 standing permission to deploy or a guarantee about tomorrow.
