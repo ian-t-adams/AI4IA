@@ -1150,7 +1150,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     managedEnvironmentId: containerEnvId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: inheritsSecrets ? concat(inheritedSecrets, sharedGatewayManifestSecrets) : concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets, sharedGatewayManifestSecrets)
+      secrets: inheritsSecrets ? concat(inheritedSecrets, sharedGatewayManifestSecrets) : concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets, sharedGatewayManifestSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.

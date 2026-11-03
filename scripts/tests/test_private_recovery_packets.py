@@ -230,7 +230,9 @@ class RecoveryCompiledTests(unittest.TestCase):
         self.assertIn("format('ca-api-{0}', parameters('environmentName'))", resources["secretSource"]["name"])
         self.assertIn("format('ca-api-private-{0}', parameters('environmentName'))", resources["secretSource"]["name"])
         inherited = resources["apiApp"]["properties"]["configuration"]["secrets"]
-        self.assertTrue(inherited.startswith("[if(variables('inheritsSecrets'), map("))
+        self.assertTrue(inherited.startswith("[if(variables('inheritsSecrets'), "))
+        self.assertIn("map(parameters('recoverySecretDescriptors')", inherited)
+        self.assertEqual(inherited.count("variables('sharedGatewayManifestSecrets')"), 2)
         self.assertIn("listSecrets('secretSource', '2025-07-01')", inherited)
         self.assertIn("equals(lambdaVariables('current').name, lambdaVariables('secret').name)", inherited)
         self.assertIn("'keyVaultUrl', tryGet(lambdaVariables('secret'), 'keyVaultUrl')", inherited)
