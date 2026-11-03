@@ -79,6 +79,23 @@ that header. A browser-supplied development identity is not trusted in productio
 
 ### Credential map
 
+The proposed cross-application shared gateway is **not an active AI4IA route**.
+The current factory-owned client also serves embeddings, images, REST speech and
+specialist operations; changing its base URL is not a stateless-chat migration.
+The safe future selection seam is the adapted HTTP/SSE chat dispatch, before
+admission, with an independently verified transport contract. It must preserve
+catalog identity, cancellation, provider errors and the existing retry rules.
+Stateful Responses, background/store, realtime/Voice Live, Agent Service, CU,
+Search and specialist paths are outside that first slice.
+
+AI4IA currently refuses shared-route activation and exposes no additional
+review/study capture or consent-writing path. Ordinary owner conversation
+persistence, execution receipts and content-free telemetry are separate and
+unchanged. The upstream foundation is tracked in
+[planetexpress-gateway#1](https://github.com/ian-t-adams/planetexpress-gateway/pull/1);
+profile/header enrichment and queue identity do not establish bearer-claim
+binding. See [the preparation boundary](configuration-reference.md#shared-gateway-preparation-only).
+
 | Credential | Holder and allowed use |
 | --- | --- |
 | Proxy-ingress key | FastAPI authenticates to SimpleL7Proxy; its backing APIM product has no APIs |

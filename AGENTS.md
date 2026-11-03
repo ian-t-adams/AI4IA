@@ -53,6 +53,14 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Blob (HTTPS, catalog host only, pinned public IP, no redirects, size/PNG
    checks), and the link is never stored, logged or returned
    (`photo_avatars/preview.py`).
+   Cross-app shared-gateway preparation is API-only and default-off.
+   `Settings.validate_shared_gateway` refuses activation even with configured
+   URL/audience values until verified app authentication, user-claim binding,
+   stateless route mapping and server no-capture enforcement are implemented.
+   Never retarget the shared factory base URL or reuse memory/tool consent for
+   review capture. No capture collector, sink or consent-writing path ships;
+   Settings must disclose unavailability. See the configuration reference's
+   shared-gateway preparation boundary before extending it.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
    match it. `runtimeEnabled` is a strict optional Boolean, default true: false

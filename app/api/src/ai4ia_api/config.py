@@ -134,6 +134,12 @@ class Settings(BaseSettings):
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
+    # Preparation only: no shipping shared-route contract or capture capability.
+    shared_gateway_enabled: bool = False
+    shared_gateway_contract_version: str | None = None
+    shared_gateway_url: str | None = None
+    shared_gateway_issuer: str | None = None
+    shared_gateway_audience: str | None = None
     # Staging is not capability issuance or runtime selection.
     gateway_attempts_v1_staged: bool = False
     # Image generation has its own api-version + timeout: image models
@@ -1030,6 +1036,33 @@ class Settings(BaseSettings):
             "single tenant."
         )
 
+    def validate_shared_gateway(self) -> None:
+        """Refuse selection until the shared gateway's contract is implemented."""
+        if not self.shared_gateway_enabled:
+            return
+        if self.shared_gateway_contract_version != "1":
+            raise RuntimeError(
+                "AI4IA_SHARED_GATEWAY_CONTRACT_VERSION must explicitly select 1; "
+                "shared routing is not available in this build."
+            )
+        if not all((
+            self.shared_gateway_url,
+            self.shared_gateway_issuer,
+            self.shared_gateway_audience,
+        )):
+            raise RuntimeError(
+                "AI4IA_SHARED_GATEWAY_ENABLED requires an explicitly configured "
+                "AI4IA_SHARED_GATEWAY_URL, AI4IA_SHARED_GATEWAY_ISSUER and "
+                "AI4IA_SHARED_GATEWAY_AUDIENCE; "
+                "shared routing is not available in this build."
+            )
+        raise RuntimeError(
+            "Shared gateway routing is unavailable: verified application authentication, "
+            "user-claim binding, stateless route mapping and server-side no-capture "
+            "enforcement have not been implemented. URL and audience configuration "
+            "do not authorize activation; the existing route will not be used as a fallback."
+        )
+
     def _validate_model_gateway_posture(self) -> None:
         """Require the deployed HTTP/SSE path to terminate at SimpleL7Proxy."""
         if self.env == Environment.local:
@@ -1313,6 +1346,7 @@ class Settings(BaseSettings):
                 "Model gateway auth must not be 'none' outside local. Configure "
                 "AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key|bearer."
             )
+        self.validate_shared_gateway()
         self._validate_model_gateway_posture()
         self.validate_gateway_attempts_v1()
         if (

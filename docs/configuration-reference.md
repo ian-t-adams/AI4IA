@@ -260,6 +260,43 @@ Treat skipping either phase as an outage risk, not as a harmless omission.
 
 ## Model gateway direction and trust
 
+### Shared gateway preparation only
+
+The API reserves `AI4IA_SHARED_GATEWAY_ENABLED` (default `false`),
+`AI4IA_SHARED_GATEWAY_CONTRACT_VERSION`, `AI4IA_SHARED_GATEWAY_URL`,
+`AI4IA_SHARED_GATEWAY_ISSUER` and `AI4IA_SHARED_GATEWAY_AUDIENCE` (all default
+unset). These are **API-only preparation settings**, not azd/CI variables,
+provisioning parameters, a working transport or activation authority. No
+production endpoint, audience, credential or header is supplied by this source.
+Contract version `1` aligns with the upstream
+[proposed v1 contract](https://github.com/ian-t-adams/planetexpress-gateway/blob/7c6c83974fb4ae872d2bba0a6501c70614c50ff2/docs/integration-contract-v1.md),
+not a verified runtime capability. When disabled, even populated preparation values do not change any request,
+credential, conversation or specialist route. When enabled, startup and direct
+client construction both refuse: missing values are reported explicitly, and
+an absent/unknown version refuses, and even fully populated v1 values cannot
+bypass the missing verified contract.
+There is no emergency bypass or silent fallback.
+
+Before stateless HTTP/SSE selection can ship, the gateway owner must establish
+the exact endpoint/path and catalog mapping, application authentication audience
+and app allowlist, authenticated user/profile binding with anti-spoof controls,
+and server-enforced no-capture behavior. Transport compatibility still needs
+error/Retry-After, cancellation, stream termination and no-duplicate-retry
+evidence. Existing production proxy authentication remains unchanged.
+
+Additional review/study capture is unavailable, including on error, retry,
+stream and bypass paths; there is no collector or sink. Settings displays an
+unchecked disabled control and does not save consent. Future capture requires
+separate versioned owner consent with revocation, a verified cross-app personal
+global deny that always wins, exact identity-based exclusions, approved reviewer
+group enforcement and a sink with automatic 30-day deletion. Missing or
+unavailable evidence must prohibit capture without blocking ordinary inference.
+No display name, browser identity header, memory preference or app-local toggle
+can substitute for that contract. Ordinary conversation persistence, receipts,
+cost/usage metadata and content-free telemetry remain unchanged.
+
+### Current production route
+
 Normal HTTP/SSE traffic uses
 `AI4IA_MODEL_GATEWAY_URL=https://<proxy>/openai`. The proxy's normal backend is
 `https://<apim>/openai`; APIM terminates at Foundry endpoints generated from

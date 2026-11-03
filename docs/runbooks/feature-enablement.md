@@ -727,6 +727,18 @@ acceptance case rather than adding a retry/probe loop.
 
 ## Enablement notes
 
+### Shared gateway preparation
+
+There is no approved activation procedure for the proposed cross-app gateway.
+The [API-only preparation settings](../configuration-reference.md#shared-gateway-preparation-only)
+default off and refuse selection even when URL/audience values are supplied.
+Do not change the shared client base URL, use profile headers as identity proof,
+reuse automatic-memory consent, or provision a review sink. The Settings notice
+is an unavailable-state disclosure, not saved opt-in or live capture evidence.
+The gateway and AI4IA owners must complete the transport/identity/no-capture
+contract before implementing selection; capture additionally requires global
+deny, explicit informed consent, reviewer enforcement and automatic retention.
+
 ### Group policy and reviewed publishing
 
 These are source capabilities, not an approved live identity configuration.

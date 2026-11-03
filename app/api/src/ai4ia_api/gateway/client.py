@@ -512,6 +512,7 @@ class ModelGatewayClient:
         self, settings: Settings, http_client: httpx.AsyncClient | None = None, *,
         attempt_verifier: GatewayCapabilityVerifier | None = None,
     ) -> None:
+        settings.validate_shared_gateway()
         self._base = settings.model_gateway_url.rstrip("/")
         self._style = settings.gateway_provider_style
         self._api_version = settings.gateway_api_version
