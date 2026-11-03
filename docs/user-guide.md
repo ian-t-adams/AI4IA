@@ -489,10 +489,15 @@ uploads, analysis and live avatars are unchanged.
 
 If a conversation, agent or workflow still selects the retired
 `generate_video` tool, the app refuses to run it and asks you to remove that
-tool. The refusal happens before any model call, and a refused chat message is
-not saved. This applies to chat with that conversation or agent, workflow runs
-and schedules, and specialists that a chat or agent delegates work to. A
-conversation with tools turned off still runs normally, without any tools.
+tool. For direct chat with that conversation or agent, refusal happens before
+any model call and the refused chat message is not saved. Workflow runs and
+schedules refuse before execution or scheduling. For a delegated specialist,
+only the specialist's own model call and checkpoint are prevented: the parent
+model may already have run and its chat context may already be saved when it
+requests delegation. Turning conversation tools off avoids this retired-tool
+refusal, but the selected source must still satisfy the existing tool-free
+requirements: sources with other required tools, published tool selections or
+linked agents cannot run tool-free.
 
 To fix it, remove the tool from the conversation's tool settings, the agent
 editor or the workflow step. The agent and workflow editors list it under

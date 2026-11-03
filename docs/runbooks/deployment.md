@@ -1226,11 +1226,16 @@ No user data,
 stored clip, account, model deployment, secret or role is deleted by this source
 change. Shared media-account permissions remain needed by images and avatars.
 
-An active `generate_video` selection refuses with an actionable 422 or tool
-error before inference, message persistence, workflow enqueue or schedule
-activation. This covers a conversation override or an inherited agent in
-HTTP/SSE chat, manual, durable and scheduled workflow runs, and delegated
-specialists. Explicit tools-off chats still run without tools. Only this exact
+An active `generate_video` selection in a conversation override or inherited
+agent refuses HTTP/SSE chat with an actionable 422 before inference or message
+persistence. Manual, durable and scheduled workflow paths refuse before
+inference, enqueue or schedule activation. Delegated specialists instead return
+an actionable tool error before the specialist's own inference or checkpoint;
+the parent model may already have run and its chat context may already be
+persisted when delegation is requested. Explicit tools-off chats avoid the
+retired-tool refusal but remain subject to existing source/tool requirements;
+sources with other required tools, published tool selections or linked agents
+cannot run tool-free. Only this exact
 retired name refuses; other unknown or unavailable tools keep their existing
 behavior. Stored records are never rewritten automatically. Owners remove the
 selection in the agent, workflow-step or conversation-tool editor; agent and
