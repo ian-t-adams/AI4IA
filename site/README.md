@@ -84,6 +84,8 @@ site/
   unknown with a generic invalid-response explanation; summary counts and rendered
   cards use the same evidence rules. Ingress reachability includes 2xx/3xx and
   401/403, but API health challenges and redirects remain unknown.
+  Resource availability is counted as healthy only with an explicit Resource
+  Health report; an uncorroborated Available value remains unknown/provisioned.
 
   Liveness covers the process only. Readiness covers the API's cached canonical
   session-store check (success cache up to 15 seconds), not Search, user

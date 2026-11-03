@@ -112,6 +112,45 @@ class PublicStatusTests(unittest.TestCase):
         self.assertEqual(public_status.inventory(inv)["resources"][0]["label"], "Azure service")
         self.assertEqual(public_status.status(health)["endpoints"][0]["state"], "unknown")
 
+    def test_inventory_positive_health_requires_report_evidence_at_public_boundary(self):
+        from scripts.tests.test_pages_status_refresh import PagesStatusRefreshTests
+
+        renderer = PagesStatusRefreshTests()
+        for reported in (True, False, None):
+            with self.subTest(reported=reported), tempfile.TemporaryDirectory() as temporary:
+                inv, health = snapshots()
+                inv["resources"][0]["healthReported"] = reported
+                site = Path(temporary) / "site"
+                shutil.copytree(ROOT / "site", site)
+                public_status.write_snapshots(site / "data", inv, health)
+                public_status.check_site(site)
+                projected = public_status.assignment(
+                    (site / "data" / "inventory.js").read_bytes(), "AI4IA_INVENTORY",
+                )
+                self.assertEqual(public_status.inventory(projected), projected)
+                expected = "healthy" if reported is True else "provisioned"
+                self.assertEqual(projected["resources"][0]["state"], expected)
+                for rows in (inv["resources"], projected["resources"]):
+                    rendered = renderer._render_status(resources=rows)
+                    self.assertIn(f">{expected}</span>", rendered["resources"])
+                    self.assertIn(
+                        f'<div class="n">{int(reported is True)}</div>'
+                        '<div class="l">Health reported available</div>',
+                        rendered["stats"],
+                    )
+                    if reported is not True:
+                        self.assertNotIn(">healthy</span>", rendered["resources"])
+                        self.assertNotIn(">Available<", rendered["resources"])
+                for availability, provisioning, state in (
+                    ("Degraded", "Succeeded", "degraded"),
+                    ("Unavailable", "Succeeded", "unavailable"),
+                    ("Available", "Failed", "degraded"),
+                ):
+                    inv["resources"][0].update(
+                        availability=availability, provisioningState=provisioning,
+                    )
+                    self.assertEqual(public_status.inventory(inv)["resources"][0]["state"], state)
+
     def test_inconsistent_endpoint_evidence_fails_closed_and_summary_counts_match(self):
         _, health = snapshots()
         inconsistent = health["endpoints"][0]

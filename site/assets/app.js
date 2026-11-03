@@ -211,11 +211,15 @@
       var availability = String(r.availability || "").toLowerCase();
       if (availability === "unavailable") return "unavailable";
       if (availability === "degraded") return "degraded";
-      return availability === "available" ? "healthy" : "provisioned";
+      if (r.provisioningState === "Failed" || r.provisioningState === "Canceled") return "degraded";
+      return availability === "available" && r.healthReported === true ? "healthy" : "provisioned";
     }
 
     function displayAvailability(r) {
       var availability = String(r.availability || "Unknown");
+      if (availability.toLowerCase() === "available" && r.healthReported !== true) {
+        availability = "Unknown";
+      }
       if (!healthSourceAvailable &&
           availability.toLowerCase() === "unknown" &&
           !r.healthReported) {

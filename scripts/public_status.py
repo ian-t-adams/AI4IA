@@ -84,6 +84,9 @@ def inventory(value: Any) -> dict | None:
         availability = row.get("availability")
         if availability not in AVAILABILITY:
             availability = "Unknown"
+        health_reported = row.get("healthReported") is True
+        if availability == "Available" and not health_reported:
+            availability = "Unknown"
         provisioning = row.get("provisioningState")
         if provisioning not in PROVISIONING:
             provisioning = "n/a"
@@ -95,7 +98,7 @@ def inventory(value: Any) -> dict | None:
         rows.append({
             "type": key, "label": label, "group": group,
             "provisioningState": provisioning, "availability": availability,
-            "healthReported": row.get("healthReported") is True, "state": state,
+            "healthReported": health_reported, "state": state,
         })
     return {"generatedAt": date(data.get("generatedAt")), "resources": rows}
 
