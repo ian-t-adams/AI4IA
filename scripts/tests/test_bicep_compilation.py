@@ -764,6 +764,8 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         legacy_url = "https://retainedclips.blob.core.windows.net/"
 
         class OutputEvaluator(MetadataEvaluator):
+            shared_url: str = ""
+
             def evaluate(self, node: tuple, mode: str, scope: dict):
                 if node == ("call", "reference", [("literal", "data")]):
                     return {"outputs": {"imageBlobAccountUrl": {"value": self.shared_url}}}

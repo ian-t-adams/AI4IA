@@ -485,8 +485,24 @@ photos; edit the whole image instead.
 Video generation has been removed. Previously generated clips remain viewable
 in old conversations while their existing storage is configured; no saved clips
 or conversations are deleted. Video uploads, analysis and live avatars are
-unchanged. Agents or workflows that selected the retired generation tool must
-be edited to remove it before running again.
+unchanged.
+
+If a conversation, agent or workflow still selects the retired
+`generate_video` tool, the app refuses to run it and asks you to remove that
+tool. The refusal happens before any model call, and a refused chat message is
+not saved. This applies to chat with that conversation or agent, workflow runs
+and schedules, and specialists that a chat or agent delegates work to. A
+conversation with tools turned off still runs normally, without any tools.
+
+To fix it, remove the tool from the conversation's tool settings, the agent
+editor or the workflow step. The agent and workflow editors list it under
+**Unavailable saved tools** with a **Remove** button; conversation tool
+settings show **Remove unavailable selection** while tools are on. In the
+agent and workflow editors, the stored definition doesn't change until you
+choose Save, and your other tools stay selected. In conversation tool
+settings, removing the tool saves the change right away; for a tool inherited
+from an agent, it records a removal for that conversation only. Retired tools
+can't be added again or run.
 
 **Cost estimate unavailable** is not free. Published estimates can differ from
 Azure billing, especially for provider-specific media meters.

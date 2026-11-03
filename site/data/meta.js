@@ -30,7 +30,7 @@ window.AI4IA_META = {
     tenant: "Contoso",
     primaryRegion: "East US 2",
     regions: [
-      { region: "East US 2", role: "Primary US model set, realtime, image/video, router, evaluations" },
+      { region: "East US 2", role: "Primary US model set, realtime, image, router, evaluations" },
       { region: "Sweden Central", role: "EU-resident model parity where available" },
       { region: "West US", role: "Targeted models such as MAI Image and deep research" },
     ],

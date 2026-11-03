@@ -103,6 +103,7 @@ from ..agents.mcp_skills import (
 from ..agents.mcp_servers import is_mcp_tool_name
 from ..agents.orchestration import build_delegate_capability
 from ..agents.tool_exec import (
+    RETIRED_VIDEO_TOOL_NAME,
     SELECTABLE_SYNTHETIC_TOOL_NAMES,
     ToolContext,
     ToolExecutor,
@@ -1139,8 +1140,19 @@ async def chat(
         session,
         explicit_agent=parsed.agent,
     )
+    if tools_allowed() and RETIRED_VIDEO_TOOL_NAME in policy.effective_tools:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "generate_video is retired. Remove it from conversation tool settings "
+                "or the selected agent in the agent editor, save, and send a new message."
+            ),
+        )
     if not tools_allowed() and policy.agent is not None and (
-        policy.agent.tools or policy.agent.links
+        any(
+            name != RETIRED_VIDEO_TOOL_NAME or policy.agent.sourceVersion is not None
+            for name in policy.agent.tools
+        ) or policy.agent.links
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

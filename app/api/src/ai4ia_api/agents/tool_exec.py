@@ -39,6 +39,8 @@ from ..request_constraints import tools_still_allowed
 # may be sync or async; :meth:`ToolExecutor.execute` awaits awaitables.
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Any]
 
+RETIRED_VIDEO_TOOL_NAME = "generate_video"
+
 
 class ToolExecutionError(Exception):
     """A handler failed, optionally after an externally observable dispatch."""

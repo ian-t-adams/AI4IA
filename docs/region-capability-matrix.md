@@ -10,7 +10,7 @@ than maintaining a second model/version list.
 
 | Region | Role | Consequence |
 | --- | --- | --- |
-| East US 2 | Primary US model set, realtime/audio, images, temporarily re-admitted video, and native Content Understanding/Speech integration | Broadest shared capability set; several native service dependencies remain here |
+| East US 2 | Primary US model set, realtime/audio, images, and native Content Understanding/Speech integration | Broadest shared capability set; several native service dependencies remain here |
 | Sweden Central | Second primary model region, with EU data-zone options where the catalog offers them | Useful backend diversity, but not every model or SKU has parity |
 | West US | Targeted MAI image and deep-research deployments | Availability/quota specialization rather than a complete third copy |
 
@@ -90,7 +90,6 @@ Models are not interchangeable simply because they accept text.
 | Plain chat | Input modalities, context/output limits, supported sampling and reasoning values |
 | Agents and workflows | The model must support the tool contract; plain-chat-only models are rejected for tool-dependent execution |
 | Images | Provider API, supported sizes/quality, output bounds, safety behavior, and cost coverage |
-| Video | Asynchronous create/status/content contract, supported clip lengths, durable delivery, and at least one runtime-enabled video model |
 | Document parsing | Explicit analyzer selection, page/byte limits, canonical extraction format, and page-based metering |
 | Realtime | Provider/model allowlist, audio contract, separate APIM WebSocket API, and voice-capable tools |
 

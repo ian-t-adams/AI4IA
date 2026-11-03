@@ -1259,7 +1259,16 @@ No user data,
 stored clip, account, model deployment, secret or role is deleted by this source
 change. Shared media-account permissions remain needed by images and avatars.
 
-Saved drafts selecting `generate_video` must be edited before execution. Catalog
+An active `generate_video` selection refuses with an actionable 422 or tool
+error before inference, message persistence, workflow enqueue or schedule
+activation. This covers a conversation override or an inherited agent in
+HTTP/SSE chat, manual, durable and scheduled workflow runs, and delegated
+specialists. Explicit tools-off chats still run without tools. Only this exact
+retired name refuses; other unknown or unavailable tools keep their existing
+behavior. Stored records are never rewritten automatically. Owners remove the
+selection in the agent, workflow-step or conversation-tool editor; agent and
+workflow edits apply on Save, and conversation edits through the existing
+tool-override PATCH. Catalog
 and offered-tool changes invalidate affected consent and publication environment
 digests: renew consent and review/republish affected published versions. Do not
 silently rewrite persisted definitions or replay held operations. Historical tool

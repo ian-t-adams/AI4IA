@@ -208,6 +208,10 @@ export function AgentBuilder({
     const known = new Set(mcpTools.map((t) => t.namespacedName));
     return form.tools.filter((t) => isMcpToolName(t) && !known.has(t));
   }, [form.tools, mcpTools]);
+  const unavailableBuiltinTools = useMemo(() => {
+    const attachable = new Set<string>(ATTACHABLE_TOOLS);
+    return form.tools.filter((tool) => !isMcpToolName(tool) && !attachable.has(tool));
+  }, [form.tools]);
 
   const refreshMine = useCallback(async (failurePrefix = "") => {
     const generation = ownerGeneration.current;
@@ -530,6 +534,28 @@ export function AgentBuilder({
               </span>
             );
           })}
+          {unavailableBuiltinTools.length > 0 && (
+            <div className="studio-unavailable-tools" role="group" aria-label="Unavailable saved tools">
+              <strong>Unavailable saved tools</strong>
+              <p className="studio-help">
+                These saved tools can’t be selected for new agents. Remove them here before
+                saving; the saved agent is unchanged until you save.
+              </p>
+              {unavailableBuiltinTools.map((tool) => (
+                <div key={tool} style={checkRow}>
+                  <code>{tool}</code>
+                  <button
+                    type="button"
+                    aria-label={`Remove unavailable tool ${tool}`}
+                    onClick={() => toggleIn("tools", tool)}
+                    style={secondaryBtn}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </fieldset>
 
         {(customToolsEnabled || mcpByServer.length > 0 || orphanMcpTools.length > 0) && (

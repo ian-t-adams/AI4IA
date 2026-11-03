@@ -22,6 +22,14 @@
 > judgement rather than a fact — the default recorded here was proposed by the
 > implementer and stands until the owner replaces it. Change the row and the
 > triggers together; a date without triggers is the weaker half.
+>
+> **Later retirement annotation (does not rewrite the approval above).** Video
+> generation and its Sora 2 deployments were subsequently removed from the
+> application, desired IaC and gateway policy; see
+> [video generation removal](runbooks/deployment.md#video-generation-removal).
+> Video references in this record describe the originally approved scope and the
+> evidence gaps as recorded. Video output is no longer a currently served
+> generation path; retained historical clips remain owner-readable only.
 
 ## Decision
 

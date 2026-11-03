@@ -946,7 +946,8 @@ approval and unattended reconciliation remain separate work.
 
 ### Applying runtime-contract changes
 
-New image/video gates and the Search-region metrics endpoint are emitted by
+New image gates, the retained legacy-clip playback settings and the
+Search-region metrics endpoint are emitted by
 Bicep. Release these changes through the normal **provision and deploy** path,
 not an API-image-only deployment that skips configuration reconciliation.
 The recorded live observation above belongs to its stated deployed commit;

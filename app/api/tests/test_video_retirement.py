@@ -29,6 +29,7 @@ from ai4ia_api.videos.artifacts import (
     artifact_path,
     build_video_blob_store,
 )
+from ai4ia_api.workflows.models import Workflow, WorkflowStep
 from tests.conftest import make_settings
 
 TOOL = "generate_video"
@@ -125,7 +126,7 @@ def test_old_catalog_or_environment_cannot_restore_tool_or_slash_command(
 
 
 @pytest.mark.parametrize("reference", ["agent", "conversation"])
-def test_persisted_tool_reference_is_unoffered_and_unknown_calls_fail_safely(reference):
+def test_persisted_tool_reference_is_unoffered_and_refuses_before_inference(reference):
     app = create_app(make_settings())
     gateway = RetirementGateway()
     with TestClient(app) as client:
@@ -158,12 +159,155 @@ def test_persisted_tool_reference_is_unoffered_and_unknown_calls_fail_safely(ref
             "sessionId": session["id"], "stream": False,
             "content": "@legacy-creator make a clip" if reference == "agent" else "make a clip",
         })
+        assert response.status_code == 422, response.text
+        assert "generate_video is retired" in response.json()["detail"]
+        assert gateway.calls == 0 and gateway.offered == []
+        assert client.get(f"/api/sessions/{session['id']}/messages").json() == []
+
+
+def test_unoffered_retired_model_tool_call_still_fails_safely(client):
+    gateway = RetirementGateway()
+    client.app.state.gateway = gateway
+    session = client.post("/api/sessions", json={
+        "model": "gpt-5.2", "toolOverrides": {"added": ["calculator"]},
+    }).json()
+    response = client.post("/api/chat", json={
+        "sessionId": session["id"], "content": "Answer a synthetic question.", "stream": False,
+    })
+    assert response.status_code == 200, response.text
+    assert gateway.calls == 2 and TOOL not in gateway.offered
+    assert "calculator" in gateway.offered
+    assert "unknown_tool" in json.dumps(gateway.tool_results)
+    assert not response.json()["message"].get("attachments")
+
+
+@pytest.mark.parametrize("kind", ["agent", "workflow"])
+def test_legacy_builder_save_requires_explicit_retired_tool_removal(kind):
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        owner = client.post("/api/sessions", json={"model": "gpt-5.2"}).json()["userId"]
+        common = dict(
+            id="legacy-creator", name="legacy-creator", displayName="Legacy creator",
+            userId=owner, description="Preserve this description.",
+        )
+        if kind == "agent":
+            source = UserAgent(
+                **common, systemPrompt="Use the requested tool.", tools=[TOOL, "calculator"],
+            )
+            service = app.state.agent_service
+            list_path, items_key = "/api/agents/mine", "agents"
+            save_path = f"/api/agents/{source.name}"
+            payload = dict(
+                systemPrompt=source.systemPrompt, tools=list(source.tools),
+                displayName=source.displayName, description=source.description,
+                expectedRevision=source.revision,
+            )
+        else:
+            source = Workflow(**common, steps=[WorkflowStep(
+                agent="general", instruction="Calculate {input}.",
+                extraTools=[TOOL, "calculator"],
+            )])
+            service = app.state.workflow_service
+            list_path, items_key = "/api/workflows", "workflows"
+            save_path = f"/api/workflows/{source.name}"
+            payload = dict(
+                steps=[step.model_dump(mode="json") for step in source.steps],
+                displayName=source.displayName, description=source.description,
+                expectedRevision=source.revision,
+            )
+        asyncio.run(service._store.put(source))
+        original = asyncio.run(service._store.get(owner, source.name)).model_dump(mode="json")
+
+        loaded = client.get(list_path)
+        assert loaded.status_code == 200, loaded.text
+        record = next(item for item in loaded.json()[items_key] if item["name"] == source.name)
+        tools = record["tools"] if kind == "agent" else record["steps"][0]["extraTools"]
+        assert tools == [TOOL, "calculator"]
+        assert asyncio.run(service._store.get(owner, source.name)).model_dump(mode="json") == original
+
+        denied = client.put(save_path, json=payload)
+        assert denied.status_code == 422, denied.text
+        assert TOOL in denied.json()["detail"]
+        assert asyncio.run(service._store.get(owner, source.name)).model_dump(mode="json") == original
+
+        if kind == "agent":
+            payload["tools"] = ["calculator"]
+        else:
+            payload["steps"][0]["extraTools"] = ["calculator"]
+        saved = client.put(save_path, json=payload)
+        assert saved.status_code == 200, saved.text
+        stored = asyncio.run(service._store.get(owner, source.name))
+        assert stored.revision == source.revision + 1
+        assert stored.createdAt == source.createdAt
+        assert stored.description == source.description
+        if kind == "agent":
+            assert saved.json()["tools"] == stored.tools == ["calculator"]
+            assert stored.systemPrompt == source.systemPrompt
+        else:
+            assert saved.json()["steps"][0]["extraTools"] == stored.steps[0].extraTools == ["calculator"]
+            assert stored.steps[0].agent == source.steps[0].agent
+            assert stored.steps[0].instruction == source.steps[0].instruction
+
+
+@pytest.mark.parametrize("tools_enabled", [False, True])
+def test_legacy_conversation_selection_requires_explicit_retired_tool_removal(tools_enabled):
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        session = client.post("/api/sessions", json={"model": "gpt-5.4"}).json()
+        owner, identifier = session["userId"], session["id"]
+        original = asyncio.run(app.state.session_repo.patch_session(
+            owner, identifier, {
+                "toolsEnabled": tools_enabled, "toolOverrides": {"added": [TOOL, "calculator"]},
+            },
+        ))
+        for path in (f"/api/tools?sessionId={identifier}", f"/api/sessions/{identifier}/inspector"):
+            loaded = client.get(path)
+            assert loaded.status_code == 200, loaded.text
+        assert asyncio.run(app.state.session_repo.get_session(owner, identifier)) == original
+        denied = client.patch(f"/api/sessions/{identifier}", json={
+            "toolOverrides": {"added": [TOOL, "calculator"]},
+        })
+        assert denied.status_code == 422, denied.text
+        assert TOOL in denied.text
+        assert asyncio.run(app.state.session_repo.get_session(owner, identifier)) == original
+        saved = client.patch(f"/api/sessions/{identifier}", json={
+            "toolOverrides": {"added": ["calculator"]},
+        })
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["toolOverrides"]["added"] == ["calculator"]
+        stored = asyncio.run(app.state.session_repo.get_session(owner, identifier))
+        assert stored.toolOverrides.added == ["calculator"]
+        assert stored.toolsEnabled == original.toolsEnabled
+        assert stored.model == original.model
+
+
+@pytest.mark.parametrize("tools_enabled", [False, True])
+def test_owned_inherited_retired_tool_can_be_excluded_without_editing_agent(tools_enabled):
+    app = create_app(make_settings())
+    with TestClient(app) as client:
+        session = client.post("/api/sessions", json={"model": "gpt-5.4"}).json()
+        owner, identifier = session["userId"], session["id"]
+        agent = UserAgent(
+            id="legacy-creator", name="legacy-creator", displayName="Legacy creator",
+            userId=owner, systemPrompt="Calculate.", tools=[TOOL, "calculator"],
+        )
+        asyncio.run(app.state.agent_service._store.put(agent))
+        original = asyncio.run(app.state.session_repo.patch_session(
+            owner, identifier, {"agentName": agent.name, "toolsEnabled": tools_enabled},
+        ))
+        response = client.patch(f"/api/sessions/{identifier}", json={
+            "toolOverrides": {"added": [], "removed": [TOOL]},
+        })
         assert response.status_code == 200, response.text
-        assert TOOL not in gateway.offered
-        assert "calculator" in gateway.offered
-        assert gateway.calls == 2
-        assert "unknown_tool" in json.dumps(gateway.tool_results)
-        assert not response.json()["message"].get("attachments")
+        stored = asyncio.run(app.state.session_repo.get_session(owner, identifier))
+        assert stored.agentName == original.agentName
+        assert stored.toolsEnabled == original.toolsEnabled
+        assert stored.toolOverrides.added == []
+        assert stored.toolOverrides.removed == [TOOL]
+        inspector = client.get(f"/api/sessions/{identifier}/inspector").json()
+        assert TOOL not in inspector["tools"]["effective"]
+        assert ("calculator" in inspector["tools"]["effective"]) is tools_enabled
+        assert asyncio.run(app.state.agent_service._store.get(owner, agent.name)) == agent
 
 
 def test_legacy_playback_owner_auth_and_read_only_lifecycle(monkeypatch):
