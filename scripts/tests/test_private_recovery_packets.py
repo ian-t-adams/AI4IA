@@ -1,7 +1,7 @@
 """Offline controls for the finite private recovery module inputs."""
-from copy import deepcopy
 import json
 import unittest
+from copy import deepcopy
 
 from scripts import _private_recovery_packets as packets
 from scripts.tests.test_bicep_compilation import ROOT, _compile
@@ -232,6 +232,7 @@ class RecoveryCompiledTests(unittest.TestCase):
         inherited = resources["apiApp"]["properties"]["configuration"]["secrets"]
         self.assertTrue(inherited.startswith("[if(variables('inheritsSecrets'), "))
         self.assertIn("map(parameters('recoverySecretDescriptors')", inherited)
+        self.assertIn("variables('speechVoiceLiveGatewaySecrets')", inherited)
         self.assertEqual(inherited.count("variables('sharedGatewayManifestSecrets')"), 2)
         self.assertIn("listSecrets('secretSource', '2025-07-01')", inherited)
         self.assertIn("equals(lambdaVariables('current').name, lambdaVariables('secret').name)", inherited)
