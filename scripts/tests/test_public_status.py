@@ -150,6 +150,72 @@ class PublicStatusTests(unittest.TestCase):
                 self.assertEqual(result["endpoints"][2]["state"], "unknown")
                 self.assert_private_absent(json.dumps(result))
 
+    def test_endpoint_matrix_survives_artifact_projection_and_rendering(self):
+        from scripts.tests.test_pages_status_refresh import PagesStatusRefreshTests
+
+        renderer = PagesStatusRefreshTests()
+        cases = [
+            (0, "up", True, "reachable", code, stamp(NOW), "up")
+            for code in (200, 204, 302, 401, 403)
+        ] + [
+            (index, "up", True, "healthy", 200, stamp(NOW), "up") for index in (2, 3)
+        ] + [
+            (0, "down", False, "http_error", 503, stamp(NOW), "down"),
+            (2, "down", False, "http_error", 503, stamp(NOW), "down"),
+            (3, "down", False, "persistence_unavailable", 503, stamp(NOW), "down"),
+            (0, "up", True, "reachable", 503, stamp(NOW), "unknown"),
+            (2, "up", True, "healthy", 302, stamp(NOW), "unknown"),
+            (0, "down", False, "http_error", 0, stamp(NOW), "unknown"),
+            (0, "up", True, "reachable", 200, None, "unknown"),
+            (2, "up", True, "healthy", 200, None, "unknown"),
+            (0, "down", False, "http_error", 503, None, "unknown"),
+            (3, "down", False, "persistence_unavailable", 503, None, "unknown"),
+        ] + [
+            (2, "down", False, "http_error", code, stamp(NOW), "unknown")
+            for code in (302, 401, 403)
+        ] + [
+            (2, "unknown", False, outcome, code, stamp(NOW), "unknown")
+            for outcome, code in (
+                ("auth_required", 401), ("auth_required", 403), ("unexpected_redirect", 302),
+            )
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            shutil.copytree(ROOT / "site", site)
+            for index, state, ok, outcome, code, observed, expected in cases:
+                with self.subTest(index=index, state=state, outcome=outcome, code=code, observed=observed):
+                    inv, health = snapshots()
+                    health["endpoints"][index].update(
+                        state=state, ok=ok, outcome=outcome, httpStatus=code, observedAt=observed,
+                    )
+                    public_status.write_snapshots(site / "data", inv, health)
+                    public_status.check_site(site)
+                    projected = public_status.assignment(
+                        (site / "data" / "status.js").read_bytes(), "AI4IA_STATUS",
+                    )
+                    self.assertEqual(public_status.status(projected), projected)
+                    row = projected["endpoints"][index]
+                    self.assertEqual(row["state"], expected)
+                    expected_up = 4 if expected == "up" else 3
+                    self.assertEqual(projected["summary"]["endpointsUp"], expected_up)
+                    rendered = renderer._render_status(endpoints=projected["endpoints"])
+                    self.assertIn(f"{expected_up}/4", rendered["stats"])
+                    card = rendered["endpoints"].split('<div class="card">')[index + 1]
+                    raw = renderer._render_status(endpoints=[{
+                        **health["endpoints"][index], "kind": row["kind"], "name": row["name"],
+                    }])
+                    if expected == "unknown":
+                        self.assertIn("not established", card)
+                        self.assertNotIn("Public ingress returned an expected response.", card)
+                        self.assertNotIn("Expected API health response.", card)
+                        self.assertNotIn("Public ingress returned an expected response.", raw["endpoints"])
+                        self.assertNotIn("Expected API health response.", raw["endpoints"])
+                        self.assertNotIn('class="badge bad"', raw["endpoints"])
+                    else:
+                        self.assertIn(
+                            'class="badge ok"' if expected == "up" else 'class="badge bad"', card,
+                        )
+
     def test_legacy_uptime_urls_are_migrated_without_losing_alerts_or_scope(self):
         legacy = report("down", report("down", report("down")))
         legacy["version"] = 1

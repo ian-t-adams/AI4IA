@@ -33,6 +33,45 @@ class StatusSnapshotLabelTests(unittest.TestCase):
         if not cls.pwsh:
             raise RuntimeError("pwsh is required to exercise status-snapshot.ps1")
 
+    def test_private_destination_guard_runs_before_discovery_or_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            script = scripts / SNAPSHOT.name
+            shutil.copyfile(SNAPSHOT, script)
+            site = root / "site"
+            site.mkdir()
+            sentinel = site / "sentinel"
+            sentinel.write_text("unchanged", encoding="utf-8")
+            for destination in (None, site, site / "data", site / "data" / ".." / "other"):
+                with self.subTest(destination=destination):
+                    argument = "" if destination is None else f"-OutDir {_ps_quote(str(destination))}"
+                    wrapper = f"""
+                    function az {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+                    function azd {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+                    & {_ps_quote(str(script))} {argument}
+                    """
+                    result = subprocess.run(
+                        [self.pwsh, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Private snapshots", result.stderr)
+                    self.assertNotIn("DISCOVERY_MUST_NOT_RUN", result.stdout + result.stderr)
+                    self.assertEqual(list(site.iterdir()), [sentinel])
+                    self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+
+    def test_explicit_private_destination_retains_operator_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = self._run_snapshot("valid", root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = (root / "inventory.js").read_text(encoding="utf-8-sig")
+            self.assertIn("sub-test", inventory)
+            self.assertIn("rg-test", inventory)
+            self.assertIn("sttest", inventory)
+
     def _run_snapshot(self, mode: str, out_dir: Path, *, public: bool = False) -> subprocess.CompletedProcess[str]:
         resource_id = (
             "/subscriptions/sub-test/resourceGroups/rg-test/providers/"

@@ -79,6 +79,12 @@ site/
   republished healthy seed. Historical snapshots without API observations show
   unknown coverage.
 
+  The public projection requires timestamped, consistent state/status/outcome
+  evidence before counting an endpoint as passing or down. Contradictions become
+  unknown with a generic invalid-response explanation; summary counts and rendered
+  cards use the same evidence rules. Ingress reachability includes 2xx/3xx and
+  401/403, but API health challenges and redirects remain unknown.
+
   Liveness covers the process only. Readiness covers the API's cached canonical
   session-store check (success cache up to 15 seconds), not Search, user
   authentication or model/gateway traffic. These probes do not perform inference
@@ -147,7 +153,8 @@ inventory and health from allowlisted types, labels, states, numbers and dates.
 Names, IDs, regions, suffixes, backend URLs and arbitrary provider text never
 cross this projection. The snapshot's `-Public` mode passes observations through
 stdin in memory before writing site files. Private/operator output remains
-available without `-Public`; use an output directory **outside `site/`**, and do
+available without `-Public`; an explicit output directory **outside `site/`**
+is required (linked ancestors are refused before discovery), and do
 not upload those diagnostics to public Actions artifacts or logs.
 
 The uptime publisher reprojects even old detailed snapshots before carrying

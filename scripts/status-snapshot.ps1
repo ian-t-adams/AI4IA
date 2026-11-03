@@ -36,7 +36,8 @@
   tagged azd-service-name=api. Unresolved targets remain explicitly unknown.
 
 .PARAMETER OutDir
-  Where the .js data files are written (default: site/data next to this repo).
+  Where the .js data files are written. Public output defaults to site/data.
+  Private output requires an explicit path outside site, with no linked ancestors.
 
 .PARAMETER Public
   Project generic public service observations before writing any file. Required for
@@ -47,7 +48,7 @@
   ./scripts/status-snapshot.ps1 -Public
 
 .EXAMPLE
-  ./scripts/status-snapshot.ps1 -Subscription <id> -ResourceGroup rg-ai4ia-<env>
+  ./scripts/status-snapshot.ps1 -OutDir <private-directory> -Subscription <id> -ResourceGroup rg-ai4ia-<env>
 #>
 [CmdletBinding()]
 param(
@@ -63,6 +64,29 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if (-not $Public) {
+    if (-not $PSBoundParameters.ContainsKey('OutDir') -or [string]::IsNullOrWhiteSpace($OutDir)) {
+        throw 'Private snapshots require an explicit OutDir outside the public site tree, or use -Public.'
+    }
+    $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
+    $siteRoot = [System.IO.Path]::Combine($repoRoot, 'site')
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if ($OutDir.Equals($siteRoot, $comparison) -or
+        $OutDir.StartsWith($siteRoot + [System.IO.Path]::DirectorySeparatorChar, $comparison)) {
+        throw 'Private snapshots cannot be written inside the public site tree.'
+    }
+    $ancestor = $OutDir
+    while ($ancestor) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -Force
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                throw 'Private snapshot destinations cannot have linked ancestors.'
+            }
+        }
+        $ancestor = Split-Path -Parent $ancestor
+    }
+}
 $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 . (Join-Path $PSScriptRoot 'status-endpoints.ps1')
 
@@ -74,8 +98,6 @@ $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 # points at". That is what makes this script correct in a new tenant or
 # subscription with no edits -- and what stops it from quietly snapshotting a
 # previous tenant's stack after a move.
-$repoRoot = Split-Path -Parent $PSScriptRoot
-
 function Get-AzdEnvValue {
     param([Parameter(Mandatory)][string] $Name)
 

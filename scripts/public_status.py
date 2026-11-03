@@ -131,40 +131,45 @@ def status(value: Any) -> dict | None:
         http_status = count(row.get("httpStatus", 0))
         if http_status > 599:
             raise HttpError("invalid_response")
+        observed = row.get("observedAt")
+        observed = date(observed) if observed is not None else None
         observed_ok = row.get("ok")
-        if type(observed_ok) is not bool:
-            observed_ok = False
         if kind == "ingress":
             reachable = outcome == "reachable" and (
                 200 <= http_status < 400 or http_status in (401, 403)
             )
-            failed = outcome == "http_error" and not (
+            failed = outcome == "http_error" and 100 <= http_status <= 599 and not (
                 200 <= http_status < 400 or http_status in (401, 403)
             )
-            if not ((state == "up" and observed_ok and reachable)
-                    or (state == "down" and not observed_ok and failed)):
-                state = "unknown"
         else:
-            healthy = outcome == "healthy" and http_status == 200
-            unavailable = (
+            reachable = outcome == "healthy" and http_status == 200
+            failed = (
                 kind == "readiness" and outcome == "persistence_unavailable"
                 and http_status == 503
-            )
-            failed = (
-                outcome == "http_error" and 400 <= http_status <= 599
+            ) or (
+                outcome == "http_error" and 100 <= http_status <= 599
+                and http_status != 200 and not 300 <= http_status < 400
+                and http_status not in (401, 403)
                 and (kind != "readiness" or http_status != 503)
             )
-            if not ((state == "up" and observed_ok and healthy)
-                    or (state == "down" and not observed_ok and (unavailable or failed))):
-                state = "unknown"
+        conclusion = (
+            state == "up" and observed_ok is True and reachable
+        ) or (
+            state == "down" and observed_ok is False and failed
+        )
+        if not (conclusion and observed is not None):
+            if state != "unknown" or outcome in {
+                "reachable", "healthy", "http_error", "persistence_unavailable",
+            }:
+                outcome = "invalid_response"
+            state = "unknown"
         latency = row.get("latencyMs")
         if latency is not None:
             latency = count(latency)
-        observed = row.get("observedAt")
         endpoints.append({
             "name": name, "kind": kind, "httpStatus": http_status,
             "ok": state == "up", "state": state, "outcome": outcome,
-            "observedAt": date(observed) if observed is not None else None,
+            "observedAt": observed,
             "latencyMs": latency,
         })
     numbers["endpointsTot"] = len(endpoints)

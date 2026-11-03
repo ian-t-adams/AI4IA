@@ -239,18 +239,22 @@
     function endpointState(e) {
       var hasObservation = e.observedAt && !isNaN(new Date(e.observedAt).getTime());
       if (e.kind === "ingress") {
-        var passingHttp = (e.httpStatus >= 200 && e.httpStatus < 400) ||
-          e.httpStatus === 401 || e.httpStatus === 403;
+        var passingHttp = Number.isInteger(e.httpStatus) &&
+          ((e.httpStatus >= 200 && e.httpStatus < 400) ||
+           e.httpStatus === 401 || e.httpStatus === 403);
         if (e.state === "up" && e.ok === true && e.outcome === "reachable" &&
             passingHttp && hasObservation) return "up";
         if (e.state === "down" && e.ok === false && e.outcome === "http_error" &&
+            Number.isInteger(e.httpStatus) && e.httpStatus >= 100 && e.httpStatus <= 599 &&
             !passingHttp && hasObservation) return "down";
         return "unknown";
       }
       if (e.state === "up" && e.ok === true && e.httpStatus === 200 &&
           e.outcome === "healthy" && hasObservation) return "up";
       var apiHttpFailure = e.outcome === "http_error" &&
-        e.httpStatus >= 400 && e.httpStatus <= 599 &&
+        Number.isInteger(e.httpStatus) && e.httpStatus >= 100 && e.httpStatus <= 599 &&
+        e.httpStatus !== 200 && !(e.httpStatus >= 300 && e.httpStatus < 400) &&
+        e.httpStatus !== 401 && e.httpStatus !== 403 &&
         !(e.kind === "readiness" && e.httpStatus === 503);
       if (e.state === "down" && e.ok === false &&
           (apiHttpFailure ||
@@ -260,6 +264,11 @@
     }
 
     function endpointOutcome(outcome, endpoint) {
+      if (endpointState(endpoint) === "unknown" &&
+          (endpoint.state !== "unknown" ||
+           ["reachable", "healthy", "http_error", "persistence_unavailable"].indexOf(outcome) !== -1)) {
+        return "Endpoint evidence is inconsistent or incomplete; health is not established.";
+      }
       var messages = {
         reachable: "Public ingress returned an expected response.",
         healthy: "Expected API health response.",
