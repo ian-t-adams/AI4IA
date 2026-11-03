@@ -48,7 +48,7 @@ from .runtime import (
     DelegatedToolResult,
     run_agent_turn,
 )
-from .tool_exec import RETIRED_VIDEO_TOOL_NAME, ToolContext, ToolExecutor
+from .tool_exec import RETIRED_VIDEO_TOOL, ToolContext, ToolExecutor
 from .tools import ToolRegistry
 from .user_agents import MAX_LINKS, NAME_RE
 
@@ -170,7 +170,7 @@ def build_delegate_capability(
         )
         if target is None or not target.enabled:
             return {"error": f"agent '{target_name}' is unavailable."}
-        if RETIRED_VIDEO_TOOL_NAME in target.tools:
+        if RETIRED_VIDEO_TOOL in target.tools:
             return {
                 "error": (
                     "generate_video is retired. Remove it from this specialist agent "

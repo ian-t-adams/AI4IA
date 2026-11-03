@@ -103,7 +103,7 @@ from ..agents.mcp_skills import (
 from ..agents.mcp_servers import is_mcp_tool_name
 from ..agents.orchestration import build_delegate_capability
 from ..agents.tool_exec import (
-    RETIRED_VIDEO_TOOL_NAME,
+    RETIRED_VIDEO_TOOL,
     SELECTABLE_SYNTHETIC_TOOL_NAMES,
     ToolContext,
     ToolExecutor,
@@ -1140,7 +1140,7 @@ async def chat(
         session,
         explicit_agent=parsed.agent,
     )
-    if tools_allowed() and RETIRED_VIDEO_TOOL_NAME in policy.effective_tools:
+    if tools_allowed() and RETIRED_VIDEO_TOOL in policy.effective_tools:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -1150,7 +1150,7 @@ async def chat(
         )
     if not tools_allowed() and policy.agent is not None and (
         any(
-            name != RETIRED_VIDEO_TOOL_NAME or policy.agent.sourceVersion is not None
+            name != RETIRED_VIDEO_TOOL or policy.agent.sourceVersion is not None
             for name in policy.agent.tools
         ) or policy.agent.links
     ):
