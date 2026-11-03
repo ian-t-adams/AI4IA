@@ -362,6 +362,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
                     "location": "eastus",
                     "provisioningState": "Succeeded",
                     "availability": "Degraded",
+                    "healthReported": True,
                     "state": "provisioned",
                 }
             ]

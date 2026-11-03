@@ -576,6 +576,30 @@ class UptimePortalTests(unittest.TestCase):
         self.assertIn('class="badge unknown"', first)
         self.assertIn("The expected health response was not received.", first)
 
+    def test_active_incident_requires_current_consistent_evidence(self):
+        firing = report("down", report("down", report("down")))
+        recovered = report("up", firing)
+        past = "An incident was open at the last recorded observation; its current status is unknown."
+        # Fresh controls: active and recovered claims remain.
+        self.assertEqual(self.render(firing)["cards"].count("Incident active."), 4)
+        self.assertNotIn(past, self.render(firing)["cards"])
+        self.assertEqual(self.render(recovered)["cards"].count("Incident recovered automatically."), 4)
+        # Stale: a valid alerting report 46 minutes later keeps past context only.
+        stale = self.render(firing, advance=46)["cards"]
+        self.assertNotIn("Incident active.", stale)
+        self.assertEqual(stale.count(past), 4)
+        self.assertEqual(stale.count("No current observation."), 4)
+        self.assertNotIn('class="badge bad"', stale)
+        # Inconsistent fresh row: the first card cannot claim an active incident.
+        inconsistent = json.loads(json.dumps(firing))
+        inconsistent["endpoints"][0].update(reason="healthy", httpStatus=200)
+        with self.assertRaises(HttpError):
+            uptime.parse_report(json.dumps(inconsistent).encode())
+        cards = self.render(inconsistent)["cards"].split('<div class="card">')[1:]
+        self.assertNotIn("Incident active.", cards[0])
+        self.assertIn(past, cards[0])
+        self.assertIn("Incident active.", cards[1])
+
     def test_derived_overall_transitions_and_observation_time_are_validated(self):
         firing = report("down", report("down", report("down")))
         recovered = report("up", firing)

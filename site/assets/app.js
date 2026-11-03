@@ -208,19 +208,25 @@
     //     "Availability: Unknown"; and
     //  2. it keeps the rendering honest even if the generator regresses.
     // Failure states still win -- those are real signals.
-    function effectiveState(r) {
-      if (r.state === "unavailable" || r.state === "degraded") return r.state;
+    // Availability (positive or failure) is current evidence only when Resource Health
+    // reported it in this snapshot generation; a stale or unchecked signal is unknown.
+    // Provisioning failures are independent evidence and still count as degraded.
+    function trustedAvailability(r) {
       var availability = String(r.availability || "").toLowerCase();
+      return r.healthReported === true && healthTrusted ? availability : "unknown";
+    }
+
+    function effectiveState(r) {
+      var availability = trustedAvailability(r);
       if (availability === "unavailable") return "unavailable";
       if (availability === "degraded") return "degraded";
       if (r.provisioningState === "Failed" || r.provisioningState === "Canceled") return "degraded";
-      return availability === "available" && r.healthReported === true && healthTrusted
-        ? "healthy" : "provisioned";
+      return availability === "available" ? "healthy" : "provisioned";
     }
 
     function displayAvailability(r) {
       var availability = String(r.availability || "Unknown");
-      if (availability.toLowerCase() === "available" && (r.healthReported !== true || !healthTrusted)) {
+      if (trustedAvailability(r) === "unknown") {
         availability = "Unknown";
       }
       if (!healthSourceAvailable &&
@@ -524,8 +530,12 @@
       if (valid && Number.isInteger(row.latencyMs) && row.latencyMs >= 0 && row.latencyMs <= 30000) {
         timing += " \u00b7 " + row.latencyMs + " ms";
       }
-      var incident = row && row.state !== "up" && row.alerting === true &&
-          row.failureStreak === 3 ? " Incident active."
+      var alerted = row && row.id === definition[0] && row.state !== "up" &&
+        row.alerting === true && row.failureStreak === 3;
+      // Only current, consistent evidence can assert an incident is active now;
+      // otherwise the last recorded incident is past context with unknown status.
+      var incident = alerted && valid && consistent ? " Incident active."
+        : alerted ? " An incident was open at the last recorded observation; its current status is unknown."
         : valid && consistent && row.state === "up" && row.transition === "recovered" &&
           row.alerting === false && report.history !== "unavailable" && report.history !== "stale"
           ? " Incident recovered automatically." : "";

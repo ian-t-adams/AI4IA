@@ -143,8 +143,8 @@ class PublicStatusTests(unittest.TestCase):
                         self.assertNotIn(">healthy</span>", rendered["resources"])
                         self.assertNotIn(">Available<", rendered["resources"])
                 for availability, provisioning, state in (
-                    ("Degraded", "Succeeded", "degraded"),
-                    ("Unavailable", "Succeeded", "unavailable"),
+                    ("Degraded", "Succeeded", "degraded" if reported is True else "provisioned"),
+                    ("Unavailable", "Succeeded", "unavailable" if reported is True else "provisioned"),
                     ("Available", "Failed", "degraded"),
                 ):
                     inv["resources"][0].update(
@@ -241,6 +241,76 @@ class PublicStatusTests(unittest.TestCase):
                     public_status.check_site(site)
             status_path.write_bytes(original)
             public_status.check_site(site)
+
+    def test_stale_or_unchecked_availability_is_not_presented_as_a_current_outage(self):
+        from scripts.tests.test_pages_status_refresh import PagesStatusRefreshTests
+
+        renderer = PagesStatusRefreshTests()
+        counts = ("total", "healthy", "provisioned", "degraded", "unavailable")
+
+        def build(availability: str, *, stale: bool, source: str, provisioning: str = "Succeeded"):
+            inv, health = snapshots()
+            inv["resources"][0].update(availability=availability, provisioningState=provisioning)
+            if stale:
+                inv["generatedAt"] = stamp(NOW - timedelta(minutes=20))
+            health["healthSource"]["status"] = source
+            return inv, health
+
+        # Controls: a matched, checked pair keeps current failures and their counts.
+        for availability, state in (("Unavailable", "unavailable"), ("Degraded", "degraded")):
+            with self.subTest(control=availability):
+                result = public_status.pair(*build(availability, stale=False, source="available"))
+                self.assertEqual(result[0]["resources"][0]["state"], state)
+                self.assertEqual(result[1]["summary"][state], 1)
+                self.assertEqual(public_status.pair(*result), result)
+                rendered = renderer._render_status(
+                    resources=result[0]["resources"], health_source={"status": "available"},
+                )
+                self.assertIn(f">{state}</span>", rendered["resources"])
+                self.assertIn(f">{availability}<", rendered["resources"])
+
+        # Stale, unchecked or both: a failure availability is not a current outage.
+        for availability in ("Unavailable", "Degraded"):
+            for stale, source in ((True, "unavailable"), (True, "available"), (False, "unavailable")):
+                with self.subTest(availability=availability, stale=stale, source=source), \
+                        tempfile.TemporaryDirectory() as temporary:
+                    inv, health = build(availability, stale=stale, source=source)
+                    result = public_status.pair(inv, health)
+                    self.assertEqual(public_status.pair(*result), result)
+                    row = result[0]["resources"][0]
+                    self.assertEqual((row["availability"], row["healthReported"], row["state"]),
+                                     ("Unknown", False, "provisioned"))
+                    summary = tuple(result[1]["summary"][key] for key in counts)
+                    self.assertEqual(summary, (None,) * 5 if stale else (1, 0, 1, 0, 0))
+                    site = Path(temporary) / "site"
+                    shutil.copytree(ROOT / "site", site)
+                    public_status.write_snapshots(site / "data", inv, health)
+                    public_status.check_site(site)
+                    # The renderer refuses the raw stale/unchecked row as well as the projected one.
+                    for rows in (result[0]["resources"], inv["resources"]):
+                        rendered = renderer._render_status(
+                            resources=rows, health_source={"status": source},
+                            inventory_generated_at=stamp(NOW - timedelta(minutes=20)) if stale
+                            else "2026-08-08T11:00:00Z",
+                        )
+                        self.assertNotIn(">unavailable</span>", rendered["resources"])
+                        self.assertNotIn(">degraded</span>", rendered["resources"])
+                        self.assertNotIn(f">{availability}<", rendered["resources"])
+
+                # Independently substantiated provisioning failure is retained.
+                result = public_status.pair(*build(
+                    availability, stale=True, source="unavailable", provisioning="Failed"))
+                self.assertEqual(result[0]["resources"][0]["state"], "degraded")
+                rendered = renderer._render_status(
+                    resources=[{**inv["resources"][0], "provisioningState": "Failed"}],
+                    health_source={"status": "unavailable"}, inventory_generated_at="2026-01-01T00:00:00Z",
+                )
+                self.assertIn(">degraded</span>", rendered["resources"])
+
+        # A failure availability without a Resource Health report is contradictory.
+        inv, health = build("Unavailable", stale=False, source="available")
+        inv["resources"][0]["healthReported"] = False
+        self.assertEqual(public_status.inventory(inv)["resources"][0]["availability"], "Unknown")
 
     def test_textual_publication_fence_covers_stylesheets_and_svg(self):
         public_status.check_site(ROOT / "site")
@@ -443,6 +513,33 @@ class PublicStatusTests(unittest.TestCase):
 
 
 class PublicCarryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_carry_does_not_republish_stale_unchecked_outages(self):
+        for stale, source, expected in (
+            (False, "available", "unavailable"),  # control: matched, checked failure
+            (True, "unavailable", "provisioned"),
+            (False, "unavailable", "provisioned"),
+        ):
+            inv, health = snapshots()
+            inv["resources"][0]["availability"] = "Unavailable"
+            if stale:
+                inv["generatedAt"] = stamp(NOW - timedelta(minutes=20))
+            health["healthSource"]["status"] = source
+            FakeTransport.replies = {}
+            for name, value in (("inventory", inv), ("status", health)):
+                FakeTransport.replies[f"/AI4IA/data/{name}.js"] = response(
+                    f"window.AI4IA_{name.upper()} = {json.dumps(value)};".encode(),
+                    content_type="text/javascript",
+                )
+            with self.subTest(stale=stale, source=source), tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(uptime, "now", return_value=NOW), redirect_stdout(io.StringIO()):
+                directory = Path(temporary)
+                await uptime.carry_snapshots(FakeTransport(set()), directory)
+                carried_inv = public_status.assignment((directory / "inventory.js").read_bytes(), "AI4IA_INVENTORY")
+                carried = public_status.assignment((directory / "status.js").read_bytes(), "AI4IA_STATUS")
+                self.assertEqual(carried_inv["resources"][0]["state"], expected)
+                self.assertEqual(carried["summary"]["unavailable"],
+                                 None if stale else int(expected == "unavailable"))
+
     async def test_observer_sanitizes_legacy_snapshots_and_does_not_log_private_targets(self):
         inv, health = snapshots()
         FakeTransport.sent = []

@@ -85,7 +85,7 @@ def inventory(value: Any) -> dict | None:
         if availability not in AVAILABILITY:
             availability = "Unknown"
         health_reported = row.get("healthReported") is True
-        if availability == "Available" and not health_reported:
+        if availability != "Unknown" and not health_reported:
             availability = "Unknown"
         provisioning = row.get("provisioningState")
         if provisioning not in PROVISIONING:
@@ -113,10 +113,11 @@ RESOURCE_COUNTS = ("total", "healthy", "provisioned", "degraded", "unavailable")
 def pair(inv: Any, health: Any) -> tuple[dict | None, dict | None]:
     """Project inventory/status together so neither can claim health the other cannot support.
 
-    Positive health needs a successful Resource Health source in a status snapshot from the
-    same generation; otherwise it is demoted to unknown. Resource counts are derived from the
-    projected inventory, or published as null (unknown, never zero) when no matching
-    inventory exists. Failure signals are retained.
+    Every Resource Health availability signal (positive or failure) needs a successful
+    source in a status snapshot from the same generation; otherwise it is demoted to unknown
+    so a stale or unchecked signal is never presented as current. Provisioning failures are
+    independent evidence and are retained. Resource counts are derived from the projected
+    inventory, or published as null (unknown, never zero) when no matching inventory exists.
     """
     projected_inventory, projected_status = inventory(inv), status(health)
     matched = (
@@ -128,7 +129,7 @@ def pair(inv: Any, health: Any) -> tuple[dict | None, dict | None]:
         and projected_status["healthSource"]["status"] == "available"
     ):
         for row in projected_inventory["resources"]:
-            if row["availability"] == "Available":
+            if row["availability"] != "Unknown":
                 row["availability"], row["healthReported"] = "Unknown", False
                 row["state"] = resource_state("Unknown", row["provisioningState"])
     if projected_status is not None:

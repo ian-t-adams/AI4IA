@@ -90,6 +90,9 @@ site/
   resource summary counts are derived from the projected inventory, and positive
   health also requires an available Resource Health source. A missing or
   mismatched pair publishes null (unknown) counts, never zero or healthy.
+  Availability signals from a stale, mismatched or unchecked pair, including
+  failures, are shown as unknown rather than as a current outage; independently
+  reported provisioning failures (Failed/Canceled) are retained.
 
   Liveness covers the process only. Readiness covers the API's cached canonical
   session-store check (success cache up to 15 seconds), not Search, user
@@ -104,7 +107,9 @@ site/
   expected live/ready JSON are checked without authentication, model calls or
   user data writes. Three consecutive failures or unknown observations open an
   incident; only the new incident alerts, and a passing check recovers
-  automatically. Missing history never blocks new probes. The report contains
+  automatically. Missing history never blocks new probes. An incident is shown
+  as active only with current, consistent evidence; a stale report keeps it as
+  last-observed context with unknown current status. The report contains
   only generic service identifiers, timing, fixed outcomes, opaque target-continuity
   hashes and bounded counters, not endpoint URLs, response bodies,
   exception text, credentials or user identifiers.
