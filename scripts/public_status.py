@@ -40,7 +40,8 @@ PROVISIONING = {"Succeeded", "Failed", "Canceled", "Creating", "Updating", "Dele
 OUTCOMES = {
     "healthy", "reachable", "http_error", "network_unavailable", "target_unresolved",
     "persistence_unavailable", "invalid_response", "redirect_rejected", "deadline",
-    "response_too_large", "invalid_target",
+    "response_too_large", "invalid_target", "private_ingress", "target_ambiguous",
+    "auth_required", "unexpected_redirect",
 }
 PUBLIC_UUID_CONSTANTS = {
     "00000000-0000-0000-0000-000000000000",
@@ -130,6 +131,32 @@ def status(value: Any) -> dict | None:
         http_status = count(row.get("httpStatus", 0))
         if http_status > 599:
             raise HttpError("invalid_response")
+        observed_ok = row.get("ok")
+        if type(observed_ok) is not bool:
+            observed_ok = False
+        if kind == "ingress":
+            reachable = outcome == "reachable" and (
+                200 <= http_status < 400 or http_status in (401, 403)
+            )
+            failed = outcome == "http_error" and not (
+                200 <= http_status < 400 or http_status in (401, 403)
+            )
+            if not ((state == "up" and observed_ok and reachable)
+                    or (state == "down" and not observed_ok and failed)):
+                state = "unknown"
+        else:
+            healthy = outcome == "healthy" and http_status == 200
+            unavailable = (
+                kind == "readiness" and outcome == "persistence_unavailable"
+                and http_status == 503
+            )
+            failed = (
+                outcome == "http_error" and 400 <= http_status <= 599
+                and (kind != "readiness" or http_status != 503)
+            )
+            if not ((state == "up" and observed_ok and healthy)
+                    or (state == "down" and not observed_ok and (unavailable or failed))):
+                state = "unknown"
         latency = row.get("latencyMs")
         if latency is not None:
             latency = count(latency)
@@ -140,6 +167,8 @@ def status(value: Any) -> dict | None:
             "observedAt": date(observed) if observed is not None else None,
             "latencyMs": latency,
         })
+    numbers["endpointsTot"] = len(endpoints)
+    numbers["endpointsUp"] = sum(row["state"] == "up" for row in endpoints)
     return {
         "generatedAt": date(data.get("generatedAt")),
         "healthSource": {

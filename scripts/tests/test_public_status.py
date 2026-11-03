@@ -54,9 +54,18 @@ def snapshots() -> tuple[dict, dict]:
             "unavailable": 0, "endpointsUp": 4, "endpointsTot": 4, "extra": secret,
         },
         "endpoints": [
-            {"name": secret, "url": PRIVATE[4], "state": "up", "outcome": "healthy",
-             "httpStatus": 200, "observedAt": stamp(NOW), "latencyMs": 12, "note": secret}
-            for _ in range(4)
+            {"name": secret, "url": PRIVATE[4], "state": "up", "ok": True,
+             "outcome": "reachable", "httpStatus": 200,
+             "observedAt": stamp(NOW), "latencyMs": 12, "note": secret},
+            {"name": secret, "url": PRIVATE[4], "state": "up", "ok": True,
+             "outcome": "reachable", "httpStatus": 401,
+             "observedAt": stamp(NOW), "latencyMs": 12, "note": secret},
+            *[
+                {"name": secret, "url": PRIVATE[4], "state": "up", "ok": True,
+                 "outcome": "healthy", "httpStatus": 200,
+                 "observedAt": stamp(NOW), "latencyMs": 12, "note": secret}
+                for _ in range(2)
+            ],
         ],
     }
     return inv, status
@@ -75,6 +84,7 @@ class PublicStatusTests(unittest.TestCase):
         self.assertEqual(projected[0]["resources"][0]["state"], "healthy")
         self.assertEqual(projected[1]["summary"]["healthy"], 1)
         self.assertEqual(projected[1]["endpoints"][3]["state"], "up")
+        self.assertEqual(projected[1]["endpoints"][1]["state"], "up")
         self.assertEqual(public_status.inventory(projected[0]), projected[0])
         self.assertEqual(public_status.status(projected[1]), projected[1])
         self.assertIn(PRIVATE[2], json.dumps(inv), "private input control did not contain the fixture")
@@ -87,7 +97,7 @@ class PublicStatusTests(unittest.TestCase):
             inv["resources"][0]["availability"] = availability
             self.assertEqual(public_status.inventory(inv)["resources"][0]["state"], expected)
         health["healthSource"]["status"] = "unavailable"
-        health["endpoints"][0].update(state="down", outcome="http_error", httpStatus=503)
+        health["endpoints"][0].update(state="down", ok=False, outcome="http_error", httpStatus=503)
         health["endpoints"][1].update(state="unknown", outcome="network_unavailable")
         result = public_status.status(health)
         self.assertEqual(result["healthSource"]["status"], "unavailable")
@@ -101,6 +111,44 @@ class PublicStatusTests(unittest.TestCase):
         self.assert_private_absent(json.dumps((public_status.inventory(inv), public_status.status(health))))
         self.assertEqual(public_status.inventory(inv)["resources"][0]["label"], "Azure service")
         self.assertEqual(public_status.status(health)["endpoints"][0]["state"], "unknown")
+
+    def test_inconsistent_endpoint_evidence_fails_closed_and_summary_counts_match(self):
+        _, health = snapshots()
+        inconsistent = health["endpoints"][0]
+        inconsistent.update(state="up", ok=False, outcome="http_error", httpStatus=503)
+        result = public_status.status(health)
+        self.assertEqual(result["endpoints"][0]["state"], "unknown")
+        self.assertFalse(result["endpoints"][0]["ok"])
+        self.assertEqual(result["summary"]["endpointsUp"], 3)
+        self.assertEqual(result["summary"]["endpointsTot"], 4)
+        serialized = json.dumps(result)
+        self.assertNotIn("private-resource-unique-suffix", serialized)
+        self.assertEqual(public_status.status(result), result)
+
+        for state, ok, outcome, status in (
+            ("up", True, "reachable", 503),
+            ("down", False, "reachable", 401),
+            ("up", True, "healthy", 302),
+        ):
+            with self.subTest(state=state, outcome=outcome, status=status):
+                _, bad = snapshots()
+                bad["endpoints"][0].update(state=state, ok=ok, outcome=outcome, httpStatus=status)
+                self.assertEqual(public_status.status(bad)["endpoints"][0]["state"], "unknown")
+
+    def test_safe_api_target_outcomes_remain_distinct_without_provider_notes(self):
+        outcomes = ("private_ingress", "target_ambiguous", "auth_required", "unexpected_redirect")
+        http_statuses = (0, 0, 401, 302)
+        for outcome, http_status in zip(outcomes, http_statuses, strict=True):
+            with self.subTest(outcome=outcome):
+                _, health = snapshots()
+                health["endpoints"][2].update(
+                    state="unknown", ok=False, outcome=outcome, httpStatus=http_status,
+                    note=PRIVATE[2],
+                )
+                result = public_status.status(health)
+                self.assertEqual(result["endpoints"][2]["outcome"], outcome)
+                self.assertEqual(result["endpoints"][2]["state"], "unknown")
+                self.assert_private_absent(json.dumps(result))
 
     def test_legacy_uptime_urls_are_migrated_without_losing_alerts_or_scope(self):
         legacy = report("down", report("down", report("down")))

@@ -237,12 +237,52 @@
       }
     });
     function endpointState(e) {
-      if (e.state === "up" && (e.kind === "liveness" || e.kind === "readiness") &&
-          (e.httpStatus !== 200 || e.outcome !== "healthy" ||
-           !e.observedAt || isNaN(new Date(e.observedAt).getTime()))) {
+      var hasObservation = e.observedAt && !isNaN(new Date(e.observedAt).getTime());
+      if (e.kind === "ingress") {
+        var passingHttp = (e.httpStatus >= 200 && e.httpStatus < 400) ||
+          e.httpStatus === 401 || e.httpStatus === 403;
+        if (e.state === "up" && e.ok === true && e.outcome === "reachable" &&
+            passingHttp && hasObservation) return "up";
+        if (e.state === "down" && e.ok === false && e.outcome === "http_error" &&
+            !passingHttp && hasObservation) return "down";
         return "unknown";
       }
-      return e.state === "up" || e.state === "down" ? e.state : "unknown";
+      if (e.state === "up" && e.ok === true && e.httpStatus === 200 &&
+          e.outcome === "healthy" && hasObservation) return "up";
+      var apiHttpFailure = e.outcome === "http_error" &&
+        e.httpStatus >= 400 && e.httpStatus <= 599 &&
+        !(e.kind === "readiness" && e.httpStatus === 503);
+      if (e.state === "down" && e.ok === false &&
+          (apiHttpFailure ||
+           (e.kind === "readiness" && e.outcome === "persistence_unavailable" && e.httpStatus === 503)) &&
+          hasObservation) return "down";
+      return "unknown";
+    }
+
+    function endpointOutcome(outcome, endpoint) {
+      var messages = {
+        reachable: "Public ingress returned an expected response.",
+        healthy: "Expected API health response.",
+        http_error: "Endpoint returned a non-passing HTTP status.",
+        network_unavailable: "No complete response; health is not established.",
+        target_unresolved: "A public target could not be resolved.",
+        target_ambiguous: "The public API target was ambiguous.",
+        private_ingress: "API ingress is private; no public probe was attempted.",
+        invalid_target: "The public API target was invalid.",
+        auth_required: "An authentication challenge prevented API health verification.",
+        unexpected_redirect: "The API health endpoint redirected; health is not established.",
+        persistence_unavailable: "The canonical session store is unavailable.",
+        invalid_response: "The expected health response was not received.",
+        redirect_rejected: "A redirect was rejected; health is not established.",
+        deadline: "The health request exceeded its deadline.",
+        response_too_large: "The health response exceeded its limit.",
+        invalid_configuration: "The health target is not configured."
+      };
+      if (!endpoint.observedAt && !messages[outcome] &&
+          (endpoint.kind === "liveness" || endpoint.kind === "readiness")) {
+        return "This snapshot does not contain a direct API " + endpoint.kind + " observation.";
+      }
+      return messages[outcome] || "Health is not established.";
     }
 
     var stats = el("status-stats");
@@ -279,7 +319,7 @@
           timing += " · " + e.latencyMs + " ms";
         }
         return '<div class="card"><h3>' + b + " " + esc(e.name) +
-          "</h3><p>HTTP " + esc(e.httpStatus || "—") + (e.note ? " · " + esc(e.note) : "") +
+          "</h3><p>" + esc(endpointOutcome(e.outcome, e)) + "</p><p>HTTP " + esc(e.httpStatus || "—") +
           '</p><p class="meta">' + esc(timing) + "</p></div>";
       }).join("");
     }
