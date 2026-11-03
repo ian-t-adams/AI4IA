@@ -710,7 +710,7 @@ class RetirementCliTests(unittest.TestCase):
             if workflow_args:
                 workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
                 collector = next(s for s in workflow["jobs"]["report"]["steps"] if s["name"] == "Collect retirement observations")
-                command = collector["run"].split("python ", 1)[1].replace("\\\n", "")
+                command = collector["run"].split("python ", 1)[1].replace("\\\n", "").splitlines()[0].split(" ||", 1)[0]
                 argv = shlex.split(command.replace("$RUNNER_TEMP/model-retirements", output.as_posix()))
             if public is not None:
                 path = temp / "public.json"
@@ -1170,6 +1170,65 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts.tests.test_model_retirement", run)
         deploy = yaml.safe_load((ROOT / ".github" / "workflows" / "deploy.yml").read_text())
         self.assertIn("scripts/_model_retirement.py", deploy.get("on", deploy.get(True))["push"]["paths"])
+
+    @unittest.skipIf(BASH is None, "bash is unavailable on this machine")
+    def test_collection_warns_only_on_attention_and_preserves_other_failures(self):
+        steps = self.workflow["jobs"]["report"]["steps"]
+        step = next(s for s in steps if s["name"] == "Collect retirement observations")
+        for report_exit in (0, 1, 2, 17, 127, 137):
+            with self.subTest(report_exit=report_exit), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                arguments = root / "arguments"
+                result = subprocess.run(
+                    [BASH, "--noprofile", "--norc", "-c",
+                     'python() { printf "%s\\n" "$@" > "$COLLECTOR_ARGUMENTS"; return "$COLLECTOR_EXIT"; }\n'
+                     + step["run"]],
+                    env={
+                        **os.environ, "RUNNER_TEMP": root.as_posix(),
+                        "COLLECTOR_ARGUMENTS": arguments.as_posix(),
+                        "COLLECTOR_EXIT": str(report_exit),
+                    },
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                self.assertEqual(
+                    arguments.read_text().splitlines(),
+                    ["scripts/check-model-availability.py", "--retirement-report",
+                     f"{root.as_posix()}/model-retirements"],
+                )
+                self.assertEqual(
+                    result.returncode, 0 if report_exit in (0, 1) else report_exit,
+                    result.stdout + result.stderr,
+                )
+                self.assertEqual("::warning::" in result.stdout, report_exit == 1)
+                if report_exit == 1:
+                    self.assertIn("see job summary", result.stdout)
+
+    @unittest.skipIf(BASH is None, "bash is unavailable on this machine")
+    def test_summary_publishes_report_but_fails_when_missing(self):
+        steps = self.workflow["jobs"]["report"]["steps"]
+        step = next(s for s in steps if s["name"] == "Publish report summary")
+        for present in (False, True):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                summary = root / "summary"
+                if present:
+                    report = root / "model-retirements" / "model-retirements.md"
+                    report.parent.mkdir()
+                    report.write_text("Retirement report: attention\n", encoding="utf-8")
+                result = subprocess.run(
+                    [BASH, "--noprofile", "--norc", "-c", step["run"]],
+                    env={
+                        **os.environ, "RUNNER_TEMP": root.as_posix(),
+                        "GITHUB_STEP_SUMMARY": summary.as_posix(),
+                    },
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                self.assertEqual(result.returncode, 0 if present else 1, result.stdout + result.stderr)
+                self.assertEqual(
+                    summary.read_text(),
+                    "Retirement report: attention\n" if present else
+                    "Retirement report unavailable: collection did not produce an artifact. No clean inventory is claimed.\n",
+                )
 
     @unittest.skipIf(BASH is None, "bash is unavailable on this machine")
     def test_real_activation_script_has_paired_positive_and_negative_controls(self):
