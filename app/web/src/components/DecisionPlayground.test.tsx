@@ -48,7 +48,8 @@ describe("Decision playground", () => {
     expect(screen.getByRole("button", { name: "Run decision" })).toHaveClass("btn-primary");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Run decision" }));
-    expect(await screen.findByRole("heading", { name: "Results" })).toHaveFocus();
+    const resultsHeading = await screen.findByRole("heading", { name: "Results" });
+    await waitFor(() => expect(resultsHeading).toHaveFocus());
     expect(screen.getByText("Yes probability: 80.0%")).toBeInTheDocument();
     expect(screen.getByText("Selected: design")).toBeInTheDocument();
     expect(screen.getByText("Score: 0.300 on a 0–2 scale")).toBeInTheDocument();

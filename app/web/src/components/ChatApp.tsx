@@ -59,6 +59,8 @@ import { useCurrentOwner, type CurrentOwner } from "./MemoryPreferenceProvider";
 import { ConversationInspector } from "./ConversationInspector";
 import { SettingsPage } from "./SettingsPanel";
 import { StudioPanel } from "./StudioPanel";
+import { DecisionPlayground } from "./DecisionPlayground";
+import { useDecisionsAvailable } from "./useDecisionsAvailable";
 import {
   DEFAULT_SPEECH_VOICE_LIVE_SETTINGS,
   DEFAULT_SPEECH_MODEL_ID,
@@ -295,6 +297,7 @@ export function ChatApp() {
   // Photo avatars follow the server's own /config (default off, and only for
   // the current owner). Visibility only: the API enforces the gate itself.
   const photoAvatarsEnabled = usePhotoAvatarsEnabled(owner.key);
+  const decisionsAvailability = useDecisionsAvailable(owner.key);
   // Closing the gallery refreshes the avatars live voice may offer.
   const [liveAvatarRefresh, setLiveAvatarRefresh] = useState(0);
   const [liveAvatarFocusRequest, setLiveAvatarFocusRequest] = useState(0);
@@ -3439,9 +3442,11 @@ export function ChatApp() {
         ? "Create AI-generated presenters, then talk with them live in a conversation."
         : view === "studio"
           ? "Build agents, chain them into workflows and connect custom tools."
-          : view === "settings"
-            ? "Personal preferences, data housekeeping and help."
-            : undefined;
+          : view === "decisions"
+            ? "Test text or JSON with named yes/no, choice and score questions."
+            : view === "settings"
+              ? "Personal preferences, data housekeeping and help."
+              : undefined;
 
   return (
     <div className="app-shell">
@@ -3474,6 +3479,9 @@ export function ChatApp() {
             onNavigate={navigate}
             libraryAvailable={libraryEnabled}
             photoAvatarsAvailable={photoAvatarsEnabled}
+            decisionsAvailable={decisionsAvailability.status === "available"}
+            decisionsAvailabilityError={decisionsAvailability.status === "error"}
+            onRetryDecisions={decisionsAvailability.retry}
             onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })}
             onBeforeSignOut={prepareSignOut}
             onCollapse={toggleLeftPanel}
@@ -3793,6 +3801,10 @@ export function ChatApp() {
                 onRun={openWorkflowRun}
                 onClose={() => navigate("chat")}
               />
+            ) : view === "decisions" ? (
+              owner.key !== null ? <DecisionPlayground key={owner.key} /> : (
+                <p className="inspector-empty">Sign in to check Decision availability.</p>
+              )
             ) : view === "library" ? (
               libraryEnabled ? (
                 <LibraryPanel
