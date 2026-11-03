@@ -532,6 +532,36 @@ class UptimePortalTests(unittest.TestCase):
         self.assertIn("observations current", rendered["freshness"])
         self.assertEqual(rendered["options"], {"cache": "no-store", "credentials": "omit", "redirect": "error"})
 
+    def test_carried_reports_and_renderer_refuse_contradictory_evidence(self):
+        for state in ("up", "down"):
+            valid = report(state, report("down", report("down")))
+            carried = uptime.parse_report(json.dumps(valid).encode())
+            self.assertEqual(carried, valid)
+            rendered = self.render(carried)
+            badge = "ok" if state == "up" else "bad"
+            self.assertEqual(rendered["cards"].count(f'class="badge {badge}"'), 4)
+        for state, reason, status in (
+            ("down", "healthy", 200), ("down", "http_error", 200),
+            ("down", "http_error", 0), ("up", "http_error", 503),
+        ):
+            with self.subTest(state=state, reason=reason, status=status):
+                current = report(state)
+                current["endpoints"][0].update(reason=reason, httpStatus=status)
+                with self.assertRaises(HttpError):
+                    uptime.parse_report(json.dumps(current).encode())
+                legacy = {**current, "version": 1, "endpoints": [
+                    {**{key: value for key, value in row.items() if key != "targetKey"},
+                     "url": f"https://{'api' if identifier.startswith('api_') else identifier}.example.test{path}"}
+                    for row, (identifier, _, path) in zip(current["endpoints"], uptime.ENDPOINTS, strict=True)
+                ]}
+                with self.assertRaises(HttpError):
+                    uptime.parse_report(json.dumps(legacy).encode())
+                rendered = self.render(current)
+                first = rendered["cards"].split('<div class="card">')[1]
+                self.assertIn('class="badge unknown"', first)
+                self.assertIn("Health not established.", first)
+                self.assertNotIn("Expected anonymous health response.", first)
+
     def test_stale_missing_future_failed_and_oversized_reports_are_not_green(self):
         for current, arguments in (
             (None, {}), (report(), {"bad_fetch": True}),

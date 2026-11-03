@@ -171,6 +171,12 @@ def parse_report(raw: bytes) -> Report:
                 item["reason"] != "healthy" or item["httpStatus"] != 200
                 or item["targetKey"] is None or item["observedAt"] is None
             ))
+            or (item["reason"] == "healthy" and item["state"] != "up")
+            or (item["state"] == "down" and (
+                item["reason"] != "http_error" or type(item["httpStatus"]) is not int
+                or not 100 <= item["httpStatus"] <= 599 or item["httpStatus"] == 200
+                or item["targetKey"] is None or item["observedAt"] is None
+            ))
         ):
             raise HttpError("invalid_response")
         if item["targetKey"] is not None and (

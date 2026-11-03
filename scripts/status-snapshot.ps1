@@ -397,9 +397,15 @@ $status = [ordered]@{
 
 if ($Public) {
     # Private observations cross the public allowlist in memory, never through a site file.
-    @{ inventory = $inventory; status = $status } | ConvertTo-Json -Depth 10 -Compress |
-        & python -m scripts.public_status --directory $OutDir
-    if ($LASTEXITCODE -ne 0) { throw 'Public snapshot projection failed; publication refused.' }
+    $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
+    Push-Location -LiteralPath $repoRoot
+    try {
+        @{ inventory = $inventory; status = $status } | ConvertTo-Json -Depth 10 -Compress |
+            & python -m scripts.public_status --directory $OutDir
+        if ($LASTEXITCODE -ne 0) { throw 'Public snapshot projection failed; publication refused.' }
+    } finally {
+        Pop-Location
+    }
     Write-Host 'Wrote generic public service observations.' -ForegroundColor Green
     return
 }

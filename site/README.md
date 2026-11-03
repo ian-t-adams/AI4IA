@@ -161,7 +161,9 @@ not upload those diagnostics to public Actions artifacts or logs.
 
 The uptime publisher reprojects even old detailed snapshots before carrying
 them forward. Invalid or unavailable snapshots become explicitly unavailable,
-never a checked-in healthy fallback. Version-1 uptime histories are migrated to
+never a checked-in healthy fallback. Contradictory uptime state/reason/status
+evidence is rejected, including during legacy migration; valid incident
+counters and recovery history remain unchanged. Version-1 uptime histories are migrated to
 version 2 without publishing their URLs: a full SHA-256 target binding preserves
 incident continuity and detects target changes. This is pseudonymization, not
 proof that a guessed hostname cannot be recognized. Counters and original

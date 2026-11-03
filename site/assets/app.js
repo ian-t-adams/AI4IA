@@ -505,8 +505,14 @@
       var valid = row && row.id === definition[0] && fresh && Number.isFinite(observed) &&
         observed <= checked && Date.now() - observed <= UPTIME_STALE_MS;
       var state = valid && (row.state === "down" || row.state === "up") ? row.state : "unknown";
-      if (state === "up" && (row.httpStatus !== 200 || row.reason !== "healthy")) state = "unknown";
-      var detail = !fresh ? "No current observation." : !valid ? "Health not established."
+      var consistent = valid && (row.state === "up"
+        ? row.httpStatus === 200 && row.reason === "healthy"
+        : row.state === "down"
+          ? row.reason === "http_error" && Number.isInteger(row.httpStatus) &&
+            row.httpStatus >= 100 && row.httpStatus <= 599 && row.httpStatus !== 200
+          : row.reason !== "healthy");
+      if (!consistent) state = "unknown";
+      var detail = !fresh ? "No current observation." : !valid || !consistent ? "Health not established."
         : row.reason === "healthy" ? "Expected anonymous health response."
         : row.reason === "http_error" ? "Endpoint returned a non-passing HTTP status."
         : row.reason === "invalid_response" ? "The expected health response was not received."

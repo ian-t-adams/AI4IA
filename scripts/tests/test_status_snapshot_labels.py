@@ -72,7 +72,9 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             self.assertIn("rg-test", inventory)
             self.assertIn("sttest", inventory)
 
-    def _run_snapshot(self, mode: str, out_dir: Path, *, public: bool = False) -> subprocess.CompletedProcess[str]:
+    def _run_snapshot(
+        self, mode: str, out_dir: Path, *, public: bool = False, cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         resource_id = (
             "/subscriptions/sub-test/resourceGroups/rg-test/providers/"
             "Microsoft.Storage/storageAccounts/sttest"
@@ -134,10 +136,12 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 )
             }
         )
-        fixture_dir = out_dir / "fixture"
+        fixture_dir = out_dir / "scripts"
         fixture_dir.mkdir()
         fixture_script = fixture_dir / SNAPSHOT.name
         shutil.copyfile(SNAPSHOT, fixture_script)
+        for module in ("public_status.py", "http_contract.py"):
+            shutil.copyfile(SNAPSHOT.parent / module, fixture_dir / module)
         # Keep the entry point and classification code intact; replace only HTTP.
         (fixture_dir / ENDPOINTS.name).write_text(
             ENDPOINTS.read_text(encoding="utf-8") + """
@@ -208,11 +212,15 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                 }}
                 throw "Unexpected az invocation: $joined"
             }}
+            $initialLocation = (Get-Location).Path
             & {_ps_quote(str(fixture_script))} `
                 -Public:${str(public).lower()} `
                 -Subscription 'sub-test' `
                 -ResourceGroup 'rg-test' `
                 -OutDir {_ps_quote(str(out_dir))}
+            if ((Get-Location).Path -cne $initialLocation) {{
+                throw 'Snapshot changed the caller location.'
+            }}
             ConvertTo-Json -InputObject @($global:healthUrls) |
                 Set-Content {_ps_quote(str(out_dir / "probes.json"))}
             if ($mode -eq 'valid') {{
@@ -240,7 +248,17 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
+            cwd=cwd,
         )
+
+    def test_public_projection_uses_script_repository_from_another_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as caller:
+            root = Path(temporary)
+            result = self._run_snapshot("api-healthy", root, public=True, cwd=Path(caller))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            inventory = (root / "inventory.js").read_text(encoding="utf-8-sig")
+            self.assertIn("Storage Account", inventory)
+            self.assertNotIn("sub-test", inventory)
 
     def test_public_snapshot_removes_identifiers_from_outputs_and_logs(self) -> None:
         for mode in ("api-healthy", "api-store-unavailable", "health-available",
