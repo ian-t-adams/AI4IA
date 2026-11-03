@@ -84,6 +84,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
         health_source: dict | None = None,
         resources: list[dict] | None = None,
         endpoints: list[dict] | None = None,
+        inventory_generated_at: str | None = "2026-08-08T11:00:00Z",
     ) -> dict[str, str]:
         app_path = json.dumps(str(APP_JS))
         health_source_json = json.dumps(
@@ -128,6 +129,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
             healthSource: {health_source_json}
           }},
           AI4IA_INVENTORY: {{
+            generatedAt: {json.dumps(inventory_generated_at)},
             resources: {resources_json}
           }},
           matchMedia: () => ({{ matches: false }})

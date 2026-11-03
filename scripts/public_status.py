@@ -90,17 +90,58 @@ def inventory(value: Any) -> dict | None:
         provisioning = row.get("provisioningState")
         if provisioning not in PROVISIONING:
             provisioning = "n/a"
-        state = (
-            "unavailable" if availability == "Unavailable"
-            else "degraded" if availability == "Degraded" or provisioning in {"Failed", "Canceled"}
-            else "healthy" if availability == "Available" else "provisioned"
-        )
         rows.append({
             "type": key, "label": label, "group": group,
             "provisioningState": provisioning, "availability": availability,
-            "healthReported": health_reported, "state": state,
+            "healthReported": health_reported,
+            "state": resource_state(availability, provisioning),
         })
     return {"generatedAt": date(data.get("generatedAt")), "resources": rows}
+
+
+def resource_state(availability: str, provisioning: str) -> str:
+    return (
+        "unavailable" if availability == "Unavailable"
+        else "degraded" if availability == "Degraded" or provisioning in {"Failed", "Canceled"}
+        else "healthy" if availability == "Available" else "provisioned"
+    )
+
+
+RESOURCE_COUNTS = ("total", "healthy", "provisioned", "degraded", "unavailable")
+
+
+def pair(inv: Any, health: Any) -> tuple[dict | None, dict | None]:
+    """Project inventory/status together so neither can claim health the other cannot support.
+
+    Positive health needs a successful Resource Health source in a status snapshot from the
+    same generation; otherwise it is demoted to unknown. Resource counts are derived from the
+    projected inventory, or published as null (unknown, never zero) when no matching
+    inventory exists. Failure signals are retained.
+    """
+    projected_inventory, projected_status = inventory(inv), status(health)
+    matched = (
+        projected_inventory is not None and projected_status is not None
+        and projected_inventory["generatedAt"] == projected_status["generatedAt"]
+    )
+    if projected_inventory is not None and not (
+        matched and projected_status is not None
+        and projected_status["healthSource"]["status"] == "available"
+    ):
+        for row in projected_inventory["resources"]:
+            if row["availability"] == "Available":
+                row["availability"], row["healthReported"] = "Unknown", False
+                row["state"] = resource_state("Unknown", row["provisioningState"])
+    if projected_status is not None:
+        summary = projected_status["summary"]
+        if matched and projected_inventory is not None:
+            rows = projected_inventory["resources"]
+            summary["total"] = len(rows)
+            for key in RESOURCE_COUNTS[1:]:
+                summary[key] = sum(row["state"] == key for row in rows)
+        else:
+            for key in RESOURCE_COUNTS:
+                summary[key] = None
+    return projected_inventory, projected_status
 
 
 def status(value: Any) -> dict | None:
@@ -112,9 +153,10 @@ def status(value: Any) -> dict | None:
     if source_status not in {"available", "unavailable"}:
         raise HttpError("invalid_response")
     summary = object_value(data.get("summary"))
-    numbers = {key: count(summary.get(key)) for key in (
-        "total", "healthy", "provisioned", "degraded", "unavailable", "endpointsUp", "endpointsTot",
-    )}
+    numbers: dict[str, int | None] = {}
+    for key in RESOURCE_COUNTS:
+        # Untrusted here; `pair` re-derives them from the matching projected inventory.
+        numbers[key] = None if summary.get(key) is None else count(summary.get(key))
     raw_endpoints = data.get("endpoints")
     if not isinstance(raw_endpoints, list) or len(raw_endpoints) != 4:
         raise HttpError("invalid_response")
@@ -192,7 +234,7 @@ def status(value: Any) -> dict | None:
 
 
 def write_snapshots(directory: Path, inv: Any, health: Any) -> None:
-    projected = (inventory(inv), status(health))
+    projected = pair(inv, health)
     directory.mkdir(parents=True, exist_ok=True)
     for name, variable, value in zip(
         ("inventory", "status"), ("AI4IA_INVENTORY", "AI4IA_STATUS"), projected, strict=True,
@@ -216,12 +258,12 @@ def assignment(raw: bytes, variable: str) -> Any:
 def check_site(directory: Path) -> None:
     from scripts.uptime import parse_report
 
-    for name, variable, project in (
-        ("inventory", "AI4IA_INVENTORY", inventory), ("status", "AI4IA_STATUS", status),
-    ):
-        data = assignment((directory / "data" / f"{name}.js").read_bytes(), variable)
-        if project(data) != data:
-            raise HttpError("invalid_response")
+    published = [
+        assignment((directory / "data" / f"{name}.js").read_bytes(), variable)
+        for name, variable in (("inventory", "AI4IA_INVENTORY"), ("status", "AI4IA_STATUS"))
+    ]
+    if list(pair(*published)) != published:
+        raise HttpError("invalid_response")
     raw = (directory / "data" / "uptime.json").read_bytes()
     value = strict_json(raw, limit=16 * 1024)
     if value != {
@@ -239,7 +281,7 @@ def check_site(directory: Path) -> None:
         re.IGNORECASE,
     )
     for path in directory.rglob("*"):
-        if path.suffix.lower() not in {".js", ".json", ".html", ".md", ".txt", ".xml"}:
+        if path.suffix.lower() not in {".js", ".json", ".html", ".md", ".txt", ".xml", ".css", ".svg"}:
             continue
         text = path.read_text(encoding="utf-8-sig")
         for constant in PUBLIC_UUID_CONSTANTS:

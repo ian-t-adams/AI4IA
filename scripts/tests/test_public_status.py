@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -150,6 +151,118 @@ class PublicStatusTests(unittest.TestCase):
                         availability=availability, provisioningState=provisioning,
                     )
                     self.assertEqual(public_status.inventory(inv)["resources"][0]["state"], state)
+
+    def test_status_pair_reconciles_resource_counts_and_health_source(self):
+        from scripts.tests.test_pages_status_refresh import PagesStatusRefreshTests
+
+        renderer = PagesStatusRefreshTests()
+        counts = ("total", "healthy", "provisioned", "degraded", "unavailable")
+
+        def summary(result: dict | None) -> tuple:
+            assert result is not None
+            return tuple(result["summary"][key] for key in counts)
+
+        # Positive control: a matched, available pair keeps its health and counts.
+        inv, health = snapshots()
+        matched = public_status.pair(inv, health)
+        self.assertEqual(matched[0]["resources"][0]["state"], "healthy")
+        self.assertEqual(summary(matched[1]), (1, 1, 0, 0, 0))
+        self.assertEqual(public_status.pair(*matched), matched)
+
+        # Legitimate failure stays failed, never demoted to unknown.
+        inv, health = snapshots()
+        inv["resources"][0]["provisioningState"] = "Failed"
+        failed = public_status.pair(inv, health)
+        self.assertEqual(failed[0]["resources"][0]["state"], "degraded")
+        self.assertEqual(summary(failed[1]), (1, 0, 0, 1, 0))
+
+        cases = {
+            "unreported": lambda inv, health: inv["resources"][0].update(healthReported=False),
+            "source unavailable": lambda inv, health: health["healthSource"].update(status="unavailable"),
+            "different generation": lambda inv, health: inv.update(generatedAt=stamp(NOW - timedelta(minutes=1))),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                inv, health = snapshots()
+                mutate(inv, health)
+                # The untrusted incoming summary still claims one healthy resource.
+                self.assertEqual(health["summary"]["healthy"], 1)
+                result = public_status.pair(inv, health)
+                self.assertEqual(public_status.pair(*result), result)
+                row = result[0]["resources"][0]
+                self.assertNotEqual(row["state"], "healthy")
+                self.assertNotEqual(row["availability"], "Available")
+                self.assertEqual(result[1]["summary"]["healthy"],
+                                 None if name == "different generation" else 0)
+                site = Path(temporary) / "site"
+                shutil.copytree(ROOT / "site", site)
+                public_status.write_snapshots(site / "data", inv, health)
+                public_status.check_site(site)
+                rendered = renderer._render_status(
+                    resources=[row], health_source=result[1]["healthSource"],
+                    inventory_generated_at=result[0]["generatedAt"],
+                )
+                self.assertNotIn(">healthy</span>", rendered["resources"])
+                self.assertNotIn(">Available<", rendered["resources"])
+                # The raw contradictory row is not trusted by the renderer either.
+                raw = renderer._render_status(
+                    resources=inv["resources"],
+                    health_source={"status": health["healthSource"]["status"]},
+                    inventory_generated_at=inv["generatedAt"],
+                )
+                self.assertNotIn(">healthy</span>", raw["resources"])
+
+        # A single carried snapshot leaves counts unknown, never zero or stale.
+        inv, health = snapshots()
+        only_status = public_status.pair(None, health)
+        self.assertIsNone(only_status[0])
+        self.assertEqual(summary(only_status[1]), (None,) * 5)
+        only_inventory = public_status.pair(inv, None)
+        self.assertNotEqual(only_inventory[0]["resources"][0]["state"], "healthy")
+        rendered = renderer._render_status(resources=None, inventory_generated_at=None)
+        self.assertNotIn(">healthy</span>", rendered["resources"])
+
+        # The artifact checker refuses a stale positive summary or positive unpaired health.
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            shutil.copytree(ROOT / "site", site)
+            inv, health = snapshots()
+            public_status.write_snapshots(site / "data", inv, health)
+            status_path = site / "data" / "status.js"
+            original = status_path.read_bytes()
+            for tamper in ("summary", "source"):
+                published = public_status.assignment(original, "AI4IA_STATUS")
+                if tamper == "summary":
+                    published["summary"]["healthy"] = 2
+                else:
+                    published["healthSource"]["status"] = "unavailable"
+                status_path.write_text(f"window.AI4IA_STATUS = {json.dumps(published)};\n")
+                with self.subTest(tamper=tamper), self.assertRaises(HttpError):
+                    public_status.check_site(site)
+            status_path.write_bytes(original)
+            public_status.check_site(site)
+
+    def test_textual_publication_fence_covers_stylesheets_and_svg(self):
+        public_status.check_site(ROOT / "site")
+        self.assertTrue(list((ROOT / "site").rglob("*.css")), "control: the site publishes CSS")
+        for suffix in (".css", ".svg"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as temporary:
+                site = Path(temporary) / "site"
+                shutil.copytree(ROOT / "site", site)
+                identifier = f"/subscriptions/{PRIVATE[0]}/resourceGroups/{PRIVATE[1]}"
+                target = next(site.rglob("*.css")) if suffix == ".css" else site / "assets" / "fixture.svg"
+                text = target.read_text() if target.exists() else '<svg xmlns="http://www.w3.org/2000/svg"></svg>\n'
+                public_status.check_site(site)
+                comment = f"/* {identifier} */" if suffix == ".css" else f"<!-- {identifier} -->"
+                target.write_text(text + comment + "\n")
+                with self.assertRaises(HttpError):
+                    public_status.check_site(site)
+                result = subprocess.run(
+                    [sys.executable, "-m", "scripts.public_status", "--check-site", str(site)],
+                    capture_output=True, text=True, cwd=ROOT, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assert_private_absent(result.stdout + result.stderr)
 
     def test_inconsistent_endpoint_evidence_fails_closed_and_summary_counts_match(self):
         _, health = snapshots()

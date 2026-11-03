@@ -86,6 +86,10 @@ site/
   401/403, but API health challenges and redirects remain unknown.
   Resource availability is counted as healthy only with an explicit Resource
   Health report; an uncorroborated Available value remains unknown/provisioned.
+  Inventory and status are reconciled as a pair with the same `generatedAt`:
+  resource summary counts are derived from the projected inventory, and positive
+  health also requires an available Resource Health source. A missing or
+  mismatched pair publishes null (unknown) counts, never zero or healthy.
 
   Liveness covers the process only. Readiness covers the API's cached canonical
   session-store check (success cache up to 15 seconds), not Search, user
@@ -156,13 +160,16 @@ Names, IDs, regions, suffixes, backend URLs and arbitrary provider text never
 cross this projection. The snapshot's `-Public` mode passes observations through
 stdin in memory before writing site files. Private/operator output remains
 available without `-Public`; an explicit output directory **outside `site/`**
-is required (linked ancestors are refused before discovery), and do
+is required (linked ancestors and case variants are refused before discovery;
+the script requires PowerShell 7), and do
 not upload those diagnostics to public Actions artifacts or logs.
 
 The uptime publisher reprojects even old detailed snapshots before carrying
 them forward. Invalid or unavailable snapshots become explicitly unavailable,
 never a checked-in healthy fallback. Contradictory uptime state/reason/status
-evidence is rejected, including during legacy migration; valid incident
+evidence is rejected, including during legacy migration. Carried reports must
+also keep the derived overall state, feasible transition/alerting combinations
+and observation times no later than the report time; valid incident
 counters and recovery history remain unchanged. Version-1 uptime histories are migrated to
 version 2 without publishing their URLs: a full SHA-256 target binding preserves
 incident continuity and detects target changes. This is pseudonymization, not
@@ -170,8 +177,8 @@ proof that a guessed hostname cannot be recognized. Counters and original
 observation timestamps survive; no new observation is invented.
 
 Both publishers run `python -m scripts.public_status --check-site site` before
-upload. It verifies canonical projected snapshot/report shapes and scans textual
-site artifacts for Azure IDs/origins and known precise deployment-region labels.
+upload. It verifies canonical projected snapshot/report shapes and pairing, and
+scans textual site artifacts (including CSS and SVG) for Azure IDs/origins and known precise deployment-region labels.
 Only fixed public UUID constants used by Mermaid/RFC namespaces are exempt;
 vendor files are not broadly skipped. Generic architecture, service purposes,
 setup/RBAC guidance and the normal public application link remain available.

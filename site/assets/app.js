@@ -177,7 +177,6 @@
     }
     renderSnapshotFreshness(el("updated"), s.generatedAt);
 
-    var sum = s.summary;
     var inventory = window.AI4IA_INVENTORY || {};
     var hasInventory = Array.isArray(inventory.resources) || Array.isArray(s.resources);
     var resources = Array.isArray(inventory.resources)
@@ -186,6 +185,9 @@
     var healthSource = s.healthSource || {};
     var healthSourceState = String(healthSource.status || "unknown").toLowerCase();
     var healthSourceAvailable = healthSourceState === "available";
+    // Positive health is trusted only from a successful source in the same snapshot generation.
+    var healthTrusted = healthSourceAvailable && (Array.isArray(inventory.resources)
+      ? inventory.generatedAt === s.generatedAt : Array.isArray(s.resources));
     var healthSourceHost = el("health-source");
     if (healthSourceHost) {
       if (healthSourceAvailable) {
@@ -212,12 +214,13 @@
       if (availability === "unavailable") return "unavailable";
       if (availability === "degraded") return "degraded";
       if (r.provisioningState === "Failed" || r.provisioningState === "Canceled") return "degraded";
-      return availability === "available" && r.healthReported === true ? "healthy" : "provisioned";
+      return availability === "available" && r.healthReported === true && healthTrusted
+        ? "healthy" : "provisioned";
     }
 
     function displayAvailability(r) {
       var availability = String(r.availability || "Unknown");
-      if (availability.toLowerCase() === "available" && r.healthReported !== true) {
+      if (availability.toLowerCase() === "available" && (r.healthReported !== true || !healthTrusted)) {
         availability = "Unknown";
       }
       if (!healthSourceAvailable &&
@@ -303,22 +306,22 @@
       // "Health reported" is deliberately separate from "Provisioned": most Azure
       // resource types publish no Resource Health availability state at all, and
       // counting those as healthy turned an absent signal into a green number.
-      var healthSourceValue = healthSourceAvailable
+      var healthSourceValue = !hasInventory ? "Unknown" : healthTrusted
         ? counts.healthy
         : (healthSourceState === "unavailable" ? "Unavailable" : "Unknown");
-      var healthSourceLabel = healthSourceAvailable
+      var healthSourceLabel = healthTrusted
         ? "Health reported available"
         : "Resource Health source";
       var provisionedLabel = healthSourceAvailable
         ? "Provisioned, no health signal"
         : "Provisioned, health not checked";
       stats.innerHTML =
-        stat(resources.length || sum.total, "Azure resources") +
+        stat(hasInventory ? resources.length : "Unknown", "Azure resources") +
         stat(healthSourceValue, healthSourceLabel) +
-        stat(counts.provisioned, provisionedLabel) +
+        stat(hasInventory ? counts.provisioned : "Unknown", provisionedLabel) +
         stat(endpoints.filter(function (e) { return endpointState(e) === "up"; }).length +
           "/" + endpoints.length, "Endpoint probes passing") +
-        stat(counts.degraded + counts.unavailable, "Degraded / unavailable");
+        stat(hasInventory ? counts.degraded + counts.unavailable : "Unknown", "Degraded / unavailable");
     }
 
     var eps = el("endpoints");
@@ -510,7 +513,7 @@
         : row.state === "down"
           ? row.reason === "http_error" && Number.isInteger(row.httpStatus) &&
             row.httpStatus >= 100 && row.httpStatus <= 599 && row.httpStatus !== 200
-          : row.reason !== "healthy");
+          : row.reason !== "healthy" && row.reason !== "http_error");
       if (!consistent) state = "unknown";
       var detail = !fresh ? "No current observation." : !valid || !consistent ? "Health not established."
         : row.reason === "healthy" ? "Expected anonymous health response."
@@ -521,8 +524,11 @@
       if (valid && Number.isInteger(row.latencyMs) && row.latencyMs >= 0 && row.latencyMs <= 30000) {
         timing += " \u00b7 " + row.latencyMs + " ms";
       }
-      var incident = row && row.alerting === true ? " Incident active."
-        : row && row.transition === "recovered" ? " Incident recovered automatically." : "";
+      var incident = row && row.state !== "up" && row.alerting === true &&
+          row.failureStreak === 3 ? " Incident active."
+        : valid && consistent && row.state === "up" && row.transition === "recovered" &&
+          row.alerting === false && report.history !== "unavailable" && report.history !== "stale"
+          ? " Incident recovered automatically." : "";
       return '<div class="card"><h3>' + stateBadge(state) + " " + esc(definition[1]) +
         "</h3><p>" + esc(detail + incident) + '</p><p class="meta">' + esc(timing) + "</p></div>";
     }).join("");

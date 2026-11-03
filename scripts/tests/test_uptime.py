@@ -274,7 +274,11 @@ class UptimeProbeTests(unittest.IsolatedAsyncioTestCase):
             await uptime.carry_snapshots(self.client, directory)
             self.assertEqual((directory / "inventory.js").read_text(), "window.AI4IA_INVENTORY = null;\n")
             self.assertIn("snapshot unavailable", logs.getvalue())
-            self.assertIn('"total": 1', (directory / "status.js").read_text())
+            carried = (directory / "status.js").read_text()
+            # Without a matching inventory, resource counts are unknown, never zero or stale.
+            self.assertIn('"total": null', carried)
+            self.assertIn('"healthy": null', carried)
+            self.assertIn('"endpointsTot": 4', carried)
 
     async def test_azure_publisher_carries_history_without_running_health_probes(self):
         current = report()
@@ -543,6 +547,7 @@ class UptimePortalTests(unittest.TestCase):
         for state, reason, status in (
             ("down", "healthy", 200), ("down", "http_error", 200),
             ("down", "http_error", 0), ("up", "http_error", 503),
+            ("unknown", "http_error", 200), ("unknown", "http_error", 503),
         ):
             with self.subTest(state=state, reason=reason, status=status):
                 current = report(state)
@@ -561,6 +566,64 @@ class UptimePortalTests(unittest.TestCase):
                 self.assertIn('class="badge unknown"', first)
                 self.assertIn("Health not established.", first)
                 self.assertNotIn("Expected anonymous health response.", first)
+                self.assertNotIn("Endpoint returned a non-passing HTTP status.", first)
+        # Valid unknown control: a genuine invalid-response observation is retained and explained.
+        current = report("down")
+        current["endpoints"][0].update(state="unknown", reason="invalid_response", httpStatus=200)
+        carried = uptime.parse_report(json.dumps(current).encode())
+        self.assertEqual(carried, current)
+        first = self.render(carried)["cards"].split('<div class="card">')[1]
+        self.assertIn('class="badge unknown"', first)
+        self.assertIn("The expected health response was not received.", first)
+
+    def test_derived_overall_transitions_and_observation_time_are_validated(self):
+        firing = report("down", report("down", report("down")))
+        recovered = report("up", firing)
+        for current, text in ((firing, "Incident active."), (recovered, "Incident recovered automatically.")):
+            with self.subTest(text=text):
+                carried = uptime.parse_report(json.dumps(current).encode())
+                self.assertEqual(carried, current)
+                self.assertEqual(self.render(carried)["cards"].count(text), 4)
+        self.assertEqual({row["transition"] for row in firing["endpoints"]}, {"firing"})
+        self.assertEqual(firing["overall"], "down")
+        mixed = report("up")
+        mixed["endpoints"][0].update(state="down", reason="http_error", httpStatus=503, failureStreak=1)
+        mixed["overall"] = uptime.overall_state(mixed["endpoints"])
+        self.assertEqual(uptime.parse_report(json.dumps(mixed).encode()), mixed)
+
+        def overall_up(value):
+            value["overall"] = "up"
+
+        def down_recovered(value):
+            value["endpoints"][0].update(transition="recovered", failureStreak=0, alerting=False)
+
+        def late_observation(value):
+            value["endpoints"][0]["observedAt"] = stamp(NOW + timedelta(seconds=1))
+
+        def firing_without_alert(value):
+            value["endpoints"][0].update(transition="firing", alerting=False)
+
+        def transition_without_history(value):
+            value["history"] = "unavailable"
+
+        for name, mutate, base in (
+            ("overall", overall_up, lambda: report("down")),
+            ("down recovered", down_recovered, lambda: report("down", report("down"))),
+            ("late observation", late_observation, lambda: report("up")),
+            ("firing without alert", firing_without_alert, lambda: report("down", report("down"))),
+            ("transition without history", transition_without_history, lambda: report("up", firing)),
+        ):
+            with self.subTest(name):
+                current = base()
+                uptime.parse_report(json.dumps(current).encode())
+                mutate(current)
+                with self.assertRaises(HttpError):
+                    uptime.parse_report(json.dumps(current).encode())
+                rendered = self.render(current)["cards"]
+                self.assertNotIn("Incident recovered automatically.", rendered)
+                if name == "late observation":
+                    first = rendered.split('<div class="card">')[1]
+                    self.assertIn('class="badge unknown"', first)
 
     def test_stale_missing_future_failed_and_oversized_reports_are_not_green(self):
         for current, arguments in (

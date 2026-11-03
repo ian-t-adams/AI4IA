@@ -44,7 +44,11 @@ class StatusSnapshotLabelTests(unittest.TestCase):
             site.mkdir()
             sentinel = site / "sentinel"
             sentinel.write_text("unchanged", encoding="utf-8")
-            for destination in (None, site, site / "data", site / "data" / ".." / "other"):
+            for destination in (
+                None, site, site / "data", site / "data" / ".." / "other",
+                # Case variants are rejected on every OS (Windows/macOS are commonly case-insensitive).
+                root / "SITE" / "data", root / "Site",
+            ):
                 with self.subTest(destination=destination):
                     argument = "" if destination is None else f"-OutDir {_ps_quote(str(destination))}"
                     wrapper = f"""
@@ -61,6 +65,32 @@ class StatusSnapshotLabelTests(unittest.TestCase):
                     self.assertNotIn("DISCOVERY_MUST_NOT_RUN", result.stdout + result.stderr)
                     self.assertEqual(list(site.iterdir()), [sentinel])
                     self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+
+    def test_legacy_powershell_is_refused_before_any_work(self) -> None:
+        first = SNAPSHOT.read_text(encoding="utf-8-sig").splitlines()[0]
+        self.assertEqual(first.strip(), "#Requires -Version 7.0")
+        legacy = shutil.which("powershell")
+        if not legacy:
+            self.skipTest("Windows PowerShell 5.1 is not installed")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            script = scripts / SNAPSHOT.name
+            shutil.copyfile(SNAPSHOT, script)
+            (root / "site" / "data").mkdir(parents=True)
+            wrapper = f"""
+            function az {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+            function azd {{ throw 'DISCOVERY_MUST_NOT_RUN' }}
+            & {_ps_quote(str(script))} -OutDir {_ps_quote(str(root / 'SITE' / 'data'))}
+            """
+            result = subprocess.run(
+                [legacy, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("DISCOVERY_MUST_NOT_RUN", result.stdout + result.stderr)
+            self.assertEqual(list((root / "site" / "data").iterdir()), [])
 
     def test_explicit_private_destination_retains_operator_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

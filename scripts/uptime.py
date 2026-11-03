@@ -128,6 +128,11 @@ async def probe(client: Transport, identifier: str, url: str | None) -> Observat
     return row
 
 
+def overall_state(rows: list[Observation]) -> State:
+    states = {row["state"] for row in rows}
+    return "down" if "down" in states else "unknown" if "unknown" in states else "up"
+
+
 def parse_report(raw: bytes) -> Report:
     value = strict_json(raw, limit=REPORT_LIMIT)
     if (
@@ -140,7 +145,7 @@ def parse_report(raw: bytes) -> Report:
         or len(value["endpoints"]) != len(ENDPOINTS)
     ):
         raise HttpError("invalid_response")
-    timestamp(value["checkedAt"])
+    checked = timestamp(value["checkedAt"])
     rows: list[Observation] = []
     for item, (identifier, _, path) in zip(value["endpoints"], ENDPOINTS, strict=True):
         if isinstance(item, dict) and value["version"] == 1:
@@ -172,6 +177,7 @@ def parse_report(raw: bytes) -> Report:
                 or item["targetKey"] is None or item["observedAt"] is None
             ))
             or (item["reason"] == "healthy" and item["state"] != "up")
+            or (item["reason"] == "http_error" and item["state"] != "down")
             or (item["state"] == "down" and (
                 item["reason"] != "http_error" or type(item["httpStatus"]) is not int
                 or not 100 <= item["httpStatus"] <= 599 or item["httpStatus"] == 200
@@ -184,8 +190,20 @@ def parse_report(raw: bytes) -> Report:
             or re.fullmatch(r"[a-f0-9]{64}", item["targetKey"]) is None
         ):
             raise HttpError("invalid_response")
-        if item["observedAt"] is not None:
-            timestamp(item["observedAt"])
+        if item["observedAt"] is not None and timestamp(item["observedAt"]) > checked:
+            raise HttpError("invalid_response")
+        # Only states `finish` can produce: firing needs an active alert, recovery needs a
+        # passing check, and without usable history no streak can exceed one observation.
+        if (
+            (item["transition"] == "firing" and not item["alerting"])
+            or (item["transition"] == "recovered" and (
+                item["state"] != "up" or value["history"] not in ("available", "scope_changed")
+            ))
+            or (value["history"] in ("unavailable", "stale") and (
+                item["failureStreak"] > 1 or item["transition"] != "none"
+            ))
+        ):
+            raise HttpError("invalid_response")
         for field in ("latencyMs", "httpStatus"):
             number = item[field]
             maximum = 30_000 if field == "latencyMs" else 599
@@ -197,6 +215,8 @@ def parse_report(raw: bytes) -> Report:
             latencyMs=item["latencyMs"], failureStreak=item["failureStreak"],
             alerting=item["alerting"], transition=item["transition"],
         ))
+    if value["overall"] != overall_state(rows):
+        raise HttpError("invalid_response")
     return Report(
         version=2, checkedAt=value["checkedAt"], history=value["history"],
         overall=value["overall"], endpoints=rows,
@@ -225,10 +245,9 @@ def finish(rows: list[Observation], previous: Report | None, observed: datetime)
             "firing" if row["alerting"] and not was_alerting
             else "recovered" if row["state"] == "up" and was_alerting else "none"
         )
-    states = {row["state"] for row in rows}
-    overall: State = "down" if "down" in states else "unknown" if "unknown" in states else "up"
     return Report(
-        version=2, checkedAt=stamp(observed), history=history, overall=overall, endpoints=rows,
+        version=2, checkedAt=stamp(observed), history=history,
+        overall=overall_state(rows), endpoints=rows,
     )
 
 
@@ -250,6 +269,7 @@ def data_url(name: str) -> str:
 
 
 async def carry_snapshots(client: Transport, directory: Path) -> None:
+    carried: dict[str, Any] = {}
     for name, variable in (("inventory", "AI4IA_INVENTORY"), ("status", "AI4IA_STATUS")):
         data: Any = None
         try:
@@ -278,6 +298,12 @@ async def carry_snapshots(client: Transport, directory: Path) -> None:
         except (HttpError, ValueError, UnicodeError, TypeError):
             data = None
             print(f"::warning::Published Azure {name} snapshot unavailable; no committed seed will be substituted.")
+        carried[name] = data
+    # Re-project as a pair: an unmatched or missing partner cannot support positive health.
+    projected = public_status.pair(carried["inventory"], carried["status"])
+    for (name, variable), data in zip(
+        (("inventory", "AI4IA_INVENTORY"), ("status", "AI4IA_STATUS")), projected, strict=True,
+    ):
         (directory / f"{name}.js").write_text(
             f"window.{variable} = {json.dumps(data, ensure_ascii=True, allow_nan=False)};\n",
             encoding="utf-8",

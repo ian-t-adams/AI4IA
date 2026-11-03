@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Generate the timestamped status/health + resource-inventory data that the self-documenting
@@ -71,7 +72,8 @@ if (-not $Public) {
     }
     $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
     $siteRoot = [System.IO.Path]::Combine($repoRoot, 'site')
-    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    # Conservative on every OS: case-insensitive filesystems are not limited to Windows.
+    $comparison = [StringComparison]::OrdinalIgnoreCase
     if ($OutDir.Equals($siteRoot, $comparison) -or
         $OutDir.StartsWith($siteRoot + [System.IO.Path]::DirectorySeparatorChar, $comparison)) {
         throw 'Private snapshots cannot be written inside the public site tree.'
