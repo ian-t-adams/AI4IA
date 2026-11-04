@@ -244,10 +244,24 @@ def test_manifest_has_a_bounded_utf8_size():
         over_limit.validate_shared_gateway()
 
 
-def test_manifest_requires_exact_lowercase_deployment_targets():
+def test_manifest_accepts_lowercase_key_with_case_preserved_target():
     manifest = _manifest()
     manifest["models"][DEPLOYMENT]["targets"][0]["deployment"] = "Synthetic-Deployment"
-    with pytest.raises(RuntimeError):
+    _settings(manifest=manifest).validate_shared_gateway()
+
+
+def test_manifest_deployment_name_key_must_match_lowercased_target():
+    manifest = _manifest()
+    manifest["models"] = {
+        "different-deployment": {
+            "kind": "deployment-name",
+            "operations": ["/chat/completions", "/responses"],
+            "targets": [
+                {"deployment": "Synthetic-Deployment", "sku": "GlobalStandard"},
+            ],
+        },
+    }
+    with pytest.raises(RuntimeError, match="deployment-name keys must match"):
         _settings(manifest=manifest).validate_shared_gateway()
 
 
@@ -458,7 +472,41 @@ async def test_shared_gateway_requires_the_exact_manifest_sku_before_token_acqui
     assert calls == []
 
 
-async def test_mixed_case_deployment_is_refused_before_token_or_http():
+async def test_mixed_case_deployment_uses_lowercase_key_and_exact_target():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "content": "synthetic reply"}}],
+        })
+
+    manifest = _manifest()
+    manifest["models"] = {
+        "synthetic-deployment": {
+            "kind": "deployment-name",
+            "operations": ["/chat/completions"],
+            "targets": [
+                {"deployment": "Synthetic-Deployment", "sku": "GlobalStandard"},
+            ],
+        },
+    }
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _client(http, manifest=manifest).complete(
+            deployment="Synthetic-Deployment",
+            messages=[{"role": "user", "content": "synthetic prompt"}],
+            shared_gateway_eligible=True,
+            shared_gateway_sku="GlobalStandard",
+        )
+
+    assert result["choices"][0]["message"]["content"] == "synthetic reply"
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://gateway.example.invalid/openai/v1/chat/completions"
+    assert json.loads(requests[0].content)["model"] == "synthetic-deployment"
+
+
+async def test_mixed_case_target_mismatch_fails_before_token_or_http():
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -466,15 +514,26 @@ async def test_mixed_case_deployment_is_refused_before_token_or_http():
         return httpx.Response(200, json={"choices": []})
 
     async def unexpected_token(scope: str) -> str:
-        raise AssertionError("mixed-case deployments are not eligible for shared routing")
+        raise AssertionError("a case-mismatched deployment target must not be admitted")
+
+    manifest = _manifest()
+    manifest["models"] = {
+        "synthetic-deployment": {
+            "kind": "deployment-name",
+            "operations": ["/chat/completions"],
+            "targets": [
+                {"deployment": "Synthetic-deployment", "sku": "GlobalStandard"},
+            ],
+        },
+    }
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = ModelGatewayClient(
-            _settings(manifest=_manifest()),
+            _settings(manifest=manifest),
             http_client=http,
             shared_gateway_token_provider=unexpected_token,
         )
-        with pytest.raises(ModelGatewayError, match="deployment name") as error:
+        with pytest.raises(ModelGatewayError, match="not eligible"):
             await client.complete(
                 deployment="Synthetic-Deployment",
                 messages=[{"role": "user", "content": "synthetic prompt"}],
@@ -482,8 +541,6 @@ async def test_mixed_case_deployment_is_refused_before_token_or_http():
                 shared_gateway_sku="GlobalStandard",
             )
 
-    assert error.value.status_code == 400
-    assert error.value.shared_gateway
     assert requests == []
 
 

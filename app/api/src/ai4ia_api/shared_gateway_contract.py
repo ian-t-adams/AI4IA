@@ -189,7 +189,6 @@ def load_shared_gateway_manifest(
                 or set(target) != {"deployment", "sku"}
                 or not isinstance(target["deployment"], str)
                 or not target["deployment"]
-                or target["deployment"] != target["deployment"].lower()
                 or not isinstance(target["sku"], str)
                 or target["sku"] not in _MODEL_SKUS
             ):
@@ -199,7 +198,10 @@ def load_shared_gateway_manifest(
             raise SharedGatewayManifestError(
                 "Shared gateway v2 models cannot spill across deployment names."
             )
-        if item["kind"] == "deployment-name" and model_key != next(iter(target_names)):
+        if (
+            item["kind"] == "deployment-name"
+            and model_key != next(iter(target_names)).lower()
+        ):
             raise SharedGatewayManifestError(
                 "Shared gateway deployment-name keys must match their target."
             )

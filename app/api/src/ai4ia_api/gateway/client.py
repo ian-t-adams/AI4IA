@@ -597,11 +597,6 @@ class ModelGatewayClient:
             raise ModelGatewayError(400, "This operation is not eligible for shared routing.")
         if no_replay_selected():
             raise QuotaError("Shared routing is unavailable for no-replay dispatches.")
-        if deployment != deployment.lower():
-            raise ModelGatewayError(
-                400, "This deployment name is not eligible for shared routing.",
-                shared_gateway=True,
-            )
         path = "/chat/completions" if api == "chat" else "/responses"
         body = dict(req.json)
         if api == "responses":
@@ -619,13 +614,13 @@ class ModelGatewayClient:
         model_key = deployment_key
         if (
             manifest.model_kinds.get(model_key) != "deployment-name"
-            or manifest.model_deployments.get(model_key) != deployment_key
+            or manifest.model_deployments.get(model_key) != deployment
             or sku not in manifest.model_skus.get(model_key, frozenset())
         ):
             aliases = [
                 key for key, target in manifest.model_deployments.items()
                 if manifest.model_kinds[key] == "alias"
-                and target == deployment_key
+                and target == deployment
                 and path in manifest.model_operations[key]
                 and sku in manifest.model_skus[key]
             ]

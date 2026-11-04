@@ -293,6 +293,9 @@ direct-path fallback. The gateway owns retries; AI4IA configures zero SDK
 retries, does not fail over or retry after stream bytes, and does not repeat the
 ordinary-path `stream_options` compatibility retry. Upstream status and bounded
 `Retry-After` are preserved. Client disconnect closes the upstream SSE stream.
+The proxy can delayed-requeue a 429 only when `S7PREQUEUE: true` is returned;
+the shared-gateway policy must strip that header for APIM to remain the sole
+retry owner. This is an offline contract, not live route evidence.
 The existing `AI4IA_GATEWAY_TIMEOUT_SECONDS` profile (120 seconds by default)
 applies; HTTPX phase/read timeouts are not a total wall-clock deadline.
 
@@ -302,8 +305,12 @@ uses the validated proxy identity; AI4IA sends no partition or caller-identity
 header. The v3 router remains an offline, default-off proposal, not an AI4IA
 resolved partition configuration or live routing proof. Do not infer an AI4IA
 proxy identity, endpoint, audience, model allowlist, alias, or backend mapping
-from another app's catalog. Until those AI4IA-specific values are issued and
-validated, leave the selector OFF and the existing v2 manifest contract
+from another app's catalog. The gateway owner has offline-validated a
+source-backed candidate operation/deployment mapping; this is not a resolved
+v2 manifest or runtime evidence, and private model/backend inventory is not
+stored here. Until AI4IA-specific identity, endpoint, audience, scope, egress,
+and allowlist values are issued in a resolved manifest and per-canary approval
+is granted, leave the selector OFF and the existing v2 manifest contract
 unchanged. Shared-gateway 400, 401, and 403 responses are surfaced without an
 app retry or fallback to the current gateway path.
 The v2 manifest continues to bind each routing key to the selected deployment
@@ -311,11 +318,13 @@ and SKU. The gateway-internal v3 catalog has no SKU field: Global and
 DataZoneStandard options must be explicit target deployments, with no implicit
 spillover. AI4IA's candidate mapping uses lowercase deployment-name keys
 (including the deployed `-dz` names) while the gateway's target must retain
-the exact catalog deployment spelling. The current selector still refuses
-seven mixed-case AI4IA deployments before token acquisition; they are not
-eligible until an exact, reviewed case-folded-key to original-target mapping is
-proved. The proposed friendly `<model>` / `<model>-dz` alias convention is not
-yet ratified and is not inferred here.
+the exact catalog deployment spelling. The selector permits a mixed-case name
+only when the resolved v2 manifest maps its lowercase key to the exact,
+case-preserved deployment target. The request sends only that lowercase key; a
+differently cased target is refused before token acquisition. This is an exact
+mapping, not a general case-insensitive alias. The proposed friendly
+`<model>` / `<model>-dz` alias convention is not yet ratified and is not inferred
+here.
 
 This source is not live activation evidence. A canary still requires a reviewed
 deployment plan, a separately identified canary environment, a resolved
