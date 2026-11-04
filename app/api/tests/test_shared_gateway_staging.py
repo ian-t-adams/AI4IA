@@ -476,10 +476,10 @@ async def test_mixed_case_deployment_is_refused_before_token_or_http():
         )
         with pytest.raises(ModelGatewayError, match="deployment name") as error:
             await client.complete(
-                deployment="Synthetic-Deployment-DZ",
+                deployment="Synthetic-Deployment",
                 messages=[{"role": "user", "content": "synthetic prompt"}],
                 shared_gateway_eligible=True,
-                shared_gateway_sku="DataZoneStandard",
+                shared_gateway_sku="GlobalStandard",
             )
 
     assert error.value.status_code == 400
