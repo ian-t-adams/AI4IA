@@ -296,6 +296,27 @@ ordinary-path `stream_options` compatibility retry. Upstream status and bounded
 The existing `AI4IA_GATEWAY_TIMEOUT_SECONDS` profile (120 seconds by default)
 applies; HTTPX phase/read timeouts are not a total wall-clock deadline.
 
+The gateway's catalog-v3 partition router is gateway-internal and preserves this
+app-facing v2 activation-manifest schema and request shape. Partition selection
+uses the validated proxy identity; AI4IA sends no partition or caller-identity
+header. The v3 router remains an offline, default-off proposal, not an AI4IA
+resolved partition configuration or live routing proof. Do not infer an AI4IA
+proxy identity, endpoint, audience, model allowlist, alias, or backend mapping
+from another app's catalog. Until those AI4IA-specific values are issued and
+validated, leave the selector OFF and the existing v2 manifest contract
+unchanged. Shared-gateway 400, 401, and 403 responses are surfaced without an
+app retry or fallback to the current gateway path.
+The v2 manifest continues to bind each routing key to the selected deployment
+and SKU. The gateway-internal v3 catalog has no SKU field: Global and
+DataZoneStandard options must be explicit target deployments, with no implicit
+spillover. AI4IA's candidate mapping uses lowercase deployment-name keys
+(including the deployed `-dz` names) while the gateway's target must retain
+the exact catalog deployment spelling. The current selector still refuses
+seven mixed-case AI4IA deployments before token acquisition; they are not
+eligible until an exact, reviewed case-folded-key to original-target mapping is
+proved. The proposed friendly `<model>` / `<model>-dz` alias convention is not
+yet ratified and is not inferred here.
+
 This source is not live activation evidence. A canary still requires a reviewed
 deployment plan, a separately identified canary environment, a resolved
 owner-issued manifest, synthetic authentication/routing/SSE proof, and explicit

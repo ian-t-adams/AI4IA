@@ -332,6 +332,16 @@ async def test_chat_uses_only_manifest_model_path_and_managed_identity_headers()
     assert "Ocp-Apim-Subscription-Key" not in request.headers
     for forbidden in _manifest()["privacy"]["forbiddenRequestHeaders"]:
         assert forbidden.lower() not in {name.lower() for name in request.headers}
+    for gateway_identity_header in (
+        "x-gw-app-id",
+        "x-gw-partition",
+        "x-ms-client-principal",
+        "x-ms-client-principal-id",
+        "x-userid",
+    ):
+        assert gateway_identity_header not in {name.lower() for name in request.headers}
+    body = json.loads(request.content)
+    assert not ({"partition", "app_id", "appid", "azp"} & body.keys())
 
 
 async def test_alias_routing_requires_exact_lowercase_alias_operation_and_sku():
@@ -390,6 +400,38 @@ async def test_unlisted_model_fails_without_falling_back_or_requesting_a_token()
     assert calls == []
 
 
+async def test_ineligible_specialist_request_keeps_its_existing_route():
+    async def unexpected_token(scope: str) -> str:
+        raise AssertionError("an ineligible specialist route must not request a shared token")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={})
+        )
+    ) as http:
+        client = ModelGatewayClient(
+            _settings(manifest=_manifest()),
+            http_client=http,
+            shared_gateway_token_provider=unexpected_token,
+        )
+        request = GatewayRequest(
+            url="https://existing-gateway.example.invalid/providers/mistral/azure/ocr",
+            headers={"api-key": "synthetic-provider-key"},
+            json={"model": "mistral-ocr"},
+        )
+        selected, shared_url = await client._shared_request(
+            request,
+            deployment=DEPLOYMENT,
+            api="mistral_ocr",
+            eligible=False,
+            sku="Standard",
+        )
+
+    assert selected is request
+    assert selected.url == "https://existing-gateway.example.invalid/providers/mistral/azure/ocr"
+    assert shared_url is None
+
+
 async def test_shared_gateway_requires_the_exact_manifest_sku_before_token_acquisition():
     calls: list[httpx.Request] = []
 
@@ -416,25 +458,33 @@ async def test_shared_gateway_requires_the_exact_manifest_sku_before_token_acqui
     assert calls == []
 
 
-async def test_shared_gateway_requires_lowercase_exact_runtime_deployment():
-    async def unexpected_token(scope: str) -> str:
-        raise AssertionError("noncanonical deployment names must be rejected before token use")
+async def test_mixed_case_deployment_is_refused_before_token_or_http():
+    requests: list[httpx.Request] = []
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(
-        lambda request: httpx.Response(200, json={"choices": []})
-    )) as http:
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"choices": []})
+
+    async def unexpected_token(scope: str) -> str:
+        raise AssertionError("mixed-case deployments are not eligible for shared routing")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = ModelGatewayClient(
             _settings(manifest=_manifest()),
             http_client=http,
             shared_gateway_token_provider=unexpected_token,
         )
-        with pytest.raises(ModelGatewayError, match="not eligible"):
+        with pytest.raises(ModelGatewayError, match="deployment name") as error:
             await client.complete(
-                deployment="Synthetic-Deployment",
-                messages=[],
+                deployment="Synthetic-Deployment-DZ",
+                messages=[{"role": "user", "content": "synthetic prompt"}],
                 shared_gateway_eligible=True,
-                shared_gateway_sku="GlobalStandard",
+                shared_gateway_sku="DataZoneStandard",
             )
+
+    assert error.value.status_code == 400
+    assert error.value.shared_gateway
+    assert requests == []
 
 
 async def test_responses_is_explicitly_non_storing_and_uses_v2_path():
@@ -522,6 +572,54 @@ async def test_gateway_status_retry_after_and_no_app_retry_or_fallback():
     assert error.value.retry_after_seconds == 17
     assert error.value.shared_gateway
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("api", "streaming", "path"),
+    [
+        ("chat", False, "/chat/completions"),
+        ("chat", True, "/chat/completions"),
+        ("responses", False, "/responses"),
+        ("responses", True, "/responses"),
+    ],
+)
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+async def test_gateway_rejections_are_propagated_without_retry_or_fallback(
+    api: str, streaming: bool, path: str, status_code: int,
+):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status_code, text="synthetic gateway rejection")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = _client(http)
+        with pytest.raises(ModelGatewayError) as error:
+            if streaming:
+                async for _ in client.stream(
+                    deployment=DEPLOYMENT,
+                    messages=[{"role": "user", "content": "synthetic prompt"}],
+                    api=api,
+                    shared_gateway_eligible=True,
+                    shared_gateway_sku="GlobalStandard",
+                ):
+                    pass
+            else:
+                await client.complete(
+                    deployment=DEPLOYMENT,
+                    messages=[{"role": "user", "content": "synthetic prompt"}],
+                    api=api,
+                    shared_gateway_eligible=True,
+                    shared_gateway_sku="GlobalStandard",
+                )
+
+    assert error.value.status_code == status_code
+    assert error.value.shared_gateway
+    assert error.value.retry_after_seconds is None
+    assert len(requests) == 1
+    assert requests[0].url.host == "gateway.example.invalid"
+    assert requests[0].url.path == f"/openai/v1{path}"
 
 
 async def test_sse_stream_is_single_attempt_and_unverified_usage_stays_unknown():
