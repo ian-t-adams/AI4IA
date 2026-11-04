@@ -161,6 +161,20 @@ export function SettingsPage({
           <button type="button" className="btn" onClick={onOpenDeletionStatus}>
             Deletion status
           </button>
+          <p style={{ margin: 0, maxWidth: "65ch" }}>
+            Shared-gateway review capture is unavailable. AI4IA does not send additional
+            copies of your prompts or replies for this review or study feature.
+            Your saved conversations, execution receipts and content-free usage
+            telemetry are unchanged.
+          </p>
+          <label>
+            <input type="checkbox" checked={false} disabled readOnly />{" "}
+            Allow additional prompt and reply capture for review (unavailable)
+          </label>
+          <p style={{ margin: 0, maxWidth: "65ch", color: "var(--fg-muted)" }}>
+            Opt-in cannot be saved yet. Verified identity, cross-app no-capture policy,
+            reviewer access and automatic 30-day deletion must be implemented first.
+          </p>
         </div>
       </SettingsSection>
       <SettingsSection

@@ -260,6 +260,103 @@ Treat skipping either phase as an outage risk, not as a harmless omission.
 
 ## Model gateway direction and trust
 
+### Shared gateway canary (default OFF)
+
+`AI4IA_SHARED_GATEWAY_ENABLED` defaults to `false`. The private resolved
+contract is supplied as raw JSON through
+`AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`; the existing deploy/preprovision JSON
+transport derives `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64`. Do not set the
+transport variable directly. The manifest is limited to 64 KiB.
+When OFF, the manifest is not selected and the existing model-gateway route,
+request shaping, credentials, conversation persistence and specialty paths
+remain unchanged. When ON, preprovision validation and API startup require a
+strict `contractVersion: "2.0.0"` manifest with `status: "resolved"`; the API
+also verifies that `callerClientId` matches its assigned `AZURE_CLIENT_ID`.
+Only the exact HTTPS host, OAuth issuer/audience/scope, operation and model
+allowlists in that manifest are used. No endpoint, tenant, audience, identity
+or deployment value is supplied by this repository. A manifest is not proof of
+gateway reachability or permission to activate a canary.
+
+The selector is limited to the standard chat router's final model dispatch:
+
+| API operation | Eligibility |
+| --- | --- |
+| `POST /openai/v1/chat/completions` | Exact lowercase deployment name or alias, selected deployment SKU, and operation in the manifest; streaming only when that operation permits it |
+| `POST /openai/v1/responses` | Exact lowercase deployment name or alias, selected deployment SKU, and operation in the manifest; explicit `store=false` and no `previous_response_id`, `background`, or `conversation`; streaming only when permitted |
+
+The manifest can further narrow these operations by model. Embeddings, images,
+speech, Anthropic, tool/service endpoints, Agent Service, Content Understanding,
+Search, realtime/Voice Live, specialist clients, and every other direct or
+stateful/background route are not eligible. The factory's current base URL is
+not changed. An eligible request sent to the shared gateway gets no automatic
+direct-path fallback. The gateway owns retries; AI4IA configures zero SDK
+retries, does not fail over or retry after stream bytes, and does not repeat the
+ordinary-path `stream_options` compatibility retry. Upstream status and bounded
+`Retry-After` are preserved. Client disconnect closes the upstream SSE stream.
+The proxy can delayed-requeue a 429 only when `S7PREQUEUE: true` is returned;
+the shared-gateway policy must strip that header for APIM to remain the sole
+retry owner. This is an offline contract, not live route evidence.
+The existing `AI4IA_GATEWAY_TIMEOUT_SECONDS` profile (120 seconds by default)
+applies; HTTPX phase/read timeouts are not a total wall-clock deadline.
+
+The gateway's catalog-v3 partition router is gateway-internal and preserves this
+app-facing v2 activation-manifest schema and request shape. Partition selection
+uses the validated proxy identity; AI4IA sends no partition or caller-identity
+header. The v3 router remains an offline, default-off proposal, not an AI4IA
+resolved partition configuration or live routing proof. Do not infer an AI4IA
+proxy identity, endpoint, audience, model allowlist, alias, or backend mapping
+from another app's catalog. The gateway owner has offline-validated a
+source-backed candidate operation/deployment mapping; this is not a resolved
+v2 manifest or runtime evidence, and private model/backend inventory is not
+stored here. Until AI4IA-specific identity, endpoint, audience, scope, egress,
+and allowlist values are issued in a resolved manifest and per-canary approval
+is granted, leave the selector OFF and the existing v2 manifest contract
+unchanged. Shared-gateway 400, 401, and 403 responses are surfaced without an
+app retry or fallback to the current gateway path.
+The v2 manifest continues to bind each routing key to the selected deployment
+and SKU. The gateway-internal v3 catalog has no SKU field: Global and
+DataZoneStandard options must be explicit target deployments, with no implicit
+spillover. AI4IA's candidate mapping uses lowercase deployment-name keys
+(including the deployed `-dz` names) while the gateway's target must retain
+the exact catalog deployment spelling. The selector permits a mixed-case name
+only when the resolved v2 manifest maps its lowercase key to the exact,
+case-preserved deployment target. The request sends only that lowercase key; a
+differently cased target is refused before token acquisition. This is an exact
+mapping, not a general case-insensitive alias. The proposed friendly
+`<model>` / `<model>-dz` alias convention is not yet ratified and is not inferred
+here.
+
+This source is not live activation evidence. A canary still requires a reviewed
+deployment plan, a separately identified canary environment, a resolved
+owner-issued manifest, synthetic authentication/routing/SSE proof, and explicit
+operator approval. The current `deploy.yml` is production-scoped and is not an
+approved canary executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED` from a GitHub
+Actions repository variable and the activation manifest from a GitHub Actions
+secret; leave both unset in production so the parameter default remains false
+and the manifest empty. Do not configure production values or use this workflow
+for a canary. The operator and rollback owner remain unassigned until Ian
+approves the canary plan. If approved, the designated operator would use a
+separate `azd` environment: set
+`AI4IA_SHARED_GATEWAY_ENABLED=true` and the private
+`AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run `azd provision` under that
+approved plan so the existing hook derives the bounded secret transport and
+preflight validates the manifest before provisioning. Verify only with the
+separately approved synthetic canary. Do not change production variables,
+dispatch the production workflow, deploy, or send live model traffic from this
+change. Rollback is a configuration change in that same isolated `azd`
+environment: set `AI4IA_SHARED_GATEWAY_ENABLED=false` and run the approved
+operator provision again. The API then uses its normal route; it never silently
+falls back while enabled. No hot in-process emergency bypass is implemented.
+
+Additional review/study capture and per-user gateway attribution remain
+unavailable. The Settings notice is an unchecked disabled control and saves no
+consent. There is no capture hook, collector or sink. Ordinary conversation
+persistence, receipts, cost/usage metadata and content-free telemetry remain
+unchanged. No display name, browser identity header, memory preference or
+app-local toggle authorizes capture.
+
+### Current production route
+
 Normal HTTP/SSE traffic uses
 `AI4IA_MODEL_GATEWAY_URL=https://<proxy>/openai`. The proxy's normal backend is
 `https://<apim>/openai`; APIM terminates at Foundry endpoints generated from

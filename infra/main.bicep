@@ -156,6 +156,14 @@ param realtimeGaEnabled bool = false
 @description('Stage only the isolated one-attempt v1 routes/key on the existing APIM. Default OFF; does not select bounded runtime traffic or activate quotas.')
 param gatewayAttemptsV1Staged bool = false
 
+@description('Select the AI4IA stateless shared-gateway route only with a resolved v2 manifest and after separate canary approval. Default OFF.')
+param sharedGatewayEnabled bool = false
+
+@secure()
+@description('Private, resolved AI4IA activation manifest carried as UTF-8 base64; schema-only or empty values cannot enable the route.')
+@maxLength(87384)
+param sharedGatewayActivationManifestBase64 string = ''
+
 @allowed([
   'preview'
   'ga'
@@ -419,6 +427,9 @@ var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'sou
 // secret proxy projection is decoded inline at the gateway module instead.
 var claudeBindingJson = empty(claudeBindingJsonBase64) ? '' : base64ToString(claudeBindingJsonBase64)
 var groupPolicyJson = empty(groupPolicyJsonBase64) ? '' : base64ToString(groupPolicyJsonBase64)
+var sharedGatewayActivationManifest = empty(sharedGatewayActivationManifestBase64)
+  ? ''
+  : base64ToString(sharedGatewayActivationManifestBase64)
 var claudeBinding = claudeExternalEnabled ? json(claudeBindingJson) : {}
 
 // Naming tokens come from models.json `naming` (the single source of truth also read by
@@ -910,6 +921,8 @@ module api 'modules/api.bicep' = {
     modelGatewayApiKey: gateway.outputs.proxyIngressKey
     modelGatewayApiKeyHeader: 'S7P-KEY'
     gatewayAttemptsV1Staged: gatewayAttemptsV1Staged
+    sharedGatewayEnabled: sharedGatewayEnabled
+    sharedGatewayActivationManifest: sharedGatewayActivationManifest
     // Realtime stays on the FastAPI relay -> APIM path because the proxy does
     // not support WebSockets. The separately scoped subscription key cannot call
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.

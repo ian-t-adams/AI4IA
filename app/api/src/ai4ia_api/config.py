@@ -134,6 +134,15 @@ class Settings(BaseSettings):
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
+    # Versioned, default-OFF stateless HTTP/SSE transport. The private manifest is
+    # required and validated before the selector can be enabled; capture remains
+    # unavailable in contract v2.
+    shared_gateway_enabled: bool = False
+    shared_gateway_activation_manifest: str | None = None
+    api_identity_client_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AZURE_CLIENT_ID"),
+    )
     # Staging is not capability issuance or runtime selection.
     gateway_attempts_v1_staged: bool = False
     # Image generation has its own api-version + timeout: image models
@@ -1030,6 +1039,24 @@ class Settings(BaseSettings):
             "single tenant."
         )
 
+    def validate_shared_gateway(self) -> None:
+        """Validate the resolved, versioned shared gateway contract before selection."""
+        if not self.shared_gateway_enabled:
+            return
+        if self.env == Environment.local or self.auth_provider != AuthProviderKind.entra:
+            raise RuntimeError(
+                "Shared gateway routing requires a non-local Entra-authenticated API."
+            )
+        from .shared_gateway_contract import load_shared_gateway_manifest
+
+        try:
+            load_shared_gateway_manifest(
+                self.shared_gateway_activation_manifest,
+                api_identity_client_id=self.api_identity_client_id,
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
     def _validate_model_gateway_posture(self) -> None:
         """Require the deployed HTTP/SSE path to terminate at SimpleL7Proxy."""
         if self.env == Environment.local:
@@ -1257,6 +1284,7 @@ class Settings(BaseSettings):
 
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
+        self.validate_shared_gateway()
         if self.claude_external_enabled and self.claude_gateway_enabled:
             raise RuntimeError("Claude gateway-key and federated authentication modes are mutually exclusive.")
         if self.claude_enabled and not (self.claude_external_enabled or self.claude_gateway_enabled):
@@ -1313,6 +1341,7 @@ class Settings(BaseSettings):
                 "Model gateway auth must not be 'none' outside local. Configure "
                 "AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key|bearer."
             )
+        self.validate_shared_gateway()
         self._validate_model_gateway_posture()
         self.validate_gateway_attempts_v1()
         if (

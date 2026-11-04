@@ -496,6 +496,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ("hard_quota_binding", "close", "hard quota coordination"),
                 ("session_repo", "close", "session repo"),
                 ("document_library", "close", "document library"),
+                ("gateway", "close", "model gateway"),
                 ("image_artifacts", "close", "image artifact store"),
                 ("photo_avatars", "close", "photo avatar service"),
                 ("document_artifacts", "close", "document artifact store"),

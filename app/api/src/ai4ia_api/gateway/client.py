@@ -13,7 +13,7 @@ import asyncio
 import hashlib
 import json
 import math
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
@@ -55,6 +55,7 @@ from .attempts import (
     GatewayCapabilityVerifier, bounded_http_client, no_replay_selected, prepare_attempt,
     versioned_target,
 )
+from ..shared_gateway_contract import SharedGatewayManifest, load_shared_gateway_manifest
 
 if TYPE_CHECKING:
     from ..catalog import ModelEntry
@@ -436,10 +437,25 @@ def _resolved_api(api: str, deployment: str) -> str:
 
 
 class ModelGatewayError(Exception):
-    def __init__(self, status_code: int, detail: str) -> None:
+    def __init__(
+        self, status_code: int, detail: str, *, retry_after_seconds: int | None = None,
+        shared_gateway: bool = False,
+    ) -> None:
         super().__init__(f"gateway error {status_code}: {detail}")
         self.status_code = status_code
         self.detail = detail
+        self.retry_after_seconds = retry_after_seconds
+        self.shared_gateway = shared_gateway
+
+
+def _retry_after_seconds(response: httpx.Response) -> int | None:
+    raw = response.headers.get("retry-after", "").strip()
+    if not raw or len(raw) > 128 or not raw.isascii():
+        return None
+    delay = parse_retry_after(raw)
+    if delay is None or delay > 86_400:
+        return None
+    return max(0, math.ceil(delay))
 
 
 @dataclass
@@ -511,8 +527,29 @@ class ModelGatewayClient:
     def __init__(
         self, settings: Settings, http_client: httpx.AsyncClient | None = None, *,
         attempt_verifier: GatewayCapabilityVerifier | None = None,
+        shared_gateway_token_provider: Callable[[str], Awaitable[str]] | None = None,
     ) -> None:
+        settings.validate_shared_gateway()
         self._base = settings.model_gateway_url.rstrip("/")
+        self._shared_enabled = settings.shared_gateway_enabled
+        self._shared_manifest: SharedGatewayManifest | None = (
+            load_shared_gateway_manifest(
+                settings.shared_gateway_activation_manifest,
+                api_identity_client_id=settings.api_identity_client_id,
+            )
+            if self._shared_enabled
+            else None
+        )
+        self._shared_token_provider = shared_gateway_token_provider
+        self._shared_credential = None
+        if self._shared_enabled and shared_gateway_token_provider is None:
+            if self._shared_manifest is None:
+                raise RuntimeError("Shared gateway contract is unavailable.")
+            from azure.identity.aio import ManagedIdentityCredential
+
+            self._shared_credential = ManagedIdentityCredential(
+                client_id=self._shared_manifest.caller_client_id,
+            )
         self._style = settings.gateway_provider_style
         self._api_version = settings.gateway_api_version
         self._auth_mode = settings.model_gateway_auth_mode
@@ -540,6 +577,109 @@ class ModelGatewayClient:
         self._attempt_staged = settings.gateway_attempts_v1_staged
         self._catalog_path = settings.model_catalog_path
         self._claude_enabled = settings.claude_runtime_enabled
+
+    async def close(self) -> None:
+        if self._shared_credential is not None:
+            await self._shared_credential.close()
+
+    async def _shared_request(
+        self, req: GatewayRequest, *, deployment: str, api: str, eligible: bool,
+        sku: str | None,
+    ) -> tuple[GatewayRequest, str | None]:
+        if not self._shared_enabled or not eligible:
+            return req, None
+        manifest = self._shared_manifest
+        if manifest is None:
+            raise ModelGatewayError(
+                503, "Shared gateway contract is unavailable.", shared_gateway=True,
+            )
+        if api not in {"chat", "responses"}:
+            raise ModelGatewayError(400, "This operation is not eligible for shared routing.")
+        if no_replay_selected():
+            raise QuotaError("Shared routing is unavailable for no-replay dispatches.")
+        path = "/chat/completions" if api == "chat" else "/responses"
+        body = dict(req.json)
+        if api == "responses":
+            if (
+                body.get("store") is not False
+                or any(
+                    field in body
+                    for field in ("previous_response_id", "background", "conversation")
+                )
+            ):
+                raise ModelGatewayError(
+                    400, "Only stateless Responses requests are eligible for shared routing."
+                )
+        deployment_key = deployment.lower()
+        model_key = deployment_key
+        if (
+            manifest.model_kinds.get(model_key) != "deployment-name"
+            or manifest.model_deployments.get(model_key) != deployment
+            or sku not in manifest.model_skus.get(model_key, frozenset())
+        ):
+            aliases = [
+                key for key, target in manifest.model_deployments.items()
+                if manifest.model_kinds[key] == "alias"
+                and target == deployment
+                and path in manifest.model_operations[key]
+                and sku in manifest.model_skus[key]
+            ]
+            if len(aliases) != 1:
+                raise ModelGatewayError(
+                    400, "This model or operation is not eligible for shared routing.",
+                    shared_gateway=True,
+                )
+            model_key = aliases[0]
+        model_paths = manifest.model_operations.get(model_key)
+        if (
+            model_paths is None
+            or path not in model_paths
+            or path not in manifest.operations
+            or sku is None
+            or sku not in manifest.model_skus.get(model_key, frozenset())
+        ):
+            raise ModelGatewayError(
+                400, "This model or operation is not eligible for shared routing.",
+                shared_gateway=True,
+            )
+        if body.get("stream") is True and not manifest.operations[path]:
+            raise ModelGatewayError(
+                400, "Streaming is not enabled for this shared gateway operation.",
+                shared_gateway=True,
+            )
+        body["model"] = model_key
+        try:
+            if self._shared_token_provider is not None:
+                token = await self._shared_token_provider(manifest.scope)
+            elif self._shared_credential is not None:
+                from azure.core.exceptions import AzureError
+
+                try:
+                    token = (await self._shared_credential.get_token(manifest.scope)).token
+                except AzureError as exc:
+                    raise ModelGatewayError(
+                        503, "Shared gateway authentication is unavailable.",
+                        shared_gateway=True,
+                    ) from exc
+            else:
+                raise ModelGatewayError(
+                    503, "Shared gateway authentication is unavailable.",
+                    shared_gateway=True,
+                )
+        except ModelGatewayError:
+            raise
+        if not token or "\r" in token or "\n" in token:
+            raise ModelGatewayError(
+                503, "Shared gateway authentication is unavailable.",
+                shared_gateway=True,
+            )
+        shared_req = GatewayRequest(
+            url=f"{manifest.base_url}{path}",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            json=body,
+        )
+        shared_req.headers["Authorization"] = "Bearer " + token
+        return shared_req, manifest.base_url
 
     @property
     def attempt_capability(self) -> AttemptEnvelope | None:
@@ -649,17 +789,28 @@ class ModelGatewayClient:
         self, client: httpx.AsyncClient, url: str, *, surface: Surface,
         deployment: str, payload: dict[str, Any], api: str = "chat",
         evidence: CapturedModelCall | None = None, telemetry: ModelSpan | None = None,
+        gateway_url: str | None = None,
+        usage_verified: bool = True,
         **kwargs: Any,
     ) -> httpx.Response:
         if no_replay_selected() and set(kwargs) - {"headers", "json"}:
             raise QuotaError("Unsupported bounded gateway transport options.")
+        dispatch_gateway_url = gateway_url or self._base
         if no_replay_selected():
-            url = versioned_target(self._base, url, surface=surface, deployment=deployment, api=api)
+            url = versioned_target(
+                dispatch_gateway_url, url, surface=surface, deployment=deployment, api=api,
+            )
         async with prepare_attempt(
-            surface, payload, deployment=deployment, target=url, gateway_url=self._base,
+            surface, payload, deployment=deployment, target=url,
+            gateway_url=dispatch_gateway_url,
             owner=current_dispatch_owner(), verifier=self._attempt_verifier,
-            credential_header=self._api_key_header,
-            has_credential=self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key),
+            credential_header=(
+                "Authorization" if gateway_url is not None else self._api_key_header
+            ),
+            has_credential=(
+                gateway_url is not None
+                or self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key)
+            ),
             staged=self._attempt_staged, api=api,
         ) as attempt, admitted_dispatch(
             surface, json.loads(attempt.body) if attempt else payload,
@@ -684,7 +835,7 @@ class ModelGatewayClient:
                     attempt.check_response(response)
             if (admission.reservation is not None or admission.workflow_observed) and response.is_success:
                 usage = None
-                if surface in {"chat", "embedding"}:
+                if usage_verified and surface in {"chat", "embedding"}:
                     try:
                         body = response.json()
                     except ValueError:
@@ -711,15 +862,23 @@ class ModelGatewayClient:
         self, client: httpx.AsyncClient, req: GatewayRequest, *, deployment: str,
         evidence: CapturedModelCall | None, telemetry: ModelSpan | None = None,
         api: str = "chat",
+        gateway_url: str | None = None,
     ) -> AsyncIterator[tuple[httpx.Response, DispatchLease]]:
         url = versioned_target(
-            self._base, req.url, surface="chat", deployment=deployment, api=api,
+            gateway_url or self._base, req.url, surface="chat", deployment=deployment, api=api,
         ) if no_replay_selected() else req.url
+        dispatch_gateway_url = gateway_url or self._base
         async with prepare_attempt(
-            "chat", req.json, deployment=deployment, target=url, gateway_url=self._base,
+            "chat", req.json, deployment=deployment, target=url,
+            gateway_url=dispatch_gateway_url,
             owner=current_dispatch_owner(), verifier=self._attempt_verifier,
-            credential_header=self._api_key_header,
-            has_credential=self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key),
+            credential_header=(
+                "Authorization" if gateway_url is not None else self._api_key_header
+            ),
+            has_credential=(
+                gateway_url is not None
+                or self._auth_mode == GatewayAuthMode.api_key and bool(self._api_key)
+            ),
             staged=self._attempt_staged, api=api,
         ) as attempt, admitted_dispatch(
             "chat", json.loads(attempt.body) if attempt else req.json,
@@ -1349,6 +1508,8 @@ class ModelGatewayClient:
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         api: str = "chat",
+        shared_gateway_eligible: bool = False,
+        shared_gateway_sku: str | None = None,
     ) -> dict[str, Any]:
         resolved_api = _resolved_api(api, deployment)
         if resolved_api == "responses":
@@ -1375,6 +1536,13 @@ class ModelGatewayClient:
                 stream=False,
                 correlation_id=correlation_id,
             )
+        req, shared_gateway_url = await self._shared_request(
+            req,
+            deployment=deployment,
+            api=resolved_api,
+            eligible=shared_gateway_eligible,
+            sku=shared_gateway_sku,
+        )
         from ..catalog import load_catalog
 
         evidence = begin_model_call(deployment, resolved_api, catalog=load_catalog(self._catalog_path))
@@ -1389,12 +1557,26 @@ class ModelGatewayClient:
                 resp = await self._post(
                     client, req.url, surface="chat", deployment=deployment, payload=req.json,
                     api=resolved_api, evidence=evidence, telemetry=telemetry,
+                    gateway_url=shared_gateway_url,
+                    usage_verified=(
+                        shared_gateway_url is None
+                        or bool(
+                            self._shared_manifest
+                            and self._shared_manifest.terminal_usage_verified
+                        )
+                    ),
                     headers=req.headers, json=req.json,
                 )
             except httpx.HTTPError as exc:
                 raise ModelGatewayError(502, _REQUEST_FAILED) from exc
             if resp.status_code >= 400:
-                raise ModelGatewayError(resp.status_code, resp.text)
+                retry_after = _retry_after_seconds(resp) if shared_gateway_url else None
+                raise ModelGatewayError(
+                    resp.status_code,
+                    resp.text,
+                    retry_after_seconds=retry_after,
+                    shared_gateway=shared_gateway_url is not None,
+                )
             try:
                 data = resp.json()
             except ValueError as exc:
@@ -1404,6 +1586,12 @@ class ModelGatewayClient:
             telemetry.response_metadata(data)
             if evidence is not None:
                 evidence.response_metadata(data)
+            if (
+                shared_gateway_url is not None
+                and self._shared_manifest is not None
+                and not self._shared_manifest.terminal_usage_verified
+            ):
+                data.pop("usage", None)
             if not tools_allowed() and contains_tool_output(data):
                 raise ModelGatewayError(502, "Provider returned a tool on a tool-free request.")
             if resolved_api == "responses":
@@ -1470,6 +1658,8 @@ class ModelGatewayClient:
         params: dict[str, Any] | None = None,
         correlation_id: str | None = None,
         api: str = "chat",
+        shared_gateway_eligible: bool = False,
+        shared_gateway_sku: str | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         timing = current_chat_timing()
         timing_started = timing.gateway_started() if timing is not None else None
@@ -1491,6 +1681,8 @@ class ModelGatewayClient:
                         correlation_id=correlation_id,
                         evidence=evidence,
                         telemetry=telemetry,
+                        shared_gateway_eligible=shared_gateway_eligible,
+                        shared_gateway_sku=shared_gateway_sku,
                     )
                 ) as response_stream:
                     async for chunk in response_stream:
@@ -1529,7 +1721,16 @@ class ModelGatewayClient:
             # without it. 400 is the unsupported-parameter signal; other statuses
             # (401/403/429/5xx) are not param-related and propagate immediately.
             attempts = (
-                [True, False] if self._stream_include_usage and not no_replay_selected()
+                [True, False]
+                if (
+                    self._stream_include_usage
+                    and not no_replay_selected()
+                    and not (
+                        self._shared_enabled
+                        and shared_gateway_eligible
+                        and resolved_api in {"chat", "responses"}
+                    )
+                )
                 else [self._stream_include_usage]
             )
             for attempt_idx, include_usage in enumerate(attempts):
@@ -1541,22 +1742,45 @@ class ModelGatewayClient:
                     include_usage=include_usage,
                     correlation_id=correlation_id,
                 )
+                req, shared_gateway_url = await self._shared_request(
+                    req,
+                    deployment=deployment,
+                    api=resolved_api,
+                    eligible=shared_gateway_eligible,
+                    sku=shared_gateway_sku,
+                )
                 if evidence is not None:
                     evidence.request(req.json)
                 is_last = attempt_idx == len(attempts) - 1
                 async with self._stream_request(
                     client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
+                    gateway_url=shared_gateway_url,
                 ) as (resp, admission):
                     if resp.status_code >= 400:
                         body = await resp.aread()
                         detail = body.decode("utf-8", "replace")
-                        if include_usage and not is_last and resp.status_code == 400:
+                        if (
+                            shared_gateway_url is None
+                            and include_usage and not is_last and resp.status_code == 400
+                        ):
                             # Likely stream_options unsupported; fall back cleanly.
                             continue
-                        raise ModelGatewayError(resp.status_code, detail)
+                        retry_after = _retry_after_seconds(resp) if shared_gateway_url else None
+                        raise ModelGatewayError(
+                            resp.status_code,
+                            detail,
+                            retry_after_seconds=retry_after,
+                            shared_gateway=shared_gateway_url is not None,
+                        )
                     async for line in resp.aiter_lines():
                         chunk = parse_sse_line(line, telemetry=telemetry, evidence=evidence)
                         if chunk is not None:
+                            if (
+                                shared_gateway_url is not None
+                                and self._shared_manifest is not None
+                                and not self._shared_manifest.terminal_usage_verified
+                            ):
+                                chunk.usage = None
                             admission.report(chunk.usage, complete=chunk.done)
                             if evidence is not None:
                                 evidence.report_usage(chunk.usage, completed=chunk.done)
@@ -1666,6 +1890,8 @@ class ModelGatewayClient:
         correlation_id: str | None = None,
         evidence: CapturedModelCall | None = None,
         telemetry: ModelSpan | None = None,
+        shared_gateway_eligible: bool = False,
+        shared_gateway_sku: str | None = None,
     ) -> AsyncGenerator[ChatChunk, None]:
         """Stream a Responses turn, translating its SSE events into the synthetic
         chat-shaped ``ChatChunk`` stream the router already consumes.
@@ -1685,16 +1911,28 @@ class ModelGatewayClient:
                 stream=True,
                 correlation_id=correlation_id,
             )
+            req, shared_gateway_url = await self._shared_request(
+                req,
+                deployment=deployment,
+                api="responses",
+                eligible=shared_gateway_eligible,
+                sku=shared_gateway_sku,
+            )
             if evidence is not None:
                 evidence.request(req.json)
             async with self._stream_request(
                 client, req, deployment=deployment, evidence=evidence, telemetry=telemetry,
-                api="responses",
+                api="responses", gateway_url=shared_gateway_url,
             ) as (resp, admission):
                 if resp.status_code >= 400:
                     body = await resp.aread()
                     raise ModelGatewayError(
-                        resp.status_code, body.decode("utf-8", "replace")
+                        resp.status_code,
+                        body.decode("utf-8", "replace"),
+                        retry_after_seconds=(
+                            _retry_after_seconds(resp) if shared_gateway_url else None
+                        ),
+                        shared_gateway=shared_gateway_url is not None,
                     )
                 data_buf: list[str] = []
                 async for line in resp.aiter_lines():
@@ -1707,6 +1945,12 @@ class ModelGatewayClient:
                             chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry, evidence=evidence)
                             data_buf = []
                             if chunk is not None:
+                                if (
+                                    shared_gateway_url is not None
+                                    and self._shared_manifest is not None
+                                    and not self._shared_manifest.terminal_usage_verified
+                                ):
+                                    chunk.usage = None
                                 admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
                                 yield chunk
                                 if chunk.done:
@@ -1716,6 +1960,12 @@ class ModelGatewayClient:
                 if data_buf:
                     chunk = _parse_responses_event("\n".join(data_buf), telemetry=telemetry, evidence=evidence)
                     if chunk is not None:
+                        if (
+                            shared_gateway_url is not None
+                            and self._shared_manifest is not None
+                            and not self._shared_manifest.terminal_usage_verified
+                        ):
+                            chunk.usage = None
                         admission.report(chunk.usage, complete=chunk.done and not chunk.incomplete)
                         yield chunk
         except httpx.HTTPError as exc:
