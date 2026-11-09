@@ -738,6 +738,15 @@ and the canary environment and deployment plan have separate operator approval.
 The preprovision validator rejects an enabled flag without a resolved manifest;
 API startup rechecks the contract and caller managed-identity client ID.
 
+The resolved manifest's `gateway.baseUrl` must be the reachable per-app
+SimpleL7Proxy endpoint. It must not point directly to APIM or AI4IA's existing
+key-only proxy. The dedicated proxy must validate the API MI bearer token's
+audience and allowlisted client ID, and use a distinct proxy UAMI for APIM.
+Current AI4IA infrastructure does not create that proxy or its private
+APIM/DNS path. Treat the proxy, identity/allowlist, and network/DNS as separate
+reviewed onboarding dependencies; do not fill them with guessed values or
+retrofit the existing key-only proxy as an implicit fallback.
+
 The current `deploy.yml` is production-scoped and is not an approved canary
 executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED` from a GitHub Actions
 repository variable and the activation manifest from a GitHub Actions secret;

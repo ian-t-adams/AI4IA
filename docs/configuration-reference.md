@@ -277,6 +277,17 @@ allowlists in that manifest are used. No endpoint, tenant, audience, identity
 or deployment value is supplied by this repository. A manifest is not proof of
 gateway reachability or permission to activate a canary.
 
+Onboarding dependency: `gateway.baseUrl` must identify the reachable,
+per-app SimpleL7Proxy endpoint, not APIM and not AI4IA's existing key-only
+proxy. The API sends a managed-identity bearer token for the manifest audience;
+the dedicated proxy must validate that audience and allowlist the API MI client
+ID, then use its own distinct proxy UAMI for APIM. Current AI4IA infrastructure
+creates only the key-authenticated proxy and does not create this
+bearer-validating proxy, its identity/allowlist, or its private APIM network and
+DNS path. Those are separate reviewed onboarding dependencies; no endpoint,
+identity, or network value is supplied or inferred here. Keep the selector OFF
+until that path is provisioned and verified under a separately approved plan.
+
 The selector is limited to the standard chat router's final model dispatch:
 
 | API operation | Eligibility |
