@@ -49,7 +49,12 @@ AI4IA_PATCH_REASONS = {
     ),
     "SimpleL7Proxy/Config/IncomingAuthValidator.cs": (
         "Trim and default the configured key header over upstream's raw assignment "
-        "and fail closed for unsigned OAuth modes."
+        "and fail closed for unsigned OAuth modes; validate single-tenant OIDC "
+        "issuer, audience, signature, lifetime and allowlisted caller IDs."
+    ),
+    "SimpleL7Proxy/Config/BoundedOidcDocumentRetriever.cs": (
+        "Fetch only trusted Microsoft Entra OIDC metadata over bounded, nonredirecting "
+        "HTTPS with strict response-size and timeout limits."
     ),
     "SimpleL7Proxy/Config/ProxyConfig.cs": (
         "Mark inbound authentication keys as secret configuration."
@@ -79,11 +84,12 @@ AI4IA_PATCH_REASONS = {
     "SimpleL7Proxy/server.cs": (
         "Compare opaque inbound authentication keys exactly and in constant time; remove "
         "redundant request-null control flow; return 404 for privileged legacy diagnostics "
-        "before auth or worker dispatch; bind reduction-only attempt metadata only "
-        "after successful key authentication."
+        "before auth or worker dispatch; validate bearer ingress against trusted OIDC "
+        "metadata and bind reduction-only attempt metadata only after authentication."
     ),
     "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": (
-        "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, "
+        "AI4IA key- or validated-bearer-authenticated one-attempt binding, "
+        "exact byte/model/path HMAC, "
         "mandatory versioned route and non-stripping scoped-host membership, "
         "pre-send claim, unsupported-shape and upstream caller-control refusal, "
         "and nonredirecting HTTP/1.1 transport."
@@ -109,7 +115,8 @@ AI4IA_PATCH_REASONS = {
     ),
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
         "Keep runtime dependencies current, including IdentityModel 8.23.0, "
-        "OpenTelemetry 1.20.1, Azure.Storage.Blobs 12.30.1 and Application Insights "
+        "OpenIdConnect metadata support, OpenTelemetry 1.20.1, Azure.Storage.Blobs "
+        "12.30.1 and Application Insights "
         "3.2.0; update Azure.Core to 1.64.0 and "
         "Microsoft.Extensions.Configuration.AzureAppConfiguration to 8.6.1; "
         "remove unsupported Application Insights 2.x packages and declare the "

@@ -306,7 +306,12 @@ ordinary-path `stream_options` compatibility retry. Upstream status and bounded
 `Retry-After` are preserved. Client disconnect closes the upstream SSE stream.
 The proxy can delayed-requeue a 429 only when `S7PREQUEUE: true` is returned;
 the shared-gateway policy must strip that header for APIM to remain the sole
-retry owner. This is an offline contract, not live route evidence.
+retry owner. Gateway v3 source deletes this header on its outbound policy path,
+and its offline tests cover that policy plus a simulated direct 429. This does
+not prove APIM-generated 429/503 responses, inbound `return-response`, `on-error`,
+retry-exhaustion responses, or inherited/global/workspace policies cannot return
+`S7PREQUEUE`; those remain acceptance blockers for a sole-retry claim. This is
+offline source evidence, not live route evidence.
 The existing `AI4IA_GATEWAY_TIMEOUT_SECONDS` profile (120 seconds by default)
 applies; HTTPX phase/read timeouts are not a total wall-clock deadline.
 

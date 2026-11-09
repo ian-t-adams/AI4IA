@@ -76,13 +76,37 @@ class ProxyTelemetryContracts(unittest.TestCase):
 class ProxyRuntimeContracts(unittest.TestCase):
     def test_bounded_metadata_is_bound_before_configurable_stripping(self) -> None:
         source = (ROOT / "proxy" / "SimpleL7Proxy" / "server.cs").read_text(encoding="utf-8")
-        authenticated = source.index("authenticatedKey = isValid;")
-        bound = source.index("NoReplayAttempt.BindAuthenticated(rd, authenticatedKey, _options)")
+        authenticated = source.index("authenticatedIngress = isValid;")
+        allowed = source.index("if (_options.ValidateAuthAppID && !_authValidator.ValidateAuthViaOauthHeader)")
+        bound = source.index("NoReplayAttempt.BindAuthenticated(rd, authenticatedIngress, _options)")
         strip = source.index("foreach (var header in _disallowedHeaders)")
         recheck = source.index("NoReplayAttempt.ValidateState(rd)")
         self.assertLess(authenticated, bound)
+        self.assertLess(allowed, bound)
         self.assertLess(bound, strip)
         self.assertLess(strip, recheck)
+
+    def test_bearer_identity_comes_from_validated_token_not_request_header(self) -> None:
+        source = (ROOT / "proxy" / "SimpleL7Proxy" / "server.cs").read_text(encoding="utf-8")
+        auth_start = source.index("string? authAppID = _authValidator.ValidateAuthViaOauthHeader")
+        auth_end = source.index("// Bind only after", auth_start)
+        auth = source[auth_start:auth_end]
+        self.assertIn(
+            "? null\n                                    : rd.Headers[_options.ValidateAuthAppIDHeader]",
+            auth,
+        )
+        self.assertIn("ValidateBearerTokenAsync(token)", auth)
+        self.assertIn("if (_options.ValidateAuthAppID && !_authValidator.ValidateAuthViaOauthHeader)", auth)
+
+    def test_bearer_metadata_is_verified_before_listening_and_on_reload(self) -> None:
+        source = (ROOT / "proxy" / "SimpleL7Proxy" / "server.cs").read_text(encoding="utf-8")
+        startup = source.index("protected override async Task ExecuteAsync")
+        verified = source.index("_authValidator.EnsureTrustedConfigurationAsync", startup)
+        listener = source.index("_httpListener.Start()", startup)
+        reload = source.index("public Task OnConfigChangedAsync")
+        reverified = source.index("_authValidator.EnsureTrustedConfigurationAsync", reload)
+        self.assertLess(verified, listener)
+        self.assertGreater(reverified, reload)
 
     def test_proxy_ci_requires_actual_test_discovery(self) -> None:
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "quality.yml").read_text())

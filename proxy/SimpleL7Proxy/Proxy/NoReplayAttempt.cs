@@ -45,7 +45,7 @@ public sealed class NoReplayAttempt
     private static bool IsExactOperation(string path) =>
         Regex.IsMatch(path, @"\A/ai4ia-attempts-v1/openai/(responses|deployments/[A-Za-z0-9_.-]+/(chat/completions|embeddings))(\?api-version=[A-Za-z0-9_.-]{1,64})?\z");
 
-    public static void BindAuthenticated(RequestData request, bool authenticatedKey, ProxyConfig options)
+    public static void BindAuthenticated(RequestData request, bool authenticatedIngress, ProxyConfig options)
     {
         var names = request.Headers.AllKeys.Where(k => k is not null && IsInternalHeader(k)).ToArray();
         if (names.Length == 0 && !IsVersionedPath(request.Path))
@@ -53,7 +53,7 @@ public sealed class NoReplayAttempt
         if (names.Length != 1 || !string.Equals(names[0], RequestHeader, StringComparison.OrdinalIgnoreCase))
             throw Refused("Untrusted gateway attempt metadata.");
         var raw = request.Headers.GetValues(RequestHeader);
-        if (!authenticatedKey || raw is not { Length: 1 })
+        if (!authenticatedIngress || raw is not { Length: 1 })
             throw Refused("Gateway attempt requires authenticated proxy ingress.");
         var match = Regex.Match(raw[0], @"\Aai4ia-one-attempt-v1\.([0-9a-f]{32})\.([0-9a-f]{64})\z");
         if (!match.Success || request.NoReplay is not null ||

@@ -1,10 +1,25 @@
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.IdentityModel.Protocols;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.JsonWebTokens;
+using System.Text.RegularExpressions;
 
 namespace SimpleL7Proxy.Config;
 
 public sealed class IncomingAuthValidator
 {
+    private static readonly Regex s_tenantIssuer = new(
+        @"\Ahttps://login\.microsoftonline\.com/(?<tenant>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/v2\.0\z",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex s_audience = new(
+        @"\A[^;,\s<>=]{1,256}\z",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex s_placeholder = new(
+        @"(example|placeholder|changeme|change-me|replace|todo|your[-_]|<|>)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     public string[] Audiences { get; set; } = [];
+    public string[] AllowedClientIds { get; set; } = [];
     public int ClockSkewMinutes { get; set; } = 1;
     public bool Enabled { get; set; }
     public string Header { get; set; } = "S7P-KEY";
@@ -20,6 +35,7 @@ public sealed class IncomingAuthValidator
     public bool ValidateAuthViaKey { get; set; } = false;
     public bool ValidateAuthViaOauthHeader { get; set; } = false;
     public string ValidateAuthViaKeyHeader { get; set; } = "S7P-KEY";
+    public IConfigurationManager<OpenIdConnectConfiguration>? ConfigurationManager { get; set; }
 
     public TokenValidationParameters validationParameters { get; set; } = null!;
 
@@ -47,7 +63,7 @@ public sealed class IncomingAuthValidator
                 "mixed" => IncomingAuthModeEnum.Mixed,
                 "none" => IncomingAuthModeEnum.None,
                 "oauth2" or "oauth" => IncomingAuthModeEnum.OAuth2,
-                _ => IncomingAuthModeEnum.None
+                _ => throw new FormatException("Unsupported inbound authentication mode.")
             };
 
             ValidateAuthViaKey = normalizedMode is "key" or "mixed";
@@ -56,11 +72,14 @@ public sealed class IncomingAuthValidator
                 ? "S7P-KEY"
                 : Header.Trim();
 
-            if (ValidateAuthMode is IncomingAuthModeEnum.OAuth2 or IncomingAuthModeEnum.Mixed)
+            if (ValidateAuthMode == IncomingAuthModeEnum.Mixed)
             {
                 throw new InvalidOperationException(
-                    "OAuth inbound validation is disabled until a trusted OIDC/JWKS signing-key source is configured.");
+                    "Mixed inbound authentication is not supported.");
             }
+
+            if (ValidateAuthMode == IncomingAuthModeEnum.OAuth2)
+                ConfigureTrustedBearerValidation();
 
             validationParameters = ToTokenValidationParameters();
         }
@@ -104,6 +123,17 @@ public sealed class IncomingAuthValidator
                 case "audience":
                 case "audiences":
                     Audiences = ParseList(value);
+                    break;
+                case "allowedclientids":
+                case "allowedclientid":
+                    var configuredIds = ParseList(value);
+                    if (configuredIds.Length == 0 ||
+                        configuredIds.Any(id => !Guid.TryParse(id, out _)))
+                        throw new FormatException("Allowed client IDs must be GUIDs.");
+                    AllowedClientIds = configuredIds
+                        .Select(id => Guid.Parse(id).ToString("D"))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
                     break;
                 case "claim":
                 case "requiredclaim":
@@ -150,6 +180,7 @@ public sealed class IncomingAuthValidator
             Header = Header,
             Issuer = Issuer,
             Audiences = (string[])Audiences.Clone(),
+            AllowedClientIds = (string[])AllowedClientIds.Clone(),
             RequiredClaims = new Dictionary<string, string>(RequiredClaims, StringComparer.OrdinalIgnoreCase),
             ValidateIssuer = ValidateIssuer,
             ValidateAudience = ValidateAudience,
@@ -160,23 +191,132 @@ public sealed class IncomingAuthValidator
             ValidateAuthMode = ValidateAuthMode,
             ValidateAuthViaKey = ValidateAuthViaKey,
             ValidateAuthViaOauthHeader = ValidateAuthViaOauthHeader,
-            ValidateAuthViaKeyHeader = ValidateAuthViaKeyHeader
+            ValidateAuthViaKeyHeader = ValidateAuthViaKeyHeader,
+            ConfigurationManager = ConfigurationManager
         };
+    }
+
+    public async Task<(bool isValid, string message, string appid)> ValidateBearerTokenAsync(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token) || ConfigurationManager is null)
+            return (false, "Token validation is unavailable", string.Empty);
+
+        try
+        {
+            var configuration = await ConfigurationManager
+                .GetConfigurationAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!string.Equals(configuration.Issuer, Issuer, StringComparison.Ordinal) ||
+                configuration.SigningKeys.Count == 0)
+                return (false, "Token validation metadata is invalid", string.Empty);
+
+            var parameters = validationParameters.Clone();
+            parameters.IssuerSigningKeys = configuration.SigningKeys;
+            var result = await new JsonWebTokenHandler()
+                .ValidateTokenAsync(token, parameters)
+                .ConfigureAwait(false);
+            if (!result.IsValid)
+            {
+                var detail = result.Exception switch
+                {
+                    SecurityTokenExpiredException => "expired token",
+                    SecurityTokenInvalidAudienceException => "invalid audience",
+                    SecurityTokenInvalidIssuerException => "invalid issuer",
+                    SecurityTokenInvalidSignatureException => "invalid signature",
+                    _ => "token validation failed"
+                };
+                return (false, $"Invalid Auth: {detail}", string.Empty);
+            }
+
+            var claims = result.Claims;
+            if (!claims.TryGetValue("ver", out var version) ||
+                !string.Equals(version?.ToString(), "2.0", StringComparison.Ordinal))
+                return (false, "Invalid Auth: unsupported token version", string.Empty);
+
+            var appid = GetClientId(claims);
+            if (appid.Length == 0 ||
+                !AllowedClientIds.Contains(appid, StringComparer.OrdinalIgnoreCase))
+                return (false, "Invalid Auth: unlisted client", appid);
+
+            foreach (var expectedClaim in RequiredClaims)
+            {
+                if (!claims.TryGetValue(expectedClaim.Key, out var actualValue) ||
+                    !string.Equals(actualValue?.ToString(), expectedClaim.Value, StringComparison.OrdinalIgnoreCase))
+                    return (false, $"Claim {expectedClaim.Key} is not valid", appid);
+            }
+
+            return (true, string.Empty, appid);
+        }
+        catch (Exception)
+        {
+            return (false, "Token validation is unavailable", string.Empty);
+        }
+    }
+
+    public async Task EnsureTrustedConfigurationAsync(CancellationToken cancellationToken)
+    {
+        if (ValidateAuthMode != IncomingAuthModeEnum.OAuth2)
+            return;
+
+        if (ConfigurationManager is null)
+            throw new InvalidOperationException("OAuth2 signing-key configuration is unavailable.");
+
+        var configuration = await ConfigurationManager
+            .GetConfigurationAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!string.Equals(configuration.Issuer, Issuer, StringComparison.Ordinal) ||
+            configuration.SigningKeys.Count == 0)
+            throw new InvalidOperationException("OAuth2 issuer or signing-key metadata is invalid.");
     }
 
     public TokenValidationParameters ToTokenValidationParameters()
     {
         return new TokenValidationParameters
         {
-            ValidateIssuer = ValidateIssuer && !string.IsNullOrWhiteSpace(Issuer),
-            ValidIssuer = string.IsNullOrWhiteSpace(Issuer) ? null : Issuer,
-            ValidateAudience = ValidateAudience && Audiences.Length > 0,
-            ValidAudiences = Audiences.Length > 0 ? Audiences : null,
+            ValidateIssuer = ValidateIssuer,
+            ValidIssuer = Issuer,
+            ValidateAudience = ValidateAudience,
+            ValidAudiences = Audiences,
             ValidateLifetime = ValidateLifetime,
             ClockSkew = TimeSpan.FromMinutes(ClockSkewMinutes),
             ValidateIssuerSigningKey = ValidateIssuerSigningKey,
-            RequireSignedTokens = RequireSignedTokens
+            ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
+            RequireSignedTokens = RequireSignedTokens,
+            RequireExpirationTime = true
         };
+    }
+
+    private void ConfigureTrustedBearerValidation()
+    {
+        if (!Enabled ||
+            !string.Equals(Header, "Authorization", StringComparison.OrdinalIgnoreCase) ||
+            s_tenantIssuer.Match(Issuer) is not { Success: true } ||
+            Audiences.Length != 1 || !s_audience.IsMatch(Audiences[0]) ||
+            s_placeholder.IsMatch(Issuer) || s_placeholder.IsMatch(Audiences[0]) ||
+            AllowedClientIds.Length == 0 ||
+            !ValidateIssuer || !ValidateAudience || !ValidateLifetime ||
+            !ValidateIssuerSigningKey || !RequireSignedTokens ||
+            ClockSkewMinutes is < 0 or > 5)
+        {
+            throw new InvalidOperationException(
+                "OAuth2 mode requires a tenant issuer, one API audience, signed-token validation and an allowed client ID.");
+        }
+
+        var metadataAddress = $"{Issuer}/.well-known/openid-configuration";
+        ConfigurationManager ??= new ConfigurationManager<OpenIdConnectConfiguration>(
+            metadataAddress,
+            new OpenIdConnectConfigurationRetriever(),
+            new BoundedOidcDocumentRetriever());
+    }
+
+    private static string GetClientId(IDictionary<string, object> claims)
+    {
+        var azp = claims.TryGetValue("azp", out var authorizedParty) ? authorizedParty?.ToString() : null;
+        var appid = claims.TryGetValue("appid", out var applicationId) ? applicationId?.ToString() : null;
+        if (!string.IsNullOrWhiteSpace(azp) && !string.IsNullOrWhiteSpace(appid) &&
+            !string.Equals(azp, appid, StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+        return !string.IsNullOrWhiteSpace(azp) ? azp : appid ?? string.Empty;
     }
 
     private static string[] ParseList(string value)

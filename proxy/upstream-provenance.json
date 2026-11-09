@@ -12,7 +12,7 @@
     "CompanionApp"
   ],
   "counts": {
-    "ai4ia-added": 8,
+    "ai4ia-added": 9,
     "ai4ia-excluded": 95,
     "ai4ia-patched": 24,
     "upstream-equivalent": 290
@@ -75,6 +75,10 @@
       "reason": "Apply AI4IA's default-deny key and value policy before any downloaded key is resolved, log refused key names without values, and accept a test client and control policy through an internal constructor."
     },
     {
+      "path": "SimpleL7Proxy/Config/BoundedOidcDocumentRetriever.cs",
+      "reason": "Fetch only trusted Microsoft Entra OIDC metadata over bounded, nonredirecting HTTPS with strict response-size and timeout limits."
+    },
+    {
       "path": "SimpleL7Proxy/Config/ConfigFactory.cs",
       "reason": "Redact declared secrets and remove warm-reload value logging."
     },
@@ -84,7 +88,7 @@
     },
     {
       "path": "SimpleL7Proxy/Config/IncomingAuthValidator.cs",
-      "reason": "Trim and default the configured key header over upstream's raw assignment and fail closed for unsigned OAuth modes."
+      "reason": "Trim and default the configured key header over upstream's raw assignment and fail closed for unsigned OAuth modes; validate single-tenant OIDC issuer, audience, signature, lifetime and allowlisted caller IDs."
     },
     {
       "path": "SimpleL7Proxy/Config/ProxyConfig.cs",
@@ -112,7 +116,7 @@
     },
     {
       "path": "SimpleL7Proxy/Proxy/NoReplayAttempt.cs",
-      "reason": "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, mandatory versioned route and non-stripping scoped-host membership, pre-send claim, unsupported-shape and upstream caller-control refusal, and nonredirecting HTTP/1.1 transport."
+      "reason": "AI4IA key- or validated-bearer-authenticated one-attempt binding, exact byte/model/path HMAC, mandatory versioned route and non-stripping scoped-host membership, pre-send claim, unsupported-shape and upstream caller-control refusal, and nonredirecting HTTP/1.1 transport."
     },
     {
       "path": "SimpleL7Proxy/Proxy/ProxyData.cs",
@@ -136,7 +140,7 @@
     },
     {
       "path": "SimpleL7Proxy/SimpleL7Proxy.csproj",
-      "reason": "Keep runtime dependencies current, including IdentityModel 8.23.0, OpenTelemetry 1.20.1, Azure.Storage.Blobs 12.30.1 and Application Insights 3.2.0; update Azure.Core to 1.64.0 and Microsoft.Extensions.Configuration.AzureAppConfiguration to 8.6.1; remove unsupported Application Insights 2.x packages and declare the OpenTelemetry processor API."
+      "reason": "Keep runtime dependencies current, including IdentityModel 8.23.0, OpenIdConnect metadata support, OpenTelemetry 1.20.1, Azure.Storage.Blobs 12.30.1 and Application Insights 3.2.0; update Azure.Core to 1.64.0 and Microsoft.Extensions.Configuration.AzureAppConfiguration to 8.6.1; remove unsupported Application Insights 2.x packages and declare the OpenTelemetry processor API."
     },
     {
       "path": "SimpleL7Proxy/packages.lock.json",
@@ -144,7 +148,7 @@
     },
     {
       "path": "SimpleL7Proxy/server.cs",
-      "reason": "Compare opaque inbound authentication keys exactly and in constant time; remove redundant request-null control flow; return 404 for privileged legacy diagnostics before auth or worker dispatch; bind reduction-only attempt metadata only after successful key authentication."
+      "reason": "Compare opaque inbound authentication keys exactly and in constant time; remove redundant request-null control flow; return 404 for privileged legacy diagnostics before auth or worker dispatch; validate bearer ingress against trusted OIDC metadata and bind reduction-only attempt metadata only after authentication."
     }
   ],
   "exclusions": [
@@ -2142,6 +2146,10 @@
       "upstreamCanonicalSha256": "762fb5e732990bc78c0d67f8c0649e660e4b98f082ae541a4c219519663025d6",
       "disposition": "ai4ia-patched"
     },
+    "SimpleL7Proxy/Config/BoundedOidcDocumentRetriever.cs": {
+      "localCanonicalSha256": "fb2d90c0bb9110da755116860938359b9cb707866ee924b228972d64ea2d61cb",
+      "disposition": "ai4ia-added"
+    },
     "SimpleL7Proxy/Config/ConfigChange.cs": {
       "localCanonicalSha256": "f02abf2b05882fea6149f241e2b44e4229c892419ab5de703bb60b22d29ab7b4",
       "upstreamRawSha256": "f02abf2b05882fea6149f241e2b44e4229c892419ab5de703bb60b22d29ab7b4",
@@ -2191,7 +2199,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Config/IncomingAuthValidator.cs": {
-      "localCanonicalSha256": "6dfaa5e947ea108728d9445a757bb1cde4a67966cdb8849bde52262a77cc1f82",
+      "localCanonicalSha256": "f99ea6906fc7619c4da91dcfefbae952c1417609c6a7af8df88bd8b23389a913",
       "upstreamRawSha256": "1e68a5bd37b573cdc2f0c4c856c2fe546ed57bda6bf397cc109dd21b2ce3b2dd",
       "upstreamCanonicalSha256": "1e68a5bd37b573cdc2f0c4c856c2fe546ed57bda6bf397cc109dd21b2ce3b2dd",
       "disposition": "ai4ia-patched"
@@ -2465,7 +2473,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": {
-      "localCanonicalSha256": "862dc2dfd670bac919365614beeebc2dbedf025b43d535206c05c7db7d39255e",
+      "localCanonicalSha256": "93673443a8466b1f1cc79f28328d6b1636f05d7ba7a47c9808d110ab7c0e916f",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/Proxy/ObjectLifecycle.md": {
@@ -2655,7 +2663,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/SimpleL7Proxy.csproj": {
-      "localCanonicalSha256": "8b672f0032039555e8e198ff520b0570a6f61794b8453ddb809813cec0fd803d",
+      "localCanonicalSha256": "8ac025b0c7191233150813cb7ecd433f7b4be81b7a260787b1b89cb6e0f4fc9b",
       "upstreamRawSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "upstreamCanonicalSha256": "7c636c17cd56878968f04b86b95a855771a2555ebc446b7f1556ddd5ca23c19d",
       "disposition": "ai4ia-patched"
@@ -2733,7 +2741,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/packages.lock.json": {
-      "localCanonicalSha256": "ed4518ea87d0d8cab05cda210d698315afd3d93bc2a1887c8d3915370a7ebd0d",
+      "localCanonicalSha256": "fb85ab79fddbf9bfd51be9e1626f00345ad79b22f913680d8427dd30f49d4a48",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/sample-deployment.yaml": {
@@ -2749,7 +2757,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/server.cs": {
-      "localCanonicalSha256": "28cfc090165d343964e6809201cacfb2782a6c95f94e3142dd09b0e04b0bed46",
+      "localCanonicalSha256": "ee1b19674062354d8cef6d45edfacd09eb6054cb43a12f52d731af90276ece0a",
       "upstreamRawSha256": "a7e272ea50390c6ec275b27e2686cf3246a0823448de20a9d660d2536cac997a",
       "upstreamCanonicalSha256": "a7e272ea50390c6ec275b27e2686cf3246a0823448de20a9d660d2536cac997a",
       "disposition": "ai4ia-patched"
