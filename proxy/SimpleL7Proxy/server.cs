@@ -540,30 +540,31 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                                         ? "Authorization"
                                         : _authValidator.ValidateAuthViaKeyHeader;
                                     string? incomingKey = rd.Headers[authHeaderName]?.Trim();
-                                    bool isBearer = incomingKey != null &&
-                                        incomingKey.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
+                                    string authValue = incomingKey ?? string.Empty;
+                                    bool isBearer = authValue.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
                                     string message = string.Empty;
                                     var authMode = _authValidator.ValidateAuthMode;
 
                                     if (rd.Debug)
                                     {
-                                        _logger.LogInformation($"[{rd.Guid}] Auth Length: {incomingKey?.Length ?? 0} isBearer: {isBearer}");
+                                        _logger.LogInformation($"[{rd.Guid}] Auth Length: {authValue.Length} isBearer: {isBearer}");
+                                    }
+
+                                    if (_authValidator.ValidateAuthViaOauthHeader)
+                                    {
+                                        var token = isBearer ? authValue["Bearer ".Length..].Trim() : string.Empty;
+                                        (isValid, message, authAppID) =
+                                            await _authValidator.ValidateBearerTokenAsync(token).ConfigureAwait(false);
+                                    }
+                                    else if (_authValidator.ValidateAuthViaKey &&
+                                        authMode == IncomingAuthModeEnum.Key)
+                                    {
+                                        (isValid, message) = ValidateAuthKey(incomingKey, message);
                                     }
 
                                     if (incomingKey is null)
                                     {
                                         message = "Not Authorized : No auth provided";
-                                    }
-                                    else if (isBearer && _authValidator.ValidateAuthViaOauthHeader)
-                                    {
-                                        var token = incomingKey["Bearer ".Length..].Trim();
-                                        (isValid, message, authAppID) =
-                                            await _authValidator.ValidateBearerTokenAsync(token).ConfigureAwait(false);
-                                    }
-                                    else if (!isBearer && _authValidator.ValidateAuthViaKey &&
-                                        authMode == IncomingAuthModeEnum.Key)
-                                    {
-                                        (isValid, message) = ValidateAuthKey(incomingKey, message);
                                     }
 
                                     if (!isValid && string.IsNullOrEmpty(message))

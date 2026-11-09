@@ -98,6 +98,26 @@ class ProxyRuntimeContracts(unittest.TestCase):
         self.assertIn("ValidateBearerTokenAsync(token)", auth)
         self.assertIn("if (_options.ValidateAuthAppID && !_authValidator.ValidateAuthViaOauthHeader)", auth)
 
+    def test_auth_validation_dispatch_is_selected_by_configured_mode(self) -> None:
+        source = (ROOT / "proxy" / "SimpleL7Proxy" / "server.cs").read_text(encoding="utf-8")
+        auth_start = source.index("string? incomingKey = rd.Headers[authHeaderName]?.Trim();")
+        auth_end = source.index("if (!isValid && string.IsNullOrEmpty(message))", auth_start)
+        auth = source[auth_start:auth_end]
+        self.assertIn("if (_authValidator.ValidateAuthViaOauthHeader)", auth)
+        self.assertIn(
+            "else if (_authValidator.ValidateAuthViaKey &&\n"
+            "                                        authMode == IncomingAuthModeEnum.Key)",
+            auth,
+        )
+        self.assertIn("ValidateBearerTokenAsync(token)", auth)
+        self.assertIn("ValidateAuthKey(incomingKey, message)", auth)
+        self.assertNotIn("isBearer && _authValidator", auth)
+        self.assertNotIn("!isBearer && _authValidator", auth)
+        self.assertIn(
+            'var token = isBearer ? authValue["Bearer ".Length..].Trim() : string.Empty;',
+            auth,
+        )
+
     def test_bearer_metadata_is_verified_before_listening_and_on_reload(self) -> None:
         source = (ROOT / "proxy" / "SimpleL7Proxy" / "server.cs").read_text(encoding="utf-8")
         startup = source.index("protected override async Task ExecuteAsync")
