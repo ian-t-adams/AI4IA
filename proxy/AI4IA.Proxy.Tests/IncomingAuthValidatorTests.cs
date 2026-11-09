@@ -115,10 +115,16 @@ public sealed class IncomingAuthValidatorTests
         using var rsa = RSA.Create(2048);
         var key = new RsaSecurityKey(rsa) { KeyId = "trusted-key" };
         var validator = CreateValidator(Issuer, Audience, AllowedClientId, key);
-        var token = CreateToken(key, rsa, Issuer, Audience, DateTime.UtcNow.AddMinutes(5), AllowedClientId);
-        var (isValid, _, appId) = await validator.ValidateBearerTokenAsync(token);
-        Assert.IsTrue(isValid);
-        Assert.AreEqual(AllowedClientId, appId);
+        var deniedToken = CreateToken(
+            key,
+            rsa,
+            Issuer,
+            Audience,
+            DateTime.UtcNow.AddMinutes(5),
+            "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff");
+        var (deniedValid, _, deniedClientId) = await validator.ValidateBearerTokenAsync(deniedToken);
+        Assert.IsFalse(deniedValid);
+        Assert.AreEqual("bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", deniedClientId);
 
         var request = new RequestData(
             "request-id",
@@ -130,9 +136,15 @@ public sealed class IncomingAuthValidatorTests
             new Dictionary<string, string>());
         request.Headers[NoReplayAttempt.RequestHeader] =
             "ai4ia-one-attempt-v1.0123456789abcdef0123456789abcdef." + new string('a', 64);
-
         Assert.ThrowsException<ProxyErrorException>(() =>
-            NoReplayAttempt.BindAuthenticated(request, false, new ProxyConfig()));
+            NoReplayAttempt.BindAuthenticated(request, deniedValid, new ProxyConfig()));
+        Assert.IsNull(request.NoReplay);
+
+        var token = CreateToken(key, rsa, Issuer, Audience, DateTime.UtcNow.AddMinutes(5), AllowedClientId);
+        var (isValid, _, appId) = await validator.ValidateBearerTokenAsync(token);
+        Assert.IsTrue(isValid);
+        Assert.AreEqual(AllowedClientId, appId);
+
         NoReplayAttempt.BindAuthenticated(request, isValid, new ProxyConfig());
         Assert.IsNotNull(request.NoReplay);
     }
