@@ -76,6 +76,17 @@ def test_duplicate_keys_only_rejected_for_v21(version):
         ).contract_version == "2.0.0"
 
 
+@pytest.mark.parametrize("legacy_case", ["alias-equals-deployment", "empty-forbidden-headers"])
+def test_v20_preserves_legacy_acceptances(legacy_case):
+    value = _manifest()
+    if legacy_case == "alias-equals-deployment":
+        for model in value["models"].values():
+            model["kind"] = "alias"
+    else:
+        value["privacy"]["forbiddenRequestHeaders"] = []
+    assert load(value).contract_version == "2.0.0"
+
+
 @pytest.mark.parametrize("family", ["claudeMessages", "videoJobs"])
 def test_complete_resolved_family_and_exact_port(family):
     value = resolved()
