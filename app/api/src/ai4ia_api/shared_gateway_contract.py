@@ -368,6 +368,12 @@ def _load_v21(
         top, api_identity_client_id=api_identity_client_id,
         require_api_identity=require_api_identity, extra_gateway_fields=extras,
     )
+    for key, deployment in common.model_deployments.items():
+        if (
+            any(ord(char) < 32 or ord(char) == 127 for char in deployment)
+            or common.model_kinds[key] == "alias" and key == deployment.lower()
+        ):
+            raise SharedGatewayManifestError("Shared gateway 2.1 top-level model binding is invalid.")
     if not _V21_REQUIRED_FORBIDDEN_HEADERS <= common.forbidden_headers:
         raise SharedGatewayManifestError("Shared gateway 2.1 required forbidden headers are missing.")
     base = urlparse(common.base_url)

@@ -137,6 +137,44 @@ def test_v20_preserves_legacy_acceptances(legacy_case):
     assert load(value).contract_version == "2.0.0"
 
 
+@pytest.mark.parametrize("kind", ["alias", "deployment-name"])
+def test_v21_top_level_model_valid_bindings(kind):
+    value = example()
+    model = next(iter(value["models"].values()))
+    model["kind"] = kind
+    key = "chat-alias" if kind == "alias" else model["targets"][0]["deployment"]
+    value["models"] = {key: model}
+    assert load(value).model_kinds[key] == kind
+
+
+@pytest.mark.parametrize("version", ["2.0.0", "2.1.0"])
+def test_top_level_alias_equal_to_deployment_only_legacy_accepts(version):
+    value = _manifest() if version == "2.0.0" else example()
+    for model in value["models"].values():
+        model["kind"] = "alias"
+    if version == "2.0.0":
+        assert load(value).contract_version == version
+    else:
+        with pytest.raises(SharedGatewayManifestError, match="model binding"):
+            load(value)
+
+
+@pytest.mark.parametrize("control", ["\x00", "\t", "\n", "\r", "\x1f", "\x7f"])
+@pytest.mark.parametrize("field", ["key", "deployment"])
+def test_v21_top_level_models_reject_control_characters(control, field):
+    value = example()
+    model = next(iter(value["models"].values()))
+    model["kind"] = "alias"
+    value["models"] = {"chat-alias": model}
+    assert load(value).model_kinds["chat-alias"] == "alias"
+    if field == "key":
+        value["models"] = {"chat-alias" + control: model}
+    else:
+        model["targets"][0]["deployment"] += control
+    with pytest.raises(SharedGatewayManifestError):
+        load(value)
+
+
 @pytest.mark.parametrize("family", ["claudeMessages", "videoJobs"])
 def test_complete_resolved_family_and_exact_port(family):
     value = resolved()
