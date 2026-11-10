@@ -12,27 +12,16 @@ window.AI4IA_META = {
     "deploys through the Azure Developer CLI (azd).",
   links: {
     app: "https://ai4ia.nomad-analytics.com",
-    proxy: "https://genaiproxy.nomad-analytics.com",
     repo: "https://github.com/ian-t-adams/AI4IA",
     docs: "https://github.com/ian-t-adams/AI4IA/tree/main/docs",
     architectureDoc: "https://github.com/ian-t-adams/AI4IA/blob/main/docs/architecture.md",
   },
   environment: {
-    envName: "slurmfactory",
-    appEnvironment: "prod",
     authProvider: "Microsoft Entra ID (workforce / B2B)",
-    subscription: "e852113b-6cb5-441c-ac68-26cff884e479",
-    resourceGroup: "rg-ai4ia-slurmfactory",
-    // Directory display name as Entra actually reports it. The intended name is
-    // "Planet Express" (already what the subscriptions are named), but renaming a
-    // tenant is a directory write and this account is only Owner at the ARM root
-    // management group -- two separate permission planes. Purely cosmetic.
-    tenant: "Contoso",
-    primaryRegion: "East US 2",
     regions: [
-      { region: "East US 2", role: "Primary US model set, realtime, image/video, router, evaluations" },
-      { region: "Sweden Central", role: "EU-resident model parity where available" },
-      { region: "West US", role: "Targeted models such as MAI Image and deep research" },
+      { region: "Regional model routing", role: "Catalog-driven model placement and regional failover where supported." },
+      { region: "Data residency", role: "Deployment operators choose geography and service availability for their requirements." },
+      { region: "Specialist capabilities", role: "Speech, image and other model capabilities depend on the catalog and feature gates." },
     ],
   },
   featurePosture: {
@@ -69,8 +58,6 @@ window.AI4IA_META = {
       note: "Live under the non-blocking policy; provider-specific assessment visibility remains incomplete." },
     { name: "Image editing", templateOn: false, observedOn: false, param: "imageEditingEnabled",
       note: "New and default-off. Requires image generation; edits run on catalog models that declare imageEditing, with GPT Image 2.5 Sunburst preferred. Not yet observed live." },
-    { name: "Video generation", templateOn: true, observedOn: true, param: "videoGenerationEnabled",
-      note: "The flag stays on so existing clips stay viewable. The October 21 subscription read extended Sora 2 to November 2; catalog re-admission restores the existing routes after rollout, with no new capacity or verified successor." },
     { name: "Document & multimodal understanding (Content Understanding)", templateOn: true, observedOn: true, param: "documentUnderstandingEnabled" },
     { name: "Document compute (Responses API code interpreter)", templateOn: true, observedOn: true, param: "documentComputeEnabled" },
     { name: "Custom (bring-your-own) MCP tools", templateOn: true, observedOn: true, param: "customToolsEnabled",
@@ -96,7 +83,7 @@ window.AI4IA_META = {
     { layer: "Memory / chunks", tech: "Cosmos DB vectors (canonical memory); Azure AI Search (document chunks)", host: "Azure Cosmos DB · Azure AI Search" },
     { layer: "Search", tech: "Azure AI Search (optional retrieval)", host: "Azure AI Search" },
     { layer: "Storage", tech: "Blob (documents + generated media)", host: "Azure Storage" },
-    { layer: "AI services", tech: "Azure AI Foundry (3 regions) + Content Understanding", host: "Azure AI Foundry" },
+    { layer: "AI services", tech: "Regional Azure AI Foundry + Content Understanding", host: "Azure AI Foundry" },
     { layer: "Observability", tech: "App Insights · Log Analytics", host: "Azure Monitor" },
     { layer: "IaC / deploy", tech: "Bicep + Azure Developer CLI (azd)", host: "GitHub Actions (OIDC)" },
   ],

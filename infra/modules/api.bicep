@@ -310,15 +310,6 @@ param imageBlobAccountUrl string = ''
 @description('Blob container tool-generated images are written to.')
 param imageBlobContainer string = 'images'
 
-@description('Enable the agent-callable generate_video tool. Default OFF. When on (and a video blob account is provisioned) any agent may attach generate_video; produced clips persist to blob storage and serve through an authenticated endpoint.')
-param videoGenerationEnabled bool = false
-
-@description('Blob account URL backing generated videos. Required for enabled video generation outside local development.')
-param videoBlobAccountUrl string = ''
-
-@description('Blob container tool-generated videos are written to.')
-param videoBlobContainer string = 'videos'
-
 @description('Enable custom photo avatars. Default OFF. The Boolean is always emitted; the Blob and limit settings only while it is on.')
 param photoAvatarsEnabled bool = false
 
@@ -840,10 +831,6 @@ var mediaFeatureEnv = [
     name: 'AI4IA_IMAGE_EDITING_ENABLED'
     value: string(imageEditingEnabled)
   }
-  {
-    name: 'AI4IA_VIDEO_GENERATION_ENABLED'
-    value: string(videoGenerationEnabled)
-  }
 ]
 
 var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
@@ -854,17 +841,6 @@ var imageEnv = (imageGenerationEnabled && !empty(imageBlobAccountUrl)) ? [
   {
     name: 'AI4IA_IMAGE_BLOB_CONTAINER'
     value: imageBlobContainer
-  }
-] : []
-
-var videoEnv = (videoGenerationEnabled && !empty(videoBlobAccountUrl)) ? [
-  {
-    name: 'AI4IA_VIDEO_BLOB_ACCOUNT_URL'
-    value: videoBlobAccountUrl
-  }
-  {
-    name: 'AI4IA_VIDEO_BLOB_CONTAINER'
-    value: videoBlobContainer
   }
 ] : []
 
@@ -1132,7 +1108,7 @@ var apiEnv = concat([
     name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
     value: appInsightsConnectionString
   }
-], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, videoEnv, photoAvatarEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
+], openapiEnv, claudeEnv, toolApprovalEnv, groupPolicyEnv, hardQuotaEnv, sessionDeletionEnv, gatewayKeyEnv, realtimeGatewayKeyEnv, realtimeGaEnv, speechVoiceLiveGatewayKeyEnv, entraEnv, memoryEnv, summarizationEnv, adminEnv, realtimeEnv, speechVoiceLiveEnv, documentEnv, documentBlobAccountEnv, computeEnv, computeCiEnv, computeRawFilesEnv, durableWorkflowsEnv, workflowAutomationEnv, inlineComputeEnv, mediaFeatureEnv, imageEnv, photoAvatarEnv, searchEnv, customToolsEnv, officialMcpEnv, webSearchEnv, resourceMetricsEnv, logAnalyticsEnv)
 
 resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   name: apiAppName

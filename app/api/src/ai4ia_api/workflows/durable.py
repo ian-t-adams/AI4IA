@@ -66,6 +66,7 @@ from .persistence import persist_run_message
 from .receipts import (
     step_from_dict, step_to_dict, workflow_activity, workflow_receipt, workflow_safety,
 )
+from .service import validate_workflow_execution_tools
 
 logger = logging.getLogger(__name__)
 
@@ -910,6 +911,7 @@ def build_orchestration_payload(
     the first option — so a run the user pinned to Sweden metered as East US,
     and a model id that stopped resolving mid-run metered as nothing at all.
     """
+    validate_workflow_execution_tools(workflow, agent_snapshot or AgentCatalog(agents=[]))
     context: dict[str, Any] = {
         "userId": user_id,
         "sessionId": session_id,

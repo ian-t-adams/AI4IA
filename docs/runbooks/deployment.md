@@ -818,6 +818,28 @@ snapshot is shown as unavailable. The Azure-backed publisher continues to
 require its normal successful inventory refresh and carries forward uptime
 observations without probing models.
 
+Public output is deliberately a generic service view, not an Azure inventory
+export. Both entry workflows forward their existing variables as explicit
+`workflow_call` secrets to their local publisher workflows, so runner input/env
+logging and Azure login cannot print the configured IDs or origins in clear text.
+The called jobs retain separate observer/build and Pages permissions, the same
+main-ref federation and the existing shared publisher lock. No repository
+settings or credentials need changing.
+
+The Azure refresh uses `status-snapshot.ps1 -Public`; the shared allowlist in
+`scripts/public_status.py` discards names, IDs, exact regions, suffixes, backend
+URLs and free-text provider notes before writing a site file. Uptime carry
+reprojects legacy snapshots through the same boundary. Invalid historical data
+is unavailable, never a healthy seed. Version-2 uptime reports use opaque
+SHA-256 target bindings rather than URLs, retaining incident continuity and
+per-target reset behavior when migrating a valid version-1 report. These hashes
+are continuity pseudonyms, not credentials or guaranteed hostname anonymity.
+Both publishers validate the final site before upload. See
+[the portal privacy boundary](../../site/README.md#public-privacy-boundary)
+for offline checks, private diagnostic handling and residual public history.
+An unreleased change does not fix live Pages; old logs/artifacts/caches and
+other public repository sources are not erased by publishing sanitized files.
+
 To pause this read-only monitor, disable the `uptime` workflow. Re-enabling it
 resumes health checks; there is no blocked lease to resolve.
 
@@ -1170,9 +1192,9 @@ Retained choices are alternatives to evaluate, **not aliases or equivalent outpu
 | `FLUX.1-Kontext-pro`, `FLUX-1.1-pro` | `FLUX.2-pro`, `FLUX.2-flex` |
 | `gpt-audio` | `gpt-audio-1.5` |
 
-Keep `sora-2` by explicit owner choice and `gpt-image-1.5` for its distinct
-DataZoneStandard image capability. (`sora-2` is later runtime-disabled ahead of
-its own retirement; see [Sora 2 runtime retirement](#sora-2-runtime-retirement).)
+Keep `gpt-image-1.5` for its distinct DataZoneStandard image capability.
+Video generation was subsequently removed; see
+[video generation removal](#video-generation-removal).
 Content Understanding's `gpt-5.2`,
 memory/Code Interpreter's `gpt-5.4-mini`, `text-embedding-3-large` and its
 3072-dimensional vectors, the `gpt-5-mini` canary, preview `gpt-realtime`,
@@ -1207,39 +1229,56 @@ Application-image rollback does not restore deleted deployments, and repinning
 TTS back to a preview version is not guaranteed. Source review and green CI do
 not authorize cleanup, tenant/Claude changes, capacity-profile changes or release.
 
-### Sora 2 runtime retirement
+### Video generation removal
 
-The owner requested re-admission after the source subscription extended
-`sora-2` `2025-12-08` to **`2026-11-02T00:00:00Z`**. Fresh model-list reads on
-2026-10-21 report that date for both the model inference deadline and the
-GlobalStandard SKU in East US 2 and Sweden Central. Both existing deployments
-remain `Succeeded` at capacity 9. The model lifecycle is still `Deprecated`;
-this is temporary availability, not a successor or a new long-term offering.
-The public October 15 schedule and OpenAI's own API retirement are separate
-evidence and do not override the explicit subscription observation.
+Video generation is removed, not runtime-disabled. The desired catalog no longer
+contains Sora 2 `2025-12-08` in East US 2 or Sweden Central, and generated APIM
+catalogs contain no video route. The generation tool, gateway create/poll/content
+client, generation configuration and clip-container provisioning are removed.
+Do not restore the retired flag: it no longer controls anything.
 
-The catalog now admits the existing row again, restoring its two APIM routes
-and the normal `generate_video` availability predicate. No version, capacity,
-account or region is changed. Source preparation is not live provider acceptance;
-deploy the new catalog/policies together, then verify advertisement and any
-separately approved generation through the app.
+Historical clip playback is removed too: there is no `/api/videos` route, video
+artifact store, `AI4IA_VIDEO_BLOB_*` setting or root/API video Blob parameter.
+Stored conversations keep their `kind: "video"` attachment records unchanged; the
+web app shows an inert "Video unavailable" notice for them and makes no request.
+Greenfield installs create no video container. Retained clip containers and blobs
+stay in place, unread, until a separately approved data disposition.
 
-Keep `AI4IA_VIDEO_GENERATION_ENABLED=true`. `api.bicep` emits
-`AI4IA_VIDEO_BLOB_ACCOUNT_URL` only while the flag is on. Turning it off would
-leave the API with an empty in-memory video store, so existing clips would return
-404. To retire it again, set only `runtimeEnabled=false`, regenerate the catalogs
-and policies, and deploy. This hides the tool and refuses direct execution while
-preserving stored clips and desired inventory.
+No user data,
+stored clip, account, model deployment, secret or role is deleted by this source
+change. Shared media-account permissions remain needed by images and avatars.
 
-Changing the catalog changes the consent environment digest, like any catalog
-edit. Users renew session/run tool consent. Published versions whose recorded
-environment differs must be reviewed and republished before they run again.
+An active `generate_video` selection in a conversation override or inherited
+agent refuses HTTP/SSE chat with an actionable 422 before inference or message
+persistence. Manual, durable and scheduled workflow paths refuse before
+inference, enqueue or schedule activation. Delegated specialists instead return
+an actionable tool error before the specialist's own inference or checkpoint;
+the parent model may already have run and its chat context may already be
+persisted when delegation is requested. Explicit tools-off chats avoid the
+retired-tool refusal but remain subject to existing source/tool requirements;
+sources with other required tools, published tool selections or linked agents
+cannot run tool-free. Only this exact
+retired name refuses; other unknown or unavailable tools keep their existing
+behavior. Stored records are never rewritten automatically. Owners remove the
+selection in the agent, workflow-step or conversation-tool editor; agent and
+workflow edits apply on Save, and conversation edits through the existing
+tool-override PATCH. Catalog
+and offered-tool changes invalidate affected consent and publication environment
+digests: renew consent and review/republish affected published versions. Do not
+silently rewrite persisted definitions or replay held operations. Historical tool
+results and attachment records remain in history but clips are not playable;
+video understanding, uploads, WebIQ video search and avatar streaming are
+unrelated and unchanged.
 
-The seven-day lifecycle policy remains unchanged: from October 26, additions or
-changed deployment targets are blocked; exact `Succeeded` reconciles only warn.
-There is no new automatic runtime date cutoff. Make the next retirement decision
-before November 2 using fresh subscription evidence. Physical deletion remains
-separately approved [coordinated cleanup](#coordinated-catalog-retirement).
+**Release boundary:** merging app/infra changes to `main` normally starts
+`deploy.yml`, including provisioning unless its existing admission/phase rules
+skip it. Source review is not rollout approval. Incremental ARM retains omitted
+live deployments and the strict desired-inventory check can reject those retained
+Sora children. Obtain exact-resource inventory and separate owner-approved
+cleanup/release coordination before merging; do not weaken that check or add
+automatic deletion to make deployment pass. Cleanup can be irreversible and
+application-image rollback cannot recreate a deprecated deployment. See
+[coordinated cleanup](#coordinated-catalog-retirement).
 
 ### Read-only model retirement reporting
 
@@ -1504,11 +1543,16 @@ rewrites the catalog, registers providers or creates/updates/deletes deployments
 | `1` | Complete evidence needs attention; this includes warnings on exact existing deployments and safe migrations away from old versions |
 | `2` | Unknown/incomplete evidence, unavailable reads, empty coverage, or omitted records; inspect known findings too |
 
+The workflow treats exit `0` as success and exit `1` as success with a warning
+annotation directing readers to the job summary. Exit `2` and every other
+unexpected exit code still fail collection. The script's exit-code contract is
+unchanged for other callers; workflow success does not mean the inventory is clear.
+
 JSON (`model-retirements.json`), Markdown (`model-retirements.md`) and a generated
 `region-capability-matrix.md` **preview** share the same observations. The workflow
 retains these three files for 30 days and publishes the Markdown in its job
-summary even on a finding/partial-read failure. Failed login is followed by an
-explicit incomplete report when collection can run; missing artifacts fail
+summary even when findings need attention or collection fails. Failed login is
+followed by an explicit incomplete report when collection can run; missing artifacts fail
 publication rather than passing with an old snapshot. Check source timestamps
 and catalog SHA-256 before using an artifact; a successful collection is not a
 standing permission to deploy or a guarantee about tomorrow.

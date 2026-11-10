@@ -44,7 +44,7 @@ def rows(state: uptime.State = "up") -> list[uptime.Observation]:
     return [
         uptime.Observation(
             id=identifier,
-            url=f"https://{'api' if identifier.startswith('api_') else identifier}.example.test{path}",
+            targetKey=uptime.target_key(f"https://{'api' if identifier.startswith('api_') else identifier}.example.test{path}"),
             state=state, reason="healthy" if state == "up" else "http_error",
             observedAt=stamp(NOW), httpStatus=200 if state == "up" else 503,
             latencyMs=10, failureStreak=0, alerting=False, transition="none",
@@ -87,12 +87,22 @@ def replies() -> dict[str, Response | HttpError]:
         "/health/ready": response({"status": "ok", "stage": "session_store"}),
         "/AI4IA/data/inventory.js": response(
             ("// generated\nwindow.AI4IA_INVENTORY = " + json.dumps({
-                "generatedAt": stamp(NOW - timedelta(hours=2)), "resources": [{"name": "observed"}],
+                "generatedAt": stamp(NOW - timedelta(hours=2)), "resources": [{
+                    "name": "observed", "type": "microsoft.storage/storageaccounts",
+                    "availability": "Unknown", "provisioningState": "Succeeded",
+                }],
             }) + ";\n").encode(), content_type="text/javascript",
         ),
         "/AI4IA/data/status.js": response(
             ("window.AI4IA_STATUS = " + json.dumps({
-                "generatedAt": stamp(NOW - timedelta(hours=2)), "summary": {"total": 1},
+                "generatedAt": stamp(NOW - timedelta(hours=2)),
+                "summary": {"total": 1, "healthy": 0, "provisioned": 1, "degraded": 0,
+                            "unavailable": 0, "endpointsUp": 0, "endpointsTot": 4},
+                "healthSource": {"status": "available"},
+                "endpoints": [
+                    {"state": "unknown", "outcome": "target_unresolved"}
+                    for _ in range(4)
+                ],
             }) + ";\n").encode(), content_type="text/javascript",
         ),
     }
@@ -137,7 +147,7 @@ class UptimeStateTests(unittest.TestCase):
                 failed = uptime.finish(rows("down"), missing, NOW)
                 self.assertTrue(all(row["failureStreak"] == 1 for row in failed["endpoints"]))
         changed = rows("down")
-        changed[0]["url"] = "https://replacement.example.test/"
+        changed[0]["targetKey"] = uptime.target_key("https://replacement.example.test/")
         current = uptime.finish(changed, active, NOW)
         self.assertEqual(current["history"], "scope_changed")
         self.assertEqual(current["endpoints"][0]["failureStreak"], 1)
@@ -163,7 +173,7 @@ class UptimeStateTests(unittest.TestCase):
         ):
             with self.subTest(field=field, value=value):
                 malformed = copy.deepcopy(valid)
-                malformed["endpoints"][0][field] = value
+                malformed["endpoints"][0]["targetKey" if field == "url" else field] = value
                 with self.assertRaises(HttpError):
                     uptime.parse_report(json.dumps(malformed).encode())
         with self.assertRaises(HttpError):
@@ -264,7 +274,11 @@ class UptimeProbeTests(unittest.IsolatedAsyncioTestCase):
             await uptime.carry_snapshots(self.client, directory)
             self.assertEqual((directory / "inventory.js").read_text(), "window.AI4IA_INVENTORY = null;\n")
             self.assertIn("snapshot unavailable", logs.getvalue())
-            self.assertIn('"total": 1', (directory / "status.js").read_text())
+            carried = (directory / "status.js").read_text()
+            # Without a matching inventory, resource counts are unknown, never zero or stale.
+            self.assertIn('"total": null', carried)
+            self.assertIn('"healthy": null', carried)
+            self.assertIn('"endpointsTot": 4', carried)
 
     async def test_azure_publisher_carries_history_without_running_health_probes(self):
         current = report()
@@ -398,14 +412,15 @@ class UptimeTransportTests(unittest.IsolatedAsyncioTestCase):
 
 class UptimeWorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "uptime.yml").read_text())
+        self.caller = yaml.safe_load((ROOT / ".github" / "workflows" / "uptime.yml").read_text())
+        self.workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "uptime-publish.yml").read_text())
 
     def test_monitor_is_main_only_every_15_minutes_and_has_no_model_authority(self):
-        triggers = self.workflow.get("on", self.workflow.get(True))
+        triggers = self.caller.get("on", self.caller.get(True))
         self.assertEqual(triggers["schedule"], [{"cron": "7,22,37,52 * * * *"}])
         self.assertNotIn("pull_request", triggers)
         self.assertEqual(self.workflow["permissions"], {})
-        self.assertEqual(self.workflow["concurrency"], {"group": "pages", "cancel-in-progress": False})
+        self.assertEqual(self.caller["concurrency"], {"group": "pages", "cancel-in-progress": False})
         observer = self.workflow["jobs"]["observe"]
         self.assertIn("refs/heads/main", observer["if"])
         self.assertEqual(observer["permissions"], {"contents": "read"})
@@ -427,8 +442,9 @@ class UptimeWorkflowTests(unittest.TestCase):
         self.assertEqual(recovery["if"], "needs.observe.outputs.recovered == 'true'")
         self.assertNotIn("exit 1", recovery["run"])
         page_workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "pages.yml").read_text())
-        self.assertEqual(page_workflow["concurrency"], self.workflow["concurrency"])
-        names = [step["name"] for step in page_workflow["jobs"]["build"]["steps"]]
+        self.assertEqual(page_workflow["concurrency"], self.caller["concurrency"])
+        publisher = yaml.safe_load((ROOT / ".github" / "workflows" / "pages-publish.yml").read_text())
+        names = [step["name"] for step in publisher["jobs"]["build"]["steps"]]
         self.assertLess(names.index("Refresh deployment status snapshot"),
                         names.index("Preserve independently collected uptime observations"))
         self.assertLess(names.index("Preserve independently collected uptime observations"), names.index("Upload site artifact"))
@@ -519,6 +535,119 @@ class UptimePortalTests(unittest.TestCase):
         self.assertIn("10 ms", rendered["cards"])
         self.assertIn("observations current", rendered["freshness"])
         self.assertEqual(rendered["options"], {"cache": "no-store", "credentials": "omit", "redirect": "error"})
+
+    def test_carried_reports_and_renderer_refuse_contradictory_evidence(self):
+        for state in ("up", "down"):
+            valid = report(state, report("down", report("down")))
+            carried = uptime.parse_report(json.dumps(valid).encode())
+            self.assertEqual(carried, valid)
+            rendered = self.render(carried)
+            badge = "ok" if state == "up" else "bad"
+            self.assertEqual(rendered["cards"].count(f'class="badge {badge}"'), 4)
+        for state, reason, status in (
+            ("down", "healthy", 200), ("down", "http_error", 200),
+            ("down", "http_error", 0), ("up", "http_error", 503),
+            ("unknown", "http_error", 200), ("unknown", "http_error", 503),
+        ):
+            with self.subTest(state=state, reason=reason, status=status):
+                current = report(state)
+                current["endpoints"][0].update(reason=reason, httpStatus=status)
+                with self.assertRaises(HttpError):
+                    uptime.parse_report(json.dumps(current).encode())
+                legacy = {**current, "version": 1, "endpoints": [
+                    {**{key: value for key, value in row.items() if key != "targetKey"},
+                     "url": f"https://{'api' if identifier.startswith('api_') else identifier}.example.test{path}"}
+                    for row, (identifier, _, path) in zip(current["endpoints"], uptime.ENDPOINTS, strict=True)
+                ]}
+                with self.assertRaises(HttpError):
+                    uptime.parse_report(json.dumps(legacy).encode())
+                rendered = self.render(current)
+                first = rendered["cards"].split('<div class="card">')[1]
+                self.assertIn('class="badge unknown"', first)
+                self.assertIn("Health not established.", first)
+                self.assertNotIn("Expected anonymous health response.", first)
+                self.assertNotIn("Endpoint returned a non-passing HTTP status.", first)
+        # Valid unknown control: a genuine invalid-response observation is retained and explained.
+        current = report("down")
+        current["endpoints"][0].update(state="unknown", reason="invalid_response", httpStatus=200)
+        carried = uptime.parse_report(json.dumps(current).encode())
+        self.assertEqual(carried, current)
+        first = self.render(carried)["cards"].split('<div class="card">')[1]
+        self.assertIn('class="badge unknown"', first)
+        self.assertIn("The expected health response was not received.", first)
+
+    def test_active_incident_requires_current_consistent_evidence(self):
+        firing = report("down", report("down", report("down")))
+        recovered = report("up", firing)
+        past = "An incident was open at the last recorded observation; its current status is unknown."
+        # Fresh controls: active and recovered claims remain.
+        self.assertEqual(self.render(firing)["cards"].count("Incident active."), 4)
+        self.assertNotIn(past, self.render(firing)["cards"])
+        self.assertEqual(self.render(recovered)["cards"].count("Incident recovered automatically."), 4)
+        # Stale: a valid alerting report 46 minutes later keeps past context only.
+        stale = self.render(firing, advance=46)["cards"]
+        self.assertNotIn("Incident active.", stale)
+        self.assertEqual(stale.count(past), 4)
+        self.assertEqual(stale.count("No current observation."), 4)
+        self.assertNotIn('class="badge bad"', stale)
+        # Inconsistent fresh row: the first card cannot claim an active incident.
+        inconsistent = json.loads(json.dumps(firing))
+        inconsistent["endpoints"][0].update(reason="healthy", httpStatus=200)
+        with self.assertRaises(HttpError):
+            uptime.parse_report(json.dumps(inconsistent).encode())
+        cards = self.render(inconsistent)["cards"].split('<div class="card">')[1:]
+        self.assertNotIn("Incident active.", cards[0])
+        self.assertIn(past, cards[0])
+        self.assertIn("Incident active.", cards[1])
+
+    def test_derived_overall_transitions_and_observation_time_are_validated(self):
+        firing = report("down", report("down", report("down")))
+        recovered = report("up", firing)
+        for current, text in ((firing, "Incident active."), (recovered, "Incident recovered automatically.")):
+            with self.subTest(text=text):
+                carried = uptime.parse_report(json.dumps(current).encode())
+                self.assertEqual(carried, current)
+                self.assertEqual(self.render(carried)["cards"].count(text), 4)
+        self.assertEqual({row["transition"] for row in firing["endpoints"]}, {"firing"})
+        self.assertEqual(firing["overall"], "down")
+        mixed = report("up")
+        mixed["endpoints"][0].update(state="down", reason="http_error", httpStatus=503, failureStreak=1)
+        mixed["overall"] = uptime.overall_state(mixed["endpoints"])
+        self.assertEqual(uptime.parse_report(json.dumps(mixed).encode()), mixed)
+
+        def overall_up(value):
+            value["overall"] = "up"
+
+        def down_recovered(value):
+            value["endpoints"][0].update(transition="recovered", failureStreak=0, alerting=False)
+
+        def late_observation(value):
+            value["endpoints"][0]["observedAt"] = stamp(NOW + timedelta(seconds=1))
+
+        def firing_without_alert(value):
+            value["endpoints"][0].update(transition="firing", alerting=False)
+
+        def transition_without_history(value):
+            value["history"] = "unavailable"
+
+        for name, mutate, base in (
+            ("overall", overall_up, lambda: report("down")),
+            ("down recovered", down_recovered, lambda: report("down", report("down"))),
+            ("late observation", late_observation, lambda: report("up")),
+            ("firing without alert", firing_without_alert, lambda: report("down", report("down"))),
+            ("transition without history", transition_without_history, lambda: report("up", firing)),
+        ):
+            with self.subTest(name):
+                current = base()
+                uptime.parse_report(json.dumps(current).encode())
+                mutate(current)
+                with self.assertRaises(HttpError):
+                    uptime.parse_report(json.dumps(current).encode())
+                rendered = self.render(current)["cards"]
+                self.assertNotIn("Incident recovered automatically.", rendered)
+                if name == "late observation":
+                    first = rendered.split('<div class="card">')[1]
+                    self.assertIn('class="badge unknown"', first)
 
     def test_stale_missing_future_failed_and_oversized_reports_are_not_green(self):
         for current, arguments in (

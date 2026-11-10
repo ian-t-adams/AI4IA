@@ -17,7 +17,7 @@ import type {
   SafetySignal,
 } from "@/lib/types";
 import { SAFETY_MAX_SEVERITY_LEVEL } from "@/lib/types";
-import { fetchImageArtifact, fetchVideoArtifact, fetchDocumentArtifact } from "@/lib/api";
+import { fetchImageArtifact, fetchDocumentArtifact } from "@/lib/api";
 import { useSpeechPlayback, type SpeechState } from "@/lib/voice";
 import { ActivityPanel, ExecutionReceiptPanel, WorkflowStepReceiptPanels } from "./ExecutionEvidence";
 import { finalResponseModel, responseModelLabel } from "@/lib/responseModel";
@@ -453,90 +453,28 @@ function ImageFailureView({ attachment }: { attachment: MessageAttachment }) {
   );
 }
 
-// Renders one tool-generated video. Like images, the MP4 bytes live behind an
-// authenticated endpoint, so we fetch the blob, wrap it in an object URL for a
-// <video controls> element, and revoke it on unmount to avoid leaks.
-function VideoAttachmentView({ attachment }: { attachment: MessageAttachment }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    let cancelled = false;
-    fetchVideoArtifact(attachment.id)
-      .then((blob) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [attachment.id]);
-
-  const caption = attachment.prompt?.trim() || "Generated video";
-
-  if (failed) {
-    return (
-      <div style={{ fontSize: "0.8em", color: "var(--fg-muted)", marginTop: 8 }}>
-        (video unavailable)
-      </div>
-    );
-  }
+// Video generation and clip playback are retired. Stored history may still hold a
+// `kind: "video"` attachment; show an inert notice instead of a broken player and
+// make no network request. The stored record and its blob are left untouched.
+function RetiredVideoAttachmentView({ attachment }: { attachment: MessageAttachment }) {
+  const prompt = attachment.prompt?.trim();
   return (
-    <figure style={{ margin: "10px 0 0" }}>
-      {url ? (
-        <video
-          src={url}
-          controls
-          playsInline
-          style={{
-            maxWidth: "100%",
-            borderRadius: 10,
-            border: "1px solid var(--border)",
-            display: "block",
-          }}
-        />
-      ) : (
-        <div
-          aria-label="Loading video"
-          style={{
-            width: "100%",
-            aspectRatio: "16 / 9",
-            maxWidth: 480,
-            borderRadius: 10,
-            border: "1px solid var(--border)",
-            background: "var(--assistant-bubble)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--fg-muted)",
-            fontSize: "0.8em",
-          }}
-        >
-          Generating video…
-        </div>
-      )}
-      <figcaption
-        style={{ fontSize: "0.72em", color: "var(--fg-muted)", marginTop: 4 }}
-      >
-        {caption}
-        {[
-          attachment.model,
-          attachment.size,
-          attachment.durationSeconds
-            ? `${attachment.durationSeconds}s`
-            : null,
-        ]
-          .filter(Boolean)
-          .map((part) => ` · ${part}`)
-          .join("")}
-      </figcaption>
-    </figure>
+    <div
+      role="note"
+      aria-label="Video unavailable"
+      style={{
+        marginTop: 8,
+        padding: "8px 10px",
+        borderRadius: 10,
+        border: "1px dashed var(--border)",
+        color: "var(--fg-muted)",
+        fontSize: "0.8em",
+      }}
+    >
+      <strong>Video unavailable.</strong> Video generation and playback have been
+      removed from AI4IA, so this earlier clip can no longer be played here.
+      {prompt ? <div style={{ marginTop: 4 }}>Requested: {prompt}</div> : null}
+    </div>
   );
 }
 
@@ -772,7 +710,7 @@ function Bubble({
       ) : null}
       {msg.attachments?.map((att) =>
         att.kind === "video" ? (
-          <VideoAttachmentView key={att.id} attachment={att} />
+          <RetiredVideoAttachmentView key={att.id} attachment={att} />
         ) : att.kind === "document" ? (
           <DocumentAttachmentView key={att.id} attachment={att} />
         ) : null,

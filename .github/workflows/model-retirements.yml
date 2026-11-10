@@ -103,8 +103,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          status=0
           python scripts/check-model-availability.py \
-            --retirement-report "$RUNNER_TEMP/model-retirements"
+            --retirement-report "$RUNNER_TEMP/model-retirements" || status=$?
+          case "$status" in
+            0) ;;
+            1) echo "::warning::Retirement report needs attention; see job summary." ;;
+            *) exit "$status" ;;
+          esac
 
       - name: Publish report summary
         if: ${{ always() }}

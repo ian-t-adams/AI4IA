@@ -260,7 +260,7 @@ explicit value `false` allows the deploy job to skip successfully.
 
 The showcase features that default on are individually overridable without a
 code change (`AI4IA_IMAGE_GENERATION_ENABLED`,
-`AI4IA_VIDEO_GENERATION_ENABLED`, `AI4IA_SEARCH_ENABLED`,
+`AI4IA_SEARCH_ENABLED`,
 `AI4IA_VOICE_LIVE_ENABLED`, the document-compute flags, official MCP/toolbox/API
 Center, custom tools, Web IQ, and summarization). Use the complete table in the
 [configuration reference](../configuration-reference.md#feature-flags-and-prerequisites)
@@ -723,13 +723,12 @@ for every row; keep failures as failures rather than converting them to notes.
 | BYO MCP (when enabled) | Register a disposable HTTPS MCP test server exposing one no-op tool; invoke it once in interactive chat | Discovery exposes one namespaced tool; the invocation is held for exact-argument approval before dispatch | Delete the MCP registration and its Key Vault secret |
 | Web search (when enabled) | One query for a stable public fact with a source requirement | One bounded result set with source links; invocation approval follows current policy | Delete the test session |
 | Image (when enabled) | One lowest-supported-size image: `solid blue square, no text` | One completed artifact owned by the operator; usage entry records the attempt | Delete the generated artifact |
-| Video (when enabled) | One shortest-supported-duration clip: `solid blue frame, no text or audio` | One completed artifact owned by the operator; an explicit provider failure is a failed acceptance result | Delete the generated artifact |
 | Azure OpenAI Voice Live | One session capped at 30 seconds; say `first release voice check`; stop immediately after transcript | Authenticated WebSocket succeeds and transcript contains the phrase | End and delete the test session; retain no audio |
 | Speech Voice Live (when enabled) | Repeat the same 30-second fixture with provider explicitly set to `speech_voice_live` | Provider switch is visible; authenticated WebSocket succeeds; transcript contains the phrase | End and delete the test session; retain no audio |
 | Admin | Open one usage rollup and one resource panel as the configured admin; repeat as a non-admin | Admin succeeds; non-admin receives the expected denial | None; read-only |
 
 Use one UUID per run so cleanup can be proved with a negative lookup. Stop after
-the first unexpected paid-operation result; do not fan out image/video/voice
+the first unexpected paid-operation result; do not fan out image/voice
 retries while diagnosing. The table deliberately has no checked boxes because
 the repository cannot truthfully claim live acceptance from static CI.
 

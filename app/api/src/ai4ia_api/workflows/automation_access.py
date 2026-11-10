@@ -24,8 +24,9 @@ from ..request_constraints import automatic_memory_allowed, tools_allowed
 from ..websearch.contracts import WEBIQ_TOOL_NAMES
 from .automation_common import AutomationError, AutomationModel, ExecutionLimits, digest, json_bytes
 from .automation_models import FrozenWorkflow, WorkflowCheckpoint
-from .models import Workflow
+from .models import Workflow, WorkflowValidationError
 from .monetary_profile import require_capped_profile
+from .service import validate_workflow_execution_tools
 
 
 class WorkflowSelection(AutomationModel):
@@ -58,6 +59,13 @@ class WorkflowAccess:
     def __init__(self, state: Any, publications: PublicationService | None = None) -> None:
         self.state = state
         self.publications = publications
+
+    @staticmethod
+    def require_current_tools(workflow: Workflow, agents: AgentCatalog) -> None:
+        try:
+            validate_workflow_execution_tools(workflow, agents)
+        except WorkflowValidationError as exc:
+            raise AutomationError("retired_tool", str(exc), status=422) from exc
 
     async def actor(self, owner: str, user: AuthenticatedUser | None) -> EffectivePolicy:
         return (
@@ -127,6 +135,7 @@ class WorkflowAccess:
         self, actor: EffectivePolicy, workflow: Workflow, agents: AgentCatalog, index: int, *,
         session_id: str, documents: list[str], nonce: str, safe_only: bool,
     ) -> ResolvedSurface:
+        self.require_current_tools(workflow, agents)
         step = workflow.steps[index]
         target = agents.get(step.agent)
         if target is None or not target.enabled or target.links:
@@ -212,6 +221,7 @@ class WorkflowAccess:
                 "digest": digest(workflow.model_dump(mode="json")),
                 "agentsDigest": digest(agents.model_dump(mode="json")),
             }
+        self.require_current_tools(workflow, agents)
         require_capped_profile(workflow, agents, selection.documentIds, limits)
         deployment = self.state.catalog.resolve_deployment(
             selection.model, region=selection.region, data_zone=selection.dataZone, policy_filter=False,
@@ -265,6 +275,7 @@ class WorkflowAccess:
         return bundle
 
     async def recheck(self, bundle: FrozenWorkflow, *, user: AuthenticatedUser | None) -> EffectivePolicy:
+        self.require_current_tools(bundle.workflow, bundle.agents)
         owner = bundle.executionOwnerId
         actor = await self.actor(owner, user)
         if environment_hash(self.state) != bundle.environmentDigest:

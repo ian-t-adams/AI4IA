@@ -41,7 +41,6 @@ from .photo_avatars.models import PhotoAvatarError
 from .publishing.models import PublicationError
 from .publishing.service import PublicationService
 from .images.artifacts import ImageArtifactStore, build_image_blob_store
-from .videos.artifacts import VideoArtifactStore, build_video_blob_store
 from .docprocessing.artifacts import (
     DocumentArtifactStore,
     build_document_artifact_blob_store,
@@ -89,7 +88,6 @@ from .routers import realtime as realtime_router
 from .routers import sessions as sessions_router
 from .routers import tools as tools_router
 from .routers import usage as usage_router
-from .routers import videos as videos_router
 from .routers import voice as voice_router
 from .sessions.factory import build_session_repository
 from .sessions.repository import SessionNotFoundError
@@ -378,10 +376,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # image_blob_account_url is set; an in-memory store locally/in tests.
         # Independent of the document library (image generation ships live).
         app.state.image_artifacts = ImageArtifactStore(build_image_blob_store(settings))
-        # Durable store for tool-generated videos. Same
-        # shared-instance rationale as images; durable AzureBlobStore when
-        # video_blob_account_url is set, else an in-memory store.
-        app.state.video_artifacts = VideoArtifactStore(build_video_blob_store(settings))
         # Custom photo avatars (default OFF). None while the flag is off, so every
         # route except /config answers 404 and no provider client, store or Blob
         # container is constructed.
@@ -503,7 +497,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ("session_repo", "close", "session repo"),
                 ("document_library", "close", "document library"),
                 ("image_artifacts", "close", "image artifact store"),
-                ("video_artifacts", "close", "video artifact store"),
                 ("photo_avatars", "close", "photo avatar service"),
                 ("document_artifacts", "close", "document artifact store"),
                 ("inline_attachment_store", "close", "inline attachment store"),
@@ -690,7 +683,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(decisions_router.router)
     app.include_router(images_router.router)
     app.include_router(inspector_router.router)
-    app.include_router(videos_router.router)
     app.include_router(photo_avatars_router.router)
     app.include_router(docprocessing_router.router)
     app.include_router(library_router.router)

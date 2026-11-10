@@ -218,7 +218,6 @@ def test_is_safe_tool_name_accepts_every_current_builtin_and_synthetic_name():
         "process_document",
         "analyze_attachment",
         "generate_image",
-        "generate_video",
         "recall_memory",
         "delegate_to_agent",
     ):

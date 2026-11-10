@@ -213,7 +213,7 @@ jobs:
       - name: Run anonymous uptime controls
         run: |
           set -euo pipefail
-          python3 -m unittest scripts.tests.test_uptime scripts.tests.test_http_dependencies
+          python3 -m unittest scripts.tests.test_uptime scripts.tests.test_http_dependencies scripts.tests.test_public_status
 
       - name: Run subscription preflight unit tests
         run: |

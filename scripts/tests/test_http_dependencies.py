@@ -28,7 +28,7 @@ def synthetic_lock(*packages: dict) -> dict:
 
 class HttpDependencyTests(unittest.TestCase):
     def test_publishers_install_the_same_runtime_before_network_commands(self):
-        for filename, job in (("uptime.yml", "observe"), ("pages.yml", "build")):
+        for filename, job in (("uptime-publish.yml", "observe"), ("pages-publish.yml", "build")):
             document = yaml.safe_load((ROOT / ".github" / "workflows" / filename).read_text())
             steps = document["jobs"][job]["steps"]
             install = [index for index, step in enumerate(steps)

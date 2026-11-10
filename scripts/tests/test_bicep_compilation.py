@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 from scripts._json_transport import TRANSPORTS
+from scripts._private_metadata import MetadataEvaluator
 from scripts.tests._production_fixture import production_document
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -720,7 +721,6 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         for parameter, env_name in (
             ("imageGenerationEnabled", "AI4IA_IMAGE_GENERATION_ENABLED"),
             ("imageEditingEnabled", "AI4IA_IMAGE_EDITING_ENABLED"),
-            ("videoGenerationEnabled", "AI4IA_VIDEO_GENERATION_ENABLED"),
         ):
             self.assertFalse(self.template["parameters"][parameter]["defaultValue"])
             self.assertEqual(
@@ -732,6 +732,23 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             )
         self.assertEqual(api["variables"].get("mediaFeatureEnv"), expected)
         self.assertIn("variables('mediaFeatureEnv')", api["variables"]["apiEnv"])
+
+    def test_video_generation_and_clip_playback_emit_no_configuration(self) -> None:
+        module = self.template["resources"]["api"]["properties"]
+        api = module["template"]
+        data = self.template["resources"]["data"]["properties"]["template"]
+        for name in ("videoGenerationEnabled", "legacyVideoBlobAccountUrl", "legacyVideoBlobContainer"):
+            self.assertNotIn(name, self.template["parameters"])
+        for name in ("videoGenerationEnabled", "videoBlobAccountUrl", "videoBlobContainer"):
+            self.assertNotIn(name, api["parameters"])
+            self.assertNotIn(name, module["parameters"])
+        self.assertNotIn("videoEnv", api["variables"])
+        compiled = json.dumps(self.template)
+        for env_name in ("AI4IA_VIDEO_BLOB_ACCOUNT_URL", "AI4IA_VIDEO_BLOB_CONTAINER", "AI4IA_VIDEO_GENERATION_ENABLED"):
+            self.assertNotIn(env_name, compiled)
+        self.assertIn("variables('imageEnv')", api["variables"]["apiEnv"])
+        self.assertNotIn("deployVideoStorage", data["parameters"])
+        self.assertNotIn("videoContainer", data["resources"])
 
     def test_openapi_false_is_emitted_rather_than_treated_as_unset(self) -> None:
         module = self.template["resources"]["api"]["properties"]

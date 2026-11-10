@@ -146,6 +146,68 @@ async function openRunTab(
 }
 
 describe("WorkflowBuilder", () => {
+  it("removes retained unavailable step tools only on request and saves valid selections", async () => {
+    const savedLegacyWorkflow: Workflow = {
+      ...WORKFLOWS[0],
+      steps: [{
+        agent: "helper",
+        instruction: "Summarize: {input}",
+        extraTools: ["generate_video", "calculator", "removed_tool"],
+      }],
+    };
+    mocks.listWorkflows.mockResolvedValue({
+      workflows: [savedLegacyWorkflow],
+      durableAvailable: false,
+    });
+    mocks.updateWorkflow.mockImplementation(async (name, body) => ({
+      ...savedLegacyWorkflow,
+      ...body,
+      name,
+      revision: 6,
+    }));
+    const user = userEvent.setup();
+    render(<WorkflowBuilder agents={AGENTS} runModel={null} onRun={() => {}} />);
+
+    await user.click(await screen.findByRole("button", { name: "Summarize" }));
+    await user.click(screen.getByText("Step tools and capabilities", { selector: "summary" }));
+    const toolPicker = screen.getByRole("group", { name: "Step 1 tools" });
+    expect(within(toolPicker).getByRole("checkbox", { name: "Calculator" })).toBeChecked();
+    expect(within(toolPicker).getByRole("checkbox", { name: "Recall memory" })).not.toBeChecked();
+    expect(within(toolPicker).queryByRole("checkbox", { name: "Generate video" })).toBeNull();
+    expect(within(toolPicker).queryByRole("checkbox", { name: "removed_tool" })).toBeNull();
+    expect(within(toolPicker).getByText("generate_video", { selector: "code" })).toBeVisible();
+    expect(within(toolPicker).getByText("removed_tool", { selector: "code" })).toBeVisible();
+    expect(mocks.updateWorkflow).not.toHaveBeenCalled();
+
+    await user.click(within(toolPicker).getByRole("button", { name: "Remove unavailable tool generate_video from step 1" }));
+    expect(mocks.updateWorkflow).not.toHaveBeenCalled();
+    expect(savedLegacyWorkflow.steps[0].extraTools).toEqual(["generate_video", "calculator", "removed_tool"]);
+    expect(within(toolPicker).getByRole("checkbox", { name: "Calculator" })).toBeChecked();
+    expect(within(toolPicker).getByText("removed_tool", { selector: "code" })).toBeVisible();
+
+    await user.click(within(toolPicker).getByRole("button", { name: "Remove unavailable tool removed_tool from step 1" }));
+    await user.click(within(toolPicker).getByRole("checkbox", { name: "Recall memory" }));
+    expect(within(toolPicker).getByRole("checkbox", { name: "Calculator" })).toBeChecked();
+    expect(within(toolPicker).getByRole("checkbox", { name: "Recall memory" })).toBeChecked();
+    expect(mocks.updateWorkflow).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(mocks.updateWorkflow).toHaveBeenCalledWith(
+        "summarize",
+        expect.objectContaining({
+          steps: [{
+            agent: "helper",
+            instruction: "Summarize: {input}",
+            extraTools: ["calculator", "recall_memory"],
+          }],
+          expectedRevision: 5,
+        }),
+      ),
+    );
+    expect(savedLegacyWorkflow.steps[0].extraTools).toEqual(["generate_video", "calculator", "removed_tool"]);
+  });
+
   it("distinguishes unavailable workflows from an empty saved list and retries", async () => {
     mocks.listWorkflows.mockRejectedValueOnce(new Error("List temporarily unavailable."))
       .mockResolvedValueOnce({ workflows: [], durableAvailable: false });

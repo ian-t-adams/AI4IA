@@ -16,7 +16,8 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-WORKFLOW = REPO / ".github" / "workflows" / "pages.yml"
+WORKFLOW = REPO / ".github" / "workflows" / "pages-publish.yml"
+CALLER = REPO / ".github" / "workflows" / "pages.yml"
 APP_JS = REPO / "site" / "assets" / "app.js"
 STATUS_HTML = REPO / "site" / "status.html"
 INDEX_HTML = REPO / "site" / "index.html"
@@ -83,6 +84,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
         health_source: dict | None = None,
         resources: list[dict] | None = None,
         endpoints: list[dict] | None = None,
+        inventory_generated_at: str | None = "2026-08-08T11:00:00Z",
     ) -> dict[str, str]:
         app_path = json.dumps(str(APP_JS))
         health_source_json = json.dumps(
@@ -127,6 +129,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
             healthSource: {health_source_json}
           }},
           AI4IA_INVENTORY: {{
+            generatedAt: {json.dumps(inventory_generated_at)},
             resources: {resources_json}
           }},
           matchMedia: () => ({{ matches: false }})
@@ -316,18 +319,19 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertNotIn("live health", public_copy)
         self.assertNotIn("live status", public_copy)
 
-    def test_status_page_renders_the_snapshot_resource_group(self) -> None:
+    def test_status_page_omits_the_snapshot_resource_group(self) -> None:
         status = STATUS_HTML.read_text(encoding="utf-8")
         app = APP_JS.read_text(encoding="utf-8")
-        self.assertIn('id="status-resource-group"', status)
+        self.assertNotIn('id="status-resource-group"', status)
         self.assertNotIn("rg-ai4ia-slurmfactory", status)
-        self.assertIn("resourceGroup.textContent = s.resourceGroup", app)
+        self.assertNotIn("s.resourceGroup", app)
 
     def test_status_uses_shared_inventory_without_duplicating_resources(self) -> None:
         rendered = self._render_status()
 
         self.assertIn("Storage", rendered["resources"])
-        self.assertIn("st-one", rendered["resources"])
+        self.assertNotIn("st-one", rendered["resources"])
+        self.assertNotIn("eastus", rendered["resources"])
         self.assertIn("1", rendered["stats"])
 
     def test_status_surfaces_a_resource_health_source_outage(self) -> None:
@@ -358,6 +362,7 @@ class PagesStatusRefreshTests(unittest.TestCase):
                     "location": "eastus",
                     "provisioningState": "Succeeded",
                     "availability": "Degraded",
+                    "healthReported": True,
                     "state": "provisioned",
                 }
             ]
@@ -445,8 +450,12 @@ class PagesStatusRefreshTests(unittest.TestCase):
 
     def test_old_snapshots_do_not_imply_api_health_was_observed(self) -> None:
         rendered = self._render_status(endpoints=[
-            {"name": "Web app", "state": "up", "httpStatus": 200},
-            {"name": "Model proxy", "state": "up", "httpStatus": 401},
+            {"name": "Web app", "kind": "ingress", "state": "up", "ok": True,
+             "outcome": "reachable", "httpStatus": 200,
+             "observedAt": "2026-08-08T11:00:00Z"},
+            {"name": "Model proxy", "kind": "ingress", "state": "up", "ok": True,
+             "outcome": "reachable", "httpStatus": 401,
+             "observedAt": "2026-08-08T11:00:00Z"},
         ])
         self.assertIn("2/4", rendered["stats"])
         self.assertIn("Endpoint probes passing", rendered["stats"])
@@ -456,10 +465,45 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn("No observation recorded", rendered["endpoints"])
         self.assertNotIn(">ready</span>", rendered["endpoints"])
 
+    def test_inconsistent_ingress_is_unknown_but_expected_reachability_is_up(self) -> None:
+        rendered = self._render_status(endpoints=[
+            {
+                "name": "Web app", "kind": "ingress", "state": "up", "ok": False,
+                "outcome": "http_error", "httpStatus": 503,
+                "observedAt": "2026-08-08T11:00:00Z",
+            },
+            {
+                "name": "Model gateway", "kind": "ingress", "state": "up", "ok": True,
+                "outcome": "reachable", "httpStatus": 401,
+                "observedAt": "2026-08-08T11:00:00Z",
+            },
+        ])
+        self.assertIn("not established", rendered["endpoints"])
+        self.assertIn("Public ingress returned an expected response.", rendered["endpoints"])
+        self.assertIn("1/4", rendered["stats"])
+
+    def test_api_target_outcomes_use_fixed_explanations_without_private_notes(self) -> None:
+        rendered = self._render_status(endpoints=[
+            {
+                "name": "API liveness", "kind": "liveness", "state": "unknown",
+                "ok": False, "outcome": "private_ingress", "httpStatus": 0,
+                "observedAt": None, "note": "private fixture detail",
+            },
+            {
+                "name": "API readiness", "kind": "readiness", "state": "unknown",
+                "ok": False, "outcome": "auth_required", "httpStatus": 401,
+                "observedAt": "2026-08-08T11:00:00Z", "note": "private fixture detail",
+            },
+        ])
+        self.assertIn("API ingress is private; no public probe was attempted.", rendered["endpoints"])
+        self.assertIn("An authentication challenge prevented API health verification.", rendered["endpoints"])
+        self.assertNotIn("private fixture detail", rendered["endpoints"])
+        self.assertIn("0/2", rendered["stats"])
+
     def test_api_health_cards_require_positive_evidence_and_display_timing(self) -> None:
         ready = {
             "name": "API readiness", "kind": "readiness", "state": "up",
-            "httpStatus": 200, "outcome": "healthy",
+            "ok": True, "httpStatus": 200, "outcome": "healthy",
             "observedAt": "2026-08-08T11:00:00Z", "latencyMs": 42,
             "note": "Cached session-store readiness; no model coverage.",
         }
@@ -467,7 +511,8 @@ class PagesStatusRefreshTests(unittest.TestCase):
         self.assertIn(">ready</span>", observed["endpoints"])
         self.assertIn("42 ms", observed["endpoints"])
         self.assertIn("Checked", observed["endpoints"])
-        self.assertIn("no model coverage", observed["endpoints"])
+        self.assertNotIn("no model coverage", observed["endpoints"])
+        self.assertIn("Expected API health response.", observed["endpoints"])
         self.assertIn("1/2", observed["stats"])
         for invalid in (
             {"httpStatus": 401}, {"outcome": "auth_required"},
@@ -482,10 +527,10 @@ class PagesStatusRefreshTests(unittest.TestCase):
             **ready, "note": "<script>unsafe()</script>",
         }])
         self.assertNotIn("<script>unsafe()", escaped["endpoints"])
-        self.assertIn("&lt;script&gt;", escaped["endpoints"])
+        self.assertNotIn("unsafe()", escaped["endpoints"])
 
     def test_api_status_helper_changes_trigger_the_existing_pages_refresh(self) -> None:
-        document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        document = yaml.safe_load(CALLER.read_text(encoding="utf-8"))
         triggers = document.get("on", document.get(True))
         self.assertIn("scripts/status-endpoints.ps1", triggers["push"]["paths"])
         self.assertIn(

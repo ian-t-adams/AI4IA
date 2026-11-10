@@ -230,6 +230,120 @@ describe("ConversationInspector", () => {
     expect(mocks.setSessionToolConsent).not.toHaveBeenCalled();
   });
 
+  it("removes a selected unavailable added tool by exact override PATCH while retaining valid selections", async () => {
+    const saved = snapshot("s1");
+    saved.tools.added = ["generate_video", "calculator"];
+    saved.tools.selected = ["generate_video", "calculator"];
+    saved.tools.effective = ["calculator"];
+    saved.tools.overrides = { added: ["generate_video", "calculator"], removed: [] };
+    mocks.getInspector.mockResolvedValue(saved);
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: [
+        selectableTool("generate_video", {
+          label: "Generate video",
+          available: false,
+          selectable: false,
+          detail: "Capability retired.",
+        }),
+        selectableTool("calculator", { label: "Calculator" }),
+      ],
+      inheritedTools: [],
+    });
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+
+    const retired = await screen.findByRole("checkbox", { name: "Generate video" });
+    const calculator = screen.getByRole("checkbox", { name: "Calculator" });
+    expect(retired).toBeChecked();
+    expect(retired).toBeDisabled();
+    expect(calculator).toBeChecked();
+    expect(calculator).toBeEnabled();
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Remove unavailable added tool generate_video" }));
+    await waitFor(() =>
+      expect(mocks.updateSession).toHaveBeenCalledExactlyOnceWith("s1", {
+        toolOverrides: { added: ["calculator"], removed: [] },
+      }),
+    );
+    expect(saved.tools.added).toEqual(["generate_video", "calculator"]);
+    expect(calculator).toBeChecked();
+    expect(mocks.setSessionToolConsent).not.toHaveBeenCalled();
+  });
+
+  it("removes an unavailable inherited selection by adding only a removal override", async () => {
+    const saved = snapshot("s1");
+    saved.tools.inherited = ["generate_video", "calculator"];
+    delete saved.tools.selected;
+    saved.tools.effective = ["calculator"];
+    saved.tools.overrides = { added: [], removed: [] };
+    mocks.getInspector.mockResolvedValue(saved);
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: [
+        selectableTool("generate_video", {
+          label: "Generate video",
+          available: false,
+          selectable: false,
+        }),
+        selectableTool("calculator", { label: "Calculator" }),
+      ],
+      inheritedTools: ["generate_video", "calculator"],
+    });
+    const user = userEvent.setup();
+    render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+
+    const inherited = await screen.findByRole("checkbox", { name: "Generate video" });
+    expect(inherited).toBeChecked();
+    expect(inherited).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Remove unavailable inherited tool generate_video" }));
+
+    await waitFor(() =>
+      expect(mocks.updateSession).toHaveBeenCalledExactlyOnceWith("s1", {
+        toolOverrides: { added: [], removed: ["generate_video"] },
+      }),
+    );
+    expect(saved.tools.inherited).toEqual(["generate_video", "calculator"]);
+  });
+
+  it("keeps unavailable selections locked when conversation tools are off or the source is read-only", async () => {
+    const saved = snapshot("s1");
+    saved.tools.enabled = false;
+    saved.tools.added = ["generate_video"];
+    saved.tools.selected = ["generate_video"];
+    saved.tools.overrides = { added: ["generate_video"], removed: [] };
+    mocks.getInspector.mockResolvedValue(saved);
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: [selectableTool("generate_video", {
+        label: "Generate video",
+        available: false,
+        selectable: false,
+      })],
+      inheritedTools: [],
+    });
+    const user = userEvent.setup();
+    const { rerender } = render(<ConversationInspector {...props()} />);
+    await user.click(screen.getByRole("button", { name: "Agent & tools" }));
+    expect(await screen.findByRole("button", { name: "Remove unavailable added tool generate_video" })).toBeDisabled();
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+
+    saved.tools.enabled = true;
+    mocks.getToolCatalog.mockResolvedValue({
+      tools: [selectableTool("generate_video", {
+        label: "Generate video",
+        available: false,
+        selectable: false,
+      })],
+      inheritedTools: [],
+      readOnlyTools: ["generate_video"],
+    });
+    rerender(<ConversationInspector {...props()} refreshKey={1} />);
+    await waitFor(() => expect(mocks.getToolCatalog).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: "Remove unavailable added tool generate_video" })).toBeNull();
+    expect(mocks.updateSession).not.toHaveBeenCalled();
+  });
+
   it("bulk edits only eligible search results, retaining hidden, denied and published selections", async () => {
     const user = userEvent.setup();
     mocks.getToolCatalog.mockResolvedValue({

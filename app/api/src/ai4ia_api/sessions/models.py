@@ -65,11 +65,12 @@ class MessageAttachment(BaseModel):
     message text.
 
     ``kind="image"`` is a generated image persisted by the ``generate_image``
-    tool; ``kind="video"`` is a generated MP4 persisted by the ``generate_video``
-    tool; ``kind="document"`` is an over-cap ``process_document`` result persisted
+    tool; ``kind="video"`` is a retired generated MP4 kept only as stored
+    history (no serve endpoint; the web shows it as unavailable);
+    ``kind="document"`` is an over-cap ``process_document`` result persisted
     as markdown. The bytes are NOT inlined — ``id`` references a durable,
     user-scoped blob fetched through the matching authenticated serve endpoint
-    (``GET /api/images/artifacts/{id}``, ``GET /api/videos/artifacts/{id}``, or
+    (``GET /api/images/artifacts/{id}`` or
     ``GET /api/documents/artifacts/{id}``), so a message stays small and the 8 KB
     tool-result cap is never an issue.
     """
@@ -93,7 +94,8 @@ class MessageAttachment(BaseModel):
     priceVersion: str | None = None
     status: str | None = None
     error: str | None = None
-    # Video-only: the requested clip length in seconds.
+    # Retired video-only history: the requested clip length in seconds. Kept so
+    # stored records round-trip unchanged; nothing serves or generates clips.
     durationSeconds: int | None = None
     # Document-only: the source library document's display name. An edited image
     # from a library source also records that document's display name here.

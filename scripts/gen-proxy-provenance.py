@@ -24,7 +24,7 @@ SOURCE_SCOPES = ("Shared", "Shared-parser", "SimpleL7Proxy", "CompanionApp")
 AI4IA_PATCH_REASONS = {
     "Shared-parser/Shared-parser.csproj": (
         "Remove unused runtime packages and update "
-        "Microsoft.Extensions.Logging.Abstractions to 10.0.13 for the parser."
+        "Microsoft.Extensions.Logging.Abstractions to 10.0.14 for the parser."
     ),
     "Shared/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
     "Shared-parser/packages.lock.json": "AI4IA-generated NuGet lock for deterministic restore.",
@@ -110,8 +110,10 @@ AI4IA_PATCH_REASONS = {
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
         "Keep runtime dependencies current, including IdentityModel 8.23.0, "
         "OpenTelemetry 1.20.1, Azure.Storage.Blobs 12.30.1 and Application Insights "
-        "3.2.0; remove unsupported Application Insights 2.x packages and declare "
-        "the OpenTelemetry processor API."
+        "3.2.0; update Azure.Core to 1.64.0 and "
+        "Microsoft.Extensions.Configuration.AzureAppConfiguration to 8.6.1; "
+        "remove unsupported Application Insights 2.x packages and declare the "
+        "OpenTelemetry processor API."
     ),
     "CompanionApp/CompanionApp.csproj": (
         "Drop the embedded resources and content items of the excluded deployment "

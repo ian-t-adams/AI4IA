@@ -108,7 +108,7 @@ separate. User MCP credentials live in Key Vault, with opaque references in Cosm
 
 Chat Completions is the agent loop's internal shape. Adapters translate it to
 Responses or Anthropic Messages where the catalog requires those protocols.
-Provider-native image/video paths stay catalog-bound through the same gateway.
+Provider-native image paths stay catalog-bound through the same gateway.
 The default-off `external-claude` target is a separate account/tenant, not a
 second application stack. It still uses the existing proxy and APIM. Only those
 routes use a source UAMI assertion and fixed target-tenant token exchange;

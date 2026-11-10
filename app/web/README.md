@@ -1,7 +1,7 @@
 # app/web — AI4IA Web
 
 Next.js App Router frontend for chat, agents, workflows, voice, document library,
-generated media, MCP server management, and the admin dashboard.
+image output, MCP server management, and the admin dashboard.
 
 ## Responsibilities
 
@@ -14,10 +14,10 @@ generated media, MCP server management, and the admin dashboard.
   settings apply to the next connection; the API injects the selected agent or
   conversation prompt and governed tools.
 - Library/media: cross-session document library, ingest status, sharing,
-  annotations, save/forget memory actions, audio/video player, and citation
+  annotations, save/forget memory actions, audio/video playback, and citation
   deep-links.
-- Tools: agent builder, workflow builder, imagery/video output rendering, custom
-  MCP server management, and Web IQ tools when enabled server-side.
+- Tools: agent builder, workflow builder, image output rendering, custom MCP
+  server management, and Web IQ tools when enabled server-side.
 - Admin: usage rollups and Azure Monitor resource panels, hidden from non-admins
   in the UI and enforced by the API, plus fixed-KQL operations/security panels
   with explicit source, freshness, partial, stale, and unavailable states.

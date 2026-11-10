@@ -9,7 +9,7 @@ at **<https://ian-t-adams.github.io/AI4IA/>**.
 
 | Page | What it shows |
 | --- | --- |
-| `index.html` | Purpose, capabilities, technology stack and live environment facts. |
+| `index.html` | Purpose, capabilities, technology stack and generic deployment design. |
 | `status.html` | 15-minute anonymous uptime observations and a separate twice-daily Azure deployment snapshot. |
 | `architecture.html` | Diagrams: request flow, deployment topology, identity/RBAC, MCP planes, chat-turn sequence. |
 | `services.html` | Every Azure service AI4IA deploys, why it exists, its IaC module and RBAC. |
@@ -35,7 +35,7 @@ site/
     services.js     Azure service catalogue                 (hand-maintained)
     requirements.js IaC modules, RBAC, packages             (hand-maintained)
     docs.js         documentation index                     (generated)
-    inventory.js    timestamped resource inventory          (generated)
+    inventory.js    timestamped generic service inventory   (generated; unobserved seed)
     status.js       timestamped health snapshot             (generated)
     uptime.json     anonymous uptime and incident counters  (generated; seed is unobserved)
 ```
@@ -55,7 +55,7 @@ site/
   Run the snapshot with an `az login` that can read the subscription:
 
   ```powershell
-  ./scripts/status-snapshot.ps1
+  ./scripts/status-snapshot.ps1 -Public
   ```
 
   Direct API checks use `AZURE_API_URL` from the selected azd environment or
@@ -79,6 +79,21 @@ site/
   republished healthy seed. Historical snapshots without API observations show
   unknown coverage.
 
+  The public projection requires timestamped, consistent state/status/outcome
+  evidence before counting an endpoint as passing or down. Contradictions become
+  unknown with a generic invalid-response explanation; summary counts and rendered
+  cards use the same evidence rules. Ingress reachability includes 2xx/3xx and
+  401/403, but API health challenges and redirects remain unknown.
+  Resource availability is counted as healthy only with an explicit Resource
+  Health report; an uncorroborated Available value remains unknown/provisioned.
+  Inventory and status are reconciled as a pair with the same `generatedAt`:
+  resource summary counts are derived from the projected inventory, and positive
+  health also requires an available Resource Health source. A missing or
+  mismatched pair publishes null (unknown) counts, never zero or healthy.
+  Availability signals from a stale, mismatched or unchecked pair, including
+  failures, are shown as unknown rather than as a current outage; independently
+  reported provisioning failures (Failed/Canceled) are retained.
+
   Liveness covers the process only. Readiness covers the API's cached canonical
   session-store check (success cache up to 15 seconds), not Search, user
   authentication or model/gateway traffic. These probes do not perform inference
@@ -92,8 +107,11 @@ site/
   expected live/ready JSON are checked without authentication, model calls or
   user data writes. Three consecutive failures or unknown observations open an
   incident; only the new incident alerts, and a passing check recovers
-  automatically. Missing history never blocks new probes. The report contains
-  only public endpoint metadata and bounded counters, not response bodies,
+  automatically. Missing history never blocks new probes. An incident is shown
+  as active only with current, consistent evidence; a stale report keeps it as
+  last-observed context with unknown current status. The report contains
+  only generic service identifiers, timing, fixed outcomes, opaque target-continuity
+  hashes and bounded counters, not endpoint URLs, response bodies,
   exception text, credentials or user identifiers.
 
   The page refreshes its report once per minute and marks evidence older than
@@ -131,3 +149,48 @@ queries. It shares the Pages publisher lock and preserves the last published
 Azure snapshot's original timestamp (or shows unavailable if it cannot be
 retrieved). The twice-daily publisher carries forward the uptime report, so
 neither cadence silently overwrites the other's evidence.
+
+## Public privacy boundary
+
+Both entry workflows pass existing repository variables as explicit
+`workflow_call` secrets to local publisher workflows. This masks configuration
+before the runner displays step inputs/environment, including Azure login.
+There is no new credential, role, variable migration, schedule or identity.
+Azure CLI login output is disabled. Reader errors expose only fixed diagnostics,
+not resource identifiers or provider response text.
+
+[`scripts/public_status.py`](../scripts/public_status.py) reconstructs public
+inventory and health from allowlisted types, labels, states, numbers and dates.
+Names, IDs, regions, suffixes, backend URLs and arbitrary provider text never
+cross this projection. The snapshot's `-Public` mode passes observations through
+stdin in memory before writing site files. Private/operator output remains
+available without `-Public`; an explicit output directory **outside `site/`**
+is required (linked ancestors and case variants are refused before discovery;
+the script requires PowerShell 7), and do
+not upload those diagnostics to public Actions artifacts or logs.
+
+The uptime publisher reprojects even old detailed snapshots before carrying
+them forward. Invalid or unavailable snapshots become explicitly unavailable,
+never a checked-in healthy fallback. Contradictory uptime state/reason/status
+evidence is rejected, including during legacy migration. Carried reports must
+also keep the derived overall state, feasible transition/alerting combinations
+and observation times no later than the report time; valid incident
+counters and recovery history remain unchanged. Version-1 uptime histories are migrated to
+version 2 without publishing their URLs: a full SHA-256 target binding preserves
+incident continuity and detects target changes. This is pseudonymization, not
+proof that a guessed hostname cannot be recognized. Counters and original
+observation timestamps survive; no new observation is invented.
+
+Both publishers run `python -m scripts.public_status --check-site site` before
+upload. It verifies canonical projected snapshot/report shapes and pairing, and
+scans textual site artifacts (including CSS and SVG) for Azure IDs/origins and known precise deployment-region labels.
+Only fixed public UUID constants used by Mermaid/RFC namespaces are exempt;
+vendor files are not broadly skipped. Generic architecture, service purposes,
+setup/RBAC guidance and the normal public application link remain available.
+
+This source change is not a live release or erasure of already public information.
+Previously published Pages versions, workflow logs/artifacts, Git history,
+third-party caches, and deployment-specific catalog/source/operator documentation
+elsewhere in this public repository may still expose infrastructure details.
+Removing or restricting that separate evidence needs a separately reviewed scope;
+identifiers are not credentials, and obscuring them does not replace access controls.

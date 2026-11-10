@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Generate the timestamped status/health + resource-inventory data that the self-documenting
@@ -36,13 +37,19 @@
   tagged azd-service-name=api. Unresolved targets remain explicitly unknown.
 
 .PARAMETER OutDir
-  Where the .js data files are written (default: site/data next to this repo).
+  Where the .js data files are written. Public output defaults to site/data.
+  Private output requires an explicit path outside site, with no linked ancestors.
+
+.PARAMETER Public
+  Project generic public service observations before writing any file. Required for
+  Pages publication. Without this switch, use an OutDir outside site/ for private
+  operator diagnostics; never upload those files to a public artifact.
 
 .EXAMPLE
-  ./scripts/status-snapshot.ps1
+  ./scripts/status-snapshot.ps1 -Public
 
 .EXAMPLE
-  ./scripts/status-snapshot.ps1 -Subscription <id> -ResourceGroup rg-ai4ia-<env>
+  ./scripts/status-snapshot.ps1 -OutDir <private-directory> -Subscription <id> -ResourceGroup rg-ai4ia-<env>
 #>
 [CmdletBinding()]
 param(
@@ -51,12 +58,37 @@ param(
     [string] $WebUrl        = '',
     [string] $ProxyUrl      = '',
     [string] $ApiUrl        = '',
+    [switch] $Public,
     [string] $OutDir        = ([System.IO.Path]::Combine(
         (Split-Path -Parent $PSScriptRoot), 'site', 'data'
     ))
 )
 
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if (-not $Public) {
+    if (-not $PSBoundParameters.ContainsKey('OutDir') -or [string]::IsNullOrWhiteSpace($OutDir)) {
+        throw 'Private snapshots require an explicit OutDir outside the public site tree, or use -Public.'
+    }
+    $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
+    $siteRoot = [System.IO.Path]::Combine($repoRoot, 'site')
+    # Conservative on every OS: case-insensitive filesystems are not limited to Windows.
+    $comparison = [StringComparison]::OrdinalIgnoreCase
+    if ($OutDir.Equals($siteRoot, $comparison) -or
+        $OutDir.StartsWith($siteRoot + [System.IO.Path]::DirectorySeparatorChar, $comparison)) {
+        throw 'Private snapshots cannot be written inside the public site tree.'
+    }
+    $ancestor = $OutDir
+    while ($ancestor) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -Force
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                throw 'Private snapshot destinations cannot have linked ancestors.'
+            }
+        }
+        $ancestor = Split-Path -Parent $ancestor
+    }
+}
 $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 . (Join-Path $PSScriptRoot 'status-endpoints.ps1')
 
@@ -68,8 +100,6 @@ $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 # points at". That is what makes this script correct in a new tenant or
 # subscription with no edits -- and what stops it from quietly snapshotting a
 # previous tenant's stack after a move.
-$repoRoot = Split-Path -Parent $PSScriptRoot
-
 function Get-AzdEnvValue {
     param([Parameter(Mandatory)][string] $Name)
 
@@ -105,7 +135,7 @@ if (-not $WebUrl)   { $WebUrl   = Get-AzdEnvValue 'AZURE_WEB_URL' }
 if (-not $ProxyUrl) { $ProxyUrl = Get-AzdEnvValue 'AZURE_PROXY_URL' }
 if (-not $ApiUrl)   { $ApiUrl   = Get-AzdEnvValue 'AZURE_API_URL' }
 
-Write-Host "Target: subscription $Subscription / resource group $ResourceGroup" -ForegroundColor Cyan
+Write-Host 'Resolving deployment observations' -ForegroundColor Cyan
 
 # --- Friendly labels + logical grouping for each Azure resource type. Keeps the
 #     status page human-readable and drives the per-group layout on the site. ---
@@ -139,17 +169,18 @@ function Resolve-Type([string]$t) {
     return @{ label = $t; group = 'Other' }
 }
 
-Write-Host "Setting subscription $Subscription" -ForegroundColor Cyan
-az account set --subscription $Subscription | Out-Null
+$null = @(az account set --subscription $Subscription 2>&1)
+if ($LASTEXITCODE -ne 0) { throw 'Could not select the configured snapshot subscription.' }
 
-$graphExt = az extension list --query "[?name=='resource-graph'].name" -o tsv --only-show-errors
+$graphExt = az extension list --query "[?name=='resource-graph'].name" -o tsv --only-show-errors 2>$null
 if (-not $graphExt) {
     Write-Host 'Installing resource-graph extension...' -ForegroundColor Yellow
-    az extension add -n resource-graph -y | Out-Null
+    $null = @(az extension add -n resource-graph -y 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the Resource Graph reader.' }
 }
 
 # --- 1) Authoritative inventory via Resource Graph ---
-Write-Host "Querying Resource Graph inventory for $ResourceGroup" -ForegroundColor Cyan
+Write-Host 'Querying Resource Graph inventory' -ForegroundColor Cyan
 # coalesce provisioningState with `state`: Postgres flexible servers (and a few other
 # providers) report readiness under properties.state, not properties.provisioningState.
 $invKql = "Resources | where resourceGroup =~ '$ResourceGroup' | project id, name, type, location, prov=tostring(coalesce(properties.provisioningState, properties.state)), service=tostring(tags['azd-service-name']), ingressFqdn=tostring(properties.configuration.ingress.fqdn), ingressExternal=tostring(properties.configuration.ingress.external)"
@@ -162,7 +193,7 @@ try {
     $invRaw = ($invOutput -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
 }
 catch {
-    throw "Resource Graph inventory query returned malformed JSON: $($_.Exception.Message)"
+    throw 'Resource Graph inventory query returned malformed JSON.'
 }
 $dataProperty = $invRaw.PSObject.Properties['data']
 if (-not $dataProperty) {
@@ -172,7 +203,7 @@ if ($invRaw.data -isnot [System.Array]) {
     throw 'Resource Graph inventory response data must be an array.'
 }
 if ($invRaw.data.Count -eq 0) {
-    throw "Resource Graph returned no resources for configured resource group '$ResourceGroup'; refusing to publish an empty snapshot."
+    throw 'Resource Graph returned no resources; refusing to publish an empty snapshot.'
 }
 $invalidResources = @($invRaw.data | Where-Object {
     [string]::IsNullOrWhiteSpace($_.id) -or
@@ -216,7 +247,7 @@ if ($providerExitCode -ne 0) {
             } elseif ($providerState -ieq 'Registering') {
                 'still registering'
             } else {
-                "in state '$providerState'"
+                'in an unrecognized state'
             }
             Write-Warning "Microsoft.ResourceHealth is $providerDescription; availability was not checked."
             $healthSource.note = "Microsoft.ResourceHealth is $providerDescription; availability was not checked."
@@ -245,7 +276,7 @@ if ($providerExitCode -ne 0) {
                     "Resource Health query returned $($health.Count) availability state(s)."
                 }
             } catch {
-                Write-Warning "Resource Health query failed (continuing without it): $($_.Exception.Message)"
+                Write-Warning 'Resource Health query failed; availability was not checked.'
                 $healthSource.note = 'Azure Resource Health could not be queried; availability was not checked.'
             }
         }
@@ -364,6 +395,21 @@ $status = [ordered]@{
     healthSource  = $healthSource
     summary       = $summary
     endpoints     = $endpoints
+}
+
+if ($Public) {
+    # Private observations cross the public allowlist in memory, never through a site file.
+    $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
+    Push-Location -LiteralPath $repoRoot
+    try {
+        @{ inventory = $inventory; status = $status } | ConvertTo-Json -Depth 10 -Compress |
+            & python -m scripts.public_status --directory $OutDir
+        if ($LASTEXITCODE -ne 0) { throw 'Public snapshot projection failed; publication refused.' }
+    } finally {
+        Pop-Location
+    }
+    Write-Host 'Wrote generic public service observations.' -ForegroundColor Green
+    return
 }
 
 $header = "// AUTO-GENERATED by scripts/status-snapshot.ps1 at $nowIso. Do not edit by hand."

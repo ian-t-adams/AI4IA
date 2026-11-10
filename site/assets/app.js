@@ -147,11 +147,10 @@
     if (envfacts) {
       var e = m.environment;
       var rows = [
-        ["Environment", e.envName + " (" + e.appEnvironment + ")"],
         ["Authentication", e.authProvider],
-        ["Primary region", e.primaryRegion],
-        ["Resource group", e.resourceGroup],
-        ["Subscription", e.subscription],
+        ["Hosting", "Managed Azure services"],
+        ["Routing", "Catalog-driven regional models"],
+        ["Public evidence", "Generic service health; deployment identifiers withheld"],
       ];
       envfacts.innerHTML = rows.map(function (r) {
         return "<tr><td>" + esc(r[0]) + '</td><td class="mono">' + esc(r[1]) + "</td></tr>";
@@ -163,11 +162,8 @@
   function renderStatus() {
     var s = window.AI4IA_STATUS;
     var host = el("status-stats");
-    var resourceGroup = el("status-resource-group");
-    if (resourceGroup && s) resourceGroup.textContent = s.resourceGroup || "unknown";
     if (!host) return;
     if (!s) {
-      if (resourceGroup) resourceGroup.textContent = "unavailable";
       var updated = el("updated");
       if (updated) {
         updated.innerHTML = stateBadge("unavailable", "data unavailable") +
@@ -176,12 +172,11 @@
       renderUnavailable(host, "The deployment summary did not load.");
       renderUnavailable(el("health-source"), "The Resource Health source status did not load.");
       renderUnavailable(el("endpoints"), "Endpoint probe results did not load.");
-      renderUnavailableRow(el("resources-body"), 5, "The Azure resource inventory did not load.");
+      renderUnavailableRow(el("resources-body"), 4, "The Azure service inventory did not load.");
       return;
     }
     renderSnapshotFreshness(el("updated"), s.generatedAt);
 
-    var sum = s.summary;
     var inventory = window.AI4IA_INVENTORY || {};
     var hasInventory = Array.isArray(inventory.resources) || Array.isArray(s.resources);
     var resources = Array.isArray(inventory.resources)
@@ -190,6 +185,9 @@
     var healthSource = s.healthSource || {};
     var healthSourceState = String(healthSource.status || "unknown").toLowerCase();
     var healthSourceAvailable = healthSourceState === "available";
+    // Positive health is trusted only from a successful source in the same snapshot generation.
+    var healthTrusted = healthSourceAvailable && (Array.isArray(inventory.resources)
+      ? inventory.generatedAt === s.generatedAt : Array.isArray(s.resources));
     var healthSourceHost = el("health-source");
     if (healthSourceHost) {
       if (healthSourceAvailable) {
@@ -210,16 +208,27 @@
     //     "Availability: Unknown"; and
     //  2. it keeps the rendering honest even if the generator regresses.
     // Failure states still win -- those are real signals.
-    function effectiveState(r) {
-      if (r.state === "unavailable" || r.state === "degraded") return r.state;
+    // Availability (positive or failure) is current evidence only when Resource Health
+    // reported it in this snapshot generation; a stale or unchecked signal is unknown.
+    // Provisioning failures are independent evidence and still count as degraded.
+    function trustedAvailability(r) {
       var availability = String(r.availability || "").toLowerCase();
+      return r.healthReported === true && healthTrusted ? availability : "unknown";
+    }
+
+    function effectiveState(r) {
+      var availability = trustedAvailability(r);
       if (availability === "unavailable") return "unavailable";
       if (availability === "degraded") return "degraded";
+      if (r.provisioningState === "Failed" || r.provisioningState === "Canceled") return "degraded";
       return availability === "available" ? "healthy" : "provisioned";
     }
 
     function displayAvailability(r) {
       var availability = String(r.availability || "Unknown");
+      if (trustedAvailability(r) === "unknown") {
+        availability = "Unknown";
+      }
       if (!healthSourceAvailable &&
           availability.toLowerCase() === "unknown" &&
           !r.healthReported) {
@@ -241,12 +250,61 @@
       }
     });
     function endpointState(e) {
-      if (e.state === "up" && (e.kind === "liveness" || e.kind === "readiness") &&
-          (e.httpStatus !== 200 || e.outcome !== "healthy" ||
-           !e.observedAt || isNaN(new Date(e.observedAt).getTime()))) {
+      var hasObservation = e.observedAt && !isNaN(new Date(e.observedAt).getTime());
+      if (e.kind === "ingress") {
+        var passingHttp = Number.isInteger(e.httpStatus) &&
+          ((e.httpStatus >= 200 && e.httpStatus < 400) ||
+           e.httpStatus === 401 || e.httpStatus === 403);
+        if (e.state === "up" && e.ok === true && e.outcome === "reachable" &&
+            passingHttp && hasObservation) return "up";
+        if (e.state === "down" && e.ok === false && e.outcome === "http_error" &&
+            Number.isInteger(e.httpStatus) && e.httpStatus >= 100 && e.httpStatus <= 599 &&
+            !passingHttp && hasObservation) return "down";
         return "unknown";
       }
-      return e.state === "up" || e.state === "down" ? e.state : "unknown";
+      if (e.state === "up" && e.ok === true && e.httpStatus === 200 &&
+          e.outcome === "healthy" && hasObservation) return "up";
+      var apiHttpFailure = e.outcome === "http_error" &&
+        Number.isInteger(e.httpStatus) && e.httpStatus >= 100 && e.httpStatus <= 599 &&
+        e.httpStatus !== 200 && !(e.httpStatus >= 300 && e.httpStatus < 400) &&
+        e.httpStatus !== 401 && e.httpStatus !== 403 &&
+        !(e.kind === "readiness" && e.httpStatus === 503);
+      if (e.state === "down" && e.ok === false &&
+          (apiHttpFailure ||
+           (e.kind === "readiness" && e.outcome === "persistence_unavailable" && e.httpStatus === 503)) &&
+          hasObservation) return "down";
+      return "unknown";
+    }
+
+    function endpointOutcome(outcome, endpoint) {
+      if (endpointState(endpoint) === "unknown" &&
+          (endpoint.state !== "unknown" ||
+           ["reachable", "healthy", "http_error", "persistence_unavailable"].indexOf(outcome) !== -1)) {
+        return "Endpoint evidence is inconsistent or incomplete; health is not established.";
+      }
+      var messages = {
+        reachable: "Public ingress returned an expected response.",
+        healthy: "Expected API health response.",
+        http_error: "Endpoint returned a non-passing HTTP status.",
+        network_unavailable: "No complete response; health is not established.",
+        target_unresolved: "A public target could not be resolved.",
+        target_ambiguous: "The public API target was ambiguous.",
+        private_ingress: "API ingress is private; no public probe was attempted.",
+        invalid_target: "The public API target was invalid.",
+        auth_required: "An authentication challenge prevented API health verification.",
+        unexpected_redirect: "The API health endpoint redirected; health is not established.",
+        persistence_unavailable: "The canonical session store is unavailable.",
+        invalid_response: "The expected health response was not received.",
+        redirect_rejected: "A redirect was rejected; health is not established.",
+        deadline: "The health request exceeded its deadline.",
+        response_too_large: "The health response exceeded its limit.",
+        invalid_configuration: "The health target is not configured."
+      };
+      if (!endpoint.observedAt && !messages[outcome] &&
+          (endpoint.kind === "liveness" || endpoint.kind === "readiness")) {
+        return "This snapshot does not contain a direct API " + endpoint.kind + " observation.";
+      }
+      return messages[outcome] || "Health is not established.";
     }
 
     var stats = el("status-stats");
@@ -254,22 +312,22 @@
       // "Health reported" is deliberately separate from "Provisioned": most Azure
       // resource types publish no Resource Health availability state at all, and
       // counting those as healthy turned an absent signal into a green number.
-      var healthSourceValue = healthSourceAvailable
+      var healthSourceValue = !hasInventory ? "Unknown" : healthTrusted
         ? counts.healthy
         : (healthSourceState === "unavailable" ? "Unavailable" : "Unknown");
-      var healthSourceLabel = healthSourceAvailable
+      var healthSourceLabel = healthTrusted
         ? "Health reported available"
         : "Resource Health source";
       var provisionedLabel = healthSourceAvailable
         ? "Provisioned, no health signal"
         : "Provisioned, health not checked";
       stats.innerHTML =
-        stat(resources.length || sum.total, "Azure resources") +
+        stat(hasInventory ? resources.length : "Unknown", "Azure resources") +
         stat(healthSourceValue, healthSourceLabel) +
-        stat(counts.provisioned, provisionedLabel) +
+        stat(hasInventory ? counts.provisioned : "Unknown", provisionedLabel) +
         stat(endpoints.filter(function (e) { return endpointState(e) === "up"; }).length +
           "/" + endpoints.length, "Endpoint probes passing") +
-        stat(counts.degraded + counts.unavailable, "Degraded / unavailable");
+        stat(hasInventory ? counts.degraded + counts.unavailable : "Unknown", "Degraded / unavailable");
     }
 
     var eps = el("endpoints");
@@ -282,8 +340,8 @@
         if (typeof e.latencyMs === "number" && isFinite(e.latencyMs) && e.latencyMs >= 0) {
           timing += " · " + e.latencyMs + " ms";
         }
-        return '<div class="card"><h3>' + b + " " + esc(e.name) + '</h3><p class="mono">' + esc(e.url || "") +
-          "</p><p>HTTP " + esc(e.httpStatus || "—") + (e.note ? " · " + esc(e.note) : "") +
+        return '<div class="card"><h3>' + b + " " + esc(e.name) +
+          "</h3><p>" + esc(endpointOutcome(e.outcome, e)) + "</p><p>HTTP " + esc(e.httpStatus || "—") +
           '</p><p class="meta">' + esc(timing) + "</p></div>";
       }).join("");
     }
@@ -291,17 +349,16 @@
     var body = el("resources-body");
     if (body) {
       if (!hasInventory) {
-        renderUnavailableRow(body, 5, "The Azure resource inventory did not load.");
+        renderUnavailableRow(body, 4, "The Azure service inventory did not load.");
         return;
       }
       var groups = groupBy(resources, "group");
       var html = "";
       Object.keys(groups).sort().forEach(function (g) {
-        html += '<tr class="grouprow"><td colspan="5"><strong>' + esc(g) + "</strong></td></tr>";
+        html += '<tr class="grouprow"><td colspan="4"><strong>' + esc(g) + "</strong></td></tr>";
         groups[g].forEach(function (r) {
           html += "<tr><td>" + stateBadge(effectiveState(r)) + "</td><td><strong>" + esc(r.label) +
-            '</strong><br><span class="mono">' + esc(r.name) + "</span></td><td>" + esc(r.location) +
-            '</td><td class="mono">' + esc(r.provisioningState) + "</td><td>" +
+            '</strong></td><td class="mono">' + esc(r.provisioningState) + "</td><td>" +
             esc(displayAvailability(r)) + "</td></tr>";
         });
       });
@@ -330,23 +387,12 @@
     var countFreshnessLabel = freshness.state === "unknown"
       ? "snapshot (freshness unknown)"
       : freshness.label;
-    // Match on BOTH the Azure type and the service's own name pattern. Matching
-    // type alone made every service sharing a type report the same count, so the
-    // web app, API and model proxy each claimed three instances when exactly one
-    // container app matches each of ca-web-*, ca-api-* and ca-proxy-*.
-    // `resourcePattern` uses shell-style `*` plus `{a,b}`/`{region}` placeholders,
-    // both of which become "any run of characters" here -- deliberately loose,
-    // because this is a display hint, not an authorization decision.
-    function patternToRegExp(pattern) {
-      var escaped = String(pattern).replace(/[.+^$()|[\]\\]/g, "\\$&");
-      var body = escaped.replace(/\{[^}]*\}/g, "*").replace(/\*/g, ".*");
-      return new RegExp("^" + body + "$", "i");
-    }
     function snapshotCount(service) {
       var t = String(service.azureType).toLowerCase();
-      var rx = patternToRegExp(service.resourcePattern);
+      // Public inventory deliberately cannot distinguish named app instances.
+      if (t === "microsoft.app/containerapps") return 0;
       return inv.filter(function (r) {
-        return String(r.type).toLowerCase() === t && rx.test(String(r.name));
+        return String(r.type).toLowerCase() === t;
       }).length;
     }
     var groups = groupBy(svc, "group");
@@ -360,7 +406,7 @@
           (n ? ' <span class="tag snapshot-' + esc(freshness.state) + '">' + n + " in " + esc(countFreshnessLabel) + "</span>" : "") + "</h3>" +
           "<p>" + esc(s.summary) + "</p>" +
           '<p class="meta"><strong>Azure type:</strong> <span class="mono">' + esc(s.azureType) + "</span></p>" +
-          '<p class="meta"><strong>IaC:</strong> <span class="mono">' + esc(s.module) + '</span> · <strong>Names:</strong> <span class="mono">' + esc(s.resourcePattern) + "</span></p>" +
+          '<p class="meta"><strong>IaC:</strong> <span class="mono">' + esc(s.module) + "</span></p>" +
           '<p class="meta"><strong>Identity/RBAC:</strong> ' + esc(s.identity) + "</p>" +
           (docs ? '<p class="meta">📚 ' + docs + "</p>" : "") + "</div>";
       });
@@ -453,7 +499,7 @@
     var checked = report && typeof report.checkedAt === "string" ? Date.parse(report.checkedAt) : NaN;
     var age = Date.now() - checked;
     var fresh = Number.isFinite(age) && age >= 0 && age <= UPTIME_STALE_MS;
-    var rows = report && report.version === 1 && Array.isArray(report.endpoints)
+    var rows = report && report.version === 2 && Array.isArray(report.endpoints)
       && report.endpoints.length === UPTIME_ENDPOINTS.length ? report.endpoints : [];
     updated.innerHTML = fresh && rows.length
       ? stateBadge("current", "observations current") + "<span>Checked " + esc(fmtDate(report.checkedAt)) + "</span>"
@@ -468,8 +514,14 @@
       var valid = row && row.id === definition[0] && fresh && Number.isFinite(observed) &&
         observed <= checked && Date.now() - observed <= UPTIME_STALE_MS;
       var state = valid && (row.state === "down" || row.state === "up") ? row.state : "unknown";
-      if (state === "up" && (row.httpStatus !== 200 || row.reason !== "healthy")) state = "unknown";
-      var detail = !fresh ? "No current observation." : !valid ? "Health not established."
+      var consistent = valid && (row.state === "up"
+        ? row.httpStatus === 200 && row.reason === "healthy"
+        : row.state === "down"
+          ? row.reason === "http_error" && Number.isInteger(row.httpStatus) &&
+            row.httpStatus >= 100 && row.httpStatus <= 599 && row.httpStatus !== 200
+          : row.reason !== "healthy" && row.reason !== "http_error");
+      if (!consistent) state = "unknown";
+      var detail = !fresh ? "No current observation." : !valid || !consistent ? "Health not established."
         : row.reason === "healthy" ? "Expected anonymous health response."
         : row.reason === "http_error" ? "Endpoint returned a non-passing HTTP status."
         : row.reason === "invalid_response" ? "The expected health response was not received."
@@ -478,8 +530,15 @@
       if (valid && Number.isInteger(row.latencyMs) && row.latencyMs >= 0 && row.latencyMs <= 30000) {
         timing += " \u00b7 " + row.latencyMs + " ms";
       }
-      var incident = row && row.alerting === true ? " Incident active."
-        : row && row.transition === "recovered" ? " Incident recovered automatically." : "";
+      var alerted = row && row.id === definition[0] && row.state !== "up" &&
+        row.alerting === true && row.failureStreak === 3;
+      // Only current, consistent evidence can assert an incident is active now;
+      // otherwise the last recorded incident is past context with unknown status.
+      var incident = alerted && valid && consistent ? " Incident active."
+        : alerted ? " An incident was open at the last recorded observation; its current status is unknown."
+        : valid && consistent && row.state === "up" && row.transition === "recovered" &&
+          row.alerting === false && report.history !== "unavailable" && report.history !== "stale"
+          ? " Incident recovered automatically." : "";
       return '<div class="card"><h3>' + stateBadge(state) + " " + esc(definition[1]) +
         "</h3><p>" + esc(detail + incident) + '</p><p class="meta">' + esc(timing) + "</p></div>";
     }).join("");

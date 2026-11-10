@@ -69,9 +69,9 @@ flowchart TB
   Proxy -->|"model-API key"| APIM["Shared apim-mcp<br/>Basic v2 + scoped keys + MI"]
   API -. "realtime key" .-> APIM
   API -. "official MCP key" .-> APIM
-  APIM --> EUS2["Foundry<br/>East US 2"]
-  APIM --> SWC["Foundry<br/>Sweden Central"]
-  APIM --> WUS["Foundry<br/>West US"]
+  APIM --> EUS2["Foundry<br/>Primary model region"]
+  APIM --> SWC["Foundry<br/>Regional model parity"]
+  APIM --> WUS["Foundry<br/>Specialist models"]
   APIM --> Toolbox["Curated upstream<br/>MCP servers"]
   API -. "SSRF-guarded" .-> BYO["User BYO<br/>MCP servers"]
           </pre>
@@ -83,8 +83,8 @@ flowchart TB
     <section style="padding-top:6px">
       <div class="container">
         <h2 class="section-title">2 · Deployment topology</h2>
-        <p class="section-sub">The live footprint in <span class="mono">rg-ai4ia-slurmfactory</span> (East US 2 primary),
-          grouped by role. See the <a href="status.html">deployment snapshot</a> for exact resources and health.</p>
+        <p class="section-sub">Logical topology grouped by role, not a map of the hosted environment's names or locations.
+          See the <a href="status.html">deployment snapshot</a> for generic service health.</p>
         <figure class="diagram">
           <pre class="mermaid">
 flowchart LR
@@ -100,10 +100,10 @@ flowchart LR
     ApiCA["ca-api · FastAPI"]
     Acr["ACR"]
   end
-  subgraph AI["Azure AI Foundry (x3 regions)"]
-    F1["East US 2"]
-    F2["Sweden Central"]
-    F3["West US"]
+  subgraph AI["Azure AI Foundry (regional routing)"]
+    F1["Primary models"]
+    F2["Regional parity"]
+    F3["Specialist models"]
   end
   subgraph Data["Data + memory"]
     Cos["Cosmos DB"]

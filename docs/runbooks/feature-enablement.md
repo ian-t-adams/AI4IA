@@ -109,7 +109,6 @@ release quota.
 | Rolling conversation summarization | `AI4IA_AUTO_SUMMARIZATION_ENABLED` | none | `autoSummarizationEnabled` | None beyond the active chat model — once the transcript exceeds the model-derived threshold, older turns fold into a running summary while the full transcript stays in storage/scrollback. Off leaves the manual `/summarize` command working but never auto-injects a summary |
 | Image generation | `AI4IA_IMAGE_GENERATION_ENABLED` | server-advertised imagery controls | `imageGenerationEnabled` | Image-capable deployment and durable media Blob storage outside local; storage presence alone does not enable generation |
 | Image editing | `AI4IA_IMAGE_EDITING_ENABLED` | server-advertised `editingEnabled` from `/api/images/options` | `imageEditingEnabled` | Default `false`. Requires image generation (startup and preprovision refuse otherwise) and its durable storage. Advertisement and execution check both flags, the store and a runtime-enabled `imageEditing` catalog model together. See [Image editing](#image-editing) |
-| Video generation | `AI4IA_VIDEO_GENERATION_ENABLED` | server-advertised tools and inline artifacts | `videoGenerationEnabled` | A runtime-enabled video deployment and durable media Blob storage outside local. The 2026-10-21 subscription read extended Sora 2 to November 2; source re-admission restores the existing routes after rollout, without new capacity. Advertisement and execution still share one gate. Keep the flag on during later runtime retirement so existing clips retain Blob storage (see [Sora 2 runtime retirement](deployment.md#sora-2-runtime-retirement)) |
 | Custom photo avatars | `AI4IA_PHOTO_AVATARS_ENABLED` (+ per-user and live-session limits) | availability from `GET /api/photo-avatars/config` | `photoAvatarsEnabled`, `photoAvatarMaxPerUser`, `photoAvatarMaxCreationsPerDay`, `photoAvatarLiveMaxMinutesPerSession`, `photoAvatarLiveIdleTimeoutSeconds` | Default `false`. Entra, Cosmos, durable Blob and metering outside local. Creation also needs the home account to report the Limited Access capability at runtime. Live avatar sessions also need Speech Voice Live. The approval, the RAI re-approval and the live checks come first: see [below](#custom-photo-avatars) |
 | Custom MCP tools | `AI4IA_CUSTOM_TOOLS_ENABLED` | `CUSTOM_TOOLS_ENABLED` | `customToolsEnabled` | Cosmos, Key Vault URI, Entra auth outside local |
 | Official MCP plane | `AI4IA_OFFICIAL_MCP_ENABLED` | none | `enableOfficialMcp` | MCP-only product/subscription on the shared active Basic v2 APIM + ≥1 server in `infra/mcp-servers.json`; gateway URL + key auto-wired |
@@ -159,7 +158,7 @@ needs justifying. Gated external/destructive tool calls are held until the user
 approves *that call with those exact arguments*, unless an explicit, valid
 session/run consent covers the enabled tool. That covers every MCP tool on
 both the BYO and official planes, **and** the first-party synthetic capabilities
-(`browse_url`, WebIQ searches/suggestions, `run_code`, image/video generation,
+(`browse_url`, WebIQ searches/suggestions, `run_code`, image generation,
 `remember_memory`, `export_document`). Marking a server `trusted` or a tool
 `requireApproval: never` still decides whether the model is offered the tool; it
 no longer decides what leaves the network, because standing trust is precisely
@@ -178,7 +177,7 @@ web result or a previous tool response chooses an outbound call's arguments.
 every use: `browse_url`, `run_code`, and `analyze_attachment`. The model chooses
 the destination or program for the first two; the third sends attachment bytes
 to the external Responses sandbox. Everything else first-party whose destination is fixed by server
-configuration — WebIQ searches/suggestions, image/video generation, `remember_memory`,
+configuration — WebIQ searches/suggestions, image generation, `remember_memory`,
 `export_document` — prompts *only* on a turn that carried untrusted content, so an
 ordinary "search the web for X" or "remember that I prefer Y" is not interrupted.
 That relaxation is declared per tool (`ToolSpec.injection_only_risk`), not
@@ -322,7 +321,7 @@ standard-capacity units, not fixed PTUs, TPM conversions, a dollar reservation
 or current headroom. They must be checked again before provisioning. Do not add
 Swedish replicas or duplicate versions to multiply them.
 Main-stack Bicep always excludes these rows from source accounts. Existing source
-allocations, Sora 2, TTS/realtime, memory and document residency floors are unchanged.
+allocations, TTS/realtime, memory and document residency floors are unchanged.
 
 The model path remains **API -> existing SimpleL7Proxy -> existing shared APIM
 -> exact target Foundry account**. Source system-MI authentication remains
@@ -952,7 +951,8 @@ approval and unattended reconciliation remain separate work.
 
 ### Applying runtime-contract changes
 
-New image/video gates and the Search-region metrics endpoint are emitted by
+New image gates and the
+Search-region metrics endpoint are emitted by
 Bicep. Release these changes through the normal **provision and deploy** path,
 not an API-image-only deployment that skips configuration reconciliation.
 The recorded live observation above belongs to its stated deployed commit;

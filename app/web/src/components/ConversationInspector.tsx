@@ -1076,7 +1076,19 @@ export function ConversationInspector({
                       ? snapshot?.tools.inherited.includes(tool.name) ?? false
                       : draftInheritedTools.includes(tool.name);
                     const selected = sessionId
-                      ? (snapshot?.tools.selected ?? snapshot?.tools.effective)?.includes(tool.name) ?? false
+                      ? (
+                          snapshot?.tools.selected ??
+                          (snapshot
+                            ? [
+                                ...snapshot.tools.inherited.filter(
+                                  (name) => !snapshot.tools.removed.includes(name),
+                                ),
+                                ...snapshot.tools.added.filter(
+                                  (name) => !snapshot.tools.removed.includes(name),
+                                ),
+                              ]
+                            : [])
+                        ).includes(tool.name)
                       : (
                           inherited ||
                           draftDefaults.toolOverrides.added.includes(tool.name)
@@ -1173,6 +1185,16 @@ export function ConversationInspector({
                               Can&apos;t enable for {selectedModelEntry?.displayName ?? "this model"} —
                               the selected model does not support tool calling.
                             </small>
+                          ) : null}
+                          {selected && (!tool.available || !tool.selectable) && !readOnly ? (
+                            <button
+                              type="button"
+                              disabled={!toolsReady || !toolsEnabled || modelToolsUnavailable}
+                              aria-label={`Remove unavailable ${inherited ? "inherited" : "added"} tool ${tool.name}`}
+                              onClick={() => changeToolSelection([tool.name], false)}
+                            >
+                              Remove unavailable selection
+                            </button>
                           ) : null}
                         </span>
                       </div>

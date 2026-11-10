@@ -23,6 +23,8 @@ from __future__ import annotations
 from uuid import uuid4
 from typing import TYPE_CHECKING
 
+from ..agents.agent_catalog import AgentCatalog, AgentSpec
+from ..agents.tool_exec import RETIRED_VIDEO_TOOL
 from ..policy.context import current_binding
 from ..policy.models import PolicyDecision, PolicyError, PolicyRequest
 from ..publishing.store import RecordStore
@@ -51,6 +53,22 @@ from .store import WorkflowStore
 if TYPE_CHECKING:
     from ..publishing.service import PublicationService
 
+
+def validate_workflow_step_execution_tools(
+    step: WorkflowStep, target: AgentSpec | None, index: int,
+) -> None:
+    """Refuse retired generation references without rewriting saved definitions."""
+    if RETIRED_VIDEO_TOOL in (*step.extraTools, *(target.tools if target is not None else ())):
+        raise WorkflowValidationError(
+            f"Step {index + 1}: generate_video is retired. Remove it from the "
+            "step's extra tools or its selected agent, save, and start a new run."
+        )
+
+
+def validate_workflow_execution_tools(workflow: Workflow, composed: AgentCatalog) -> None:
+    """Check every step before admission, not after earlier steps have run."""
+    for index, step in enumerate(workflow.steps):
+        validate_workflow_step_execution_tools(step, composed.get(step.agent), index)
 
 class WorkflowService:
     def __init__(
