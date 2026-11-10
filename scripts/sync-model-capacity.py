@@ -7,8 +7,10 @@ queries the selected subscription's live deployments, quota counters, and
 existing deployment. Bicep selects that value only when
 ``AI4IA_MODEL_CAPACITY_PROFILE=maximum``.
 
-Pool scope is inferred from Azure's own numbers rather than a publisher
-allowlist:
+Legacy pool selection uses the existing numerical rules below. They do not prove
+pool ownership or outside/all-version membership. Planning refuses contradictory
+or nonzero unattributed usage, multiple versions sharing one counter, and
+missing/malformed/continued quota or platform evidence instead of guessing:
 
 * Global pools satisfy ``current across all regions + available == limit``.
 * Regional pools satisfy ``current in region + available == limit``.
@@ -16,6 +18,7 @@ allowlist:
 
 ``--reduce-to-quota`` repairs recorded pools after a quota decrease without
 increasing any deployment, changing pool membership, or going below a baseline.
+Even an apparently healthy recorded pool must pass the same evidence checks.
 The command is read-only unless ``--apply`` is supplied.
 """
 
@@ -29,7 +32,6 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -76,34 +78,56 @@ def _quota_keys(sku: str, model: str) -> list[str]:
     return list(dict.fromkeys(f"{sku_key}|{_normal(candidate)}" for candidate in candidates))
 
 
-def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def index_quota(raw: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise TypeError("Complete quota inventory is required.")
     index: dict[str, dict[str, Any]] = {}
     for item in raw:
-        counter = str((item.get("name") or {}).get("value") or "")
+        if not isinstance(item, dict) or not isinstance(item.get("name"), dict):
+            raise TypeError("Invalid quota counter identity.")
+        counter = item["name"].get("value")
+        if not isinstance(counter, str) or not counter or counter != counter.strip():
+            raise ValueError("Invalid quota counter identity.")
         if counter.count(".") < 2:
             continue
         _publisher, _, remainder = counter.partition(".")
         sku, _, model = remainder.partition(".")
         if not sku or not model:
             continue
+        if any(type(item.get(field)) is not int or item[field] < 0 for field in ("currentValue", "limit")):
+            raise ValueError(f"{counter}: quota currentValue and limit must be known nonnegative integers.")
         entry = {
             "counter": counter,
-            "current": int(float(item.get("currentValue") or 0)),
-            "limit": int(float(item.get("limit") or 0)),
+            "current": item["currentValue"],
+            "limit": item["limit"],
         }
         for key in _quota_keys(sku, model):
-            index.setdefault(key, entry)
+            if key in index:
+                raise ValueError(f"{counter}: duplicate or aliased quota counter evidence.")
+            index[key] = entry
     return index
 
 
 def _platform_index(raw: dict[str, Any]) -> dict[tuple[str, str], int]:
+    if not isinstance(raw, dict) or set(raw) - {"value"} or not isinstance(raw.get("value"), list):
+        raise ValueError("Complete platform capacity inventory is required.")
     indexed: dict[tuple[str, str], int] = {}
-    for item in raw.get("value") or []:
-        properties = item.get("properties") or {}
-        region = _normal(item.get("location"))
-        sku = str(properties.get("skuName") or "")
-        if region and sku:
-            indexed[(region, sku.casefold())] = int(properties.get("availableCapacity") or 0)
+    for item in raw["value"]:
+        if not isinstance(item, dict) or not isinstance(item.get("properties"), dict):
+            raise TypeError("Invalid platform capacity evidence.")
+        properties = item["properties"]
+        location, sku = item.get("location"), properties.get("skuName")
+        available = properties.get("availableCapacity")
+        if (
+            not isinstance(location, str) or not location.strip()
+            or not isinstance(sku, str) or not sku.strip() or sku != sku.strip()
+            or type(available) is not int or available < 0
+        ):
+            raise ValueError("Platform identity and nonnegative integer capacity must be explicit.")
+        key = _normal(location), sku.casefold()
+        if key in indexed:
+            raise ValueError("Duplicate platform capacity identity.")
+        indexed[key] = available
     return indexed
 
 
@@ -165,6 +189,25 @@ def planning_catalog(models: dict[str, Any], live: dict[str, dict[str, int]]) ->
     return {**models, "catalog": catalog}
 
 
+def _validate_counter_versions(
+    models: dict[str, Any], quotas: dict[str, dict[str, dict[str, Any]]],
+) -> None:
+    members: dict[str, set[tuple[str, str, str, str]]] = defaultdict(set)
+    for model in models["catalog"]:
+        if model_target(model) != "source":
+            continue
+        for deployment in model["deployments"]:
+            for key in _quota_keys(deployment["sku"], model["name"]):
+                counter = quotas.get(deployment["region"], {}).get(key)
+                if counter is not None:
+                    members[counter["counter"]].add((
+                        model["format"], model["name"], deployment["version"], deployment["sku"],
+                    ))
+                    break
+    if any(len(identities) != 1 for identities in members.values()):
+        raise ValueError("Multiple model/version identities share a quota counter; planning is unsupported.")
+
+
 def reduce_capacity_to_quota(
     models: dict[str, Any],
     live_by_region: dict[str, dict[str, int]],
@@ -173,6 +216,7 @@ def reduce_capacity_to_quota(
     """Reduce only over-limit recorded pools; retain outside allocation and baselines."""
     models = planning_catalog(models, live_by_region)
     quotas = {region: index_quota(rows) for region, rows in quota_by_region.items()}
+    _validate_counter_versions(models, quotas)
     plan: dict[tuple[str, str, str], int] = {}
     pools: dict[tuple[str, str, str], str] = {}
     diagnostics: list[str] = []
@@ -200,8 +244,6 @@ def reduce_capacity_to_quota(
                 raise ValueError(f"{model['name']} ({sku}, {pool}): quota replicas disagree.")
             counter = observed[0]
             recorded = [int(deployment.get("maxCapacity", deployment["capacity"])) for deployment in deployments]
-            if sum(recorded) <= counter["limit"]:
-                continue
             if pool != "global" and pool not in {
                 f"region:{deployment['region']}" for deployment in deployments
             } | {
@@ -218,7 +260,14 @@ def reduce_capacity_to_quota(
                 current.append(value)
             if counter["current"] < sum(current):
                 raise ValueError(f"{model['name']} ({sku}, {pool}): quota usage contradicts live allocation.")
-            outside = counter["current"] - sum(current)
+            if counter["current"] != sum(current):
+                raise ValueError(
+                    f"{model['name']} ({sku}, {pool}): outside allocation or shared-counter membership "
+                    "is unproven; no changes recorded."
+                )
+            outside = 0
+            if sum(recorded) <= counter["limit"]:
+                continue
             target = counter["limit"] - outside
             baselines = [int(deployment["capacity"]) for deployment in deployments]
             if target < sum(baselines):
@@ -260,6 +309,7 @@ def build_capacity_plan(
         region: index_quota(raw)
         for region, raw in quota_by_region.items()
     }
+    _validate_counter_versions(models, quotas)
     regions = models["regions"]
     active: list[dict[str, Any]] = []
     diagnostics: list[str] = []
@@ -385,6 +435,16 @@ def build_capacity_plan(
                 )
             limit = limits.pop()
             current_total = sum(int(entry["current"]) for entry in members)
+            counters = {(entry["counter"], entry["quotaCurrent"]) for entry in members}
+            if len(counters) != 1:
+                raise ValueError(f"{model} ({sku}, {scope}): quota replicas disagree.")
+            if next(iter(counters))[1] != current_total:
+                raise ValueError(
+                    f"{model} ({sku}, {scope}): outside allocation or shared-counter membership "
+                    "is unproven or contradictory; no changes recorded."
+                )
+            if current_total > limit:
+                raise ValueError(f"{model} ({sku}, {scope}): live allocation exceeds quota; maximum planning refuses.")
             target_total = min(
                 limit,
                 current_total
@@ -477,6 +537,30 @@ def _collect_live(
                 for model in models["catalog"] for d in model["deployments"] if d["region"] == region
             ):
                 raise ValueError("Retained provisioning-disabled deployment planning is unsupported.")
+            expected = [
+                (model, d) for model in models["catalog"] for d in model["deployments"]
+                if d["region"] == region and deployment_name(models, model["name"], d) == name
+            ]
+            if len(expected) != 1:
+                raise ValueError("Unknown or ambiguous deployment allocation; planning is unsupported.")
+            model, deployment = expected[0]
+            expected_id = (
+                f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/"
+                f"Microsoft.CognitiveServices/accounts/{matches[0]['name']}/deployments/{name}"
+            )
+            properties = item.get("properties")
+            native_model = properties.get("model") if isinstance(properties, dict) else None
+            if (
+                item.get("id") != expected_id
+                or not isinstance(properties, dict)
+                or not isinstance(native_model, dict)
+                or any(native_model.get(field) != value for field, value in (
+                    ("format", model["format"]), ("name", model["name"]), ("version", deployment["version"]),
+                ))
+                or properties.get("provisioningState") != "Succeeded"
+                or not isinstance(item.get("sku"), dict) or item["sku"].get("name") != deployment["sku"]
+            ):
+                raise ValueError("Deployment identity/model/SKU/state does not prove its quota allocation.")
             sku = item.get("sku")
             value = sku.get("capacity") if isinstance(sku, dict) else None
             if type(value) is not int or value <= 0:

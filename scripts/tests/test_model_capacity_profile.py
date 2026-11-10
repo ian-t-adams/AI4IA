@@ -186,21 +186,13 @@ class CapacityAllocationTests(unittest.TestCase):
             "data-zone:EU",
         )
 
-    def test_partner_global_pool_is_shared_even_when_counters_look_regional(self) -> None:
-        plan, pools, _ = capacity.build_capacity_plan(
-            _models(),
-            _live("GlobalStandard"),
-            _quota(
-                "GlobalStandard",
-                current=50,
-                limit=300,
-                publisher="AIServices",
-            ),
-            _platform("GlobalStandard", east=250, sweden=250),
-        )
-        self.assertEqual(plan[("model-a", "eastus2", "GlobalStandard")], 150)
-        self.assertEqual(plan[("model-a", "swedencentral", "GlobalStandard")], 150)
-        self.assertEqual(pools[("model-a", "eastus2", "GlobalStandard")], "global")
+    def test_publisher_does_not_override_contradictory_shared_counter_usage(self) -> None:
+        with self.assertRaisesRegex(ValueError, "shared-counter membership"):
+            capacity.build_capacity_plan(
+                _models(), _live("GlobalStandard"),
+                _quota("GlobalStandard", current=50, limit=300, publisher="AIServices"),
+                _platform("GlobalStandard", east=250, sweden=250),
+            )
 
     def test_shared_data_zone_availability_is_counted_once(self) -> None:
         models = _models("DataZoneStandard")
@@ -290,6 +282,11 @@ class SyncStagedMainTests(unittest.TestCase):
                         rows.append(copy.deepcopy(row))
                     elif corruption == "capacity":
                         row["sku"]["capacity"] = True
+                    elif corruption == "outside":
+                        outside = copy.deepcopy(row)
+                        outside["name"] += "-outside"
+                        outside["id"] += "-outside"
+                        rows.append(outside)
                     elif corruption == "continued":
                         return {"value": rows, "nextLink": "unconsumed"}
                 return rows
@@ -340,6 +337,17 @@ class SyncStagedMainTests(unittest.TestCase):
                 models["catalog"].append(candidate)
                 self.assertEqual(self.run_sync(models, apply=apply, reduce=reduce, absent=True), 0)
 
+    def test_provisioned_allocations_require_exact_identity_before_quota_arithmetic(self):
+        for apply in (False, True):
+            for reduce in (False, True):
+                for corruption in ("id", "format", "name", "version", "sku", "state", "duplicate", "capacity", "outside"):
+                    with self.subTest(apply=apply, reduce=reduce, corruption=corruption):
+                        models = _models()
+                        self.assertIsInstance(self.run_sync(
+                            models, apply=apply, reduce=reduce, corruption=corruption,
+                        ), str)
+                self.assertEqual(self.run_sync(_models(), apply=apply, reduce=reduce), 0)
+
     def test_optional_absence_requires_complete_inventory_and_required_rows_refuse(self):
         for apply in (False, True):
             for reduce in (False, True):
@@ -382,12 +390,11 @@ class QuotaReductionTests(unittest.TestCase):
         self.assertEqual(models, before)
 
     def test_outside_allocation_is_not_spent_by_the_reduction(self):
-        plan, _, _ = capacity.reduce_capacity_to_quota(
-            self.models(), _live("GlobalStandard", 500, 500),
-            _quota("GlobalStandard", 1050, 250),
-        )
-        self.assertEqual(sum(plan.values()), 200)
-        self.assertEqual(set(plan.values()), {100})
+        with self.assertRaisesRegex(ValueError, "outside allocation.*unproven"):
+            capacity.reduce_capacity_to_quota(
+                self.models(), _live("GlobalStandard", 500, 500),
+                _quota("GlobalStandard", 1050, 250),
+            )
 
     def test_data_zones_remain_independent_and_healthy_pools_are_untouched(self):
         plan, pools, _ = capacity.reduce_capacity_to_quota(
@@ -421,6 +428,129 @@ class QuotaReductionTests(unittest.TestCase):
                     deployment["maxCapacityPool"] = "unrecognized"
             with self.subTest(change=change), self.assertRaises(ValueError):
                 capacity.reduce_capacity_to_quota(models, live, quota)
+
+
+class SyncCounterSafetyTests(unittest.TestCase):
+    def fixture(self, *, reduce=False, staged=False, outside=True):
+        models = QuotaReductionTests().models() if reduce else _models()
+        if reduce:
+            for d in models["catalog"][0]["deployments"]:
+                d["maxCapacity"] = 80
+        if staged:
+            candidate = copy.deepcopy(models["catalog"][0])
+            candidate.update(name="staged-video", runtimeEnabled=False, provisioningEnabled=False)
+            models["catalog"].append(candidate)
+        live = _live("GlobalStandard", 100, 100) if reduce else _live("GlobalStandard")
+        current = (200 if reduce else 100) + ((20 if reduce else 40) if outside else 0)
+        quota = _quota("GlobalStandard", current, 170, publisher="AIServices")
+        return models, live, quota, _platform("GlobalStandard", 70, 70)
+
+    def run_plan(self, models, live, quota, platform, *, reduce=False):
+        if reduce:
+            return capacity.reduce_capacity_to_quota(models, live, quota)
+        return capacity.build_capacity_plan(models, live, quota, platform)
+
+    def test_outside_allocation_refuses_before_actionable_plan_or_healthy_shortcut(self):
+        for reduce in (False, True):
+            for staged in (False, True):
+                with self.subTest(reduce=reduce, staged=staged):
+                    fixture = self.fixture(reduce=reduce, staged=staged)
+                    original = copy.deepcopy(fixture)
+                    with self.assertRaisesRegex(ValueError, "outside allocation.*unproven"):
+                        self.run_plan(*fixture, reduce=reduce)
+                    self.assertEqual(fixture, original)
+                    models, live, quota, platform = self.fixture(reduce=reduce, staged=staged, outside=False)
+                    plan, _, _ = self.run_plan(models, live, quota, platform, reduce=reduce)
+                    self.assertEqual(sum(plan.values()), 0 if reduce else 170)
+                    # Even a numerically exact outside boundary lacks proven pool membership.
+                    if reduce:
+                        for d in models["catalog"][0]["deployments"]:
+                            d["maxCapacity"] = 75
+                        with self.assertRaisesRegex(ValueError, "outside allocation"):
+                            self.run_plan(models, live, fixture[2], platform, reduce=True)
+
+    def test_dry_run_and_temp_apply_refuse_without_writing_and_zero_outside_control_runs(self):
+        for reduce in (False, True):
+            for staged in (False, True):
+                for apply in (False, True):
+                    for outside in (False, True):
+                        with self.subTest(reduce=reduce, staged=staged, apply=apply, outside=outside):
+                            models, live, quota, platform = self.fixture(reduce=reduce, staged=staged, outside=outside)
+                            with tempfile.TemporaryDirectory() as directory:
+                                catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                                original = json.dumps(models)
+                                catalog.write_text(original, encoding="utf-8")
+                                def azure(*args, quota=quota):
+                                    if args[:2] == ("account", "show"):
+                                        return {"id": SUBSCRIPTION}
+                                    if args[:3] == ("cognitiveservices", "usage", "list"):
+                                        return quota[args[args.index("--location") + 1]]
+                                    raise AssertionError(args)
+                                argv = [
+                                    "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                                    "--environment-name", "example", "--output-plan", str(output),
+                                ]
+                                if apply:
+                                    argv.append("--apply")
+                                if reduce:
+                                    argv.append("--reduce-to-quota")
+                                with (
+                                    patch.object(capacity, "MODELS_FILE", catalog),
+                                    patch.object(capacity, "ROOT", Path(directory)),
+                                    patch.object(capacity, "_collect_live", return_value=live),
+                                    patch.object(capacity, "_collect_platform", return_value=platform),
+                                    patch.object(capacity, "_az_json", side_effect=azure),
+                                    patch.object(sys, "argv", argv),
+                                    contextlib.redirect_stdout(io.StringIO()),
+                                ):
+                                    if outside:
+                                        with self.assertRaisesRegex(ValueError, "outside allocation"):
+                                            capacity.main()
+                                    else:
+                                        self.assertEqual(capacity.main(), 0)
+                                if outside:
+                                    self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                                    self.assertFalse(output.exists())
+                                else:
+                                    self.assertTrue(output.exists())
+
+    def test_quota_current_and_limit_are_known_native_counts_not_defaults(self):
+        for reduce in (False, True):
+            for field in ("currentValue", "limit"):
+                for value in ("missing", None, True, -1, 100.5, "100"):
+                    models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+                    for rows in quota.values():
+                        if value == "missing":
+                            rows[0].pop(field, None)
+                        else:
+                            rows[0][field] = value
+                    with self.subTest(reduce=reduce, field=field, value=value):
+                        with self.assertRaisesRegex(ValueError, "known nonnegative integers"):
+                            self.run_plan(models, live, quota, platform, reduce=reduce)
+
+    def test_duplicate_quota_continuation_and_platform_evidence_are_not_projected_away(self):
+        models, live, quota, platform = self.fixture(outside=False)
+        for region in quota:
+            quota[region].append(copy.deepcopy(quota[region][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate or aliased"):
+            self.run_plan(models, live, quota, platform)
+        with self.assertRaisesRegex(TypeError, "Complete quota"):
+            capacity.index_quota({"value": [], "nextLink": "continued"})
+        for value in (None, True, -1, 70.5, "70"):
+            models, live, quota, platform = self.fixture(outside=False)
+            next(iter(platform.values()))["value"][0]["properties"]["availableCapacity"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "must be explicit"):
+                self.run_plan(models, live, quota, platform)
+        with self.assertRaisesRegex(ValueError, "Complete platform"):
+            capacity._platform_index({"value": [], "nextLink": "continued"})
+
+    def test_versions_cannot_spend_the_same_counter_twice(self):
+        for reduce in (False, True):
+            models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+            models["catalog"][0]["deployments"][1]["version"] = "2"
+            platform[("OpenAI", "model-a", "2")] = copy.deepcopy(platform[("OpenAI", "model-a", "1")])
+            with self.subTest(reduce=reduce), self.assertRaisesRegex(ValueError, "Multiple model/version"):
+                self.run_plan(models, live, quota, platform, reduce=reduce)
 
 
 class CapacityIacTests(unittest.TestCase):

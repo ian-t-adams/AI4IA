@@ -478,6 +478,18 @@ planner never reduces a live deployment; that is not proof that its maximum is a
 safe production reserve policy. Use the read-only evidence report and a separate
 scope review before approving any capacity change.
 
+Both modes refuse nonzero unattributed usage instead of calculating outside
+allocation from a guessed pool. The selected counter's complete, unique native
+integer current/limit evidence must agree with the catalog's validated live
+allocation; missing usage is not zero. Multiple versions sharing a counter are
+unsupported by both planners, rather than receiving separate allocations from
+the same headroom. Unknown deployments or mismatched resource/model/version/SKU/
+state evidence refuse before the live inventory is reduced to capacity numbers.
+Continued/duplicate/invalid quota and platform responses cannot become actionable
+plans. Refusal writes neither the catalog nor a requested plan file, even with
+`--apply`. These are conservative planner limits, not new pool-scope proof or a
+change to nonproduction preflight's existing warning-only quota contract.
+
 When an existing recorded pool exceeds a newly reduced quota, use the separate
 reduction-only mode:
 
@@ -490,8 +502,11 @@ python scripts/sync-model-capacity.py `
 # Review the reductions, then repeat with --apply to record them in source.
 ```
 
-This mode retains each recorded pool, subtracts observed outside allocation,
-and refuses missing/contradictory evidence or a quota below portable baselines.
+This mode retains each recorded pool and requires zero unattributed usage before
+considering even an apparently healthy recorded pool. Outside allocation is
+currently unsupported: a recorded total plus apparent outside allocation exactly
+at the limit is still refused without independent membership evidence. It also
+refuses missing/contradictory evidence or a quota below portable baselines.
 It never increases a live/desired capacity or changes regions, versions, SKUs or
 pool membership. `--apply` edits only the catalog; Azure changes still require
 the normal approved provision. Every subsequent read is bound to the checked

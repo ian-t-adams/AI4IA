@@ -1478,6 +1478,9 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+A sync plan refuses unproven outside/shared-counter allocation before any
+healthy-recorded-pool shortcut or write. Neither planner may allocate one
+counter independently to multiple versions; missing quota usage is never zero.
 A GlobalStandard usage counter reported with the same limit in every region is
 often one subscription-wide pool, not per-region headroom: `gpt-image-2.5-*`
 has a single 2-unit pool, so its eastus2 replica consumed it and the swedencentral
