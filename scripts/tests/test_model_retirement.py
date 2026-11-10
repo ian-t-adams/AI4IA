@@ -1078,10 +1078,12 @@ class RetirementCliTests(unittest.TestCase):
         self.assertEqual(self.run_main(
             MultiRegionAzure(allow_quota=True), models=models, report_mode=False
         )[0], 0)
-        with self.assertRaises(SystemExit):
-            self.run_main(
-                MultiRegionAzure(fail_west=True, allow_quota=True), models=models, report_mode=False
-            )
+        code, _, diagnostic = self.run_main(
+            MultiRegionAzure(fail_west=True, allow_quota=True), models=models, report_mode=False
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("deployment inventory in westus", diagnostic)
+        self.assertIn("deployment inventory is unavailable", diagnostic)
 
     def test_report_mode_rejects_writing_inside_the_checkout_before_azure_reads(self):
         with (

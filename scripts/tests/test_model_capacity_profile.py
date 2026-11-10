@@ -614,7 +614,10 @@ class RetainedProductionPreflightTests(unittest.TestCase):
         }
         return models, policy, inventory, quotas
 
-    def run_main(self, models, inventory, *, limit=300, failure=None, malformed=None, profile="production"):
+    def run_main(
+        self, models, inventory, *, limit=300, failure=None, malformed=None,
+        profile="production", failure_detail="fixture read failed",
+    ):
         calls = []
 
         def azure(*args):
@@ -645,7 +648,7 @@ class RetainedProductionPreflightTests(unittest.TestCase):
             elif operation == ("cognitiveservices", "account", "deployment", "list"):
                 name = args[args.index("--name") + 1]
                 if failure == name:
-                    return subprocess.CompletedProcess(args, 1, stdout="", stderr="fixture read failed")
+                    return subprocess.CompletedProcess(args, 1, stdout="", stderr=failure_detail)
                 result = [{
                     "id": row["id"], "name": row["deploymentName"],
                     "sku": {"name": row["sku"], "capacity": row["capacity"]},
@@ -956,6 +959,58 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                 if profile == "production":
                     self.assertIn("production_inventory_unknown", text)
                 self.assertFalse(offers or quota_reads)
+
+    def test_inventory_failures_preserve_region_and_redacted_command_context(self):
+        models, _, inventory, _ = self.fixture()
+        for profile in ("baseline", "maximum", "production"):
+            with self.subTest(profile=profile):
+                code, text, _, offers, quota_reads = self.run_main(
+                    models, inventory, profile=profile,
+                    failure="mf-demo-example-eastus2-abcdefghijklm",
+                    failure_detail=(
+                        'synthetic failure\nAuthorization: Bearer private-bearer '
+                        '"api_key": "private-key" password=private-password '
+                        "https://example.invalid/?sig=private-signature "
+                        + "a" * 40
+                    ),
+                )
+                self.assertNotEqual(code, 0)
+                self.assertIn("deployment inventory in eastus2", text)
+                self.assertIn("synthetic failure", text)
+                self.assertIn("could not list model deployments", text)
+                for private in (
+                    "private-bearer", "private-key", "private-password", "private-signature", "a" * 40,
+                ):
+                    self.assertNotIn(private, text)
+                self.assertFalse(offers or quota_reads)
+
+    def test_inventory_diagnostic_is_bounded_and_control_safe(self):
+        detail = preflight._inventory_diagnostic(SystemExit(
+            "synthetic failure\x1b\nabcdefgh.ijklmnop.qrstuvwx " + "word " * 2000,
+        ))
+        self.assertIn("synthetic failure", detail)
+        self.assertNotIn("abcdefgh.ijklmnop.qrstuvwx", detail)
+        self.assertLessEqual(len(detail), 512)
+        self.assertNotRegex(detail, r"[\x00-\x1f\x7f-\x9f]")
+
+    def test_os_inventory_failure_keeps_typed_reason_without_exception_payload(self):
+        models, _, _, _ = self.fixture()
+        observed, diagnostics = {}, []
+        with patch.object(
+            preflight, "_regional_deployment_inventory", side_effect=OSError("private OS payload"),
+        ):
+            inventory, _ = preflight.existing_deployment_inventory(
+                models, resource_group="rg-demo-example", environment_name="example",
+                region_reads=observed, diagnostics=diagnostics,
+                read=lambda *args: subprocess.CompletedProcess(args, 0, stdout=(
+                    "true" if args[:2] == ("group", "exists") else "[]"
+                ), stderr=""),
+            )
+        self.assertEqual(inventory, {})
+        self.assertEqual(len(diagnostics), len(models["regions"]))
+        self.assertTrue(all(row.status == "unavailable" for row in observed.values()))
+        self.assertIn("deployment inventory in eastus2: OSError", diagnostics[0])
+        self.assertNotIn("private OS payload", "".join(diagnostics))
 
     def test_malformed_flags_fail_before_any_reads(self):
         for field in ("runtimeEnabled", "provisioningEnabled"):

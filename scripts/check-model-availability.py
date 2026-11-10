@@ -276,6 +276,7 @@ def existing_deployment_inventory(
     environment_name: str | None,
     foundry_endpoints_raw: str | None = None,
     region_reads: dict[str, retirement.SourceRead] | None = None,
+    diagnostics: list[str] | None = None,
     read: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str]]:
     """Inventory exact deployments azd would reconcile, or enter explicit addition mode.
@@ -283,9 +284,11 @@ def existing_deployment_inventory(
     No context means a manual/greenfield check: every desired deployment is treated
     as an addition. In an azd hook the target resource group/environment are known;
     any Azure inventory error fails rather than incorrectly exempting a lifecycle
-    block. A report caller may supply region_reads to retain successful regions
-    alongside explicit unavailable states; preprovision never opts into that
-    partial-read mode. All operations are read-only.
+    block. Callers may supply region_reads to retain successful regions alongside
+    explicit unavailable states. Preprovision uses those states but still refuses
+    any unavailable regional inventory; reports retain partial coverage.
+    Optional diagnostics preserve bounded operator context, not report evidence.
+    All operations are read-only.
     """
     resource_group = (resource_group or "").strip()
     environment_name = (environment_name or "").strip()
@@ -349,9 +352,12 @@ def existing_deployment_inventory(
                 environment_name=environment_name, foundry_token=foundry_token,
                 read=query,
             )
-        except (SystemExit, OSError):
+        except (SystemExit, OSError) as exc:
             if region_reads is None:
                 raise
+            if diagnostics is not None:
+                reason = _inventory_diagnostic(exc) if isinstance(exc, SystemExit) else "OSError: OS read failed"
+                diagnostics.append(f"ERROR: deployment inventory in {region}: {reason}")
             region_reads[region] = retirement.SourceRead(
                 "deployment-inventory", region, "unavailable", retirement.timestamp(datetime.now(UTC)),
                 "inventory-read-failed-or-ambiguous",
@@ -363,6 +369,25 @@ def existing_deployment_inventory(
                 "deployment-inventory", region, "observed", retirement.timestamp(datetime.now(UTC))
             )
     return inventory, []
+
+
+def _inventory_diagnostic(exc: SystemExit) -> str:
+    """Keep operator failure context bounded without credential-bearing payloads."""
+    detail = str(exc)[:8192]
+    detail = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", detail)
+    detail = re.sub(r"\bBearer\s+\S+", "[REDACTED]", detail, flags=re.IGNORECASE)
+    detail = re.sub(
+        r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", "[REDACTED]", detail,
+    )
+    detail = re.sub(
+        r"""(\b(?:api[_-]?key|x-api-key|access[_-]?token|token|authorization|secret|password"""
+        r"""|ocp-apim-subscription-key|subscription[_-]?key|s7p[_-]?key)\b["']?\s*[:=]\s*)"""
+        r"""("[^"]*"|'[^']*'|[^\s,;]+)""",
+        r"\1[REDACTED]", detail, flags=re.IGNORECASE,
+    )
+    detail = re.sub(r"https?://\S+", "[URL REDACTED]", detail, flags=re.IGNORECASE)
+    detail = re.sub(r"[A-Za-z0-9_+/=-]{32,}(?:\.[A-Za-z0-9_+/=-]+)*", "[REDACTED]", detail)
+    return " ".join(detail.split())[:512] or "inventory read failed"
 
 
 def _regional_deployment_inventory(
@@ -1321,13 +1346,17 @@ def main() -> int:
     )
     regions = sorted(models["regions"] if args.capacity_profile == "production" else set(args.region or by_region))
     region_reads: dict[str, retirement.SourceRead] = {}
+    inventory_diagnostics: list[str] = []
     existing_deployments, inventory_warnings = existing_deployment_inventory(
         models,
         resource_group=resource_group,
         environment_name=environment_name,
         foundry_endpoints_raw=os.environ.get("AZURE_FOUNDRY_ENDPOINTS"),
         region_reads=region_reads,
+        diagnostics=inventory_diagnostics,
     )
+    for diagnostic in inventory_diagnostics:
+        print(diagnostic, file=sys.stderr)
     complete_regions = frozenset(region for region, read in region_reads.items() if read.status == "observed")
     retained_errors = retained_capacity_errors(by_region, existing_deployments)
     if args.capacity_profile != "production":
