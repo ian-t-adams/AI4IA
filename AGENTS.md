@@ -845,6 +845,10 @@ be a public HTTPS endpoint without credentials, query, fragment, loopback,
 private, link-local, or reserved IP space. Prefer a `projectConnectionId`, which
 keeps endpoint and authentication configuration in the Foundry project connection.
 
+Windows model-deployment gate controls run separately on `windows-latest` under
+both Windows PowerShell 5.1 and pwsh; skipped or empty execution fails that job.
+The existing Linux/pwsh operator suite remains in place.
+
 `quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on
 `scripts`, hadolint on the three Dockerfiles, the proxy .NET build/auth tests,
 `python3 -m yamllint -c .yamllint .`, a docs-catalog drift gate

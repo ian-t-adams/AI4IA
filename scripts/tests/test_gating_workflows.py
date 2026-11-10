@@ -90,6 +90,61 @@ def workflow_paths() -> list[Path]:
     return sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")])
 
 
+class WindowsModelGateCoverageTests(unittest.TestCase):
+    def test_windows_runner_refuses_skipped_empty_and_failed_execution(self) -> None:
+        document = yaml.safe_load((WORKFLOWS / "quality.yml").read_text(encoding="utf-8"))
+        job = document["jobs"]["windows-model-gate"]
+        command = next(step["run"] for step in job["steps"] if "run" in step)
+        python_source = command.split("@'\n", 1)[1].split("\n'@", 1)[0]
+        for successful, count, skipped, expected in (
+            (True, 1, [], 0),
+            (True, 1, [("test", "shell missing")], 1),
+            (True, 0, [], 1),
+            (False, 1, [], 1),
+        ):
+            with self.subTest(successful=successful, count=count, skipped=skipped):
+                result = mock.Mock(testsRun=count, skipped=skipped)
+                result.wasSuccessful.return_value = successful
+                with (
+                    mock.patch.object(unittest.defaultTestLoader, "loadTestsFromNames") as loader,
+                    mock.patch.object(unittest, "TextTestRunner") as runner,
+                    self.assertRaises(SystemExit) as exit_context,
+                ):
+                    runner.return_value.run.return_value = result
+                    exec(compile(python_source, "quality-windows-model-gate", "exec"), {})
+                self.assertEqual(exit_context.exception.code, expected)
+                loader.assert_called_once_with([
+                    "scripts.tests.test_postprovision_hard_gates.ModelDeploymentHardGateTests",
+                    "scripts.tests.test_postprovision_hard_gates.WindowsPowerShell51ModelDeploymentTests",
+                ])
+
+    def test_quality_runs_both_actual_shell_suites_without_skips(self) -> None:
+        document = yaml.safe_load((WORKFLOWS / "quality.yml").read_text(encoding="utf-8"))
+        job = document["jobs"]["windows-model-gate"]
+        self.assertEqual(job["runs-on"], "windows-latest")
+        self.assertNotIn("if", job)
+        self.assertNotIn("needs", job)
+        self.assertNotIn("continue-on-error", job)
+        step = next(step for step in job["steps"] if "run" in step)
+        self.assertEqual(step["shell"], "pwsh")
+        self.assertNotIn("if", step)
+        self.assertNotIn("continue-on-error", step)
+        command = step["run"]
+        self.assertIn("ModelDeploymentHardGateTests", command)
+        self.assertIn("WindowsPowerShell51ModelDeploymentTests", command)
+        self.assertIn("result.wasSuccessful()", command)
+        self.assertIn("result.testsRun > 0", command)
+        self.assertIn("not result.skipped", command)
+        self.assertIn("sys.exit(not (", command)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", command)
+        linux = document["jobs"]["script-tests"]
+        self.assertEqual(linux["runs-on"], "ubuntu-latest")
+        self.assertTrue(any(
+            "scripts.tests.test_postprovision_hard_gates" in step.get("run", "")
+            for step in linux["steps"]
+        ))
+
+
 class GatingWorkflowsAlwaysReportTests(unittest.TestCase):
     def _load(self, filename: str) -> dict:
         raw = (WORKFLOWS / filename).read_text(encoding="utf-8")
