@@ -13,7 +13,7 @@ from uuid import UUID
 from xml.etree import ElementTree as ET
 
 from _capacity_evidence import EvidenceError, az_command, number, object_value, run_bounded, strict_json
-from _model_targets import model_target
+from _model_targets import model_target, provisioning_enabled, runtime_enabled
 from _model_retirement import parse_date
 from _claude_gateway import configured_gateway, source_apim_id, verify_gateway_routes, verify_gateway_transition
 
@@ -151,11 +151,16 @@ def configured_binding(environment: dict[str, str] | os._Environ[str] = os.envir
     return binding
 
 
-def requirements(models: dict[str, Any]) -> list[dict[str, Any]]:
+def requirements(models: dict[str, Any], *, include_optional: bool = False) -> list[dict[str, Any]]:
+    """Required identities, or all known identities for retained-inventory checks."""
     naming = models["naming"]
     result = []
     for model in models["catalog"]:
+        provisioned = provisioning_enabled(model)
+        runnable = runtime_enabled(model)
         if model_target(model) != "external-claude":
+            continue
+        if not include_optional and not provisioned and not runnable:
             continue
         for deployment in model["deployments"]:
             result.append({
@@ -166,7 +171,8 @@ def requirements(models: dict[str, Any]) -> list[dict[str, Any]]:
                 "model": {"format": model["format"], "name": model["name"], "version": deployment["version"]},
                 "sku": deployment["sku"], "capacity": deployment["capacity"], "region": deployment["region"],
             })
-    require(0 < len(result) <= 16, "claude_catalog_inventory")
+    require(len(result) <= 16 and (len(result) > 0 or not include_optional), "claude_catalog_inventory")
+    require(len({row["name"] for row in result}) == len(result), "claude_catalog_duplicates")
     return result
 
 
@@ -284,6 +290,8 @@ def verify_identity(binding: Binding, reader: Reader, *, attached: bool) -> None
 
 def verify_target(binding: Binding, models: dict[str, Any], reader: Reader) -> int:
     expected = requirements(models)
+    known = requirements(models, include_optional=True)
+    required_names = {row["name"] for row in expected}
     account = reader.get(True, binding.account_id, "2025-04-01-preview")
     properties = object_value(account.get("properties"))
     require(
@@ -297,14 +305,19 @@ def verify_target(binding: Binding, models: dict[str, Any], reader: Reader) -> i
         and account.get("tags", {}).get("azd-env-name") == binding["environment"],
         "claude_target_account_mismatch",
     )
-    deployment_rows = object_rows(
-        reader.get(True, binding.account_id + "/deployments", "2025-10-01-preview").get("value"),
-        16, "claude_deployment_inventory",
-    )
-    require(len(deployment_rows) == len(expected), "claude_deployment_inventory")
+    inventory = reader.get(True, binding.account_id + "/deployments", "2025-10-01-preview")
+    require(not inventory.get("nextLink") and not inventory.get("@odata.nextLink"), "claude_readback_continuation")
+    deployment_rows = object_rows(inventory.get("value"), 16, "claude_deployment_inventory")
+    require(all(isinstance(row.get("name"), str) for row in deployment_rows), "claude_deployment_inventory")
     by_name = {row.get("name"): row for row in deployment_rows}
-    require(len(by_name) == len(expected), "claude_deployment_duplicates")
-    for desired in expected:
+    require(len(by_name) == len(deployment_rows), "claude_deployment_duplicates")
+    require(
+        required_names <= by_name.keys() <= {row["name"] for row in known},
+        "claude_deployment_inventory",
+    )
+    for desired in known:
+        if desired["name"] not in by_name:
+            continue
         row = by_name.get(desired["name"], {})
         props = object_value(row.get("properties", {}))
         sku = object_value(row.get("sku", {}))
@@ -342,11 +355,13 @@ def verify_target(binding: Binding, models: dict[str, Any], reader: Reader) -> i
         }],
         "claude_inference_role_permissions",
     )
-    return len(expected)
+    return len(deployment_rows)
 
 
 def target_preflight(binding: Binding, models: dict[str, Any], reader: Reader) -> int:
     """New isolated account only: exact offering/usageName/platform, no pool inference."""
+    expected = requirements(models)
+    require(bool(expected), "claude_no_required_deployments")
     context = reader.command(True, ["account", "show"])
     require(
         context.get("id") == binding["targetSubscriptionId"]
@@ -357,7 +372,6 @@ def target_preflight(binding: Binding, models: dict[str, Any], reader: Reader) -
     group = binding.account_id.rsplit("/providers/", 1)[0]
     accounts = reader.get(True, group + "/providers/Microsoft.CognitiveServices/accounts", "2025-04-01-preview")
     require(accounts.get("value") == [], "claude_target_group_not_empty")
-    expected = requirements(models)
     region = expected[0]["region"]
     base = f"/subscriptions/{binding['targetSubscriptionId']}/providers/Microsoft.CognitiveServices"
     offers = object_rows(

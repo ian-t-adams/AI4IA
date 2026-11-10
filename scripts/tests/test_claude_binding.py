@@ -22,6 +22,7 @@ from scripts.tests._loader import load_script
 ROOT = Path(__file__).resolve().parents[2]
 AVAILABILITY = load_script("claude_availability", ROOT / "scripts" / "check-model-availability.py")
 GENERATOR = load_script("claude_catalog", ROOT / "scripts" / "gen-model-catalog.py")
+CLI = load_script("claude_binding_cli", ROOT / "scripts" / "check-claude-binding.py")
 
 
 @contextmanager
@@ -55,6 +56,166 @@ class ClaudeBindingTests(unittest.TestCase):
         self.assertGreater(len(self.reader.calls), 25)
         self.assertTrue(any(call[0] for call in self.reader.calls))
         self.assertTrue(any(not call[0] for call in self.reader.calls))
+
+    def staged_target(self):
+        document = models()
+        candidate = deepcopy(next(row for row in document["catalog"] if row.get("deploymentTarget") == "external-claude"))
+        candidate.update(name="staged-claude", provisioningEnabled=False, runtimeEnabled=False)
+        candidate["deployments"] = candidate["deployments"][:1]
+        document["catalog"].append(candidate)
+        desired = claude.requirements(document, include_optional=True)[-1]
+        retained = {
+            "id": self.binding.account_id + "/deployments/" + desired["name"],
+            "name": desired["name"],
+            "sku": {"name": desired["sku"], "capacity": desired["capacity"]},
+            "properties": {
+                "model": desired["model"], "provisioningState": "Succeeded",
+                "versionUpgradeOption": "NoAutoUpgrade",
+            },
+        }
+        return document, candidate, retained
+
+    def test_only_dual_disabled_rows_are_optional_in_complete_target_inventory(self):
+        document, candidate, retained = self.staged_target()
+        key = (True, self.binding.account_id + "/deployments")
+        baseline = deepcopy(self.reader.responses[key])
+        for fields, required in (
+            ({}, True),
+            ({"provisioningEnabled": True, "runtimeEnabled": True}, True),
+            ({"provisioningEnabled": False}, True),
+            ({"runtimeEnabled": False}, True),
+            ({"provisioningEnabled": False, "runtimeEnabled": True}, True),
+            ({"provisioningEnabled": True, "runtimeEnabled": False}, True),
+            ({"provisioningEnabled": False, "runtimeEnabled": False}, False),
+        ):
+            with self.subTest(fields=fields):
+                candidate.pop("provisioningEnabled", None)
+                candidate.pop("runtimeEnabled", None)
+                candidate.update(fields)
+                self.reader.responses[key] = deepcopy(baseline)
+                if required:
+                    with self.assertRaisesRegex(EvidenceError, "claude_deployment_inventory"):
+                        claude.verify_target(self.binding, document, self.reader)
+                else:
+                    self.assertEqual(claude.verify_target(self.binding, document, self.reader), 9)
+                self.reader.responses[key]["value"].append(deepcopy(retained))
+                self.assertEqual(claude.verify_target(self.binding, document, self.reader), 10)
+                self.assertEqual(len(claude.requirements(document)), 10 if required else 9)
+                self.assertEqual(len(claude.requirements(document, include_optional=True)), 10)
+
+    def test_retained_optional_target_requires_exact_identity_capacity_and_state(self):
+        document, _, retained = self.staged_target()
+        key = (True, self.binding.account_id + "/deployments")
+        self.reader.responses[key]["value"].append(retained)
+        cases = [
+            (["id"], retained["id"].replace("/deployments/", "/other/")),
+            (["name"], "unexpected-deployment"),
+            (["sku", "name"], "Standard"),
+            (["sku", "capacity"], retained["sku"]["capacity"] + 1),
+            (["sku", "capacity"], float(retained["sku"]["capacity"])),
+            (["properties", "model", "format"], "OpenAI"),
+            (["properties", "model", "name"], "unknown-model"),
+            (["properties", "model", "version"], "unknown-version"),
+            (["properties", "provisioningState"], "Creating"),
+            (["properties", "versionUpgradeOption"], "OnceNewDefaultVersionAvailable"),
+        ]
+        for path, replacement in cases:
+            with self.subTest(path=path):
+                self.assertEqual(claude.verify_target(self.binding, document, self.reader), 10)
+                bad = deepcopy(retained)
+                value = bad
+                for part in path[:-1]:
+                    value = value[part]
+                value[path[-1]] = replacement
+                self.reader.responses[key]["value"][-1] = bad
+                with self.assertRaises(EvidenceError):
+                    claude.verify_target(self.binding, document, self.reader)
+                self.reader.responses[key]["value"][-1] = retained
+        self.assertEqual(claude.verify_target(self.binding, document, self.reader), 10)
+        self.reader.responses[key]["value"].append(deepcopy(retained))
+        with self.assertRaisesRegex(EvidenceError, "claude_deployment_duplicates"):
+            claude.verify_target(self.binding, document, self.reader)
+
+    def test_optional_absence_requires_complete_successful_target_inventory(self):
+        document, _, _ = self.staged_target()
+        key = (True, self.binding.account_id + "/deployments")
+        baseline = deepcopy(self.reader.responses[key])
+        for response in (
+            {"value": baseline["value"], "nextLink": "https://example.invalid/next"},
+            {"value": baseline["value"], "@odata.nextLink": "https://example.invalid/next"},
+            {},
+            {"value": None},
+            {"value": []},
+            {"value": baseline["value"][1:]},
+        ):
+            with self.subTest(response=response):
+                self.assertEqual(claude.verify_target(self.binding, document, self.reader), 9)
+                self.reader.responses[key] = response
+                with self.assertRaises(EvidenceError):
+                    claude.verify_target(self.binding, document, self.reader)
+                self.reader.responses[key] = deepcopy(baseline)
+        original_get = self.reader.get
+
+        def failed_inventory(target, path, version):
+            if target and path == self.binding.account_id + "/deployments":
+                raise EvidenceError("claude_readback_incomplete")
+            return original_get(target, path, version)
+
+        with patch.object(self.reader, "get", side_effect=failed_inventory):
+            with self.assertRaisesRegex(EvidenceError, "claude_readback_incomplete"):
+                claude.verify_target(self.binding, document, self.reader)
+        self.assertEqual(claude.verify_target(self.binding, document, self.reader), 9)
+
+    def test_staged_target_flags_reject_malformed_values_before_reads(self):
+        document, candidate, _ = self.staged_target()
+        for field in ("provisioningEnabled", "runtimeEnabled"):
+            for value in (None, "false", 0, 1, [], {}):
+                with self.subTest(field=field, value=value):
+                    candidate[field] = value
+                    calls = len(self.reader.calls)
+                    with self.assertRaisesRegex(ValueError, f"{field} must be a Boolean"):
+                        claude.verify_target(self.binding, document, self.reader)
+                    self.assertEqual(len(self.reader.calls), calls)
+                    candidate[field] = False
+        self.assertEqual(claude.verify_target(self.binding, document, self.reader), 9)
+
+    def test_all_optional_inventory_is_verified_but_not_a_provisioning_plan(self):
+        document = models()
+        for candidate in document["catalog"]:
+            if candidate.get("deploymentTarget") == "external-claude":
+                candidate.update(provisioningEnabled=False, runtimeEnabled=False)
+        self.assertEqual(claude.verify_target(self.binding, document, self.reader), 9)
+        key = (True, self.binding.account_id + "/deployments")
+        self.reader.responses[key] = {"value": []}
+        self.assertEqual(claude.verify_target(self.binding, document, self.reader), 0)
+        role_key = (True, self.binding["targetInferenceRoleDefinitionId"])
+        role = deepcopy(self.reader.responses[role_key])
+        self.reader.responses[role_key]["properties"]["permissions"][0]["dataActions"] = ["*"]
+        with self.assertRaisesRegex(EvidenceError, "claude_inference_role_permissions"):
+            claude.verify_target(self.binding, document, self.reader)
+        self.reader.responses[role_key] = role
+        self.assertEqual(claude.verify_target(self.binding, document, self.reader), 0)
+        calls = len(self.reader.calls)
+        with self.assertRaisesRegex(EvidenceError, "claude_no_required_deployments"):
+            claude.target_preflight(self.binding, document, self.reader)
+        self.assertEqual(len(self.reader.calls), calls)
+
+    def test_cli_distinguishes_verified_empty_inventory_from_disabled_binding(self):
+        for configured, count, output in (
+            (None, 0, "Claude binding: disabled."),
+            (self.binding, 0, "Claude exact-target readback: deployments verified: 0."),
+            (self.binding, 9, "Claude exact-target readback: deployments verified: 9."),
+        ):
+            with (
+                self.subTest(configured=bool(configured), count=count),
+                patch.object(CLI, "configured_binding", return_value=configured),
+                patch.object(CLI, "configured_gateway", return_value=None),
+                patch.object(CLI, "verify_configured", return_value=count),
+                patch.object(sys, "argv", ["check-claude-binding.py"]),
+                patch("builtins.print") as printed,
+            ):
+                self.assertEqual(CLI.main(), 0)
+                printed.assert_called_once_with(output)
 
     def test_default_configuration_constructs_no_reader(self):
         with binding_environment({
@@ -377,6 +538,8 @@ class ClaudeBindingTests(unittest.TestCase):
 
         self.reader.command = capacity_read
         self.assertEqual(claude.target_preflight(b, models(), self.reader), 9)
+        staged_document, _, _ = self.staged_target()
+        self.assertEqual(claude.target_preflight(b, staged_document, self.reader), 9)
         actual_quota = quotas[0]["limit"]
         quotas[0]["limit"] = 0
         with self.assertRaisesRegex(EvidenceError, "claude_raw_quota_insufficient"):

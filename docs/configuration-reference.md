@@ -103,8 +103,10 @@ procedure: [greenfield standup §5](runbooks/greenfield-standup.md#5-select-envi
 Each model's optional `provisioningEnabled` catalog Boolean defaults to `true`;
 `false` excludes that row from both the main-stack and separate Claude-target
 model deployment templates, independently of `runtimeEnabled`. Omission preserves
-existing catalog behavior. New candidate rows must explicitly set this field to
-`false` until their deployment scope is approved. Only an absent property takes
+existing catalog behavior. A default-off staged candidate must explicitly set
+**both** `provisioningEnabled: false` and `runtimeEnabled: false` until its scope
+is approved. Provisioning opt-out alone does not disable runtime and can be
+intentional for an externally managed deployment. Only an absent property takes
 the legacy default: explicit null and other non-Booleans are rejected by catalog
 validation and cause Bicep evaluation to fail even if that validation is bypassed.
 The primary-region Content Understanding completion and embedding deployments
@@ -116,13 +118,31 @@ already-deployed resource when it is omitted. Physical cleanup requires a separa
 reviewed, operator-approved operation.
 
 This switch is not yet a complete staged-candidate admission contract.
-Availability preflight, exact external-Claude binding verification, production
-capacity policy and maximum/quota-reduction planning still include opted-out
+Availability preflight, production capacity policy, capacity evidence and
+maximum/quota-reduction planning still include opted-out
 catalog identities and can reject a never-deployed candidate. Do not remove
 those identities wholesale: a previously deployed opted-out row may still consume
-quota and require exact-identity verification. Separating required desired
+quota and require exact-identity verification. The main postprovision gate also
+compares required deployment names with an exact observed set; its current
+name-only output cannot authorize a retained deployment's model/version/SKU.
+Separating required desired
 deployments from optional, strictly verified retained allocations remains a
 prerequisite to adding staged rows.
+
+The separate external-Claude target binding verifier distinguishes the two:
+only a row with both flags explicitly false may be absent from a successful,
+complete target inventory. A present optional row must still match its exact
+account/deployment ID, model/version, SKU/capacity, Succeeded state and upgrade
+policy; required rows and unexpected resources still fail closed. Runtime-on,
+provisioning-off externally managed rows remain required. Incomplete/failed
+inventory is never absence evidence. The returned count includes every verified
+present deployment, including optional retained rows, and does not establish
+freed quota. A configured binding with zero observed deployments reports that
+verified count, not a disabled binding. An entirely
+optional catalog is not a new-target provisioning plan; that preflight refuses
+before reads. This bounded verification change does not resolve the shared
+availability, evidence, capacity or postprovision blockers above, nor make
+unsupported video categories routable.
 
 ## Feature flags and prerequisites
 
