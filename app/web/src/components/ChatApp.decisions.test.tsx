@@ -142,4 +142,46 @@ describe("Decisions workspace", () => {
     expect(screen.queryByRole("button", { name: "Retry Decision availability" })).toBeNull();
     expect(mocks.streamChat).not.toHaveBeenCalled();
   });
+
+  it("runs a typed decision from its workspace and recovers a run error only on explicit resubmission", async () => {
+    let runs = 0;
+    mocks.apiFetch.mockImplementation(async (path, init) => {
+      if (path === "/api/decisions/options") return Response.json({ models: offered });
+      if (path !== "/api/decisions/run") return Response.json({ enabled: false });
+      runs += 1;
+      expect(init.method).toBe("POST");
+      const request = JSON.parse(init.body);
+      expect(request).toMatchObject({
+        model: offered[0].id, inputFormat: "text",
+        questions: [{ name: "question_1", type: "noul", instructions: "Is this synthetic?" }],
+      });
+      if (runs === 1) return Response.json({ detail: "Synthetic upstream outage" }, { status: 502 });
+      return Response.json({
+        model: offered[0].id, reportedModel: "microsoft-decision-1",
+        region: "eastus2", residency: "us", latencyMs: 20,
+        answers: { question_1: { type: "noul", noul: .75 } },
+        usage: { known: true, inputTokens: 123, outputTokens: 7, totalTokens: 130 },
+        costKnown: false, estimatedCostUsd: null,
+      });
+    });
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole("button", { name: "Decisions" }));
+    await user.type(await screen.findByRole("textbox", { name: "Content to evaluate" }), "Synthetic report");
+    await user.type(screen.getByRole("textbox", { name: "Instructions" }), "Is this synthetic?");
+    expect(runs).toBe(0);
+    await user.click(screen.getByRole("button", { name: "Run decision" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Synthetic upstream outage");
+    expect(screen.queryByRole("region", { name: "Decision results" })).toBeNull();
+    expect(runs).toBe(1);
+    await user.click(screen.getByRole("button", { name: "Run decision" }));
+    const results = await screen.findByRole("region", { name: "Decision results" });
+    expect(results).toHaveTextContent("Yes probability: 75.0%");
+    expect(results).toHaveTextContent("123 input / 7 output / 130 total");
+    expect(results).toHaveTextContent("Cost: Unknown");
+    await waitFor(() => expect(within(results).getByRole("heading", { name: "Results" })).toHaveFocus());
+    expect(runs).toBe(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(mocks.streamChat).not.toHaveBeenCalled();
+  });
 });

@@ -232,6 +232,43 @@ or 4,096 values. Availability and execution both honor catalog enablement,
 authenticated model policy and processing residency. A US-only deployment is
 unavailable under EU-only policy; it is never silently rerouted.
 
+#### Try Decisions locally without a model call
+
+From the repository root, with Node 22 and Python 3.12, restore the normal
+development dependencies, build the web app, and install the optional browser
+runner outside the repository:
+
+```powershell
+uv sync --project app\api --frozen --extra dev
+npm ci --prefix app\web
+npm run build --prefix app\web
+npm install --prefix "$env:TEMP\ai4ia-decision-browser" --no-save playwright@1.64.1
+$env:AI4IA_PLAYWRIGHT_MODULE = "$env:TEMP\ai4ia-decision-browser\node_modules\playwright"
+node "$env:AI4IA_PLAYWRIGHT_MODULE\cli.js" install chromium
+npm run test:decisions-browser --prefix app\web
+```
+
+The runner starts and stops its own loopback-only Next.js and FastAPI servers.
+It checks `#/decisions`, real options loading, text and parsed-JSON runs with all
+three answer types, a visible upstream failure and explicit recovery. It also
+intercepts options responses to check unavailable/error/reload states. The
+browser, same-origin proxy, API validation, catalog admission, native Decision
+adapter and in-memory usage are real; only the native model HTTP transport is a
+deterministic fixture. No Azure credentials, cloud access or billing are involved.
+The fixture ignores workstation API configuration and refuses non-loopback
+connections. It is under API `tests`, never a production feature flag or route.
+
+For hands-on testing, run the same command with `-- --interactive`. After the
+checks pass, an offline browser and Playwright Inspector remain open: use
+**Load synthetic example**, edit questions and **Run decision**. Enter the exact
+text `fixture:upstream-error` in Text mode for a visible failure, then replace it
+and run again. Close the Inspector/browser to finish. If using installed Edge,
+set `$env:AI4IA_BROWSER_CHANNEL = "msedge"` instead of installing Chromium.
+`AI4IA_TEST_PYTHON` can point to another prepared API virtual environment.
+These synthetic answers prove integration, not model quality or a live deployment.
+A live test still needs separately approved authenticated access, an eligible
+Microsoft-Decision-1 deployment and authorization for a potentially billable Run.
+
 ### Reviewed shared agents and workflows
 
 When the operator enables publishing, saved builder definitions can be submitted
