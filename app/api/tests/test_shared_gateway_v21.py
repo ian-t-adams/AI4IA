@@ -103,6 +103,29 @@ def test_schema_only_requires_dotted_placeholder_audience(audience):
         load(value)
 
 
+@pytest.mark.parametrize(
+    ("audience", "placeholder"),
+    [
+        ("api://team-example.invalidity", False),
+        ("api://team.example.invalidity", False),
+        ("api://example.invalid.test", False),
+        ("api://notexample.invalid", False),
+        ("api://example.invalid", True),
+        ("api://team.example.invalid", True),
+        ("api://nested.team.example.invalid", True),
+    ],
+)
+def test_v21_resolved_audience_placeholder_boundary(audience, placeholder):
+    value = resolved()
+    value["auth"]["audience"] = audience
+    value["auth"]["scope"] = audience + "/.default"
+    if placeholder:
+        with pytest.raises(SharedGatewayManifestError, match="placeholders"):
+            load(value)
+    else:
+        assert load(value).scope == audience + "/.default"
+
+
 @pytest.mark.parametrize("version", ["2.2.0", "3.0.0", None, 2])
 def test_unknown_versions_refuse(version):
     value = example()

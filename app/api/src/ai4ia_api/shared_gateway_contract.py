@@ -474,7 +474,8 @@ def _load_v21(
         any(host == "example.invalid" or host.endswith(".example.invalid") for host in hosts)
         or top["auth"]["tenantId"] == "00000000-0000-0000-0000-000000000000"
         or common.caller_client_id == "00000000-0000-0000-0000-000000000000"
-        or "example.invalid" in top["auth"]["audience"]
+        or top["auth"]["audience"] == "api://example.invalid"
+        or top["auth"]["audience"].endswith(".example.invalid")
     ):
         raise SharedGatewayManifestError("Shared gateway resolved contract contains placeholders.")
     return replace(
