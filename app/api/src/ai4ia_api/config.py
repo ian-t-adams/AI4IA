@@ -138,6 +138,8 @@ class Settings(BaseSettings):
     # required and validated before the selector can be enabled; capture remains
     # unavailable in contract v2.
     shared_gateway_enabled: bool = False
+    shared_gateway_claude_messages_enabled: bool = False
+    shared_gateway_video_jobs_enabled: bool = False
     shared_gateway_activation_manifest: str | None = None
     api_identity_client_id: str | None = Field(
         default=None,
@@ -1041,7 +1043,11 @@ class Settings(BaseSettings):
 
     def validate_shared_gateway(self) -> None:
         """Validate the resolved, versioned shared gateway contract before selection."""
-        if not self.shared_gateway_enabled:
+        requested = {
+            "claudeMessages": self.shared_gateway_claude_messages_enabled,
+            "videoJobs": self.shared_gateway_video_jobs_enabled,
+        }
+        if not self.shared_gateway_enabled and not any(requested.values()):
             return
         if self.env == Environment.local or self.auth_provider != AuthProviderKind.entra:
             raise RuntimeError(
@@ -1050,10 +1056,18 @@ class Settings(BaseSettings):
         from .shared_gateway_contract import load_shared_gateway_manifest
 
         try:
-            load_shared_gateway_manifest(
+            manifest = load_shared_gateway_manifest(
                 self.shared_gateway_activation_manifest,
                 api_identity_client_id=self.api_identity_client_id,
             )
+            if manifest.status != "resolved":
+                raise ValueError("Shared gateway routing requires a resolved manifest.")
+            for name, enabled in requested.items():
+                if enabled and (
+                    name not in manifest.capabilities
+                    or not manifest.capabilities[name].enabled
+                ):
+                    raise ValueError(f"Shared gateway {name} capability is unavailable.")
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
 

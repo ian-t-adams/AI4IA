@@ -1,7 +1,7 @@
 """Strict, secretless validation for the resolved shared gateway v2 manifest."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import json
 import re
 from urllib.parse import urlparse
@@ -36,6 +36,16 @@ class SharedGatewayManifest:
     model_skus: dict[str, frozenset[str]]
     terminal_usage_verified: bool
     forbidden_headers: frozenset[str]
+    contract_version: str = "2.0.0"
+    status: str = "resolved"
+    capabilities: dict[str, SharedGatewayCapability] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SharedGatewayCapability:
+    enabled: bool
+    base_url: str | None
+    models: dict[str, dict]
 
 
 def _object(value: object, required: set[str], label: str) -> dict:
@@ -65,6 +75,13 @@ def load_shared_gateway_manifest(
     except (TypeError, ValueError) as exc:
         raise SharedGatewayManifestError("Shared gateway manifest JSON is invalid.") from exc
 
+    if isinstance(manifest, dict) and manifest.get("contractVersion") == "2.1.0":
+        manifest = json.loads(raw, object_pairs_hook=_unique_keys)
+        return _load_v21(
+            manifest, api_identity_client_id=api_identity_client_id,
+            require_api_identity=require_api_identity,
+        )
+
     top = _object(
         manifest,
         {
@@ -76,7 +93,21 @@ def load_shared_gateway_manifest(
     if top["contractVersion"] != "2.0.0" or top["status"] != "resolved":
         raise SharedGatewayManifestError("Only a resolved shared gateway contract v2 is enableable.")
 
-    gateway = _object(top["gateway"], {"baseUrl", "allowedHosts", "pathPrefix"}, "gateway")
+    return _load_common(
+        top, api_identity_client_id=api_identity_client_id,
+        require_api_identity=require_api_identity,
+    )
+
+
+def _load_common(
+    top: dict, *, api_identity_client_id: str | None, require_api_identity: bool,
+    extra_gateway_fields: set[str] | None = None,
+) -> SharedGatewayManifest:
+    gateway = _object(
+        top["gateway"],
+        {"baseUrl", "allowedHosts", "pathPrefix"} | (extra_gateway_fields or set()),
+        "gateway",
+    )
     base_url = gateway["baseUrl"]
     if (
         not isinstance(base_url, str)
@@ -298,4 +329,137 @@ def load_shared_gateway_manifest(
         model_skus=model_skus,
         terminal_usage_verified=streaming["terminalUsage"] == "verified",
         forbidden_headers=frozenset(name.lower() for name in forbidden_headers),
+    )
+
+
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise SharedGatewayManifestError("Shared gateway 2.1 duplicate JSON key.")
+        result[key] = value
+    return result
+
+
+def _load_v21(
+    manifest: object, *, api_identity_client_id: str | None, require_api_identity: bool,
+) -> SharedGatewayManifest:
+    top = _object(
+        manifest,
+        {
+            "contractVersion", "status", "gateway", "auth", "operations", "models",
+            "retry", "responses", "streaming", "correlation", "privacy", "bypass",
+            "capabilities",
+        },
+        "2.1 top-level",
+    )
+    if top["status"] not in ("resolved", "schema-only"):
+        raise SharedGatewayManifestError("Shared gateway 2.1 status is invalid.")
+    gateway = top["gateway"]
+    if not isinstance(gateway, dict):
+        raise SharedGatewayManifestError("Shared gateway 2.1 gateway shape is invalid.")
+    extras = set(gateway) & {"anthropicBaseUrl", "videoBaseUrl"}
+    common = _load_common(
+        top, api_identity_client_id=api_identity_client_id,
+        require_api_identity=require_api_identity, extra_gateway_fields=extras,
+    )
+    if not top["privacy"]["forbiddenRequestHeaders"]:
+        raise SharedGatewayManifestError("Shared gateway 2.1 forbidden headers cannot be empty.")
+    base = urlparse(common.base_url)
+    for name in extras:
+        path = "/anthropic/v1" if name == "anthropicBaseUrl" else "/video/v1"
+        value = gateway[name]
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"https://[a-z0-9.-]+(?::[0-9]+)?" + path, value) is None
+            or urlparse(value).netloc != base.netloc
+        ):
+            raise SharedGatewayManifestError("Shared gateway 2.1 family URL is invalid.")
+
+    capabilities = _object(
+        top["capabilities"], {"claudeMessages", "videoJobs"}, "2.1 capabilities",
+    )
+    templates = {
+        "claudeMessages": {
+            "messages": {"method": "POST", "path": "/messages", "stream": "allowed"},
+        },
+        "videoJobs": {
+            "submit": {"method": "POST", "path": "/jobs"},
+            "status": {"method": "GET", "path": "/jobs/{id}"},
+            "content": {"method": "GET", "path": "/jobs/{id}/content"},
+        },
+    }
+    parsed: dict[str, SharedGatewayCapability] = {}
+    for name, template in templates.items():
+        family = _object(capabilities[name], {"enabled", "operations", "models"}, name)
+        models = family["models"]
+        if (
+            type(family["enabled"]) is not bool
+            or family["operations"] != template
+            or not isinstance(models, dict)
+        ):
+            raise SharedGatewayManifestError("Shared gateway 2.1 capability is invalid.")
+        paths = {operation["path"] for operation in template.values()}
+        for key, model in models.items():
+            if not isinstance(key, str) or _MODEL_KEY.fullmatch(key) is None:
+                raise SharedGatewayManifestError("Shared gateway 2.1 model key is invalid.")
+            item = _object(model, {"kind", "operations", "targets"}, "2.1 model")
+            targets = item["targets"]
+            operations = item["operations"]
+            if (
+                item["kind"] not in ("deployment-name", "alias")
+                or not isinstance(operations, list)
+                or any(not isinstance(path, str) for path in operations)
+                or len(operations) != len(paths)
+                or set(operations) != paths
+                or not isinstance(targets, list)
+                or not targets
+            ):
+                raise SharedGatewayManifestError("Shared gateway 2.1 model is invalid.")
+            deployments: set[str] = set()
+            seen: list[dict] = []
+            for target in targets:
+                target = _object(target, {"deployment", "sku", "backend"}, "2.1 target")
+                deployment, sku, backend = (
+                    target["deployment"], target["sku"], target["backend"]
+                )
+                if (
+                    not isinstance(deployment, str) or not deployment
+                    or any(ord(char) < 32 or ord(char) == 127 for char in deployment)
+                    or not isinstance(sku, str) or sku not in _MODEL_SKUS
+                    or not isinstance(backend, str)
+                    or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", backend) is None
+                    or target in seen
+                ):
+                    raise SharedGatewayManifestError("Shared gateway 2.1 target is invalid.")
+                deployments.add(deployment)
+                seen.append(target)
+            if len(deployments) != 1 or (
+                (key == next(iter(deployments)).lower()) != (item["kind"] == "deployment-name")
+            ):
+                raise SharedGatewayManifestError("Shared gateway 2.1 model binding is invalid.")
+        url_field = "anthropicBaseUrl" if name == "claudeMessages" else "videoBaseUrl"
+        if family["enabled"] and (
+            top["status"] != "resolved" or url_field not in gateway or not models
+        ):
+            raise SharedGatewayManifestError("Shared gateway 2.1 enabled family is incomplete.")
+        parsed[name] = SharedGatewayCapability(
+            enabled=family["enabled"], base_url=gateway.get(url_field), models=models,
+        )
+
+    hosts = gateway["allowedHosts"]
+    if top["status"] == "schema-only":
+        if any(family.enabled for family in parsed.values()) or any(
+            host != "example.invalid" and not host.endswith(".example.invalid") for host in hosts
+        ):
+            raise SharedGatewayManifestError("Shared gateway schema-only contract must be synthetic and off.")
+    elif (
+        any(host == "example.invalid" or host.endswith(".example.invalid") for host in hosts)
+        or top["auth"]["tenantId"] == "00000000-0000-0000-0000-000000000000"
+        or common.caller_client_id == "00000000-0000-0000-0000-000000000000"
+        or "example.invalid" in top["auth"]["audience"]
+    ):
+        raise SharedGatewayManifestError("Shared gateway resolved contract contains placeholders.")
+    return replace(
+        common, contract_version="2.1.0", status=top["status"], capabilities=parsed,
     )

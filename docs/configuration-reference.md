@@ -270,12 +270,28 @@ transport variable directly. The manifest is limited to 64 KiB.
 When OFF, the manifest is not selected and the existing model-gateway route,
 request shaping, credentials, conversation persistence and specialty paths
 remain unchanged. When ON, preprovision validation and API startup require a
-strict `contractVersion: "2.0.0"` manifest with `status: "resolved"`; the API
+strict `contractVersion: "2.0.0"` or `"2.1.0"` manifest with `status: "resolved"`; the API
 also verifies that `callerClientId` matches its assigned `AZURE_CLIENT_ID`.
 Only the exact HTTPS host, OAuth issuer/audience/scope, operation and model
 allowlists in that manifest are used. No endpoint, tenant, audience, identity
 or deployment value is supplied by this repository. A manifest is not proof of
 gateway reachability or permission to activate a canary.
+
+The additive 2.1 parser is metadata-only: it does not add Claude/video routes,
+models, tools or UI, and does not restore retired video. It is pinned to gateway
+draft PR `ian-t-adams/planetexpress-gateway#3`, schema blob
+`70736d6b5793fa7f141207f49fdd4baf1046953f` (SHA-256
+`ef90d1e5421338c9a7af0ee70f4d1e61a4ecdb1c11c72f1dc29e31d424f3180e`).
+Unlike 2.0, 2.1 rejects duplicate JSON keys. It validates optional family URLs
+against the exact base authority, including port, and requires complete explicit
+capability metadata. Schema-only metadata must be synthetic and both families
+off; it cannot enable any shared transport. The API-only settings
+`shared_gateway_claude_messages_enabled` and `shared_gateway_video_jobs_enabled`
+both default false; requesting either requires its resolved, enabled 2.1
+capability and the existing Entra/API identity validation, or startup refuses.
+These settings validate eligibility only; no family dispatcher or infrastructure
+wiring is supplied in this slice. Provider targets, network reachability, runtime
+transport, pricing and per-route activation approval remain separate dependencies.
 
 Onboarding dependency: `gateway.baseUrl` must identify the reachable,
 per-app SimpleL7Proxy endpoint, not APIM and not AI4IA's existing key-only
