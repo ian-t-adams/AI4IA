@@ -3028,6 +3028,15 @@ async def chat(
             )
             if isinstance(exc, asyncio.CancelledError):
                 raise
+            if exc.shared_throttling_message is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=exc.shared_throttling_message,
+                    headers=(
+                        {"Retry-After": str(exc.retry_after_seconds)}
+                        if exc.retry_after_seconds is not None else None
+                    ),
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=CHAT_COMPLETION_FAILED,

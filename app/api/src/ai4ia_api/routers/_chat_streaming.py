@@ -868,7 +868,7 @@ async def _plain_gateway_stream(
             yield "data: [DONE]\n\n"
         else:
             yield f"data: {json.dumps({'error': 'Stream ended unexpectedly.'})}\n\n"
-    except ModelGatewayError:
+    except ModelGatewayError as exc:
         final = MessageStatus.error
         assistant.content = "".join(parts)
         assistant.status = final
@@ -882,6 +882,12 @@ async def _plain_gateway_stream(
             else "The failed reply could not be saved."
         )
         error_payload: dict[str, object] = {"error": detail}
+        if exc.shared_throttling_message is not None:
+            error_payload = {"error": exc.shared_throttling_message, "status": 429}
+            if exc.retry_after_seconds is not None:
+                error_payload["retryAfterSeconds"] = exc.retry_after_seconds
+            if not terminal_persisted:
+                error_payload["error"] = f"{exc.shared_throttling_message} {detail}"
         if not terminal_persisted:
             error_payload["persistenceFailed"] = True
         yield f"data: {json.dumps(error_payload)}\n\n"

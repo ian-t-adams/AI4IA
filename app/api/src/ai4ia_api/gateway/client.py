@@ -16,6 +16,7 @@ import math
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Any, TYPE_CHECKING
 
 import httpx
@@ -447,13 +448,26 @@ class ModelGatewayError(Exception):
         self.retry_after_seconds = retry_after_seconds
         self.shared_gateway = shared_gateway
 
+    @property
+    def shared_throttling_message(self) -> str | None:
+        if not self.shared_gateway or self.status_code != 429:
+            return None
+        if self.retry_after_seconds is not None:
+            return f"Model gateway throttled this request. Try again in {self.retry_after_seconds} seconds."
+        return "Model gateway throttled this request. Try again later."
 
-def _retry_after_seconds(response: httpx.Response) -> int | None:
+
+def _retry_after_seconds(response: httpx.Response, *, shared: bool = False) -> int | None:
     raw = response.headers.get("retry-after", "").strip()
     if not raw or len(raw) > 128 or not raw.isascii():
         return None
+    if shared and not raw.isdigit():
+        try:
+            parsedate_to_datetime(raw)
+        except (ValueError, TypeError, OverflowError):
+            return None
     delay = parse_retry_after(raw)
-    if delay is None or delay > 86_400:
+    if delay is None or (shared and not math.isfinite(delay)) or delay > 86_400:
         return None
     return max(0, math.ceil(delay))
 
@@ -1570,10 +1584,10 @@ class ModelGatewayClient:
             except httpx.HTTPError as exc:
                 raise ModelGatewayError(502, _REQUEST_FAILED) from exc
             if resp.status_code >= 400:
-                retry_after = _retry_after_seconds(resp) if shared_gateway_url else None
+                retry_after = _retry_after_seconds(resp, shared=True) if shared_gateway_url else None
                 raise ModelGatewayError(
                     resp.status_code,
-                    resp.text,
+                    _REQUEST_FAILED if shared_gateway_url else resp.text,
                     retry_after_seconds=retry_after,
                     shared_gateway=shared_gateway_url is not None,
                 )
@@ -1765,10 +1779,10 @@ class ModelGatewayClient:
                         ):
                             # Likely stream_options unsupported; fall back cleanly.
                             continue
-                        retry_after = _retry_after_seconds(resp) if shared_gateway_url else None
+                        retry_after = _retry_after_seconds(resp, shared=True) if shared_gateway_url else None
                         raise ModelGatewayError(
                             resp.status_code,
-                            detail,
+                            _STREAM_FAILED if shared_gateway_url else detail,
                             retry_after_seconds=retry_after,
                             shared_gateway=shared_gateway_url is not None,
                         )
@@ -1928,9 +1942,9 @@ class ModelGatewayClient:
                     body = await resp.aread()
                     raise ModelGatewayError(
                         resp.status_code,
-                        body.decode("utf-8", "replace"),
+                        _STREAM_FAILED if shared_gateway_url else body.decode("utf-8", "replace"),
                         retry_after_seconds=(
-                            _retry_after_seconds(resp) if shared_gateway_url else None
+                            _retry_after_seconds(resp, shared=True) if shared_gateway_url else None
                         ),
                         shared_gateway=shared_gateway_url is not None,
                     )

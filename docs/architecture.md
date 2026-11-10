@@ -89,8 +89,14 @@ Stateful Responses (`store=true`, prior response, background, or conversation),
 embeddings, images, speech, Anthropic, realtime/Voice Live, Agent Service, CU,
 Search, and specialist routes remain on their existing paths.
 
-The gateway owns retries. AI4IA makes one attempt, preserves upstream status and
-bounded `Retry-After`, and closes SSE when the caller disconnects. Streaming and
+The gateway owns retries. AI4IA makes one attempt and closes SSE when the caller
+disconnects. At `/api/chat`, a shared-gateway throttle becomes HTTP 429 for a
+non-streaming request, with a sanitized message and validated `Retry-After`
+(0-86,400 seconds) when present. A stream that has emitted metadata remains HTTP
+200; its existing SSE error event carries actionable sanitized text, `status: 429`
+and optional `retryAfterSeconds`. The UI displays that text without resubmitting.
+Other upstream HTTP failures remain sanitized HTTP 502 or generic SSE errors;
+provider bodies, endpoints and private headers are not returned. Streaming and
 non-streaming calls use the existing gateway timeout profile. This source
 prepares a canary selector only; resolved values, synthetic hub proof, a
 reviewed deployment plan and approval remain prerequisites to activation.

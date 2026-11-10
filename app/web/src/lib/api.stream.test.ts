@@ -22,6 +22,34 @@ function sseResponse(chunks: string[]): Response {
 afterEach(() => mockApiFetch.mockReset());
 
 describe("streamChat", () => {
+  it("surfaces shared throttling after metadata without retrying or completing", async () => {
+    const message = "Model gateway throttled this request. Try again in 17 seconds.";
+    mockApiFetch.mockResolvedValue(sseResponse([
+      'data: {"metadata":{"userMessageId":"u1","assistantMessageId":"a1"}}\n\n',
+      `data: ${JSON.stringify({ error: message, status: 429, retryAfterSeconds: 17 })}\n\n`,
+    ]));
+    const onDone = vi.fn();
+    const onDelta = vi.fn();
+    const onError = vi.fn();
+    await new Promise<void>((resolve) => {
+      streamChat({ sessionId: "s1", content: "synthetic question" }, {
+        onMetadata: vi.fn(),
+        onDelta,
+        onDone,
+        onError: (text, info) => {
+          onError(text, info);
+          resolve();
+        },
+      });
+    });
+    expect(onError).toHaveBeenCalledWith(message, {
+      accepted: true, persistenceFailed: false, definitePreAcceptance: false,
+    });
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onDelta).not.toHaveBeenCalled();
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+  });
+
   it.each([false, true])(
     "serializes the exact chat request without changing context (text-only=%s)",
     async (textOnly) => {

@@ -318,8 +318,25 @@ stateful/background route are not eligible. The factory's current base URL is
 not changed. An eligible request sent to the shared gateway gets no automatic
 direct-path fallback. The gateway owns retries; AI4IA configures zero SDK
 retries, does not fail over or retry after stream bytes, and does not repeat the
-ordinary-path `stream_options` compatibility retry. Upstream status and bounded
-`Retry-After` are preserved. Client disconnect closes the upstream SSE stream.
+ordinary-path `stream_options` compatibility retry. The client retains upstream
+status internally, but `/api/chat` does not expose arbitrary provider errors.
+For a shared-gateway 429, non-streaming chat returns HTTP 429 with fixed
+sanitized throttling text and a validated `Retry-After` delay when present.
+Only ASCII delta-seconds or an HTTP-date are accepted, bounded to 0-86,400
+seconds and normalized to integer seconds; malformed, oversized or out-of-range
+guidance is omitted, not clamped into an invented wait.
+For streaming chat, metadata may already have committed HTTP 200: the terminal
+SSE event remains `{"error": "<sanitized actionable text>", "status": 429}`,
+with optional integer `retryAfterSeconds` and the existing `persistenceFailed`
+flag when saving fails. Here `status` describes the upstream throttle, not the
+stream's HTTP status. The error text includes the validated wait or says to try
+again later, so the existing UI displays it without retrying. Both paths retain
+the failed assistant record when persistence succeeds; they never return the
+upstream error body, credentials, endpoint or private headers. Other upstream
+HTTP failures still map to sanitized HTTP 502 or generic SSE errors, and
+ordinary/non-shared error handling is unchanged. Client disconnect closes the
+upstream SSE stream. These MockTransport API controls are not deployed APIM or
+SimpleL7Proxy proof; end-to-end live 429 acceptance remains an activation gate.
 The proxy can delayed-requeue a 429 only when `S7PREQUEUE: true` is returned;
 the shared-gateway policy must strip that header for APIM to remain the sole
 retry owner. Gateway v3 source deletes this header on its outbound policy path,

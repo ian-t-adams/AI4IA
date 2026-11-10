@@ -183,6 +183,27 @@ afterEach(() => {
 });
 
 describe("ChatApp stream reconciliation", () => {
+  it("shows the validated throttling wait after an accepted stream without resubmitting", async () => {
+    const handlers = captureStreamHandlers();
+    const user = userEvent.setup();
+    const message = "Model gateway throttled this request. Try again in 17 seconds.";
+    render(<ChatApp />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await user.click(screen.getByRole("button", { name: "Send draft message" }));
+    mocks.listMessages.mockResolvedValue([
+      chatMessage("u1", "user", "hello from draft"),
+      chatMessage("a1", "assistant", "", "error"),
+    ]);
+    act(() => {
+      handlers().onMetadata({ userMessageId: "u1", assistantMessageId: "a1", sources: null });
+      handlers().onError(message, {
+        accepted: true, persistenceFailed: false, definitePreAcceptance: false,
+      });
+    });
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(mocks.streamChat).toHaveBeenCalledTimes(1);
+  });
+
   it("removes the optimistic user row after a pre-acceptance HTTP error", async () => {
     const handlers = captureStreamHandlers();
     const user = userEvent.setup();

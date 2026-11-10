@@ -21,6 +21,49 @@ afterEach(() => {
 });
 
 describe("same-origin API proxy", () => {
+  it("preserves chat throttling status and retry guidance without resubmitting", async () => {
+    const body = JSON.stringify({ detail: "Model gateway throttled this request. Try again in 17 seconds." });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, {
+      status: 429, headers: { "retry-after": "17", "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { POST } = await loadRoute();
+    const response = await POST(new NextRequest("https://app.example.test/api/chat", {
+      method: "POST", body: "{}",
+    }), context(["chat"]));
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("17");
+    await expect(response.text()).resolves.toBe(body);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("passes chat metadata before an unchanged throttling SSE event arrives", async () => {
+    const metadata = 'data: {"conversationId":"synthetic","userMessageId":"user"}\n\n';
+    const error = 'data: {"error":"Model gateway throttled this request. Try again in 17 seconds.","status":429,"retryAfterSeconds":17}\n\n';
+    let upstream: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { upstream = controller; controller.enqueue(new TextEncoder().encode(metadata)); },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, {
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { POST } = await loadRoute();
+    const response = await POST(new NextRequest("https://app.example.test/api/chat", {
+      method: "POST", body: "{}",
+    }), context(["chat"]));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(metadata);
+    upstream!.enqueue(new TextEncoder().encode(error));
+    upstream!.close();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(error);
+    expect((await reader.read()).done).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it.each(["decisions/options", "models"])("forwards cancelled availability reads only on Decision (%s)", async (path) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
     vi.stubGlobal("fetch", fetchMock);
