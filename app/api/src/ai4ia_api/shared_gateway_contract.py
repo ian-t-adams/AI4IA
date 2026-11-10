@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 
 _PATHS = frozenset({"/chat/completions", "/responses"})
@@ -459,6 +459,8 @@ def _load_v21(
         )
 
     hosts = gateway["allowedHosts"]
+    audience_host = urlsplit(top["auth"]["audience"]).hostname or ""
+    audience_placeholder = audience_host == "example.invalid" or audience_host.endswith(".example.invalid")
     if top["status"] == "schema-only":
         if (
             any(family.enabled for family in parsed.values())
@@ -467,15 +469,14 @@ def _load_v21(
             )
             or top["auth"]["tenantId"] != "00000000-0000-0000-0000-000000000000"
             or common.caller_client_id != "00000000-0000-0000-0000-000000000000"
-            or ".example.invalid" not in top["auth"]["audience"]
+            or not audience_placeholder
         ):
             raise SharedGatewayManifestError("Shared gateway schema-only contract must be synthetic and off.")
     elif (
         any(host == "example.invalid" or host.endswith(".example.invalid") for host in hosts)
         or top["auth"]["tenantId"] == "00000000-0000-0000-0000-000000000000"
         or common.caller_client_id == "00000000-0000-0000-0000-000000000000"
-        or top["auth"]["audience"] == "api://example.invalid"
-        or top["auth"]["audience"].endswith(".example.invalid")
+        or audience_placeholder
     ):
         raise SharedGatewayManifestError("Shared gateway resolved contract contains placeholders.")
     return replace(

@@ -94,33 +94,26 @@ def test_schema_only_requires_placeholder_auth(field):
         load(value)
 
 
-@pytest.mark.parametrize("audience", ["api://example.invalid", "api://notexample.invalid"])
-def test_schema_only_requires_dotted_placeholder_audience(audience):
-    value = example()
-    value["auth"]["audience"] = audience
-    value["auth"]["scope"] = audience + "/.default"
-    with pytest.raises(SharedGatewayManifestError, match="schema-only"):
-        load(value)
-
-
+@pytest.mark.parametrize("status", ["schema-only", "resolved"])
 @pytest.mark.parametrize(
     ("audience", "placeholder"),
     [
-        ("api://team-example.invalidity", False),
+        ("api://EXAMPLE.INVALID", True),
+        ("api://TEAM.EXAMPLE.INVALID", True),
+        ("api://nested.team.example.invalid", True),
+        ("api://example.invalid", True),
         ("api://team.example.invalidity", False),
+        ("api://team-example.invalidity", False),
         ("api://example.invalid.test", False),
         ("api://notexample.invalid", False),
-        ("api://example.invalid", True),
-        ("api://team.example.invalid", True),
-        ("api://nested.team.example.invalid", True),
     ],
 )
-def test_v21_resolved_audience_placeholder_boundary(audience, placeholder):
-    value = resolved()
+def test_v21_audience_placeholder_boundary(status, audience, placeholder):
+    value = example() if status == "schema-only" else resolved()
     value["auth"]["audience"] = audience
     value["auth"]["scope"] = audience + "/.default"
-    if placeholder:
-        with pytest.raises(SharedGatewayManifestError, match="placeholders"):
+    if placeholder != (status == "schema-only"):
+        with pytest.raises(SharedGatewayManifestError, match="schema-only|placeholders"):
             load(value)
     else:
         assert load(value).scope == audience + "/.default"
