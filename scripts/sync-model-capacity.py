@@ -37,7 +37,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _model_naming import deployment_name
-from _model_targets import model_target, provisioning_enabled, runtime_enabled, source_catalog
+from _model_targets import declared_capacity_pool, model_target, provisioning_enabled, runtime_enabled, source_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_FILE = ROOT / "infra" / "models.json"
@@ -184,6 +184,7 @@ def planning_catalog(models: dict[str, Any], live: dict[str, dict[str, int]]) ->
             continue
         deployments = []
         for deployment in model["deployments"]:
+            declared_capacity_pool(deployment, models["regions"])
             region = deployment["region"]
             if region not in live or not isinstance(live[region], dict):
                 raise ValueError(f"{region}: complete deployment inventory is unavailable.")

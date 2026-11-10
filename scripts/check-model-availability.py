@@ -77,6 +77,7 @@ from _model_routing import (
 )
 from _model_targets import (
     ModelTarget,
+    declared_capacity_pool,
     model_target,
     provisioning_enabled,
     runtime_enabled,
@@ -185,6 +186,7 @@ def catalog_requirements(
         if not include_anthropic and entry.get("format") == "Anthropic":
             continue
         for deployment in entry.get("deployments", []):
+            pool = declared_capacity_pool(deployment, models.get("regions", {}))
             region = deployment.get("region")
             sku = deployment.get("sku", "")
             if not region:
@@ -203,7 +205,7 @@ def catalog_requirements(
                         else effective_capacity(deployment, capacity_profile)
                     ),
                     "capacityPool": (
-                        deployment.get("maxCapacityPool")
+                        pool
                         if capacity_profile == "maximum"
                         else None
                     ),
@@ -809,12 +811,15 @@ def _quota_keys(sku: str, model: str) -> list[str]:
     return keys
 
 
-def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def index_quota(
+    raw: Iterable[dict[str, Any]], *, reject_ambiguous: bool = False,
+) -> dict[str, dict[str, Any]]:
     """Index usage counters as {"<sku>|<model>": {limit, current, counter}}.
 
     Keys are normalised the same way as :func:`_quota_keys`, and the publisher
     prefix (`OpenAI.` / `AIServices.`) is dropped so both namespaces land in one
     index -- the catalog does not record which publisher a model belongs to.
+    Maximum-mode callers reject collisions instead of selecting the first row.
     """
     index: dict[str, dict[str, Any]] = {}
     for item in raw:
@@ -827,7 +832,9 @@ def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         sku, _, model = remainder.partition(".")
         if not sku or not model:
             continue
-        for key in _quota_keys(sku, model):
+        for key in dict.fromkeys(_quota_keys(sku, model)):
+            if reject_ambiguous and key in index:
+                raise ValueError("ambiguous quota counter lookup aliases; maximum capacity cannot be revalidated")
             index.setdefault(
                 key,
                 {
@@ -1029,8 +1036,10 @@ def evaluate_shared_quota(
 def evaluate_declared_capacity_pools(
     by_region: dict[str, list[dict[str, Any]]],
     index: dict[str, dict[str, Any]],
+    *,
+    regional_indexes: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Validate generated maximum capacities against their recorded Azure pool."""
+    """Validate declared source pools without treating labels as Azure scope proof."""
     errors: list[str] = []
     warnings: list[str] = []
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
@@ -1048,13 +1057,28 @@ def evaluate_declared_capacity_pools(
             grouped.setdefault((item["sku"], item["name"], pool), []).append(item)
 
     for (sku, name, pool), items in sorted(grouped.items()):
-        entry = next((index[key] for key in _quota_keys(sku, name) if key in index), None)
-        if entry is None:
+        observations = []
+        for region in {item["region"] for item in items}:
+            regional = regional_indexes.get(region, {}) if regional_indexes is not None else index
+            entry = next((regional[key] for key in _quota_keys(sku, name) if key in regional), None)
+            if entry is not None:
+                observations.append(entry)
+        if not observations:
             warnings.append(
                 f"{name} ({sku}, {pool}): no quota counter matched; maximum "
                 "capacity cannot be revalidated."
             )
             continue
+        if (
+            len({entry["limit"] for entry in observations}) != 1
+            or len({entry["counter"].casefold() for entry in observations}) != 1
+        ):
+            errors.append(
+                f"{name} ({sku}, {pool}): contradictory quota counter identity/limits "
+                "across declared pool members; maximum capacity cannot be revalidated."
+            )
+            continue
+        entry = observations[0]
         total = sum(int(item.get("capacity") or 0) for item in items)
         if total > entry["limit"]:
             errors.append(
@@ -1309,6 +1333,16 @@ def main() -> int:
     if args.retirement_report:
         return run_retirement_report(args, models, catalog_bytes)
     try:
+        by_region = catalog_requirements(
+            models,
+            include_anthropic=claude_enabled,
+            capacity_profile=args.capacity_profile,
+            target="source",
+        )
+    except ValueError as exc:
+        print(f"ERROR: catalog deployment configuration: {exc}", file=sys.stderr)
+        return 1
+    try:
         external_count = verify_configured(models)
         if external_count:
             print(f"Verified {external_count} external Claude deployments in their exact target scope.", flush=True)
@@ -1321,12 +1355,6 @@ def main() -> int:
     account_label = f"{account['name']} ({account['id']})" if account["name"] else account["id"]
     print(f"Checking Azure subscription {account_label}.", flush=True)
 
-    by_region = catalog_requirements(
-        models,
-        include_anthropic=claude_enabled,
-        capacity_profile=args.capacity_profile,
-        target="source",
-    )
     regions = sorted(models["regions"] if args.capacity_profile == "production" else set(args.region or by_region))
     region_reads: dict[str, retirement.SourceRead] = {}
     inventory_diagnostics: list[str] = []
@@ -1425,6 +1453,7 @@ def main() -> int:
     total_errors = len(retained_errors)
     total_warnings = 0
     merged_quota: dict[str, dict[str, Any]] = {}
+    regional_quota: dict[str, dict[str, dict[str, Any]]] = {}
     production_quotas: dict[str, list[dict]] = {}
     for region in regions:
         required = by_region.get(region, [])
@@ -1473,10 +1502,19 @@ def main() -> int:
                     production_quotas[region] = capacity_evidence.parse_quota({"value": raw_quota})
                 except capacity_evidence.EvidenceError as exc:
                     errors.append(f"Production quota evidence is unavailable: {exc.code}")
-            quota_index = index_quota(raw_quota) if args.capacity_profile != "production" else {}
-            # Counters are subscription-wide and identical in every region, so
-            # merging is safe; a region that does not offer a model can still be
-            # missing its counter, which is why this merges instead of picking one.
+            try:
+                quota_index = index_quota(
+                    raw_quota, reject_ambiguous=args.capacity_profile == "maximum",
+                ) if args.capacity_profile != "production" else {}
+            except ValueError:
+                errors.append(
+                    f"Quota evidence in {region} is invalid or has ambiguous quota counter lookup aliases; "
+                    "capacity cannot be revalidated."
+                )
+                quota_index = {}
+            regional_quota[region] = quota_index
+            # Keep the legacy fallback projection, but declared maximum pools
+            # compare their own regional evidence before accepting a shared limit.
             for key, entry in quota_index.items():
                 merged_quota.setdefault(key, entry)
             quota_errors, quota_warnings = evaluate_quota(
@@ -1524,7 +1562,7 @@ def main() -> int:
         # overcommit that `--region` was used to investigate.
         if args.capacity_profile == "maximum":
             shared_errors, shared_warnings = evaluate_declared_capacity_pools(
-                by_region, merged_quota
+                by_region, merged_quota, regional_indexes=regional_quota
             )
             fallback = {
                 region: [

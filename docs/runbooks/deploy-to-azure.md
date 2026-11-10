@@ -487,6 +487,18 @@ planner never reduces a live deployment; that is not proof that its maximum is a
 safe production reserve policy. Use the read-only evidence report and a separate
 scope review before approving any capacity change.
 
+Declared `maxCapacityPool` labels must be internally consistent: `region:<name>`
+matches the deployment's own region, and `data-zone:<US|EU>` matches that region's
+catalog `dataZone`. Catalog validation, preflight and both sync modes refuse a
+contradictory label before grouping allocations. `global` remains valid; matching
+labels prove only source consistency, never the real Azure pool boundary.
+Maximum preflight retains regional quota observations: conflicting counter
+identities or limits within one declared pool refuse regardless of read order.
+Separate valid region/data-zone pools retain their independent limits; this
+does not strengthen the warning-only nonproduction `currentValue` check.
+Maximum mode also rejects duplicate/overlapping normalized counter aliases
+within one regional response, rather than choosing a publisher by row order.
+
 Both modes refuse nonzero unattributed usage instead of calculating outside
 allocation from a guessed pool. The selected counter's complete, unique native
 integer current/limit evidence must agree with the catalog's validated live

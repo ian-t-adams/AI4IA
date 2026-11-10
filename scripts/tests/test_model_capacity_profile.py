@@ -32,6 +32,7 @@ preflight = load_script(
 )
 validator = load_script("production_feature_prereqs", ROOT / "scripts" / "validate-feature-prereqs.py")
 generator = load_script("production_catalog_generator", ROOT / "scripts" / "gen-model-catalog.py")
+catalog_validator = load_script("capacity_catalog_validator", ROOT / "scripts" / "validate-catalog.py")
 
 
 def _models(sku: str = "GlobalStandard") -> dict:
@@ -433,6 +434,203 @@ class QuotaReductionTests(unittest.TestCase):
                     deployment["maxCapacityPool"] = "unrecognized"
             with self.subTest(change=change), self.assertRaises(ValueError):
                 capacity.reduce_capacity_to_quota(models, live, quota)
+
+
+class DeclaredPoolMembershipTests(unittest.TestCase):
+    def fixture(self, *, distinct_zones=False):
+        models = _models("DataZoneStandard")
+        models["regions"] = {
+            "eastus2": {"dataZone": "US", "primary": True},
+            "westus3": {"dataZone": "EU" if distinct_zones else "US", "primary": True},
+        }
+        for deployment, region in zip(models["catalog"][0]["deployments"], models["regions"], strict=True):
+            deployment.update(
+                region=region, maxCapacity=100,
+                maxCapacityPool=f"data-zone:{models['regions'][region]['dataZone']}",
+            )
+        return models
+
+    def validate(self, models):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps(models), encoding="utf-8")
+            with patch.object(catalog_validator, "MODELS", path), contextlib.redirect_stdout(io.StringIO()):
+                return catalog_validator.main()
+
+    def preflight(self, models, *, limits=None, quota_rows=None, counters=None):
+        def azure(*args):
+            if args[:2] == ("account", "show"):
+                return subprocess.CompletedProcess(args, 0, stdout='{"id":"sub","name":"fixture"}', stderr="")
+            if args[:2] == ("group", "exists"):
+                return subprocess.CompletedProcess(args, 0, stdout="false", stderr="")
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps(models), encoding="utf-8")
+            with (
+                patch.object(preflight, "MODELS_FILE", path),
+                patch.dict(os.environ, {"AI4IA_MODEL_CAPACITY_PROFILE": "maximum"}, clear=True),
+                patch.object(sys, "argv", [
+                    "check-model-availability.py", "--resource-group", "rg-demo-example", "--environment-name", "example",
+                ]),
+                patch.object(preflight, "_az", side_effect=azure) as read,
+                patch.object(preflight, "verify_configured", return_value=0),
+                patch.object(preflight, "offered_models", return_value=[{
+                    "model": {"name": "model-a", "format": "OpenAI", "version": "1", "skus": [{"name": "DataZoneStandard"}]},
+                }]) as offers,
+                patch.object(preflight, "quota_usage", side_effect=lambda region: quota_rows if quota_rows is not None else [{
+                    "name": {"value": (counters or {}).get(region, "AIServices.DataZoneStandard.model-a")},
+                    "currentValue": 140,
+                    "limit": (limits or {}).get(region, 150),
+                }]) as quotas,
+                contextlib.redirect_stdout(io.StringIO()) as out,
+                contextlib.redirect_stderr(io.StringIO()) as err,
+            ):
+                code = preflight.main()
+            return code, out.getvalue() + err.getvalue(), read.call_count, offers.call_count, quotas.call_count
+
+    def test_contradictory_labels_refuse_in_validator_and_full_preflight_before_reads(self):
+        for label in ("data-zone:EU", "region:eastus2"):
+            for provisioning, runtime in ((True, True), (False, False), (False, True), (True, False)):
+                models = self.fixture()
+                models["catalog"][0].update(provisioningEnabled=provisioning, runtimeEnabled=runtime)
+                models["catalog"][0]["deployments"][1]["maxCapacityPool"] = label
+                with self.subTest(label=label, provisioning=provisioning, runtime=runtime):
+                    with self.subTest(surface="validator"):
+                        self.assertEqual(self.validate(models), 1)
+                    with self.subTest(surface="preflight"):
+                        code, text, reads, offers, quotas = self.preflight(models)
+                        self.assertEqual(code, 1, text)
+                        self.assertIn("maxCapacityPool", text)
+                        self.assertEqual((reads, offers, quotas), (0, 0, 0))
+
+    def test_shared_pool_conflicting_limits_refuse_in_both_region_orders(self):
+        for kind in ("shared", "global", "distinct", "region"):
+            for east, west in ((220, 150), (150, 220), (220, 220), (150, 150)):
+                models = self.fixture(distinct_zones=kind == "distinct")
+                if kind == "region":
+                    for deployment in models["catalog"][0]["deployments"]:
+                        deployment["maxCapacityPool"] = f"region:{deployment['region']}"
+                elif kind == "global":
+                    for deployment in models["catalog"][0]["deployments"]:
+                        deployment["maxCapacityPool"] = "global"
+                with self.subTest(kind=kind, east=east, west=west):
+                    code, text, reads, offers, quotas = self.preflight(
+                        models, limits={"eastus2": east, "westus3": west},
+                    )
+                    self.assertEqual(code, int(kind in ("shared", "global") and min(east, west) < 200), text)
+                    self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                    self.assertIn("currentValue is unreliable", text)
+                    if kind in ("shared", "global") and east != west:
+                        self.assertIn("contradictory quota counter identity/limits", text)
+                    else:
+                        self.assertNotIn("contradictory", text)
+
+    def test_pool_counter_identity_preserves_casefold_and_independent_pool_controls(self):
+        for distinct_zones, counter, expected in (
+            (False, "aiservices.DATAZONESTANDARD.MODEL-A", 0),
+            (False, "OpenAI.DataZoneStandard.model-a", 1),
+            (True, "OpenAI.DataZoneStandard.model-a", 0),
+        ):
+            with self.subTest(distinct_zones=distinct_zones, counter=counter):
+                code, text, *_ = self.preflight(
+                    self.fixture(distinct_zones=distinct_zones),
+                    limits={"eastus2": 220, "westus3": 220},
+                    counters={"westus3": counter},
+                )
+                self.assertEqual(code, expected, text)
+                self.assertEqual("contradictory quota counter identity/limits" in text, bool(expected))
+
+    def test_colliding_counter_aliases_refuse_both_response_orders_and_distinct_control_passes(self):
+        valid = {
+            "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 220,
+        }
+        conflicting = {
+            "name": {"value": "OpenAI.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 150,
+        }
+        unrelated = {
+            **conflicting, "name": {"value": "OpenAI.DataZoneStandard.model-b"},
+        }
+        for first, second, expected in (
+            (valid, conflicting, 1), (conflicting, valid, 1), (valid, unrelated, 0), (unrelated, valid, 0),
+        ):
+            with self.subTest(first=first["name"], second=second["name"]):
+                code, text, reads, offers, quotas = self.preflight(self.fixture(), quota_rows=[first, second])
+                self.assertEqual(code, expected, text)
+                self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                if expected:
+                    self.assertIn("ambiguous quota counter lookup aliases", text)
+                else:
+                    self.assertNotIn("ambiguous", text)
+
+    def test_valid_shared_distinct_region_and_global_pool_controls(self):
+        for kind, expected in (("shared", 1), ("distinct", 0), ("region", 0), ("global", 1)):
+            models = self.fixture(distinct_zones=kind == "distinct")
+            if kind in ("region", "global"):
+                for deployment in models["catalog"][0]["deployments"]:
+                    deployment["maxCapacityPool"] = "global" if kind == "global" else f"region:{deployment['region']}"
+            with self.subTest(kind=kind):
+                self.assertEqual(self.validate(models), 0)
+                code, text, reads, offers, quotas = self.preflight(models)
+                self.assertEqual(code, expected, text)
+                self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                self.assertIn("currentValue is unreliable", text)
+                if expected:
+                    self.assertIn("maximum profile requests 200", text)
+                else:
+                    models["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=False)
+                    absent = self.preflight(models)
+                    self.assertEqual(absent[0], 0, absent[1])
+                    self.assertEqual(absent[3:], (0, 0))
+
+    def test_planners_and_temp_apply_refuse_contradictory_membership(self):
+        for label in ("data-zone:EU", "region:eastus2"):
+            for apply in (False, True):
+                models = self.fixture()
+                live = {
+                    region: {f"model-a-sub-{region}-dz": 50} for region in models["regions"]
+                }
+                quotas = {region: [{
+                    "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 150,
+                }] for region in models["regions"]}
+                platform = {("OpenAI", "model-a", "1"): {"value": [{
+                    "location": region, "properties": {"skuName": "DataZoneStandard", "availableCapacity": 50},
+                } for region in models["regions"]]}}
+                # Identical complete evidence remains actionable with consistent labels.
+                self.assertEqual(sum(capacity.build_capacity_plan(models, live, quotas, platform)[0].values()), 150)
+                reduction_live = {region: {name: 100 for name in rows} for region, rows in live.items()}
+                reduction_quota = copy.deepcopy(quotas)
+                for rows in reduction_quota.values():
+                    rows[0]["currentValue"] = 200
+                self.assertEqual(sum(capacity.reduce_capacity_to_quota(models, reduction_live, reduction_quota)[0].values()), 150)
+                models["catalog"][0]["deployments"][1]["maxCapacityPool"] = label
+                with self.subTest(label=label, apply=apply):
+                    for plan in (
+                        lambda: capacity.build_capacity_plan(models, live, quotas, platform),
+                        lambda: capacity.reduce_capacity_to_quota(models, reduction_live, reduction_quota),
+                    ):
+                        with self.assertRaisesRegex(ValueError, "maxCapacityPool"):
+                            plan()
+                    with tempfile.TemporaryDirectory() as directory:
+                        catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                        original = json.dumps(models)
+                        catalog.write_text(original, encoding="utf-8")
+                        with (
+                            patch.object(capacity, "MODELS_FILE", catalog),
+                            patch.object(capacity, "ROOT", Path(directory)),
+                            patch.object(capacity, "_collect_live", return_value=live),
+                            patch.object(capacity, "_az_json", return_value={"id": SUBSCRIPTION}) as read,
+                            patch.object(sys, "argv", [
+                                "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                                "--environment-name", "example", "--output-plan", str(output),
+                            ] + (["--apply"] if apply else [])),
+                            self.assertRaisesRegex(ValueError, "maxCapacityPool"),
+                        ):
+                            capacity.main()
+                        read.assert_called_once_with("account", "show")
+                        self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                        self.assertFalse(output.exists())
 
 
 class CliDiagnosticPrivacyTests(unittest.TestCase):
