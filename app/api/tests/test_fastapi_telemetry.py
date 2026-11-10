@@ -579,14 +579,19 @@ def _exercise(case: str) -> None:
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
                 source_parent.attributes = {}
-                # A sampled local parent without an explicit rate represents
-                # 100% sampling; the SDK preserves it even with a zero root rate.
+                # b58 falls back to the zero root rate here; b59 inherits sampling.
+                # The facade must preserve the installed SDK's decision and evidence.
+                native = inheritance_control.should_sample(
+                    trace.set_span_in_context(source_parent, Context()), 123, "chat",
+                    kind=SpanKind.CLIENT, attributes={},
+                )
                 unbounded = inheritance_control.should_sample(
                     trace.set_span_in_context(recorded, Context()), 123, "chat",
                     kind=SpanKind.CLIENT, attributes={},
                 )
-                assert unbounded.decision == Decision.RECORD_AND_SAMPLE
-                assert _SAMPLE_RATE_KEY not in (unbounded.attributes or {})
+                assert unbounded.decision == native.decision
+                assert unbounded.attributes == native.attributes
+                assert unbounded.trace_state == native.trace_state
                 assert inheritance_control.should_sample(
                     Context(), 123, "chat", kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
