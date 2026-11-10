@@ -117,15 +117,28 @@ opt-out, not deletion: the current incremental deployment mode does not delete a
 already-deployed resource when it is omitted. Physical cleanup requires a separate
 reviewed, operator-approved operation.
 
-This switch is not yet a complete staged-candidate admission contract.
-Baseline/maximum availability preflight, capacity evidence and
-maximum/quota-reduction planning still include opted-out
-catalog identities and can reject a never-deployed candidate. Do not remove
-those identities wholesale: a previously deployed opted-out row may still consume
-quota and require exact-identity verification. These unresolved consumers remain
-blockers to adding staged rows, independently of the production preflight slice
-below. Video categories also remain rejected by gateway generation; staging
-metadata does not establish a video transport or enable a route.
+All availability profiles omit a dual-disabled candidate from offering and
+capacity admission only after complete successful regional inventory proves
+absence. Unknown inventory and missing runtime-on/provisioning-off deployments
+remain blocking. Video categories remain rejected by gateway generation; this
+staging contract does not establish a video transport or enable a route.
+
+Maximum/quota-reduction sync planning likewise omits only proven optional
+absence. It explicitly refuses **every present provisioning-disabled catalog
+deployment**, before projecting away native identity evidence or writing a plan
+or catalog. This refusal applies to dry-run and `--apply`; retained capacity
+planning is unsupported, not an imagined reduction/increase or freed quota.
+Required missing deployments and malformed/continued inventories also refuse.
+Provisioning-on/runtime-off and legacy rows retain their ordinary planning.
+
+Capacity evidence retains both flag intentions and reports a conclusively absent
+optional deployment as `absent`, not an incomplete catalog inventory. Its usage
+remains unknown, never measured zero; incomplete sources or usage still prevent
+a complete measurement report. Pool accounting preserves observed counter usage,
+actual retained allocations and outside/unattributed allocation. Production
+recommendations hold provisioning-disabled pools with an explicit unsupported
+code and no proposed budget, rather than predicting non-reconciling changes.
+These are source/offline contracts, not activation or live inventory evidence.
 
 Production availability preflight requires successful terminal inventory for all
 catalog regions before excluding an absent dual-disabled source candidate.

@@ -77,10 +77,14 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    allocation at its verified actual capacity, with exact scoped identity,
    reviewed bounds, outside allocation and reserves. All profiles also refuse
    present provisioning-disabled capacity that cannot match exact selected
-   postprovision evidence; accounting is not a capacity reconciliation. Other
-   profile planners and capacity evidence are not yet a complete
-   staged-versus-retained contract; see
-   the configuration reference before adding candidates.
+   postprovision evidence; accounting is not a capacity reconciliation.
+   Baseline/maximum preflight and sync planning omit only proven dual-disabled
+   absence. Sync refuses all present provisioning-disabled catalog deployments
+   before lossy inventory projection or plan/catalog writes; recommendations
+   hold such pools without a proposed budget. Evidence preserves optional
+   absence separately from unknown inventory and unknown usage, retaining actual
+   allocation and outside usage. See the configuration reference before adding
+   candidates; this source contract does not enable video routes or activation.
    Never interpret runtime disablement as physical deletion or free quota. Every
    seam offering a capability backed by such a model shares one availability
    predicate and still re-checks at execution.

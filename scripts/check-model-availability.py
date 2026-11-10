@@ -1326,10 +1326,33 @@ def main() -> int:
         resource_group=resource_group,
         environment_name=environment_name,
         foundry_endpoints_raw=os.environ.get("AZURE_FOUNDRY_ENDPOINTS"),
-        region_reads=region_reads if args.capacity_profile == "production" else None,
+        region_reads=region_reads,
     )
     complete_regions = frozenset(region for region, read in region_reads.items() if read.status == "observed")
     retained_errors = retained_capacity_errors(by_region, existing_deployments)
+    if args.capacity_profile != "production":
+        for region, requirements in by_region.items():
+            unmanaged = [item for item in requirements if not item["provisioningEnabled"]]
+            if unmanaged and region not in complete_regions:
+                print("ERROR: staged/retained deployment inventory is unknown.", file=sys.stderr)
+                return 1
+            missing_required = [
+                item for item in unmanaged if item["required"]
+                and (_normal_location(region), item["deploymentName"].casefold()) not in existing_deployments
+            ]
+            if missing_required:
+                print("ERROR: required externally managed deployments are absent.", file=sys.stderr)
+                return 1
+        by_region = {
+            region: [
+                item for item in requirements if item["required"]
+                or (_normal_location(region), item["deploymentName"].casefold()) in existing_deployments
+            ]
+            for region, requirements in by_region.items()
+        }
+        if any(read.status != "observed" for read in region_reads.values()):
+            print("ERROR: deployment inventory is unavailable.", file=sys.stderr)
+            return 1
     if args.capacity_profile == "production" and policy is not None:
         try:
             if complete_regions != frozenset(models["regions"]):

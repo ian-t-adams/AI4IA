@@ -109,6 +109,43 @@ def _platform(sku: str, east: int, sweden: int) -> dict:
 
 
 class CapacityAllocationTests(unittest.TestCase):
+    def test_staged_absence_and_retained_refusal_in_both_planners(self):
+        for planner in ("maximum", "reduce"):
+            models = QuotaReductionTests().models()
+            staged = copy.deepcopy(models["catalog"][0])
+            staged.update(name="staged-video", runtimeEnabled=False, provisioningEnabled=False)
+            models["catalog"].append(staged)
+            def run(document, live):
+                if planner == "reduce":
+                    return capacity.reduce_capacity_to_quota(document, live, _quota("GlobalStandard", 100, 1000))
+                return capacity.build_capacity_plan(
+                    document, live, _quota("GlobalStandard", 100, 1000), _platform("GlobalStandard", 900, 900),
+                )
+            with self.subTest(planner=planner):
+                expected = run({**models, "catalog": models["catalog"][:1]}, _live("GlobalStandard"))
+                self.assertEqual(run(models, _live("GlobalStandard")), expected)
+                with self.assertRaisesRegex(ValueError, "complete deployment inventory"):
+                    run(models, {})
+                for runtime in (False, True):
+                    staged["runtimeEnabled"] = runtime
+                    live = _live("GlobalStandard")
+                    for d in staged["deployments"]:
+                        live[d["region"]][capacity.deployment_name(models, staged["name"], d)] = 100
+                    with self.assertRaisesRegex(ValueError, "retained provisioning-disabled"):
+                        run(models, live)
+                with self.assertRaisesRegex(ValueError, "required externally managed"):
+                    run(models, _live("GlobalStandard"))
+                for field in ("runtimeEnabled", "provisioningEnabled"):
+                    for value in (None, "false", 0):
+                        malformed = copy.deepcopy(models)
+                        malformed["catalog"][0][field] = value
+                        with self.assertRaises(ValueError):
+                            run(malformed, _live("GlobalStandard"))
+                required = copy.deepcopy(models)
+                required["catalog"] = required["catalog"][:1]
+                with self.assertRaisesRegex(ValueError, "required externally managed or provisioned"):
+                    run(required, {region: {} for region in required["regions"]})
+
     def test_shared_global_pool_is_balanced_without_double_counting(self) -> None:
         plan, pools, _ = capacity.build_capacity_plan(
             _models(),
@@ -201,6 +238,123 @@ class CapacityAllocationTests(unittest.TestCase):
                 _quota("GlobalStandard", current=99, limit=1000),
                 _platform("GlobalStandard", east=901, sweden=901),
             )
+
+
+class SyncStagedMainTests(unittest.TestCase):
+    def run_sync(self, models, *, apply=False, reduce=False, corruption=None, absent=False, inventory="complete"):
+        models["naming"]["foundryToken"] = "demo"
+        accounts = [
+            {"name": f"mf-demo-example-{region}-abcdefghijklm", "kind": "AIServices", "location": region}
+            for region in models["regions"]
+        ]
+        def azure(*args):
+            if args[:2] == ("account", "show"):
+                return {"id": SUBSCRIPTION}
+            if args[:3] == ("cognitiveservices", "account", "list"):
+                if inventory == "failed":
+                    raise RuntimeError("mock failed account inventory")
+                if inventory == "continued":
+                    return {"value": accounts, "nextLink": "unconsumed"}
+                if inventory == "empty":
+                    return []
+                return accounts
+            if args[:4] == ("cognitiveservices", "account", "deployment", "list"):
+                account = args[args.index("--name") + 1]
+                region = next(a["location"] for a in accounts if a["name"] == account)
+                rows = []
+                for model in models["catalog"]:
+                    if absent and not model.get("provisioningEnabled", True):
+                        continue
+                    for d in model["deployments"]:
+                        if d["region"] != region:
+                            continue
+                        name = capacity.deployment_name(models, model["name"], d)
+                        rows.append({
+                            "name": name, "id": f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-demo-example/"
+                            f"providers/Microsoft.CognitiveServices/accounts/{account}/deployments/{name}",
+                            "sku": {"name": d["sku"], "capacity": 100},
+                            "properties": {"model": {"format": model["format"], "name": model["name"], "version": d["version"]},
+                                           "provisioningState": "Succeeded"},
+                        })
+                if corruption and rows:
+                    row = rows[-1]
+                    if corruption == "id":
+                        row["id"] = row["id"].replace(account, "foreign-account")
+                    elif corruption in ("format", "name", "version"):
+                        row["properties"]["model"][corruption] = "wrong"
+                    elif corruption == "sku":
+                        row["sku"]["name"] = "Standard"
+                    elif corruption == "state":
+                        row["properties"]["provisioningState"] = "Failed"
+                    elif corruption == "duplicate":
+                        rows.append(copy.deepcopy(row))
+                    elif corruption == "capacity":
+                        row["sku"]["capacity"] = True
+                    elif corruption == "continued":
+                        return {"value": rows, "nextLink": "unconsumed"}
+                return rows
+            if args[:3] == ("cognitiveservices", "usage", "list"):
+                return _quota("GlobalStandard", 200, 300)["eastus2"]
+            if args[:1] == ("rest",):
+                return _platform("GlobalStandard", 100, 100)[("OpenAI", "model-a", "1")]
+            raise AssertionError(args)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            plan = Path(directory) / "plan.json"
+            original = json.dumps(models).encode()
+            path.write_bytes(original)
+            args = ["sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                    "--environment-name", "example", "--output-plan", str(plan)]
+            args += ["--apply"] if apply else []
+            args += ["--reduce-to-quota"] if reduce else []
+            with patch.object(capacity, "MODELS_FILE", path), patch.object(capacity, "ROOT", Path(directory)), \
+                 patch.object(capacity, "_az_json", side_effect=azure), patch.object(sys, "argv", args), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    code = capacity.main()
+                except (ValueError, RuntimeError) as exc:
+                    self.assertEqual(path.read_bytes(), original)
+                    self.assertFalse(plan.exists())
+                    return str(exc)
+            return code
+
+    def test_retained_refuses_before_catalog_or_plan_write_with_valid_control(self):
+        for runtime in (False, True):
+            for apply in (False, True):
+                for reduce in (False, True):
+                    for corruption in (None, "id", "format", "name", "version", "sku", "state", "duplicate", "capacity", "continued"):
+                        with self.subTest(runtime=runtime, apply=apply, reduce=reduce, corruption=corruption):
+                            models = _models()
+                            models["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=runtime)
+                            self.assertIsInstance(self.run_sync(models, apply=apply, reduce=reduce, corruption=corruption), str)
+        models = _models()
+        models["catalog"][0].update(provisioningEnabled=True, runtimeEnabled=False)
+        self.assertEqual(self.run_sync(models, apply=True), 0)
+
+    def test_optional_absent_candidate_keeps_existing_plan_and_apply(self):
+        for apply in (False, True):
+            for reduce in (False, True):
+                models = _models()
+                candidate = copy.deepcopy(models["catalog"][0])
+                candidate.update(name="staged-video", runtimeEnabled=False, provisioningEnabled=False)
+                models["catalog"].append(candidate)
+                self.assertEqual(self.run_sync(models, apply=apply, reduce=reduce, absent=True), 0)
+
+    def test_optional_absence_requires_complete_inventory_and_required_rows_refuse(self):
+        for apply in (False, True):
+            for reduce in (False, True):
+                for runtime in (False, True):
+                    models = _models()
+                    models["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=runtime)
+                    for inventory in ("failed", "continued"):
+                        self.assertIsInstance(self.run_sync(
+                            models, apply=apply, reduce=reduce, inventory=inventory,
+                        ), str)
+                    result = self.run_sync(models, apply=apply, reduce=reduce, inventory="empty")
+                    if runtime:
+                        self.assertIsInstance(result, str)
+                    else:
+                        self.assertEqual(result, 0)
 
 
 class QuotaReductionTests(unittest.TestCase):
@@ -611,6 +765,23 @@ class RetainedProductionPreflightTests(unittest.TestCase):
         self.assertEqual(code, 0, text)
         self.assertFalse(offers or quota_reads)
         self.assertFalse(any(call[:4] == ("cognitiveservices", "account", "deployment", "list") for call in calls))
+
+    def test_confirmed_optional_absence_skips_offers_in_all_profiles(self):
+        for profile in ("baseline", "maximum", "production"):
+            models, _, _, _ = self.fixture()
+            for model in models["catalog"]:
+                for deployment in model["deployments"]:
+                    deployment.pop("production", None)
+            code, text, _, offers, quota_reads = self.run_main(models, {}, profile=profile)
+            self.assertEqual(code, 0, text)
+            self.assertFalse(offers or quota_reads)
+            for malformed in ("continued-accounts", "continued-deployments", ("kind", None)):
+                code, text, _, offers, quota_reads = self.run_main(models, {}, profile=profile, malformed=malformed)
+                self.assertNotEqual(code, 0, text)
+                self.assertFalse(offers or quota_reads)
+            models["catalog"][0]["runtimeEnabled"] = True
+            code, text, _, _, _ = self.run_main(models, {}, profile=profile)
+            self.assertNotEqual(code, 0, text)
 
     def test_endpoint_account_identity_requires_strings(self):
         entry = {"region": "eastus2", "accountName": "mf-demo-example-eastus2-abcdefghijklm"}

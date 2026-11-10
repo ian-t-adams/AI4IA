@@ -140,6 +140,7 @@ def _catalog(models: dict, catalog_digest: str) -> evidence.Catalog:
                 integer(item.get("capacity"), 1),
                 integer(item["maxCapacity"], 1) if "maxCapacity" in item else None,
                 item.get("maxCapacityPool"),
+                provisioning=provisioning_enabled(model), runtime=runtime_enabled(model),
             ))
     if not 1 <= len(deployments) <= evidence.MAX_DEPLOYMENTS:
         raise evidence.EvidenceError("deployment_limit_exceeded")

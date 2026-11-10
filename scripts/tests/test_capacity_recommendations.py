@@ -77,6 +77,26 @@ class RecommendationTests(unittest.TestCase):
             self.assertEqual((self.directory / name).read_bytes(), body)
         self.assertEqual(set(p.name for p in self.directory.iterdir()) - before.keys(), {"report.json"})
 
+    def test_retained_and_absent_staged_reports_never_predict_capacity_changes(self):
+        for runtime in (False, True):
+            for absent in (False, True):
+                document = production_document()
+                document["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=runtime)
+                self.fixture = self.make_fixture(document)
+                if absent:
+                    for region in self.fixture.catalog.regions:
+                        self.fixture.responses[f"deployments:{region}"]["value"] = []
+                report = self.report()
+                plan = self.run_report(report)
+                self.assertEqual(plan["status"], "partial")
+                pool = plan["pools"][0]
+                self.assertEqual(pool["codes"], ["provisioning_disabled_capacity_planning_unsupported"])
+                self.assertIsNone(pool["budget"])
+                for row in pool["deployments"]:
+                    self.assertEqual(row["action"], "hold")
+                    self.assertEqual(row["currentCapacity"], None if absent else 50)
+                    self.assertEqual(row["recommendedCapacity"], row["currentCapacity"])
+
     def test_policy_integer_rounding_critical_floor_and_ceiling(self):
         document = production_document()
         document["productionCapacityPolicy"]["pools"][0]["usage"]["countPerCapacityHour"] = 7
