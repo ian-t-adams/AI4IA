@@ -479,6 +479,15 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                     result.append(dict(result[0]))
                 elif malformed == "continued-accounts":
                     result = {"value": result, "nextLink": "unconsumed"}
+                elif malformed == "empty-accounts":
+                    result = []
+                elif isinstance(malformed, tuple):
+                    field, value = malformed
+                    for account in result:
+                        if value is None:
+                            account.pop(field)
+                        else:
+                            account[field] = value
             elif operation == ("cognitiveservices", "account", "deployment", "list"):
                 name = args[args.index("--name") + 1]
                 if failure == name:
@@ -517,6 +526,11 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                 "AI4IA_MODEL_CAPACITY_PROFILE": profile, "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
                 "AZURE_ENV_NAME": "example", "AI4IA_WORKLOAD": "demo",
             }
+            if malformed == "stale-endpoints":
+                env["AZURE_FOUNDRY_ENDPOINTS"] = json.dumps([
+                    {"region": region, "accountName": f"mf-demo-example-{region}-nonexistent"}
+                    for region in models["regions"]
+                ])
             with patch.dict(os.environ, env, clear=True), patch.object(preflight, "MODELS_FILE", path), \
                  patch.object(sys, "argv", ["check-model-availability.py"]), \
                  patch.object(preflight, "_az", side_effect=azure), \
@@ -574,6 +588,40 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                         self.assertEqual(code, 0 if exact else 1, text)
                         if not exact:
                             self.assertIn("retained_deployment_capacity_mismatch", text)
+
+    def test_account_filtering_cannot_establish_optional_absence(self):
+        models, _, inventory, _ = self.fixture()
+        for malformed in (
+            ("name", None), ("name", ["account"]), ("name", 123), ("name", " "),
+            ("kind", None), ("kind", ["AIServices"]), ("kind", "Other"),
+            ("location", None), ("location", ["eastus2"]), ("location", 123),
+            ("location", "east-us2"), ("location", "westus"),
+            "stale-endpoints",
+        ):
+            with self.subTest(malformed=malformed):
+                code, text, _, offers, quota_reads = self.run_main(
+                    models, inventory, limit=190, malformed=malformed,
+                )
+                self.assertEqual(code, 1, text)
+                self.assertIn("production_inventory_unknown", text)
+                self.assertFalse(offers or quota_reads)
+        code, text, calls, offers, quota_reads = self.run_main(
+            models, inventory, limit=190, malformed="empty-accounts",
+        )
+        self.assertEqual(code, 0, text)
+        self.assertFalse(offers or quota_reads)
+        self.assertFalse(any(call[:4] == ("cognitiveservices", "account", "deployment", "list") for call in calls))
+
+    def test_endpoint_account_identity_requires_strings(self):
+        entry = {"region": "eastus2", "accountName": "mf-demo-example-eastus2-abcdefghijklm"}
+        self.assertEqual(preflight._foundry_accounts_from_output(json.dumps([entry])), {
+            entry["region"]: entry["accountName"],
+        })
+        for field in entry:
+            for value in (None, [], ["eastus2"], 123, True, ""):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(SystemExit):
+                        preflight._foundry_accounts_from_output(json.dumps([{**entry, field: value}]))
 
     def test_retained_capacity_requires_native_positive_integer_evidence(self):
         for profile in ("baseline", "production", "maximum"):

@@ -146,6 +146,12 @@ from the selected profile's exact postprovision evidence. Unknown expected or
 actual capacity is blocking, not an inferred historical allocation. Provisioned
 rows retain their existing addition/reconciliation behavior.
 
+An account-list response is not proof of absence if target candidate names,
+kinds or locations are malformed, or prior endpoint output conflicts with
+owned-looking account candidates. Such evidence is unavailable, not an empty
+regional deployment inventory. A successful complete empty account list can
+still establish optional absence; it does not establish freed quota.
+
 The source-target postprovision gate consumes additive version-1 evidence in
 `AZURE_EXPECTED_MODEL_DEPLOYMENTS`: exact account IDs and catalog-derived
 deployment identity, required/optional status, selected capacity and upgrade

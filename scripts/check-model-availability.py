@@ -254,6 +254,8 @@ def _foundry_accounts_from_output(raw: str | None) -> dict[str, str]:
     if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
         raise SystemExit("ERROR: AZURE_FOUNDRY_ENDPOINTS must be an array of account/region objects.")
     for entry in entries:
+        if any(not isinstance(entry.get(field), str) or not entry[field].strip() for field in ("region", "accountName")):
+            raise SystemExit("ERROR: AZURE_FOUNDRY_ENDPOINTS has an invalid account/region identity.")
         region = _normal_location(entry.get("region"))
         account_name = str(entry.get("accountName") or "").strip()
         if not region or not account_name:
@@ -375,19 +377,27 @@ def _regional_deployment_inventory(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Read a whole account atomically so malformed rows cannot become partial absence."""
     normalized_region = _normal_location(region)
+    if any(
+        not isinstance(account.get("name"), str)
+        or not account["name"].strip()
+        or account["name"] != account["name"].strip()
+        for account in accounts
+    ):
+        raise SystemExit("ERROR: account inventory contains an invalid account name.")
+    prefix = f"mf-{foundry_token}-{environment_name}-{region}-".casefold()
+    owned_candidates = [
+        account for account in accounts
+        if environment_name and account["name"].casefold().startswith(prefix)
+    ]
     if expected_name:
         candidates = [
             account for account in accounts
-            if str(account.get("name") or "").casefold() == expected_name.casefold()
+            if account["name"].casefold() == expected_name.casefold()
         ]
+        if any(account["name"].casefold() != expected_name.casefold() for account in owned_candidates):
+            raise SystemExit("ERROR: endpoint output conflicts with candidate Foundry account inventory.")
     elif environment_name:
-        prefix = f"mf-{foundry_token}-{environment_name}-{region}-".casefold()
-        candidates = [
-            account for account in accounts
-            if str(account.get("kind") or "").casefold() == "aiservices"
-            and _normal_location(account.get("location")) == normalized_region
-            and str(account.get("name") or "").casefold().startswith(prefix)
-        ]
+        candidates = owned_candidates
     else:
         raise SystemExit(
             "ERROR: the target resource group exists, but neither AZURE_ENV_NAME "
@@ -403,8 +413,11 @@ def _regional_deployment_inventory(
     if not candidates:
         return {}
     if (
-        str(candidates[0].get("kind") or "").casefold() != "aiservices"
-        or _normal_location(candidates[0].get("location")) != normalized_region
+        not isinstance(candidates[0].get("kind"), str)
+        or candidates[0]["kind"].casefold() != "aiservices"
+        or not isinstance(candidates[0].get("location"), str)
+        or not candidates[0]["location"].strip()
+        or re.sub(r"\s+", "", candidates[0]["location"].casefold()) != normalized_region
     ):
         raise SystemExit("ERROR: the selected Foundry account has a different kind or region.")
     account_name = str(candidates[0].get("name") or "")
