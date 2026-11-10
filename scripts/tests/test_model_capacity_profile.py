@@ -457,7 +457,7 @@ class DeclaredPoolMembershipTests(unittest.TestCase):
             with patch.object(catalog_validator, "MODELS", path), contextlib.redirect_stdout(io.StringIO()):
                 return catalog_validator.main()
 
-    def preflight(self, models, *, limits=None, quota_rows=None, counters=None):
+    def preflight(self, models, *, limits=None, quota_rows=None, counters=None, region=None):
         def azure(*args):
             if args[:2] == ("account", "show"):
                 return subprocess.CompletedProcess(args, 0, stdout='{"id":"sub","name":"fixture"}', stderr="")
@@ -473,7 +473,7 @@ class DeclaredPoolMembershipTests(unittest.TestCase):
                 patch.dict(os.environ, {"AI4IA_MODEL_CAPACITY_PROFILE": "maximum"}, clear=True),
                 patch.object(sys, "argv", [
                     "check-model-availability.py", "--resource-group", "rg-demo-example", "--environment-name", "example",
-                ]),
+                ] + (["--region", region] if region else [])),
                 patch.object(preflight, "_az", side_effect=azure) as read,
                 patch.object(preflight, "verify_configured", return_value=0),
                 patch.object(preflight, "offered_models", return_value=[{
@@ -607,6 +607,33 @@ class DeclaredPoolMembershipTests(unittest.TestCase):
         ])
         self.assertEqual(code, 1, text)
         self.assertIn("ambiguous quota counter lookup aliases", text)
+
+    def test_region_filter_still_fences_other_catalog_regions_candidate_keys(self):
+        models = self.fixture()
+        other = copy.deepcopy(models["catalog"][0])
+        other["name"] = "model-b"
+        other["deployments"] = [other["deployments"][1]]
+        other["deployments"][0].update(sku="GlobalStandard", maxCapacityPool="global")
+        models["catalog"].append(other)
+        local = {
+            "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 220,
+        }
+        remote = {
+            "name": {"value": "AIServices.GlobalStandard.model-b"}, "currentValue": 100, "limit": 220,
+        }
+        for alias in ("modelb", "model-b.Azure", "model-b.0", "model-b-lookalike"):
+            conflicting = {
+                **remote, "name": {"value": f"OpenAI.GlobalStandard.{alias}"},
+            }
+            for rows in ([local, remote, conflicting], [conflicting, remote, local]):
+                with self.subTest(alias=alias, first=rows[0]["name"]):
+                    code, text, reads, offers, quotas = self.preflight(
+                        models, quota_rows=rows, region="eastus2",
+                    )
+                    expected = int(alias != "model-b-lookalike")
+                    self.assertEqual(code, expected, text)
+                    self.assertEqual((reads, offers, quotas), (2, 1, 1))
+                    self.assertEqual("ambiguous quota counter lookup aliases" in text, bool(expected))
 
     def test_valid_shared_distinct_region_and_global_pool_controls(self):
         for kind, expected in (("shared", 1), ("distinct", 0), ("region", 0), ("global", 1)):
