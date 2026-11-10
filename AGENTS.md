@@ -813,6 +813,7 @@ python -m unittest scripts.tests.test_policy_json_shape
 python -m unittest scripts.tests.test_voice_provider_catalog
 python -m unittest scripts.tests.test_feature_prereqs
 python -m unittest scripts.tests.test_model_capacity_profile
+python -m unittest scripts.tests.test_model_provisioning
 python -m unittest scripts.tests.test_foundry_local_auth scripts.tests.test_foundry_role_scope scripts.tests.test_web_auth_config scripts.tests.test_postgres_retired scripts.tests.test_runtime_rbac_and_model_pins
 python -m unittest scripts.tests.test_rai_policy
 python -m unittest scripts.tests.test_bicep_naming

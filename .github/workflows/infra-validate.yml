@@ -40,6 +40,8 @@ on:
       - "scripts/tests/test_cosmos_backup_policy.py"
       - "scripts/gen-gateway-policy.py"
       - "scripts/_model_targets.py"
+      - "scripts/tests/test_model_provisioning.py"
+      - "scripts/_private_metadata.py"
       - "scripts/_claude_binding.py"
       - "scripts/_claude_gateway.py"
       - "scripts/tests/test_claude_gateway.py"
@@ -154,6 +156,7 @@ jobs:
       - name: Model capacity profile tests
         run: |
           python -m unittest scripts.tests.test_model_capacity_profile
+          python -m unittest scripts.tests.test_model_provisioning
           python -m unittest scripts.tests.test_model_routing
 
       - name: Runtime and IaC posture contract tests

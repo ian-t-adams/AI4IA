@@ -104,7 +104,10 @@ Each model's optional `provisioningEnabled` catalog Boolean defaults to `true`;
 `false` excludes that row from both the main-stack and separate Claude-target
 model deployment templates, independently of `runtimeEnabled`. Omission preserves
 existing catalog behavior. New candidate rows must explicitly set this field to
-`false` until their deployment scope is approved. This is a desired-template
+`false` until their deployment scope is approved. Only an absent property takes
+the legacy default: explicit null and other non-Booleans are rejected by catalog
+validation and excluded by Bicep even if that validation is bypassed.
+This is a desired-template
 opt-out, not deletion: the current incremental deployment mode does not delete an
 already-deployed resource when it is omitted. Physical cleanup requires a separate
 reviewed, operator-approved operation.

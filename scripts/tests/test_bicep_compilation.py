@@ -15,12 +15,70 @@ import unittest
 from pathlib import Path
 
 from scripts._json_transport import TRANSPORTS
-from scripts._private_metadata import MetadataEvaluator
+from scripts._private_metadata import Expression
 from scripts.tests._production_fixture import production_document
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "infra" / "main.bicep"
 MODELS = ROOT / "infra" / "models.json"
+
+
+def _provisioning_projection(template: dict, expression: str, catalog: list[dict]):
+    """Evaluate only the emitted provisioning-filter subset, not the ARM runtime."""
+    functions = {
+        name.lower(): member
+        for row in template["functions"] if row["namespace"] == "__bicep"
+        for name, member in row["members"].items()
+    }
+
+    def evaluate(node, scope):
+        if node[0] == "literal":
+            return node[1]
+        if node[0] == "get":
+            return evaluate(node[1], scope)[evaluate(node[2], scope)]
+        if node[0] != "call":
+            raise AssertionError(f"Unsupported provisioning node: {node[0]}")
+        _, name, args = node
+        if name == "if":
+            return evaluate(args[1] if evaluate(args[0], scope) else args[2], scope)
+        if name == "filter":
+            _, function, (binding, body) = args[1]
+            assert function == "lambda"
+            key = evaluate(binding, scope)
+            return [row for row in evaluate(args[0], scope) if evaluate(body, {**scope, key: row})]
+        values = [evaluate(arg, scope) for arg in args]
+        if name in ("parameters", "lambdavariables"):
+            return scope[values[0]]
+        if name == "variables":
+            assert values[0] in ("catalog", "models")
+            return catalog if values[0] == "catalog" else {"catalog": catalog}
+        if name.startswith("__bicep_"):
+            member = functions[name.removeprefix("__bicep_")]
+            bindings = dict(zip((p["name"] for p in member["parameters"]), values, strict=True))
+            return evaluate(Expression(member["output"]["value"][1:-1]).parse(), bindings)
+        if name in ("true", "false"):
+            return name == "true"
+        if name == "createarray":
+            return values
+        if name == "contains":
+            container, item = values
+            if isinstance(container, dict):
+                return item.casefold() in (key.casefold() for key in container)
+            return any(type(value) is type(item) and value == item for value in container)
+        if name == "tryget":
+            return values[0].get(values[1])
+        if name == "coalesce":
+            return next((value for value in values if value is not None), None)
+        if name == "equals":
+            return type(values[0]) is type(values[1]) and values[0] == values[1]
+        if name == "not":
+            return not values[0]
+        if name == "and":
+            return all(values)
+        raise AssertionError(f"Unsupported provisioning function: {name}")
+
+    # The shared parser has no namespaced-call syntax; retain each member name.
+    return evaluate(Expression(expression[1:-1].replace("__bicep.", "__bicep_")).parse(), {})
 
 
 def _compile(main: Path = MAIN) -> subprocess.CompletedProcess[str]:
@@ -154,6 +212,67 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         deployment_module = next(row for row in rows if row["type"] == "Microsoft.Resources/deployments")
         self.assertIn("not(empty(variables('deploymentRows')))", account["condition"])
         self.assertIn("not(empty(variables('deploymentRows')))", deployment_module["condition"])
+
+        expected = (
+            "[if(contains(parameters('model'), 'provisioningEnabled'), "
+            "contains(createArray(true()), tryGet(parameters('model'), 'provisioningEnabled')), true())]"
+        )
+        for template, variable, deployment_target in (
+            (self.template, "deployableCatalog", "source"),
+            (target, "external", "external-claude"),
+        ):
+            functions = next(row["members"] for row in template["functions"] if row["namespace"] == "__bicep")
+            self.assertEqual(functions["deploymentProvisioningEnabled"]["output"]["value"], expected)
+            cases = [("omitted", {}), ("true", {"provisioningEnabled": True})]
+            cases += [
+                (str(index), {"provisioningEnabled": value})
+                for index, value in enumerate((False, None, "true", "false", 0, 1, 1.0, [], {}))
+            ]
+            catalog = [
+                {
+                    "name": label,
+                    "format": "Anthropic" if deployment_target == "external-claude" else "OpenAI",
+                    "deploymentTarget": deployment_target,
+                    **fields,
+                }
+                for label, fields in cases
+            ]
+            with self.subTest(entrypoint=variable):
+                admitted = _provisioning_projection(template, template["variables"][variable], catalog)
+                self.assertEqual([row["name"] for row in admitted], ["omitted", "true"])
+                legacy = json.loads(MODELS.read_text(encoding="utf-8"))["catalog"]
+                expected_legacy = [
+                    row for row in legacy
+                    if row.get("deploymentTarget", "source") == deployment_target
+                    and (deployment_target != "source" or row["format"] != "Anthropic")
+                ]
+                self.assertEqual(
+                    _provisioning_projection(template, template["variables"][variable], legacy),
+                    expected_legacy,
+                )
+
+    def test_provisioning_helper_in_offline_bicep_evaluator(self) -> None:
+        bicep = shutil.which("bicep")
+        if not bicep:
+            self.skipTest("Local expression evaluation requires standalone Bicep console.")
+        source = (ROOT / "infra" / "model-targets.bicep").read_text(encoding="utf-8")
+        declarations = re.findall(r"^func deploymentProvisioningEnabled\(.*$", source, re.MULTILINE)
+        self.assertEqual(len(declarations), 1)
+        rows = [{}] + [
+            {"provisioningEnabled": value}
+            for value in (True, False, None, "true", "false", 0, 1, 1.0, [], {})
+        ]
+        expressions = "\n".join(
+            f"deploymentProvisioningEnabled(json('{json.dumps(row)}'))" for row in rows
+        )
+        result = subprocess.run(
+            [bicep, "console"], input=f"{declarations[0]}\n{expressions}\n",
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        # Console may exit zero on evaluation errors: require the actual result.
+        self.assertEqual(result.stdout.split(), ["true", "true"] + ["false"] * 9)
 
     def test_decision_alias_changes_resource_token_not_provider_model(self) -> None:
         inputs = next(row["input"] for row in self.template["variables"]["copy"]
