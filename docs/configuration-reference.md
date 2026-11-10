@@ -118,15 +118,29 @@ already-deployed resource when it is omitted. Physical cleanup requires a separa
 reviewed, operator-approved operation.
 
 This switch is not yet a complete staged-candidate admission contract.
-Availability preflight, production capacity policy, capacity evidence and
+Baseline/maximum availability preflight, capacity evidence and
 maximum/quota-reduction planning still include opted-out
 catalog identities and can reject a never-deployed candidate. Do not remove
 those identities wholesale: a previously deployed opted-out row may still consume
-quota and require exact-identity verification. In particular, production pool
-preflight still projects selected targets for opted-out rows, which can undercount
-their larger retained allocation; a successful preflight is not proof of safe
-staged/retained capacity accounting. These unresolved consumers remain blockers
-to adding staged rows.
+quota and require exact-identity verification. These unresolved consumers remain
+blockers to adding staged rows, independently of the production preflight slice
+below. Video categories also remain rejected by gateway generation; staging
+metadata does not establish a video transport or enable a route.
+
+Production availability preflight requires successful terminal inventory for all
+catalog regions before excluding an absent dual-disabled source candidate.
+An absent candidate may lack production metadata and causes no offering or quota
+request of its own. Runtime-on/provisioning-off deployments remain required.
+Present provisioning-disabled rows require reviewed production capacity/bounds,
+exact scoped deployment ID, canonical account name, model/version/SKU, Succeeded
+state and `NoAutoUpgrade` (plus an exact router subset when applicable). Missing,
+duplicate, continued, failed or mismatched evidence refuses admission.
+The pool calculation preserves each such deployment's proven **actual** positive
+integer allocation within its reviewed bounds; it never substitutes a smaller
+selected capacity for a reduction the template will not execute. Outside
+allocation and all reserve components remain included. This conservative pool
+accounting does not reconcile a retained deployment to its selected capacity:
+postprovision's independent exact-capacity gate still applies.
 
 The source-target postprovision gate consumes additive version-1 evidence in
 `AZURE_EXPECTED_MODEL_DEPLOYMENTS`: exact account IDs and catalog-derived

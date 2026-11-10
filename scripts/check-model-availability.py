@@ -69,15 +69,25 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _capacity_evidence as capacity_evidence
 import _model_retirement as retirement
 from _claude_binding import verify_configured
-from _model_routing import offered_routing_models, routing_configuration, routing_matches
-from _model_targets import ModelTarget, model_target
 from _model_naming import deployment_name
+from _model_routing import (
+    offered_routing_models,
+    routing_configuration,
+    routing_matches,
+)
+from _model_targets import (
+    ModelTarget,
+    model_target,
+    provisioning_enabled,
+    runtime_enabled,
+)
 from _production_capacity import (
     PROFILES,
     bind_scope,
     check_live_pools,
     effective_capacity,
     parse_policy,
+    preflight_membership,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +177,7 @@ def catalog_requirements(
         parse_policy(models, required=True, include_anthropic=include_anthropic)
     by_region: dict[str, list[dict[str, Any]]] = {}
     for entry in models.get("catalog", []):
+        provisioning, runtime = provisioning_enabled(entry), runtime_enabled(entry)
         declared_target = model_target(entry)
         routing = routing_configuration(entry, models)
         if target is not None and declared_target != target:
@@ -186,7 +197,11 @@ def catalog_requirements(
                     "format": entry.get("format", "OpenAI"),
                     "sku": sku,
                     "version": str(deployment.get("version", "")),
-                    "capacity": effective_capacity(deployment, capacity_profile),
+                    "capacity": (
+                        None if capacity_profile == "production" and not (provisioning or runtime)
+                        and "capacity" not in (deployment.get("production") or {})
+                        else effective_capacity(deployment, capacity_profile)
+                    ),
                     "capacityPool": (
                         deployment.get("maxCapacityPool")
                         if capacity_profile == "maximum"
@@ -194,6 +209,9 @@ def catalog_requirements(
                     ),
                     "versionUpgradeOption": "NoAutoUpgrade",
                     "region": region,
+                    **({
+                        "provisioningEnabled": provisioning, "required": provisioning or runtime,
+                    } if capacity_profile == "production" else {}),
                     **({"routing": routing} if routing is not None else {}),
                     **({"deploymentTarget": declared_target} if declared_target != "source" else {}),
                 }
@@ -420,16 +438,17 @@ def _regional_deployment_inventory(
         if (normalized_region, deployment_name.casefold()) in inventory:
             raise SystemExit("ERROR: deployment inventory contains duplicate deployment identities.")
         inventory[(normalized_region, deployment_name.casefold())] = {
+            "id": deployment.get("id"),
             "accountName": account_name,
             "deploymentName": deployment_name,
             "region": region,
-            "modelName": str(model.get("name") or ""),
-            "format": str(model.get("format") or ""),
-            "version": str(model.get("version") or ""),
-            "sku": str(sku.get("name") or ""),
+            "modelName": model.get("name", ""),
+            "format": model.get("format", ""),
+            "version": model.get("version", ""),
+            "sku": sku.get("name", ""),
             "capacity": sku.get("capacity"),
-            "versionUpgradeOption": str(properties.get("versionUpgradeOption") or ""),
-            "provisioningState": str(properties.get("provisioningState") or ""),
+            "versionUpgradeOption": properties.get("versionUpgradeOption", ""),
+            "provisioningState": properties.get("provisioningState", ""),
             **({"routing": properties["routing"]} if "routing" in properties else {}),
         }
     return inventory
@@ -1260,12 +1279,40 @@ def main() -> int:
         target="source",
     )
     regions = sorted(models["regions"] if args.capacity_profile == "production" else set(args.region or by_region))
+    region_reads: dict[str, retirement.SourceRead] = {}
     existing_deployments, inventory_warnings = existing_deployment_inventory(
         models,
         resource_group=resource_group,
         environment_name=environment_name,
         foundry_endpoints_raw=os.environ.get("AZURE_FOUNDRY_ENDPOINTS"),
+        region_reads=region_reads if args.capacity_profile == "production" else None,
     )
+    complete_regions = frozenset(region for region, read in region_reads.items() if read.status == "observed")
+    if args.capacity_profile == "production" and policy is not None:
+        try:
+            if complete_regions != frozenset(models["regions"]):
+                raise capacity_evidence.EvidenceError("production_inventory_unknown")
+            active = preflight_membership(
+                policy, existing_deployments, include_anthropic=claude_enabled, complete_regions=complete_regions,
+            )
+            by_region = {
+                region: [
+                    {
+                        **item,
+                        **({"capacity": existing_deployments[(region, item["deploymentName"].casefold())]["capacity"]}
+                           if not item["provisioningEnabled"] else {}),
+                    }
+                    for item in rows if (region, item["deploymentName"]) in active
+                ] for region, rows in by_region.items()
+            }
+            quota_regions = {
+                region for pool in policy.pools if any(d.key in active for d in policy.members(pool))
+                for region in pool.assertion["regions"]
+            }
+            regions = sorted(quota_regions | {region for region, rows in by_region.items() if rows})
+        except capacity_evidence.EvidenceError as exc:
+            print(f"ERROR: production capacity preflight: {exc.code}", file=sys.stderr)
+            return 1
     inventory_at = datetime.now(UTC)
     inventory_state: retirement.InventoryState = (
         "observed" if resource_group or environment_name else "not-requested"
@@ -1289,7 +1336,7 @@ def main() -> int:
             print(f"{region}: no deployments in the catalog; skipping.")
             continue
         print(f"Checking {len(required)} deployments in {region} ...", flush=True)
-        offered = offered_models(region)
+        offered = offered_models(region) if required else []
         scoped_offered = catalog_offerings(required, offered)
         index = index_offered(scoped_offered)
         errors, warnings = evaluate(
@@ -1362,6 +1409,7 @@ def main() -> int:
         try:
             for pool in check_live_pools(
                 policy, existing_deployments, production_quotas, include_anthropic=claude_enabled,
+                complete_regions=complete_regions,
             ):
                 print(
                     f"Production pool {pool['id']} [{pool['counter']}, {pool['scope']}, "

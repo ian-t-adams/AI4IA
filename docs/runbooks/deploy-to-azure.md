@@ -309,6 +309,21 @@ decisions; this code does not decide which workloads can forgo a reserve.
 Maximum's historical heuristics and `maxCapacityPool` cannot establish a
 production pool or set a production ceiling.
 
+For production preflight, a source deployment is required when either
+`provisioningEnabled` or `runtimeEnabled` is true (each defaults true). Only a
+dual-disabled candidate can be absent, after successful complete regional
+inventory; unknown/failed/continued inventory is not absence. Missing production
+metadata is allowed for that absent candidate only. A present provisioning-disabled
+deployment must have exact scoped identity/model/version/SKU/state/upgrade-policy
+evidence and reviewed production capacity/bounds. Pool accounting preserves its
+actual positive integer allocation within those bounds, not an unexecuted desired
+reduction. Outside allocation and replacement/retry/other-workload reserves still
+apply: retained 100 + outside 40 + reserved 90 cannot fit a counter limit of 190.
+No absent candidate creates free quota, and no template change reconciles a
+retained deployment. The postprovision exact-capacity gate is independent.
+Baseline/maximum planning, capacity reporting and video routing retain their
+separate staging blockers; this production check does not enable them.
+
 ### Prepare, recommend, review, then select
 
 1. Obtain owner decisions for criticality, bounds, reserve units and sizing

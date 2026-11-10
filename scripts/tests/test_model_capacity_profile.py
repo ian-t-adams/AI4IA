@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import copy
 import contextlib
+import copy
 import io
+import json
 import os
 import subprocess
 import sys
@@ -434,6 +434,241 @@ class CapacityIacTests(unittest.TestCase):
                 for error in errors
             )
         )
+
+
+class RetainedProductionPreflightTests(unittest.TestCase):
+    def fixture(self, runtime=False, provisioning=False):
+        models = production_document()
+        models["catalog"][0].update(runtimeEnabled=runtime, provisioningEnabled=provisioning)
+        policy = production.parse_policy(models, required=True, include_anthropic=False)
+        assert policy is not None
+        inventory = {}
+        for d in policy.scope.catalog.deployments:
+            account = f"mf-demo-example-{d.region}-abcdefghijklm"
+            inventory[(d.region, d.name.casefold())] = {
+                "id": f"{policy.scope.group_path}/providers/Microsoft.CognitiveServices/accounts/{account}/deployments/{d.name}",
+                "accountName": account, "region": d.region, "deploymentName": d.name,
+                "format": d.model.format, "modelName": d.model.name, "version": d.model.version,
+                "sku": d.model.sku, "capacity": 50, "provisioningState": "Succeeded",
+                "versionUpgradeOption": "NoAutoUpgrade",
+            }
+        quotas = {
+            region: [{
+                "counter": policy.pools[0].assertion["counter"],
+                "unit": "Count", "currentValue": 140, "limit": 300,
+            }] for region in models["regions"]
+        }
+        return models, policy, inventory, quotas
+
+    def run_main(self, models, inventory, *, limit=300, failure=None, malformed=None):
+        calls = []
+
+        def azure(*args):
+            calls.append(args)
+            operation = args[:4]
+            if args[:2] == ("account", "show"):
+                result = {"id": SUBSCRIPTION, "name": "fixture"}
+            elif args[:2] == ("group", "exists"):
+                result = True
+            elif args[:3] == ("cognitiveservices", "account", "list"):
+                result = [
+                    {"name": f"mf-demo-example-{region}-abcdefghijklm", "kind": "AIServices", "location": region}
+                    for region in models["regions"]
+                ]
+                if malformed == "duplicate-account":
+                    result.append(dict(result[0]))
+                elif malformed == "continued-accounts":
+                    result = {"value": result, "nextLink": "unconsumed"}
+            elif operation == ("cognitiveservices", "account", "deployment", "list"):
+                name = args[args.index("--name") + 1]
+                if failure == name:
+                    return subprocess.CompletedProcess(args, 1, stdout="", stderr="fixture read failed")
+                result = [{
+                    "id": row["id"], "name": row["deploymentName"],
+                    "sku": {"name": row["sku"], "capacity": row["capacity"]},
+                    "properties": {
+                        "model": {"format": row["format"], "name": row["modelName"], "version": row["version"]},
+                        "provisioningState": row["provisioningState"],
+                        "versionUpgradeOption": row["versionUpgradeOption"],
+                    },
+                } for row in inventory.values() if row["accountName"] == name]
+                if malformed == "continued-deployments":
+                    result = {"value": result, "nextLink": "unconsumed"}
+                elif malformed == "duplicate-deployment" and result:
+                    result.append(dict(result[0]))
+            else:
+                raise AssertionError(f"unapproved test operation: {args}")
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(result), stderr="")
+
+        offered = [{
+            "model": {
+                "format": m["format"], "name": m["name"], "version": d["version"],
+                "lifecycleStatus": "GenerallyAvailable", "skus": [{"name": d["sku"]}],
+            },
+        } for m in models["catalog"] for d in m["deployments"]]
+        quota = [{
+            "name": {"value": models["productionCapacityPolicy"]["pools"][0]["pool"]["counter"]},
+            "unit": "Count", "currentValue": 140, "limit": limit,
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps(models), encoding="utf-8")
+            env = {
+                "AI4IA_MODEL_CAPACITY_PROFILE": "production", "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                "AZURE_ENV_NAME": "example", "AI4IA_WORKLOAD": "demo",
+            }
+            with patch.dict(os.environ, env, clear=True), patch.object(preflight, "MODELS_FILE", path), \
+                 patch.object(sys, "argv", ["check-model-availability.py"]), \
+                 patch.object(preflight, "_az", side_effect=azure), \
+                 patch.object(preflight, "verify_configured", return_value=0), \
+                 patch.object(preflight, "offered_models", return_value=offered) as offers, \
+                 patch.object(preflight, "quota_usage", return_value=quota) as quotas, \
+                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                try:
+                    code = preflight.main()
+                except SystemExit as exc:
+                    code = str(exc)
+        return code, out.getvalue() + err.getvalue(), calls, offers.call_args_list, quotas.call_args_list
+
+    def test_retained_actual_allocation_with_outside_and_reserves(self):
+        for runtime in (False, True):
+            models, policy, inventory, quotas = self.fixture(runtime=runtime)
+            result = production.check_live_pools(policy, inventory, quotas, include_anthropic=False)[0]
+            self.assertEqual(result["currentCatalogAllocation"], 100)
+            self.assertEqual(result["proposedCatalogAllocation"], 100)
+            self.assertEqual(result["outsideCatalogOrUnattributedAllocation"], 40)
+            self.assertEqual(sum(result["reserve"].values()), 90)
+            for rows in quotas.values():
+                rows[0]["limit"] = 190
+            with self.assertRaisesRegex(evidence.EvidenceError, "production_pool_reserve_exceeded"):
+                production.check_live_pools(policy, inventory, quotas, include_anthropic=False)
+            for limit, expected in ((300, 0), (230, 0), (229, 1), (190, 1)):
+                with self.subTest(runtime=runtime, limit=limit):
+                    code, text, _, _, _ = self.run_main(models, inventory, limit=limit)
+                    self.assertEqual(code, expected, text)
+                    if not expected:
+                        self.assertIn("selected 100", text)
+                        self.assertNotIn("selected 60", text)
+                    else:
+                        self.assertIn("production_pool_reserve_exceeded", text)
+
+    def test_provisioned_runtime_off_and_legacy_keep_desired_selection(self):
+        for legacy in (False, True):
+            models, _, inventory, _ = self.fixture(provisioning=True)
+            if legacy:
+                del models["catalog"][0]["runtimeEnabled"]
+                del models["catalog"][0]["provisioningEnabled"]
+            code, text, _, offers, _ = self.run_main(models, inventory, limit=190)
+            self.assertEqual(code, 0, text)
+            self.assertIn("selected 60", text)
+            self.assertEqual(len(offers), 2)
+
+    def test_absence_requires_terminal_inventory_and_only_both_flags_off(self):
+        models, policy, _, quotas = self.fixture()
+        with self.assertRaisesRegex(evidence.EvidenceError, "optional_deployment_inventory_unknown"):
+            production.check_live_pools(policy, {}, quotas, include_anthropic=False)
+        self.assertEqual(production.check_live_pools(
+            policy, {}, {}, include_anthropic=False, complete_regions=frozenset(models["regions"]),
+        ), [])
+        for runtime, provisioning in ((False, False), (True, False), (False, True)):
+            models, _, _, _ = self.fixture(runtime, provisioning)
+            code, text, calls, offers, quota_reads = self.run_main(models, {})
+            self.assertEqual(code, 0 if not (runtime or provisioning) else 1, text)
+            self.assertEqual(sum(c[:4] == ("cognitiveservices", "account", "deployment", "list") for c in calls), 2)
+            if not (runtime or provisioning):
+                self.assertEqual(offers, [])
+                self.assertEqual(quota_reads, [])
+
+    def test_optional_missing_production_metadata_is_lazy_but_retained_is_not(self):
+        models, _, inventory, _ = self.fixture()
+        for d in models["catalog"][0]["deployments"]:
+            del d["production"]
+        self.assertIsNotNone(production.parse_policy(models, required=True, include_anthropic=False))
+        code, text, _, offers, quota_reads = self.run_main(models, {})
+        self.assertEqual(code, 0, text)
+        self.assertFalse(offers or quota_reads)
+        code, text, _, offers, quota_reads = self.run_main(models, inventory)
+        self.assertEqual(code, 1, text)
+        self.assertIn("retained_production_capacity_not_configured", text)
+        self.assertFalse(offers or quota_reads)
+        models["catalog"][0]["runtimeEnabled"] = True
+        with self.assertRaisesRegex(evidence.EvidenceError, "production_deployment_not_configured"):
+            production.parse_policy(models, required=True, include_anthropic=False)
+
+    def test_new_staged_identity_does_not_request_offering_or_capacity(self):
+        models, _, inventory, _ = self.fixture(provisioning=True)
+        staged = copy.deepcopy(models["catalog"][0])
+        staged.update(name="staged-model", runtimeEnabled=False, provisioningEnabled=False)
+        for d in staged["deployments"]:
+            del d["production"]
+        models["catalog"].append(staged)
+        code, text, _, offers, _ = self.run_main(models, inventory)
+        self.assertEqual(code, 0, text)
+        self.assertIn("Checking 1 deployments in eastus2", text)
+        self.assertEqual(len(offers), 2)
+        requirements = preflight.catalog_requirements(models, capacity_profile="production", include_anthropic=False)
+        self.assertIsNone(requirements["eastus2"][1]["capacity"])
+
+    def test_retained_exact_evidence_and_integer_bounds_refuse(self):
+        mutations = {
+            "id": ("wrong", None),
+            "accountName": ("other-account", None),
+            "deploymentName": ("unknown", None),
+            "region": ("other-region", None),
+            "format": ("Other", None),
+            "modelName": ("unknown", None),
+            "version": ("unreviewed", 1, None),
+            "sku": ("Standard", None),
+            "provisioningState": ("Failed", None),
+            "versionUpgradeOption": ("OnceNewDefaultVersionAvailable", None),
+            "capacity": (None, True, 0, -1, 50.0, "50", 101, 29),
+        }
+        for field, values in mutations.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    _, policy, inventory, quotas = self.fixture()
+                    next(iter(inventory.values()))[field] = value
+                    with self.assertRaises(evidence.EvidenceError):
+                        production.check_live_pools(policy, inventory, quotas, include_anthropic=False)
+
+    def test_retained_boolean_capacity_is_not_integer_one(self):
+        models, _, inventory, quotas = self.fixture()
+        for d in models["catalog"][0]["deployments"]:
+            d["capacity"] = 1
+            d["production"]["criticalMinimum"] = int(d["production"]["critical"])
+        policy = production.parse_policy(models, required=True, include_anthropic=False)
+        assert policy is not None
+        row = next(iter(inventory.values()))
+        row["capacity"] = 1
+        self.assertTrue(production.check_live_pools(policy, inventory, quotas, include_anthropic=False))
+        row["capacity"] = True
+        with self.assertRaisesRegex(evidence.EvidenceError, "invalid_production_integer"):
+            production.check_live_pools(policy, inventory, quotas, include_anthropic=False)
+
+    def test_failed_partial_continued_duplicate_inventory_never_establishes_absence(self):
+        models, _, inventory, _ = self.fixture()
+        for malformed in ("continued-accounts", "duplicate-account", "continued-deployments", "duplicate-deployment"):
+            with self.subTest(malformed=malformed):
+                code, text, _, _, _ = self.run_main(models, inventory, malformed=malformed)
+                self.assertNotEqual(code, 0, text)
+        for current in ({}, inventory):
+            code, text, _, offers, quota_reads = self.run_main(
+                models, current, failure="mf-demo-example-swedencentral-abcdefghijklm",
+            )
+            self.assertEqual(code, 1, text)
+            self.assertIn("production_inventory_unknown", text)
+            self.assertFalse(offers or quota_reads)
+
+    def test_malformed_flags_fail_before_any_reads(self):
+        for field in ("runtimeEnabled", "provisioningEnabled"):
+            for value in (None, "false", 0, 1, []):
+                with self.subTest(field=field, value=value):
+                    models, _, _, _ = self.fixture()
+                    models["catalog"][0][field] = value
+                    code, text, calls, offers, quota_reads = self.run_main(models, {})
+                    self.assertEqual(code, 1, text)
+                    self.assertIn("invalid_production_model_intent", text)
+                    self.assertFalse(calls or offers or quota_reads)
 
 
 class ProductionProfileTests(unittest.TestCase):

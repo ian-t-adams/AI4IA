@@ -9,7 +9,8 @@ from typing import Any
 
 import _capacity_evidence as evidence
 from _model_naming import PATTERN, deployment_name
-from _model_targets import model_target
+from _model_routing import routing_configuration, routing_matches
+from _model_targets import model_target, provisioning_enabled, runtime_enabled
 
 VERSION = "production-capacity-v1"
 PROFILES = ("baseline", "production", "maximum")
@@ -73,12 +74,24 @@ class PoolPolicy:
 
 
 @dataclass(frozen=True)
+class DeploymentIntent:
+    provisioning: bool
+    runtime: bool
+    routing: dict | None
+
+    @property
+    def required(self) -> bool:
+        return self.provisioning or self.runtime
+
+
+@dataclass(frozen=True)
 class Policy:
     id: str
     scope: evidence.Scope
     pools: tuple[PoolPolicy, ...]
     deployments: tuple[DeploymentPolicy, ...]
     review: dict | None
+    intents: dict[DeploymentKey, DeploymentIntent]
 
     def members(self, pool: PoolPolicy) -> tuple[DeploymentPolicy, ...]:
         return tuple(d for d in self.deployments if d.pool_id == pool.id)
@@ -86,7 +99,8 @@ class Policy:
     def enabled(self, include_anthropic: bool) -> set[DeploymentKey]:
         return {
             (d.region, d.name) for d in self.scope.catalog.deployments
-            if include_anthropic or d.model.format != "Anthropic"
+            if (include_anthropic or d.model.format != "Anthropic")
+            and self.intents[(d.region, d.name)].required
         }
 
 
@@ -138,6 +152,15 @@ def parse_policy(
     models: dict, *, required: bool = False, include_anthropic: bool = True,
     catalog_digest: str = "",
 ) -> Policy | None:
+    try:
+        model_intents = [
+            DeploymentIntent(
+                provisioning_enabled(model), runtime_enabled(model), routing_configuration(model, models),
+            )
+            for model in models["catalog"]
+        ]
+    except ValueError as exc:
+        raise evidence.EvidenceError("invalid_production_model_intent") from exc
     raw_policy = models.get("productionCapacityPolicy")
     if raw_policy is not None and include_anthropic and any(
         model_target(model) != "source" for model in models["catalog"]
@@ -210,11 +233,13 @@ def parse_policy(
     by_id = {p.id: p for p in pools}
     by_key = {(d.region, d.name): d for d in catalog.deployments}
     deployments = []
-    for model in models["catalog"]:
+    intents = {}
+    for model, intent in zip(models["catalog"], model_intents, strict=True):
         for item in model["deployments"]:
             name = deployment_name(models, model["name"], item)
             deployment = by_key[(item["region"], name)]
-            enabled = include_anthropic or deployment.model.format != "Anthropic"
+            intents[(deployment.region, deployment.name)] = intent
+            enabled = intent.required and (include_anthropic or deployment.model.format != "Anthropic")
             if "production" not in item:
                 if required and enabled:
                     raise evidence.EvidenceError("production_deployment_not_configured")
@@ -240,7 +265,7 @@ def parse_policy(
             if required and enabled and selected is None:
                 raise evidence.EvidenceError("production_capacity_missing")
             deployments.append(DeploymentPolicy(deployment, pool_id, config["critical"], critical_minimum, ceiling, selected))
-    result = Policy(policy_id, scope, tuple(pools), tuple(deployments), review)
+    result = Policy(policy_id, scope, tuple(pools), tuple(deployments), review, intents)
     if required:
         for pool in result.pools:
             selected = [d for d in result.members(pool) if d.key in result.enabled(include_anthropic)]
@@ -311,9 +336,54 @@ def check_increase_headroom(
     return increase
 
 
+def preflight_membership(
+    policy: Policy, inventory: dict[tuple[str, str], dict[str, Any]], *,
+    include_anthropic: bool, complete_regions: frozenset[str] = frozenset(),
+) -> set[DeploymentKey]:
+    """Only terminal inventory can establish optional absence, never freed quota."""
+    active = policy.enabled(include_anthropic)
+    configured = {d.key: d for d in policy.deployments}
+    for deployment in policy.scope.catalog.deployments:
+        if not include_anthropic and deployment.model.format == "Anthropic":
+            continue
+        key = deployment.region, deployment.name
+        intent = policy.intents[key]
+        if intent.provisioning:
+            continue
+        row = inventory.get((deployment.region, deployment.name.casefold()))
+        if row is None:
+            if intent.required:
+                raise evidence.EvidenceError("required_unmanaged_deployment_absent")
+            if deployment.region not in complete_regions:
+                raise evidence.EvidenceError("optional_deployment_inventory_unknown")
+            continue
+        config = configured.get(key)
+        if config is None or config.capacity is None:
+            raise evidence.EvidenceError("retained_production_capacity_not_configured")
+        if not evidence.owned_account_name(policy.scope, deployment.region, row.get("accountName")):
+            raise evidence.EvidenceError("production_account_mismatch")
+        account_path = policy.scope.account_path(row["accountName"])
+        if row.get("id") != f"{account_path}/deployments/{deployment.name}":
+            raise evidence.EvidenceError("retained_deployment_identity_mismatch")
+        if (
+            row.get("region"), row.get("deploymentName"), row.get("format"), row.get("modelName"),
+            row.get("version"), row.get("sku"), row.get("provisioningState"), row.get("versionUpgradeOption"),
+        ) != (
+            deployment.region, deployment.name, deployment.model.format, deployment.model.name,
+            deployment.model.version, deployment.model.sku, "Succeeded", "NoAutoUpgrade",
+        ):
+            raise evidence.EvidenceError("retained_deployment_mismatch")
+        if intent.routing is not None and not routing_matches(row.get("routing"), intent.routing):
+            raise evidence.EvidenceError("retained_deployment_routing_mismatch")
+        integer(row.get("capacity"), config.floor, config.ceiling)
+        active.add(key)
+    return active
+
+
 def check_live_pools(
     policy: Policy, inventory: dict[tuple[str, str], dict[str, Any]],
     quotas: dict[str, list[dict]], *, include_anthropic: bool,
+    complete_regions: frozenset[str] = frozenset(),
 ) -> list[dict]:
     """Recheck exact asserted counters, all versions and outside allocations.
 
@@ -321,7 +391,9 @@ def check_live_pools(
     or claim that quota headroom is currently allocatable platform capacity.
     """
     results = []
-    enabled = policy.enabled(include_anthropic)
+    enabled = preflight_membership(
+        policy, inventory, include_anthropic=include_anthropic, complete_regions=complete_regions,
+    )
     for pool in policy.pools:
         members = policy.members(pool)
         if not any(d.key in enabled for d in members):
@@ -361,6 +433,8 @@ def check_live_pools(
         configured = {d.key: d for d in members}
         for deployment in expected:
             key = deployment.region, deployment.name
+            if key not in enabled and not policy.intents[key].required:
+                continue
             row = inventory.get((deployment.region, deployment.name.casefold()))
             if row is None or (
                 row["deploymentName"], row["format"], row["modelName"], row["version"], row["sku"], row["provisioningState"]
@@ -378,7 +452,7 @@ def check_live_pools(
                 config = configured.get(key)
                 if config is None or config.capacity is None:
                     raise evidence.EvidenceError("production_capacity_missing")
-                targets[key] = config.capacity
+                targets[key] = config.capacity if policy.intents[key].provisioning else live
             else:
                 # Disabled catalog entries are not deleted by an ARM reconciliation.
                 targets[key] = live

@@ -70,9 +70,12 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    and adds versioned exact-identity/capacity evidence: only dual-disabled rows
    may be absent after complete inventory; retained rows still verify exactly.
    Unknown optional production capacity stays null and refuses a present row,
-   never baseline/zero/free quota. Shared capacity/availability/evidence consumers
-   are not yet a complete staged-versus-retained contract; see the configuration
-   reference before adding candidates.
+   never baseline/zero/free quota. Production preflight requires terminal
+   inventory before optional absence and keeps provisioning-disabled retained
+   allocation at its verified actual capacity, with exact scoped identity,
+   reviewed bounds, outside allocation and reserves. Other profile planners and
+   capacity evidence are not yet a complete staged-versus-retained contract; see
+   the configuration reference before adding candidates.
    Never interpret runtime disablement as physical deletion or free quota. Every
    seam offering a capability backed by such a model shares one availability
    predicate and still re-checks at execution.
