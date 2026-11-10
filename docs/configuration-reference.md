@@ -122,12 +122,35 @@ Availability preflight, production capacity policy, capacity evidence and
 maximum/quota-reduction planning still include opted-out
 catalog identities and can reject a never-deployed candidate. Do not remove
 those identities wholesale: a previously deployed opted-out row may still consume
-quota and require exact-identity verification. The main postprovision gate also
-compares required deployment names with an exact observed set; its current
-name-only output cannot authorize a retained deployment's model/version/SKU.
-Separating required desired
-deployments from optional, strictly verified retained allocations remains a
-prerequisite to adding staged rows.
+quota and require exact-identity verification. In particular, production pool
+preflight still projects selected targets for opted-out rows, which can undercount
+their larger retained allocation; a successful preflight is not proof of safe
+staged/retained capacity accounting. These unresolved consumers remain blockers
+to adding staged rows.
+
+The source-target postprovision gate consumes additive version-1 evidence in
+`AZURE_EXPECTED_MODEL_DEPLOYMENTS`: exact account IDs and catalog-derived
+deployment identity, required/optional status, selected capacity and upgrade
+policy. The existing `deploymentNames` projection is unchanged. Legacy outputs
+without versioned fields retain their strict names/state gate; partial or invalid
+versioned evidence cannot fall back to it. Only dual-disabled source rows are
+optional. Runtime-on/provisioning-off rows remain required, as do
+provisioning-on/runtime-off rows. A successful complete inventory can establish
+optional absence for that observation, never deletion or freed quota. Every
+present row must match its exact account/resource ID, model format/name/version,
+SKU, positive integer capacity, Succeeded state and `NoAutoUpgrade` policy.
+Unknown resources, duplicate identities, failed/continued inventories and missing
+or mismatched evidence fail closed.
+
+Verification capacity uses the selected profile, never an observed value as its
+own expectation. For an optional production row lacking a configured allocation,
+the output carries explicit null without evaluating strict production selection.
+Such a row may be absent, but a retained deployment fails verification until
+reviewed expected capacity is available. There is no baseline/zero fallback or
+inference of its historical allocation. Required production rows still fail
+evaluation without production metadata. Resource construction and the existing
+deployment set are unchanged; this metadata does not deploy retained resources
+or reconcile their capacity.
 
 The separate external-Claude target binding verifier distinguishes the two:
 only a row with both flags explicitly false may be absent from a successful,
@@ -143,7 +166,7 @@ freed quota. A configured binding with zero observed deployments reports that
 verified count, not a disabled binding. An entirely
 optional catalog is not a new-target provisioning plan; that preflight refuses
 before reads. This bounded verification change does not resolve the shared
-availability, evidence, capacity or postprovision blockers above, nor make
+availability, evidence or capacity blockers above, nor make
 unsupported video categories routable.
 
 ## Feature flags and prerequisites

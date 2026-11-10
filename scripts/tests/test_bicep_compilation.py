@@ -1026,6 +1026,14 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             expected_models["deploymentNames"],
         )
         self.assertIn("deploymentName", expected_models["deploymentNames"])
+        self.assertEqual(expected_models["verificationVersion"], 1)
+        self.assertEqual(
+            expected_models["deploymentEvidence"],
+            "[variables('modelEvidenceByRegion')[copyIndex()]]",
+        )
+        self.assertIn("resourceId(subscription().subscriptionId", expected_models["accountId"])
+        self.assertIn("variables('resourceGroupName')", expected_models["accountId"])
+        self.assertIn("Microsoft.CognitiveServices/accounts", expected_models["accountId"])
         self.assertEqual(
             outputs["AZURE_PRIMARY_FOUNDRY_REGION"]["value"],
             "[parameters('location')]",
@@ -1115,6 +1123,168 @@ param selections = {
         self.assertIn(document, template["variables"].values())
         self.assertIn("production", template["parameters"]["modelCapacityProfile"]["allowedValues"])
         self.assertIn("__bicep.selectedCapacity", json.dumps(template["variables"]["copy"]))
+
+
+class SourceInventoryCompiledTests(unittest.TestCase):
+    """Evaluate the actual root projections locally, then drive the actual PS gate."""
+
+    def build_evidence(self, document: dict, profile: str = "baseline") -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("capacity.bicep", "model-targets.bicep"):
+                shutil.copy2(ROOT / "infra" / name, root / name)
+            (root / "models.json").write_text(json.dumps(document), encoding="utf-8")
+            source = MAIN.read_text(encoding="utf-8")
+            deployable = re.search(r"^var deployableCatalog = .+$", source, re.MULTILINE)
+            self.assertIsNotNone(deployable)
+            assert deployable is not None
+            # Extract both complete declarations; do not recreate their naming or filters.
+            records = source.split("var modelDeploymentsByRegion = ", 1)[1].split(
+                "\nvar uniqueSuffix", 1,
+            )[0]
+            fixture = """using none
+import { selectedCapacity, verificationCapacity } from './capacity.bicep'
+import { deploymentNameBase, deploymentTarget, deploymentProvisioningEnabled, deploymentRuntimeEnabled, deploymentRouting } from './model-targets.bicep'
+var models = loadJsonContent('models.json')
+var catalog = models.catalog
+var skuShort = models.naming.skuShort
+var subscriptionToken = models.naming.subscriptionToken
+var regionList = map(items(models.regions), r => { name: r.key })
+"""
+            fixture += f"var modelCapacityProfile = '{profile}'\n{deployable[0]}\n"
+            fixture += "var modelDeploymentsByRegion = " + records
+            fixture += "\nparam evidence = modelEvidenceByRegion\nparam deployments = modelDeploymentsByRegion\n"
+            parameters = root / "fixture.bicepparam"
+            parameters.write_text(fixture, encoding="utf-8")
+            bicep = shutil.which("bicep")
+            self.assertIsNotNone(bicep, "The infra-validate Bicep compiler is required.")
+            return subprocess.run(
+                [str(bicep), "build-params", str(parameters), "--stdout"],
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+
+    def selections(self, document: dict, profile: str = "baseline") -> dict:
+        result = self.build_evidence(document, profile)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotRegex(result.stderr, r"\(\d+,\d+\)\s*:\s*(?:Warning|Error)")
+        envelope = json.loads(result.stdout)
+        parameters = json.loads(envelope["parametersJson"]) if "parametersJson" in envelope else envelope
+        return {key: value["value"] for key, value in parameters["parameters"].items()}
+
+    def test_flags_required_vs_staged_and_resource_projection_are_independent(self) -> None:
+        for flags, required, provisioned in (
+            ({}, True, True),
+            ({"runtimeEnabled": False}, True, True),
+            ({"provisioningEnabled": True, "runtimeEnabled": True}, True, True),
+            ({"provisioningEnabled": True, "runtimeEnabled": False}, True, True),
+            ({"provisioningEnabled": False}, True, False),
+            ({"provisioningEnabled": False, "runtimeEnabled": True}, True, False),
+            ({"provisioningEnabled": False, "runtimeEnabled": False}, False, False),
+        ):
+            with self.subTest(flags=flags):
+                document = production_document()
+                document["catalog"][0].update(flags, deploymentNameBase="azure-safe-synthetic")
+                actual = self.selections(document)
+                for index, region in enumerate(sorted(document["regions"])):
+                    evidence = actual["evidence"][index][0]
+                    self.assertIs(evidence["required"], required)
+                    self.assertEqual(evidence["name"], f"azure-safe-synthetic-example-{region}-glbl")
+                    deployments = actual["deployments"][index]
+                    self.assertEqual(len(deployments), int(provisioned))
+                    if provisioned:
+                        self.assertEqual(evidence["name"], deployments[0]["deploymentName"])
+                        self.assertEqual(evidence["capacity"], deployments[0]["capacity"])
+                        self.assertEqual(evidence["model"]["name"], deployments[0]["modelName"])
+
+    def test_external_targets_are_not_source_inventory_or_resources(self) -> None:
+        document = production_document()
+        document["catalog"][0].update(deploymentTarget="external-claude", format="Anthropic")
+        actual = self.selections(document)
+        self.assertEqual(actual, {"evidence": [[], []], "deployments": [[], []]})
+
+    def test_verification_upgrade_policy_matches_the_compiled_resource(self) -> None:
+        result = _compile(ROOT / "infra" / "modules" / "models.bicep")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resource = next(
+            row for row in json.loads(result.stdout)["resources"]
+            if row["type"] == "Microsoft.CognitiveServices/accounts/deployments"
+        )
+        properties = resource["properties"]
+        node = Expression(properties[1:-1]).parse()
+        self.assertEqual(node[:2], ("call", "union"))
+        base = node[2][0]
+        self.assertEqual(base[:2], ("call", "createobject"))
+        fields = {base[2][i][1]: base[2][i + 1] for i in range(0, len(base[2]), 2)}
+        policy = fields["versionUpgradeOption"]
+        self.assertEqual(policy[0], "literal")
+        actual = self.selections(production_document())
+        self.assertEqual(actual["evidence"][0][0]["versionUpgradeOption"], policy[1])
+
+    def test_present_malformed_flags_fail_actual_evaluation(self) -> None:
+        for field in ("runtimeEnabled", "provisioningEnabled"):
+            for value in (None, "false", 0):
+                document = production_document()
+                document["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=False)
+                document["catalog"][0][field] = value
+                with self.subTest(field=field, value=value):
+                    denied = self.build_evidence(document)
+                    self.assertNotEqual(denied.returncode, 0)
+                    self.assertIn("Error", denied.stderr)
+
+    def test_profiles_unknown_optional_capacity_and_required_failure(self) -> None:
+        document = production_document()
+        for profile, capacities in (
+            ("baseline", [10, 10]), ("maximum", [100, 100]), ("production", [40, 20]),
+        ):
+            actual = self.selections(document, profile)
+            self.assertEqual([rows[0]["capacity"] for rows in actual["evidence"]], capacities)
+        model = document["catalog"][0]
+        model.update(provisioningEnabled=False, runtimeEnabled=False)
+        for deployment in model["deployments"]:
+            del deployment["production"]
+        actual = self.selections(document, "production")
+        self.assertEqual([rows[0]["capacity"] for rows in actual["evidence"]], [None, None])
+        self.assertEqual(actual["deployments"], [[], []])
+        model["runtimeEnabled"] = True
+        denied = self.build_evidence(document, "production")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("Error", denied.stderr)
+
+    def test_bicep_evidence_drives_absent_retained_and_unknown_capacity_ps_gate(self) -> None:
+        from scripts.tests.test_postprovision_hard_gates import _run_model
+
+        document = production_document()
+        model = document["catalog"][0]
+        model.update(provisioningEnabled=False, runtimeEnabled=False)
+        account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-ai4ia-test/providers/Microsoft.CognitiveServices/accounts/mf-example-sweden"
+        for missing_capacity in (False, True):
+            if missing_capacity:
+                for deployment in model["deployments"]:
+                    del deployment["production"]
+            selections = self.selections(document, "production")
+            # Use the actual compiled root output's schema, not a second PS fixture.
+            target = {
+                "accountName": "mf-example-sweden", "region": "eastus2",
+                "deploymentNames": [row["deploymentName"] for row in selections["deployments"][0]],
+                "verificationVersion": 1, "accountId": account_id,
+                "deploymentEvidence": selections["evidence"][0],
+            }
+            evidence = target["deploymentEvidence"][0]
+            actual = {
+                "name": evidence["name"], "id": account_id + "/deployments/" + evidence["name"],
+                "sku": {"name": evidence["sku"], "capacity": 40},
+                "properties": {
+                    "model": evidence["model"], "provisioningState": "Succeeded",
+                    "versionUpgradeOption": evidence["versionUpgradeOption"],
+                },
+            }
+            for deployments in ([], [actual]):
+                payload = _run_model(
+                    overrides={"AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target])},
+                    deployments=deployments,
+                )
+                expected = "FAIL" if missing_capacity and deployments else "PASS"
+                self.assertEqual(payload["results"][0]["status"], expected, payload)
 
 
 if __name__ == "__main__":

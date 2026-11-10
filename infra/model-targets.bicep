@@ -7,6 +7,10 @@ func deploymentTarget(model object) string => model.?deploymentTarget ?? 'source
 func deploymentProvisioningEnabled(model object) bool => contains(model, 'provisioningEnabled') ? model.?provisioningEnabled : true
 
 @export()
+#disable-next-line use-safe-access
+func deploymentRuntimeEnabled(model object) bool => contains(model, 'runtimeEnabled') ? model.?runtimeEnabled : true
+
+@export()
 func deploymentRouting(model object) object? => model.?routing
 
 @export()

@@ -64,6 +64,15 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    eligibility gate refuses disabled rows even without actor filtering.
    Generated HTTP, preview/GA realtime routes, default realtime selection and
    voice-provider projections all honor disablement.
+   `provisioningEnabled` independently defaults true and gates desired deployment
+   construction, not runtime or deletion. A staged default-off row needs both
+   flags explicitly false. The source postprovision output retains legacy names
+   and adds versioned exact-identity/capacity evidence: only dual-disabled rows
+   may be absent after complete inventory; retained rows still verify exactly.
+   Unknown optional production capacity stays null and refuses a present row,
+   never baseline/zero/free quota. Shared capacity/availability/evidence consumers
+   are not yet a complete staged-versus-retained contract; see the configuration
+   reference before adding candidates.
    Never interpret runtime disablement as physical deletion or free quota. Every
    seam offering a capability backed by such a model shares one availability
    predicate and still re-checks at execution.

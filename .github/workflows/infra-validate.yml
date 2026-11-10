@@ -27,6 +27,8 @@ on:
       - "scripts/_model_routing.py"
       - "scripts/tests/test_model_routing.py"
       - "scripts/postprovision.ps1"
+      - "scripts/tests/test_postprovision_hard_gates.py"
+      - "scripts/tests/_postprovision.py"
       - "scripts/tests/test_feature_prereqs.py"
       - "scripts/tests/test_model_capacity_profile.py"
       - "scripts/tests/_production_fixture.py"

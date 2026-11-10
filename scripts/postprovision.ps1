@@ -317,8 +317,8 @@ function Invoke-HttpProbe {
 
 # --- checks ----------------------------------------------------------------
 function Test-ModelDeployment {
-  # HARD GATE. Foundry accounts + their model deployments are created by provision,
-  # so every exact catalog-driven deployment MUST exist and be Succeeded right now.
+  # HARD GATE. Required deployments must exist; optional retained deployments must
+  # match the versioned identity/capacity evidence, never just a known name.
   # Consume the Bicep output verbatim; never reconstruct account/deployment names.
   $expectedRaw = Get-EnvValue 'AZURE_EXPECTED_MODEL_DEPLOYMENTS'
   $subId = Get-EnvValue 'AZURE_SUBSCRIPTION_ID'
@@ -348,11 +348,68 @@ function Test-ModelDeployment {
     return
   }
   $headers = @{ Authorization = "Bearer $token" }
+  $accounts = @{}
   foreach ($target in $targets) {
+    if ($target -isnot [pscustomobject]) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'invalid account inventory record'
+      continue
+    }
     $account = "$($target.accountName)".Trim()
+    if ($accounts.ContainsKey($account)) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'duplicate account inventory record'
+      continue
+    }
+    $accounts[$account] = $true
+    $accountId = "/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.CognitiveServices/accounts/$account"
+    $hasEvidence = $null -ne $target.PSObject.Properties['verificationVersion']
+    if ($hasEvidence) {
+      try {
+        if ($target.verificationVersion -cne 1 -or $target.verificationVersion -isnot [long] -or
+            $target.accountId -isnot [string] -or $target.accountId -ine $accountId -or
+            $target.deploymentEvidence -isnot [array] -or [string]::IsNullOrWhiteSpace($account)) {
+          throw 'invalid versioned account evidence'
+        }
+        $evidence = @{}
+        foreach ($item in $target.deploymentEvidence) {
+          if ($item.name -isnot [string] -or $item.name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or
+              $evidence.ContainsKey($item.name) -or $item.required -isnot [bool] -or
+              $item.model.format -isnot [string] -or [string]::IsNullOrWhiteSpace($item.model.format) -or
+              $item.model.name -isnot [string] -or [string]::IsNullOrWhiteSpace($item.model.name) -or
+              $item.model.version -isnot [string] -or [string]::IsNullOrWhiteSpace($item.model.version) -or
+              $item.sku -isnot [string] -or [string]::IsNullOrWhiteSpace($item.sku) -or
+              $item.versionUpgradeOption -isnot [string] -or
+              $item.versionUpgradeOption -cne 'NoAutoUpgrade' -or
+              $null -eq $item.PSObject.Properties['capacity'] -or
+              ($null -ne $item.capacity -and ($item.capacity -isnot [long] -or $item.capacity -le 0)) -or
+              ($item.required -and $null -eq $item.capacity)) {
+            throw 'invalid or duplicate deployment evidence'
+          }
+          $evidence[$item.name] = $item
+        }
+        if ($target.deploymentNames -isnot [array]) { throw 'invalid legacy name projection' }
+        $names = @{}
+        foreach ($name in $target.deploymentNames) {
+          if ($name -isnot [string] -or -not $evidence.ContainsKey($name) -or
+              -not $evidence[$name].required -or $names.ContainsKey($name)) {
+            throw 'inconsistent legacy name projection'
+          }
+          $names[$name] = $true
+        }
+      } catch {
+        Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'invalid versioned model inventory evidence'
+        continue
+      }
+    } elseif ($null -ne $target.PSObject.Properties['deploymentEvidence'] -or $null -ne $target.PSObject.Properties['accountId']) {
+      Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'versioned model inventory evidence missing version'
+      continue
+    }
     $expectedNames = @($target.deploymentNames | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
-    if ([string]::IsNullOrWhiteSpace($account) -or $expectedNames.Count -eq 0) {
+    if ([string]::IsNullOrWhiteSpace($account) -or (-not $hasEvidence -and $expectedNames.Count -eq 0)) {
       Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'expected deployment record is missing accountName or deploymentNames'
+      continue
+    }
+    if (@($expectedNames | Sort-Object -Unique).Count -ne $expectedNames.Count) {
+      Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'duplicate expected deployment names'
       continue
     }
     $uri = "https://management.azure.com/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.CognitiveServices/accounts/$account/deployments?api-version=2023-05-01"
@@ -362,13 +419,62 @@ function Test-ModelDeployment {
       Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail "ARM query failed: $($_.Exception.Message)"
       continue
     }
+    if ($resp -isnot [pscustomobject] -or
+        $null -ne $resp.nextLink -or $null -ne $resp.'@odata.nextLink' -or
+        $resp.value -isnot [array]) {
+      Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'incomplete or continued deployment inventory'
+      continue
+    }
     $deployments = @($resp.value)
     $byName = @{}
+    $invalidInventory = $false
     foreach ($deployment in $deployments) {
-      $name = "$($deployment.name)".Trim()
-      if (-not [string]::IsNullOrWhiteSpace($name)) {
-        $byName[$name.ToLowerInvariant()] = $deployment
+      $name = $deployment.name
+      if ($deployment -isnot [pscustomobject] -or $name -isnot [string] -or
+          [string]::IsNullOrWhiteSpace($name) -or $byName.ContainsKey($name)) {
+        $invalidInventory = $true
+        break
       }
+      $byName[$name] = $deployment
+    }
+    if ($invalidInventory) {
+      Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'invalid or duplicate deployment inventory'
+      continue
+    }
+    if ($hasEvidence) {
+      $failed = $false
+      foreach ($name in $byName.Keys) {
+        if (-not $evidence.ContainsKey($name)) { $failed = $true; break }
+        $item = $evidence[$name]
+        $actual = $byName[$name]
+        if ($null -eq $item.capacity -or
+            $actual.name -cne $item.name -or
+            $actual.id -isnot [string] -or $actual.id -ine "$accountId/deployments/$($item.name)" -or
+            $actual.properties.model.format -isnot [string] -or
+            $actual.properties.model.name -isnot [string] -or
+            $actual.properties.model.version -isnot [string] -or
+            $actual.properties.model.format -cne $item.model.format -or
+            $actual.properties.model.name -cne $item.model.name -or
+            $actual.properties.model.version -cne $item.model.version -or
+            $actual.sku.name -isnot [string] -or
+            $actual.sku.name -cne $item.sku -or $actual.sku.capacity -isnot [long] -or
+            $actual.sku.capacity -ne $item.capacity -or
+            $actual.properties.provisioningState -isnot [string] -or
+            $actual.properties.provisioningState -cne 'Succeeded' -or
+            $actual.properties.versionUpgradeOption -isnot [string] -or
+            $actual.properties.versionUpgradeOption -cne $item.versionUpgradeOption) {
+          $failed = $true; break
+        }
+      }
+      foreach ($item in $evidence.Values) {
+        if ($item.required -and -not $byName.ContainsKey($item.name)) { $failed = $true }
+      }
+      if ($failed) {
+        Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'missing, unexpected or mismatched exact deployment evidence (unknown capacity cannot authorize retained allocation)'
+      } else {
+        Add-Result -Name "model-deployments/$account" -Status 'PASS' -Detail "$($byName.Count) exact deployment(s) verified; omission is not deletion or freed quota"
+      }
+      continue
     }
     $missing = @($expectedNames | Where-Object { -not $byName.ContainsKey($_.ToLowerInvariant()) })
     $expectedKeys = @($expectedNames | ForEach-Object { $_.ToLowerInvariant() })

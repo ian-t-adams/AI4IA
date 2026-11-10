@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from scripts.tests._postprovision import _ps_literal, _run_pwsh
@@ -16,6 +17,8 @@ def _run_model(
     overrides: dict[str, str | None] | None = None,
     token: str | None = "fake-management-token",
     deployments: list[dict[str, object]] | None = None,
+    inventory: dict | None = None,
+    fail_inventory: bool = False,
 ) -> dict[str, object]:
     values: dict[str, str | None] = {
         "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps(
@@ -37,7 +40,7 @@ def _run_model(
     )
     token_literal = "$null" if token is None else _ps_literal(token)
     response = json.dumps(
-        {
+        inventory if inventory is not None else {
             "value": deployments
             if deployments is not None
             else [
@@ -78,6 +81,7 @@ function Get-EnvValue {{
 function Get-MgmtToken {{ return {token_literal} }}
 function Invoke-RestMethod {{
   param($Method, $Uri, $Headers, $TimeoutSec)
+  {("throw 'synthetic inventory read failure'" if fail_inventory else "")}
   $script:Captured = [pscustomobject]@{{
     method = "$Method"
     uri = "$Uri"
@@ -290,6 +294,161 @@ class TokenAcquisitionTests(unittest.TestCase):
 
 
 class ModelDeploymentHardGateTests(unittest.TestCase):
+    def evidence_fixture(self):
+        account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-ai4ia-test/providers/Microsoft.CognitiveServices/accounts/mf-example-sweden"
+        evidence = {
+            "name": "deployment-from-arm", "required": True,
+            "model": {"format": "OpenAI", "name": "synthetic-model", "version": "1"},
+            "sku": "GlobalStandard", "capacity": 10, "versionUpgradeOption": "NoAutoUpgrade",
+        }
+        target = {
+            "region": "swedencentral", "accountName": "mf-example-sweden",
+            "deploymentNames": [evidence["name"]], "accountId": account_id,
+            "verificationVersion": 1, "deploymentEvidence": [evidence],
+        }
+        actual = {
+            "id": account_id + "/deployments/" + evidence["name"], "name": evidence["name"],
+            "sku": {"name": evidence["sku"], "capacity": evidence["capacity"]},
+            "properties": {
+                "model": deepcopy(evidence["model"]), "provisioningState": "Succeeded",
+                "versionUpgradeOption": evidence["versionUpgradeOption"],
+            },
+        }
+        return target, actual
+
+    def run_evidence(self, target, deployments=None, **kwargs):
+        return _run_model(
+            overrides={"AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target])},
+            deployments=deployments, **kwargs,
+        )
+
+    def test_versioned_required_and_known_retained_inventory(self):
+        target, actual = self.evidence_fixture()
+        self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+        self.assertEqual(self.run_evidence(target, [])["results"][0]["status"], "FAIL")
+        optional = deepcopy(target["deploymentEvidence"][0])
+        optional.update(name="staged-known", required=False)
+        target["deploymentEvidence"].append(optional)
+        self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+        retained = deepcopy(actual)
+        retained.update(name=optional["name"], id=target["accountId"] + "/deployments/" + optional["name"])
+        self.assertEqual(self.run_evidence(target, [actual, retained])["results"][0]["status"], "PASS")
+        optional["required"] = True  # Externally managed runtime-on rows remain required.
+        self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "FAIL")
+        self.assertEqual(self.run_evidence(target, [actual, retained])["results"][0]["status"], "PASS")
+        optional["required"] = False
+        optional["capacity"] = None
+        self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+        payload = self.run_evidence(target, [actual, retained])
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        self.assertIn("unknown capacity", payload["results"][0]["detail"])
+
+    def test_versioned_exact_evidence_mutations_fail_for_required_and_retained(self):
+        for required in (True, False):
+            target, actual = self.evidence_fixture()
+            target["deploymentEvidence"][0]["required"] = required
+            if not required:
+                target["deploymentNames"] = []
+            for path, replacement in (
+                (("id",), actual["id"].replace("/accounts/", "/wrong/")),
+                (("name",), "unknown-deployment"),
+                (("sku", "name"), "Standard"),
+                (("sku", "name"), [actual["sku"]["name"]]),
+                (("sku", "capacity"), 11),
+                (("sku", "capacity"), True),
+                (("sku", "capacity"), 10.0),
+                (("properties", "model", "format"), "Other"),
+                (("properties", "model", "name"), "other-model"),
+                (("properties", "model", "version"), "2"),
+                (("properties", "versionUpgradeOption"), "OnceNewDefaultVersionAvailable"),
+                (("properties", "provisioningState"), "Creating"),
+                (("properties", "provisioningState"), ["Succeeded"]),
+                (("properties", "versionUpgradeOption"), ["NoAutoUpgrade"]),
+                (("properties", "model"), {}),
+                (("properties",), None),
+                (("id",), None),
+                (("sku", "capacity"), None),
+            ):
+                with self.subTest(required=required, path=path, replacement=replacement):
+                    bad = deepcopy(actual)
+                    node = bad
+                    for part in path[:-1]:
+                        node = node[part]
+                    node[path[-1]] = replacement
+                    self.assertEqual(self.run_evidence(target, [bad])["results"][0]["status"], "FAIL")
+            self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+
+    def test_versioned_malformed_evidence_and_duplicate_inventory_fail(self):
+        target, actual = self.evidence_fixture()
+        for field, values in (
+            ("capacity", (True, False, 0, -1, 10.0, "10", None)),
+            ("required", (None, "false", 0)),
+            ("name", (None, "", "with/slash")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    bad = deepcopy(target)
+                    bad["deploymentEvidence"][0][field] = value
+                    self.assertEqual(self.run_evidence(bad, [actual])["results"][0]["status"], "FAIL")
+        for field in ("accountId", "verificationVersion", "deploymentEvidence"):
+            bad = deepcopy(target)
+            del bad[field]
+            self.assertEqual(self.run_evidence(bad, [actual])["results"][0]["status"], "FAIL")
+        for field, value in (
+            ("accountId", target["accountId"].replace("rg-ai4ia-test", "rg-other")),
+            ("verificationVersion", True),
+            ("verificationVersion", 2),
+            ("deploymentEvidence", None),
+            ("deploymentNames", ["unknown"]),
+            ("deploymentNames", [actual["name"], actual["name"]]),
+        ):
+            bad = deepcopy(target)
+            bad[field] = value
+            self.assertEqual(self.run_evidence(bad, [actual])["results"][0]["status"], "FAIL")
+        bad = deepcopy(target)
+        bad["deploymentEvidence"].append(deepcopy(bad["deploymentEvidence"][0]))
+        self.assertEqual(self.run_evidence(bad, [actual])["results"][0]["status"], "FAIL")
+        self.assertEqual(self.run_evidence(target, [actual, deepcopy(actual)])["results"][0]["status"], "FAIL")
+        duplicate_id = deepcopy(actual)
+        duplicate_id["name"] = "known-retained"
+        retained = deepcopy(target["deploymentEvidence"][0])
+        retained.update(name=duplicate_id["name"], required=False)
+        target["deploymentEvidence"].append(retained)
+        self.assertEqual(self.run_evidence(target, [actual, duplicate_id])["results"][0]["status"], "FAIL")
+        payload = _run_model(
+            overrides={"AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target, target])}, deployments=[actual],
+        )
+        self.assertIn("FAIL", [row["status"] for row in payload["results"]])
+        self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+
+    def test_complete_inventory_is_required_even_when_every_known_row_is_optional(self):
+        target, actual = self.evidence_fixture()
+        target["deploymentEvidence"][0]["required"] = False
+        target["deploymentNames"] = []
+        for response in (
+            {}, {"value": None}, {"value": {}},
+            {"value": [], "nextLink": "https://example.invalid/next"},
+            {"value": [], "nextLink": ""},
+            {"value": [actual], "@odata.nextLink": "https://example.invalid/next"},
+            {"value": [{"name": None}]},
+        ):
+            with self.subTest(response=response):
+                self.assertEqual(self.run_evidence(target, inventory=response)["results"][0]["status"], "FAIL")
+        self.assertEqual(self.run_evidence(target, [], fail_inventory=True)["results"][0]["status"], "FAIL")
+        self.assertEqual(self.run_evidence(target, [])["results"][0]["status"], "PASS")
+        self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+
+    def test_legacy_inventory_still_rejects_duplicate_and_unknown_names(self):
+        baseline = {"name": "deployment-from-arm", "properties": {"provisioningState": "Succeeded"}}
+        self.assertEqual(_run_model(deployments=[baseline])["results"][0]["status"], "PASS")
+        for rows in ([baseline, deepcopy(baseline)], [baseline, {**baseline, "name": "unknown"}]):
+            self.assertEqual(_run_model(deployments=rows)["results"][0]["status"], "FAIL")
+        target = {
+            "accountName": "mf-example-sweden",
+            "deploymentNames": [baseline["name"], baseline["name"].upper()],
+        }
+        self.assertEqual(self.run_evidence(target, [baseline])["results"][0]["status"], "FAIL")
+
     def test_control_reaches_arm_with_bearer_token_and_passes(self) -> None:
         payload = _run_model()
         self.assertEqual(payload["results"][0]["status"], "PASS")
