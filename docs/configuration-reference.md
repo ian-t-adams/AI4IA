@@ -133,7 +133,9 @@ The separate external-Claude target binding verifier distinguishes the two:
 only a row with both flags explicitly false may be absent from a successful,
 complete target inventory. A present optional row must still match its exact
 account/deployment ID, model/version, SKU/capacity, Succeeded state and upgrade
-policy; required rows and unexpected resources still fail closed. Runtime-on,
+policy; catalog capacities must be positive integers, never Booleans or coerced
+values, even when the standalone verifier reads raw JSON without schema validation.
+Required rows and unexpected resources still fail closed. Runtime-on,
 provisioning-off externally managed rows remain required. Incomplete/failed
 inventory is never absence evidence. The returned count includes every verified
 present deployment, including optional retained rows, and does not establish

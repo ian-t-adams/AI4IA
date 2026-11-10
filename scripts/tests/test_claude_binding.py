@@ -136,6 +136,30 @@ class ClaudeBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "claude_deployment_duplicates"):
             claude.verify_target(self.binding, document, self.reader)
 
+    def test_catalog_capacity_requires_positive_integer_for_required_and_optional_rows(self):
+        for required in (True, False):
+            for capacity in (1, 2, True, False, None, 0, -1, 1.0, "1", [], {}):
+                with self.subTest(required=required, capacity=capacity):
+                    document, candidate, retained = self.staged_target()
+                    candidate["runtimeEnabled"] = required
+                    candidate["deployments"][0]["capacity"] = capacity
+                    # Preserve the bool/int equality trap rather than hiding it
+                    # behind a mismatched observed allocation.
+                    retained["sku"]["capacity"] = capacity if type(capacity) is int else 1
+                    reader = FixtureReader(self.binding)
+                    key = (True, self.binding.account_id + "/deployments")
+                    reader.responses[key]["value"].append(retained)
+                    if type(capacity) is int and capacity > 0:
+                        self.assertEqual(claude.verify_target(self.binding, document, reader), 10)
+                    else:
+                        with self.assertRaisesRegex(EvidenceError, "claude_catalog_capacity"):
+                            claude.verify_target(self.binding, document, reader)
+                        self.assertEqual(reader.calls, [])
+                        reader.responses[key]["value"].pop()
+                        with self.assertRaisesRegex(EvidenceError, "claude_catalog_capacity"):
+                            claude.verify_target(self.binding, document, reader)
+                        self.assertEqual(reader.calls, [])
+
     def test_optional_absence_requires_complete_successful_target_inventory(self):
         document, _, _ = self.staged_target()
         key = (True, self.binding.account_id + "/deployments")

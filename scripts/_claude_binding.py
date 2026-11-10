@@ -163,13 +163,15 @@ def requirements(models: dict[str, Any], *, include_optional: bool = False) -> l
         if not include_optional and not provisioned and not runnable:
             continue
         for deployment in model["deployments"]:
+            capacity = deployment.get("capacity")
+            require(type(capacity) is int and capacity > 0, "claude_catalog_capacity")
             result.append({
                 "name": (
                     f"{model['name']}-{naming['subscriptionToken']}-{deployment['region']}"
                     f"-{naming['skuShort'][deployment['sku']]}"
                 ),
                 "model": {"format": model["format"], "name": model["name"], "version": deployment["version"]},
-                "sku": deployment["sku"], "capacity": deployment["capacity"], "region": deployment["region"],
+                "sku": deployment["sku"], "capacity": capacity, "region": deployment["region"],
             })
     require(len(result) <= 16 and (len(result) > 0 or not include_optional), "claude_catalog_inventory")
     require(len({row["name"] for row in result}) == len(result), "claude_catalog_duplicates")
@@ -316,13 +318,16 @@ def verify_target(binding: Binding, models: dict[str, Any], reader: Reader) -> i
         "claude_deployment_inventory",
     )
     for desired in known:
-        if desired["name"] not in by_name:
+        name = desired["name"]
+        if not isinstance(name, str):
+            raise EvidenceError("claude_catalog_inventory")
+        if name not in by_name:
             continue
-        row = by_name.get(desired["name"], {})
+        row = by_name[name]
         props = object_value(row.get("properties", {}))
         sku = object_value(row.get("sku", {}))
         require(
-            row.get("id", "").lower() == (binding.account_id + "/deployments/" + desired["name"]).lower()
+            row.get("id", "").lower() == (binding.account_id + "/deployments/" + name).lower()
             and props.get("provisioningState") == "Succeeded"
             and isinstance(props.get("model"), dict)
             and {key: props["model"].get(key) for key in desired["model"]} == desired["model"]
