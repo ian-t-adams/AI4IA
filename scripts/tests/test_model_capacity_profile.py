@@ -272,6 +272,10 @@ class SyncStagedMainTests(unittest.TestCase):
                     row = rows[-1]
                     if corruption == "id":
                         row["id"] = row["id"].replace(account, "foreign-account")
+                    elif corruption == "id-case":
+                        row["id"] = row["id"].upper()
+                    elif corruption == "id-type":
+                        row["id"] = [row["id"]]
                     elif corruption in ("format", "name", "version"):
                         row["properties"]["model"][corruption] = "wrong"
                     elif corruption == "sku":
@@ -340,13 +344,14 @@ class SyncStagedMainTests(unittest.TestCase):
     def test_provisioned_allocations_require_exact_identity_before_quota_arithmetic(self):
         for apply in (False, True):
             for reduce in (False, True):
-                for corruption in ("id", "format", "name", "version", "sku", "state", "duplicate", "capacity", "outside"):
+                for corruption in ("id", "id-type", "format", "name", "version", "sku", "state", "duplicate", "capacity", "outside"):
                     with self.subTest(apply=apply, reduce=reduce, corruption=corruption):
                         models = _models()
                         self.assertIsInstance(self.run_sync(
                             models, apply=apply, reduce=reduce, corruption=corruption,
                         ), str)
                 self.assertEqual(self.run_sync(_models(), apply=apply, reduce=reduce), 0)
+                self.assertEqual(self.run_sync(_models(), apply=apply, reduce=reduce, corruption="id-case"), 0)
 
     def test_optional_absence_requires_complete_inventory_and_required_rows_refuse(self):
         for apply in (False, True):
@@ -551,6 +556,73 @@ class SyncCounterSafetyTests(unittest.TestCase):
             platform[("OpenAI", "model-a", "2")] = copy.deepcopy(platform[("OpenAI", "model-a", "1")])
             with self.subTest(reduce=reduce), self.assertRaisesRegex(ValueError, "Multiple model/version"):
                 self.run_plan(models, live, quota, platform, reduce=reduce)
+
+    def test_counter_case_variants_share_version_fence_and_refuse_temp_writes(self):
+        for reduce, variant in (
+            (reduce, variant) for reduce in (False, True) for variant in ("case", "modela", "model-a.azure", "model-a.0")
+        ):
+            models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+            models["catalog"][0]["deployments"][1]["version"] = "2"
+            platform[("OpenAI", "model-a", "2")] = copy.deepcopy(platform[("OpenAI", "model-a", "1")])
+            if not reduce:
+                for rows in platform.values():
+                    for row in rows["value"]:
+                        row["properties"]["availableCapacity"] = 120
+                quota = _quota("GlobalStandard", 50, 170, publisher="AIServices")
+            quota["swedencentral"] = copy.deepcopy(quota["swedencentral"])
+            counter = quota["swedencentral"][0]["name"]["value"]
+            quota["swedencentral"][0]["name"]["value"] = (
+                counter.swapcase() if variant == "case" else counter[:-len("model-a")] + variant
+            )
+            with self.subTest(reduce=reduce, variant=variant), self.assertRaisesRegex(ValueError, "Multiple model/version"):
+                self.run_plan(models, live, quota, platform, reduce=reduce)
+            for apply in (False, True):
+                with tempfile.TemporaryDirectory() as directory:
+                    catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                    original = json.dumps(models)
+                    catalog.write_text(original, encoding="utf-8")
+                    def azure(*args, quota=quota):
+                        if args[:2] == ("account", "show"):
+                            return {"id": SUBSCRIPTION}
+                        if args[:3] == ("cognitiveservices", "usage", "list"):
+                            return quota[args[args.index("--location") + 1]]
+                        raise AssertionError(args)
+                    argv = [
+                        "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                        "--environment-name", "example", "--output-plan", str(output),
+                    ] + (["--apply"] if apply else []) + (["--reduce-to-quota"] if reduce else [])
+                    with (
+                        self.subTest(reduce=reduce, variant=variant, apply=apply),
+                        patch.object(capacity, "MODELS_FILE", catalog),
+                        patch.object(capacity, "ROOT", Path(directory)),
+                        patch.object(capacity, "_collect_live", return_value=live),
+                        patch.object(capacity, "_collect_platform", return_value=platform),
+                        patch.object(capacity, "_az_json", side_effect=azure),
+                        patch.object(sys, "argv", argv),
+                        self.assertRaisesRegex(ValueError, "Multiple model/version"),
+                    ):
+                        capacity.main()
+                    self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                    self.assertFalse(output.exists())
+
+    def test_single_version_counter_case_variants_and_distinct_counters_keep_controls(self):
+        for reduce in (False, True):
+            models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+            quota["swedencentral"] = copy.deepcopy(quota["swedencentral"])
+            quota["swedencentral"][0]["name"]["value"] = quota["swedencentral"][0]["name"]["value"].swapcase()
+            plan, _, _ = self.run_plan(models, live, quota, platform, reduce=reduce)
+            self.assertEqual(sum(plan.values()), 0 if reduce else 170)
+            other = copy.deepcopy(models["catalog"][0])
+            other["name"] = "model-b"
+            models["catalog"].append(other)
+            for region, allocations in live.items():
+                allocations.update({name.replace("model-a", "model-b"): value for name, value in list(allocations.items())})
+                other_quota = copy.deepcopy(quota[region][0])
+                other_quota["name"]["value"] = other_quota["name"]["value"][:-len("model-a")] + "model-b"
+                quota[region].append(other_quota)
+            platform[("OpenAI", "model-b", "1")] = copy.deepcopy(platform[("OpenAI", "model-a", "1")])
+            plan, _, _ = self.run_plan(models, live, quota, platform, reduce=reduce)
+            self.assertEqual(sum(plan.values()), 0 if reduce else 340)
 
 
 class CapacityIacTests(unittest.TestCase):
@@ -892,7 +964,8 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                 index = sorted(models["regions"]).index(region)
                 key = region, compiled["evidence"][index][0]["name"].casefold()
                 for field, value in (
-                    (None, None), ("modelName", "different-model"), ("format", "different-format"),
+                    (None, None), ("id", inventory[key]["id"].upper()),
+                    ("modelName", "different-model"), ("format", "different-format"),
                     ("version", "99"), ("sku", "Standard"), ("provisioningState", "Failed"),
                     ("versionUpgradeOption", "OnceNewDefaultVersionAvailable"),
                     ("id", inventory[key]["id"].replace(inventory[key]["accountName"], "foreign-account")),
@@ -902,6 +975,7 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                         row = actual_inventory[key]
                         if field is not None:
                             row[field] = value
+                        valid = field is None or value == inventory[key]["id"].upper()
                         target = {
                             "region": region, "accountName": row["accountName"],
                             "accountId": policy.scope.account_path(row["accountName"]),
@@ -924,12 +998,12 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                             "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
                             "AZURE_RESOURCE_GROUP": policy.scope.resource_group,
                         }, deployments=[actual])
-                        self.assertEqual(gate["results"][0]["status"], "PASS" if field is None else "FAIL")
+                        self.assertEqual(gate["results"][0]["status"], "PASS" if valid else "FAIL")
                         code, text, _, offers, quota_reads = self.run_main(
                             models, actual_inventory, profile=profile,
                         )
-                        self.assertEqual(code, 0 if field is None else 1, text)
-                        if field is not None:
+                        self.assertEqual(code, 0 if valid else 1, text)
+                        if not valid:
                             self.assertIn("retained_deployment_", text)
                             self.assertFalse(offers or quota_reads)
 

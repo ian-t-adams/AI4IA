@@ -327,7 +327,10 @@ selected profile's exact postprovision evidence in all three profiles, even
 when conservative pool accounting alone would fit. Those profiles also share
 the exact retained account/resource identity, model/format/version/SKU,
 Succeeded state, upgrade-policy and configured routing checks; matching capacity
-alone cannot admit a retained resource. Ordinary provisioning-enabled resources
+alone cannot admit a retained resource. Scoped ARM resource IDs compare as
+case-insensitive strings, consistently with the postprovision gate; other model
+and deployment identity fields retain their existing exact checks.
+Ordinary provisioning-enabled resources
 still follow reconciliation checks. Unknown expected/actual capacity refuses;
 changing the catalog cannot apply a retained-capacity change. These source
 checks do not authorize deployment, prove live quota or enable video routing.
@@ -485,8 +488,11 @@ allocation from a guessed pool. The selected counter's complete, unique native
 integer current/limit evidence must agree with the catalog's validated live
 allocation; missing usage is not zero. Multiple versions sharing a counter are
 unsupported by both planners, rather than receiving separate allocations from
-the same headroom. Unknown deployments or mismatched resource/model/version/SKU/
-state evidence refuse before the live inventory is reduced to capacity numbers.
+the same headroom. Counter identity is case-insensitive, and overlapping
+normalized lookup aliases across regions also share the version fence. This
+conservatively refuses ambiguous aliases without claiming live-counter
+equivalence. Unknown deployments or mismatched resource/model/version/SKU/state
+evidence refuse before the live inventory is reduced to capacity numbers.
 Continued/duplicate/invalid quota and platform responses cannot become actionable
 plans. Refusal writes neither the catalog nor a requested plan file, even with
 `--apply`. These are conservative planner limits, not new pool-scope proof or a

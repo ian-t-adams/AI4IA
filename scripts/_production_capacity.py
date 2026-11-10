@@ -345,7 +345,8 @@ def retained_identity(
     if not evidence.owned_account_name(scope, deployment.region, row.get("accountName")):
         raise evidence.EvidenceError("production_account_mismatch")
     account_path = scope.account_path(row["accountName"])
-    if row.get("id") != f"{account_path}/deployments/{deployment.name}":
+    resource_id = row.get("id")
+    if not isinstance(resource_id, str) or resource_id.casefold() != f"{account_path}/deployments/{deployment.name}".casefold():
         raise evidence.EvidenceError("retained_deployment_identity_mismatch")
     if (
         row.get("region"), row.get("deploymentName"), row.get("format"), row.get("modelName"),

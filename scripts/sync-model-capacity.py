@@ -200,9 +200,11 @@ def _validate_counter_versions(
             for key in _quota_keys(deployment["sku"], model["name"]):
                 counter = quotas.get(deployment["region"], {}).get(key)
                 if counter is not None:
-                    members[counter["counter"]].add((
-                        model["format"], model["name"], deployment["version"], deployment["sku"],
-                    ))
+                    _publisher, counter_sku, counter_model = counter["counter"].split(".", 2)
+                    for alias in _quota_keys(counter_sku, counter_model):
+                        members[alias].add((
+                            model["format"], model["name"], deployment["version"], deployment["sku"],
+                        ))
                     break
     if any(len(identities) != 1 for identities in members.values()):
         raise ValueError("Multiple model/version identities share a quota counter; planning is unsupported.")
@@ -240,7 +242,7 @@ def reduce_capacity_to_quota(
                 if counter is None:
                     raise ValueError(f"{model['name']} ({sku}, {pool}): quota evidence is missing.")
                 observed.append(counter)
-            if len({(row["counter"], row["limit"], row["current"]) for row in observed}) != 1:
+            if len({(row["counter"].casefold(), row["limit"], row["current"]) for row in observed}) != 1:
                 raise ValueError(f"{model['name']} ({sku}, {pool}): quota replicas disagree.")
             counter = observed[0]
             recorded = [int(deployment.get("maxCapacity", deployment["capacity"])) for deployment in deployments]
@@ -435,7 +437,7 @@ def build_capacity_plan(
                 )
             limit = limits.pop()
             current_total = sum(int(entry["current"]) for entry in members)
-            counters = {(entry["counter"], entry["quotaCurrent"]) for entry in members}
+            counters = {(entry["counter"].casefold(), entry["quotaCurrent"]) for entry in members}
             if len(counters) != 1:
                 raise ValueError(f"{model} ({sku}, {scope}): quota replicas disagree.")
             if next(iter(counters))[1] != current_total:
@@ -550,8 +552,9 @@ def _collect_live(
             )
             properties = item.get("properties")
             native_model = properties.get("model") if isinstance(properties, dict) else None
+            resource_id = item.get("id")
             if (
-                item.get("id") != expected_id
+                not isinstance(resource_id, str) or resource_id.casefold() != expected_id.casefold()
                 or not isinstance(properties, dict)
                 or not isinstance(native_model, dict)
                 or any(native_model.get(field) != value for field, value in (
