@@ -209,9 +209,8 @@ def catalog_requirements(
                     ),
                     "versionUpgradeOption": "NoAutoUpgrade",
                     "region": region,
-                    **({
-                        "provisioningEnabled": provisioning, "required": provisioning or runtime,
-                    } if capacity_profile == "production" else {}),
+                    "provisioningEnabled": provisioning,
+                    "required": provisioning or runtime,
                     **({"routing": routing} if routing is not None else {}),
                     **({"deploymentTarget": declared_target} if declared_target != "source" else {}),
                 }
@@ -502,6 +501,35 @@ def existing_deployment_drift(
     if "routing" in required and not routing_matches(existing.get("routing"), required["routing"]):
         differences.append("routing mode or exact model subset differs")
     return differences
+
+
+def retained_capacity_errors(
+    by_region: dict[str, list[dict[str, Any]]],
+    inventory: dict[tuple[str, str], dict[str, Any]],
+) -> list[str]:
+    """Unmanaged retained capacity cannot be reconciled to a different profile target."""
+    errors = []
+    for region, rows in by_region.items():
+        for item in rows:
+            if item["provisioningEnabled"]:
+                continue
+            existing = inventory.get((_normal_location(region), item["deploymentName"].casefold()))
+            if existing is None:
+                # Absence admission belongs to inventory/membership, not capacity comparison.
+                continue
+            expected, actual = item["capacity"], existing.get("capacity")
+            if type(expected) is not int or expected <= 0 or type(actual) is not int or actual <= 0:
+                code = "retained_deployment_capacity_unknown"
+            elif expected != actual:
+                code = "retained_deployment_capacity_mismatch"
+            else:
+                continue
+            errors.append(
+                f"{item['deploymentName']} ({region}): {code}; provisioning is disabled, "
+                "so the selected profile capacity cannot be applied. Exact retained capacity "
+                "must match the catalog's postprovision evidence before proceeding."
+            )
+    return errors
 
 
 def all_deployments_exact_existing(
@@ -1288,6 +1316,7 @@ def main() -> int:
         region_reads=region_reads if args.capacity_profile == "production" else None,
     )
     complete_regions = frozenset(region for region, read in region_reads.items() if read.status == "observed")
+    retained_errors = retained_capacity_errors(by_region, existing_deployments)
     if args.capacity_profile == "production" and policy is not None:
         try:
             if complete_regions != frozenset(models["regions"]):
@@ -1326,7 +1355,9 @@ def main() -> int:
             flush=True,
         )
 
-    total_errors = 0
+    for error in retained_errors:
+        print(f"ERROR: {error}")
+    total_errors = len(retained_errors)
     total_warnings = 0
     merged_quota: dict[str, dict[str, Any]] = {}
     production_quotas: dict[str, list[dict]] = {}

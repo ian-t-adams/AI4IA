@@ -139,8 +139,12 @@ The pool calculation preserves each such deployment's proven **actual** positive
 integer allocation within its reviewed bounds; it never substitutes a smaller
 selected capacity for a reduction the template will not execute. Outside
 allocation and all reserve components remain included. This conservative pool
-accounting does not reconcile a retained deployment to its selected capacity:
-postprovision's independent exact-capacity gate still applies.
+accounting does not reconcile a retained deployment to its selected capacity.
+Across baseline, production and maximum, preflight also rejects a present
+provisioning-disabled deployment whose proven positive integer capacity differs
+from the selected profile's exact postprovision evidence. Unknown expected or
+actual capacity is blocking, not an inferred historical allocation. Provisioned
+rows retain their existing addition/reconciliation behavior.
 
 The source-target postprovision gate consumes additive version-1 evidence in
 `AZURE_EXPECTED_MODEL_DEPLOYMENTS`: exact account IDs and catalog-derived

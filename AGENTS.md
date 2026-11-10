@@ -75,8 +75,11 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    never baseline/zero/free quota. Production preflight requires terminal
    inventory before optional absence and keeps provisioning-disabled retained
    allocation at its verified actual capacity, with exact scoped identity,
-   reviewed bounds, outside allocation and reserves. Other profile planners and
-   capacity evidence are not yet a complete staged-versus-retained contract; see
+   reviewed bounds, outside allocation and reserves. All profiles also refuse
+   present provisioning-disabled capacity that cannot match exact selected
+   postprovision evidence; accounting is not a capacity reconciliation. Other
+   profile planners and capacity evidence are not yet a complete
+   staged-versus-retained contract; see
    the configuration reference before adding candidates.
    Never interpret runtime disablement as physical deletion or free quota. Every
    seam offering a capability backed by such a model shares one availability

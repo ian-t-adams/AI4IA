@@ -460,7 +460,7 @@ class RetainedProductionPreflightTests(unittest.TestCase):
         }
         return models, policy, inventory, quotas
 
-    def run_main(self, models, inventory, *, limit=300, failure=None, malformed=None):
+    def run_main(self, models, inventory, *, limit=300, failure=None, malformed=None, profile="production"):
         calls = []
 
         def azure(*args):
@@ -514,7 +514,7 @@ class RetainedProductionPreflightTests(unittest.TestCase):
             path = Path(directory) / "models.json"
             path.write_text(json.dumps(models), encoding="utf-8")
             env = {
-                "AI4IA_MODEL_CAPACITY_PROFILE": "production", "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                "AI4IA_MODEL_CAPACITY_PROFILE": profile, "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
                 "AZURE_ENV_NAME": "example", "AI4IA_WORKLOAD": "demo",
             }
             with patch.dict(os.environ, env, clear=True), patch.object(preflight, "MODELS_FILE", path), \
@@ -530,6 +530,82 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                     code = str(exc)
         return code, out.getvalue() + err.getvalue(), calls, offers.call_args_list, quotas.call_args_list
 
+    def test_retained_capacity_matches_actual_bicep_and_postprovision_all_profiles(self):
+        from scripts.tests.test_bicep_compilation import SourceInventoryCompiledTests
+        from scripts.tests.test_postprovision_hard_gates import _run_model
+
+        for profile in ("baseline", "production", "maximum"):
+            for runtime in (False, True):
+                for exact in (False, True):
+                    with self.subTest(profile=profile, runtime=runtime, exact=exact):
+                        models, policy, inventory, _ = self.fixture(runtime=runtime)
+                        if profile == "maximum":
+                            for deployment in models["catalog"][0]["deployments"]:
+                                deployment["maxCapacity"] = 50
+                        compiled = SourceInventoryCompiledTests().selections(models, profile)
+                        for index, region in enumerate(sorted(models["regions"])):
+                            evidence_row = compiled["evidence"][index][0]
+                            row = next(item for item in inventory.values() if item["region"] == region)
+                            row["capacity"] = evidence_row["capacity"] if exact else (
+                                60 if profile == "maximum" else 50
+                            )
+                            account_id = policy.scope.account_path(row["accountName"])
+                            target = {
+                                "accountName": row["accountName"], "accountId": account_id,
+                                "region": region, "verificationVersion": 1,
+                                "deploymentNames": [],
+                                "deploymentEvidence": compiled["evidence"][index],
+                            }
+                            actual = {
+                                "name": row["deploymentName"], "id": row["id"],
+                                "sku": {"name": row["sku"], "capacity": row["capacity"]},
+                                "properties": {
+                                    "model": evidence_row["model"], "provisioningState": "Succeeded",
+                                    "versionUpgradeOption": row["versionUpgradeOption"],
+                                },
+                            }
+                            gate = _run_model(overrides={
+                                "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target]),
+                                "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                                "AZURE_RESOURCE_GROUP": policy.scope.resource_group,
+                            }, deployments=[actual])
+                            self.assertEqual(gate["results"][0]["status"], "PASS" if exact else "FAIL")
+                        code, text, _, _, _ = self.run_main(models, inventory, profile=profile)
+                        self.assertEqual(code, 0 if exact else 1, text)
+                        if not exact:
+                            self.assertIn("retained_deployment_capacity_mismatch", text)
+
+    def test_retained_capacity_requires_native_positive_integer_evidence(self):
+        for profile in ("baseline", "production", "maximum"):
+            models, _, inventory, _ = self.fixture()
+            requirements = preflight.catalog_requirements(models, capacity_profile=profile)
+            for region, rows in requirements.items():
+                inventory[(region, rows[0]["deploymentName"].casefold())]["capacity"] = rows[0]["capacity"]
+            self.assertEqual(preflight.retained_capacity_errors(requirements, inventory), [])
+            for side in ("expected", "actual"):
+                for value in (None, True, False, 0, -1, 1.0, "40"):
+                    with self.subTest(profile=profile, side=side, value=value):
+                        desired, observed = copy.deepcopy(requirements), copy.deepcopy(inventory)
+                        if side == "expected":
+                            desired["eastus2"][0]["capacity"] = value
+                        else:
+                            next(iter(observed.values()))["capacity"] = value
+                        errors = preflight.retained_capacity_errors(desired, observed)
+                        self.assertEqual(len(errors), 1)
+                        self.assertIn("retained_deployment_capacity_unknown", errors[0])
+
+    def test_provisioned_capacity_drift_remains_reconcilable_in_all_profiles(self):
+        for profile in ("baseline", "production", "maximum"):
+            for legacy in (False, True):
+                with self.subTest(profile=profile, legacy=legacy):
+                    models, _, inventory, _ = self.fixture(provisioning=True)
+                    if legacy:
+                        del models["catalog"][0]["provisioningEnabled"]
+                        del models["catalog"][0]["runtimeEnabled"]
+                    code, text, _, _, _ = self.run_main(models, inventory, profile=profile)
+                    self.assertEqual(code, 0, text)
+                    self.assertNotIn("retained_deployment_capacity_", text)
+
     def test_retained_actual_allocation_with_outside_and_reserves(self):
         for runtime in (False, True):
             models, policy, inventory, quotas = self.fixture(runtime=runtime)
@@ -542,15 +618,16 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                 rows[0]["limit"] = 190
             with self.assertRaisesRegex(evidence.EvidenceError, "production_pool_reserve_exceeded"):
                 production.check_live_pools(policy, inventory, quotas, include_anthropic=False)
-            for limit, expected in ((300, 0), (230, 0), (229, 1), (190, 1)):
+            for limit in (300, 230, 229, 190):
                 with self.subTest(runtime=runtime, limit=limit):
                     code, text, _, _, _ = self.run_main(models, inventory, limit=limit)
-                    self.assertEqual(code, expected, text)
-                    if not expected:
-                        self.assertIn("selected 100", text)
-                        self.assertNotIn("selected 60", text)
-                    else:
+                    self.assertEqual(code, 1, text)
+                    self.assertIn("retained_deployment_capacity_mismatch", text)
+                    self.assertNotIn("selected 60", text)
+                    if limit < 230:
                         self.assertIn("production_pool_reserve_exceeded", text)
+                    else:
+                        self.assertIn("selected 100", text)
 
     def test_provisioned_runtime_off_and_legacy_keep_desired_selection(self):
         for legacy in (False, True):
@@ -647,17 +724,19 @@ class RetainedProductionPreflightTests(unittest.TestCase):
 
     def test_failed_partial_continued_duplicate_inventory_never_establishes_absence(self):
         models, _, inventory, _ = self.fixture()
-        for malformed in ("continued-accounts", "duplicate-account", "continued-deployments", "duplicate-deployment"):
-            with self.subTest(malformed=malformed):
-                code, text, _, _, _ = self.run_main(models, inventory, malformed=malformed)
+        for profile in ("baseline", "production", "maximum"):
+            for malformed in ("continued-accounts", "duplicate-account", "continued-deployments", "duplicate-deployment"):
+                with self.subTest(profile=profile, malformed=malformed):
+                    code, text, _, _, _ = self.run_main(models, inventory, malformed=malformed, profile=profile)
+                    self.assertNotEqual(code, 0, text)
+            for current in ({}, inventory):
+                code, text, _, offers, quota_reads = self.run_main(
+                    models, current, failure="mf-demo-example-swedencentral-abcdefghijklm", profile=profile,
+                )
                 self.assertNotEqual(code, 0, text)
-        for current in ({}, inventory):
-            code, text, _, offers, quota_reads = self.run_main(
-                models, current, failure="mf-demo-example-swedencentral-abcdefghijklm",
-            )
-            self.assertEqual(code, 1, text)
-            self.assertIn("production_inventory_unknown", text)
-            self.assertFalse(offers or quota_reads)
+                if profile == "production":
+                    self.assertIn("production_inventory_unknown", text)
+                self.assertFalse(offers or quota_reads)
 
     def test_malformed_flags_fail_before_any_reads(self):
         for field in ("runtimeEnabled", "provisioningEnabled"):
@@ -665,10 +744,11 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                 with self.subTest(field=field, value=value):
                     models, _, _, _ = self.fixture()
                     models["catalog"][0][field] = value
-                    code, text, calls, offers, quota_reads = self.run_main(models, {})
-                    self.assertEqual(code, 1, text)
-                    self.assertIn("invalid_production_model_intent", text)
-                    self.assertFalse(calls or offers or quota_reads)
+                    for profile in ("baseline", "production", "maximum"):
+                        code, text, calls, offers, quota_reads = self.run_main(models, {}, profile=profile)
+                        self.assertEqual(code, 1, text)
+                        self.assertIn("invalid_production_model_intent", text)
+                        self.assertFalse(calls or offers or quota_reads)
 
 
 class ProductionProfileTests(unittest.TestCase):

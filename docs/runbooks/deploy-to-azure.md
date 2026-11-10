@@ -320,7 +320,10 @@ actual positive integer allocation within those bounds, not an unexecuted desire
 reduction. Outside allocation and replacement/retry/other-workload reserves still
 apply: retained 100 + outside 40 + reserved 90 cannot fit a counter limit of 190.
 No absent candidate creates free quota, and no template change reconciles a
-retained deployment. The postprovision exact-capacity gate is independent.
+retained deployment. Preflight rejects retained capacity differing from the
+selected profile's exact postprovision evidence in all three profiles, even
+when conservative pool accounting alone would fit. Unknown expected/actual
+capacity refuses; changing the catalog cannot apply a retained-capacity change.
 Baseline/maximum planning, capacity reporting and video routing retain their
 separate staging blockers; this production check does not enable them.
 
