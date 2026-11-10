@@ -106,11 +106,23 @@ model deployment templates, independently of `runtimeEnabled`. Omission preserve
 existing catalog behavior. New candidate rows must explicitly set this field to
 `false` until their deployment scope is approved. Only an absent property takes
 the legacy default: explicit null and other non-Booleans are rejected by catalog
-validation and excluded by Bicep even if that validation is bypassed.
+validation and cause Bicep evaluation to fail even if that validation is bypassed.
+The primary-region Content Understanding completion and embedding deployments
+remain required by unconditional infrastructure outputs even when document
+understanding is disabled; preflight rejects opting either required row out.
 This is a desired-template
 opt-out, not deletion: the current incremental deployment mode does not delete an
 already-deployed resource when it is omitted. Physical cleanup requires a separate
 reviewed, operator-approved operation.
+
+This switch is not yet a complete staged-candidate admission contract.
+Availability preflight, exact external-Claude binding verification, production
+capacity policy and maximum/quota-reduction planning still include opted-out
+catalog identities and can reject a never-deployed candidate. Do not remove
+those identities wholesale: a previously deployed opted-out row may still consume
+quota and require exact-identity verification. Separating required desired
+deployments from optional, strictly verified retained allocations remains a
+prerequisite to adding staged rows.
 
 ## Feature flags and prerequisites
 

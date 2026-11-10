@@ -55,7 +55,10 @@ def _provisioning_projection(template: dict, expression: str, catalog: list[dict
         if name.startswith("__bicep_"):
             member = functions[name.removeprefix("__bicep_")]
             bindings = dict(zip((p["name"] for p in member["parameters"]), values, strict=True))
-            return evaluate(Expression(member["output"]["value"][1:-1]).parse(), bindings)
+            value = evaluate(Expression(member["output"]["value"][1:-1]).parse(), bindings)
+            if member["output"]["type"] == "bool" and type(value) is not bool:
+                raise ValueError("Boolean UDF output required")
+            return value
         if name in ("true", "false"):
             return name == "true"
         if name == "createarray":
@@ -215,7 +218,7 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
 
         expected = (
             "[if(contains(parameters('model'), 'provisioningEnabled'), "
-            "contains(createArray(true()), tryGet(parameters('model'), 'provisioningEnabled')), true())]"
+            "tryGet(parameters('model'), 'provisioningEnabled'), true())]"
         )
         for template, variable, deployment_target in (
             (self.template, "deployableCatalog", "source"),
@@ -223,10 +226,10 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         ):
             functions = next(row["members"] for row in template["functions"] if row["namespace"] == "__bicep")
             self.assertEqual(functions["deploymentProvisioningEnabled"]["output"]["value"], expected)
-            cases = [("omitted", {}), ("true", {"provisioningEnabled": True})]
-            cases += [
-                (str(index), {"provisioningEnabled": value})
-                for index, value in enumerate((False, None, "true", "false", 0, 1, 1.0, [], {}))
+            cases = [
+                ("omitted", {}),
+                ("true", {"provisioningEnabled": True}),
+                ("false", {"provisioningEnabled": False}),
             ]
             catalog = [
                 {
@@ -240,6 +243,12 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             with self.subTest(entrypoint=variable):
                 admitted = _provisioning_projection(template, template["variables"][variable], catalog)
                 self.assertEqual([row["name"] for row in admitted], ["omitted", "true"])
+                for value in (None, "true", "false", 0, 1, 1.0, [], {}):
+                    with self.subTest(value=value), self.assertRaisesRegex(ValueError, "Boolean"):
+                        _provisioning_projection(
+                            template, template["variables"][variable],
+                            [{**catalog[0], "provisioningEnabled": value}],
+                        )
                 legacy = json.loads(MODELS.read_text(encoding="utf-8"))["catalog"]
                 expected_legacy = [
                     row for row in legacy
@@ -262,17 +271,22 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             {"provisioningEnabled": value}
             for value in (True, False, None, "true", "false", 0, 1, 1.0, [], {})
         ]
-        expressions = "\n".join(
-            f"deploymentProvisioningEnabled(json('{json.dumps(row)}'))" for row in rows
-        )
-        result = subprocess.run(
-            [bicep, "console"], input=f"{declarations[0]}\n{expressions}\n",
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "")
-        # Console may exit zero on evaluation errors: require the actual result.
-        self.assertEqual(result.stdout.split(), ["true", "true"] + ["false"] * 9)
+        for index, row in enumerate(rows):
+            with self.subTest(row=row):
+                expression = f"deploymentProvisioningEnabled(json('{json.dumps(row)}'))"
+                result = subprocess.run(
+                    [bicep, "console"], input=f"{declarations[0]}\n{expression}\n",
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                output = result.stdout + result.stderr
+                if index < 3:
+                    self.assertEqual(result.returncode, 0, output)
+                    self.assertEqual(output.split(), ["true" if index < 2 else "false"])
+                else:
+                    # Console can exit zero on errors: require a typed diagnostic,
+                    # never a success-shaped false result.
+                    self.assertIn("bool", output.lower())
+                    self.assertNotIn(output.strip(), ("true", "false", ""))
 
     def test_decision_alias_changes_resource_token_not_provider_model(self) -> None:
         inputs = next(row["input"] for row in self.template["variables"]["copy"]
