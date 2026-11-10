@@ -582,8 +582,23 @@ def _exercise(case: str) -> None:
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
                 source_parent.attributes = {}
-                assert inheritance_control.should_sample(
+                # A sampled local parent without an explicit rate represents
+                # 100% sampling; the SDK preserves it even with a zero root rate.
+                unbounded = inheritance_control.should_sample(
                     trace.set_span_in_context(recorded, Context()), 123, "chat",
+                    kind=SpanKind.CLIENT, attributes={},
+                )
+                assert unbounded.decision == Decision.RECORD_AND_SAMPLE
+                assert _SAMPLE_RATE_KEY not in (unbounded.attributes or {})
+                assert inheritance_control.should_sample(
+                    Context(), 123, "chat",
+                    kind=SpanKind.CLIENT, attributes={},
+                ).decision == Decision.DROP
+                remote = NonRecordingSpan(SpanContext(
+                    123, 456, is_remote=True, trace_flags=TraceFlags(TraceFlags.SAMPLED),
+                ))
+                assert inheritance_control.should_sample(
+                    trace.set_span_in_context(remote, Context()), 123, "chat",
                     kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
         assert network == []
