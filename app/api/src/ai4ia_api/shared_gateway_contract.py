@@ -18,6 +18,11 @@ _MODEL_SKUS = frozenset({
     "GlobalProvisionedManaged", "DataZoneProvisionedManaged",
 })
 _MAX_MANIFEST_BYTES = 65536
+_V21_REQUIRED_FORBIDDEN_HEADERS = frozenset({
+    "api-key", "x-llmmodel", "s7p-model-override", "x-backend-affinity",
+    "x-s7ppriority", "x-policycyclecounter", "s7pdebug",
+    "x-ms-client-principal-id", "x-userid",
+})
 
 
 class SharedGatewayManifestError(ValueError):
@@ -363,8 +368,8 @@ def _load_v21(
         top, api_identity_client_id=api_identity_client_id,
         require_api_identity=require_api_identity, extra_gateway_fields=extras,
     )
-    if not top["privacy"]["forbiddenRequestHeaders"]:
-        raise SharedGatewayManifestError("Shared gateway 2.1 forbidden headers cannot be empty.")
+    if not _V21_REQUIRED_FORBIDDEN_HEADERS <= common.forbidden_headers:
+        raise SharedGatewayManifestError("Shared gateway 2.1 required forbidden headers are missing.")
     base = urlparse(common.base_url)
     for name in extras:
         path = "/anthropic/v1" if name == "anthropicBaseUrl" else "/video/v1"
@@ -449,8 +454,14 @@ def _load_v21(
 
     hosts = gateway["allowedHosts"]
     if top["status"] == "schema-only":
-        if any(family.enabled for family in parsed.values()) or any(
-            host != "example.invalid" and not host.endswith(".example.invalid") for host in hosts
+        if (
+            any(family.enabled for family in parsed.values())
+            or any(
+                host != "example.invalid" and not host.endswith(".example.invalid") for host in hosts
+            )
+            or top["auth"]["tenantId"] != "00000000-0000-0000-0000-000000000000"
+            or common.caller_client_id != "00000000-0000-0000-0000-000000000000"
+            or ".example.invalid" not in top["auth"]["audience"]
         ):
             raise SharedGatewayManifestError("Shared gateway schema-only contract must be synthetic and off.")
     elif (

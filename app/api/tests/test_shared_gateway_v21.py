@@ -53,6 +53,56 @@ def test_pinned_example_bytes_and_disabled_metadata():
     assert all(not family.enabled for family in manifest.capabilities.values())
 
 
+@pytest.mark.parametrize(
+    "header",
+    [
+        "api-key", "x-llmmodel", "s7p-model-override", "x-backend-affinity",
+        "x-s7ppriority", "x-policycyclecounter", "s7pdebug",
+        "x-ms-client-principal-id", "x-userid",
+    ],
+)
+@pytest.mark.parametrize("status", ["schema-only", "resolved"])
+def test_v21_requires_each_gateway_forbidden_header(header, status):
+    value = example() if status == "schema-only" else resolved()
+    assert load(value).status == status
+    value["privacy"]["forbiddenRequestHeaders"] = [
+        name for name in value["privacy"]["forbiddenRequestHeaders"] if name.lower() != header
+    ]
+    with pytest.raises(SharedGatewayManifestError, match="forbidden headers"):
+        load(value)
+
+
+@pytest.mark.parametrize("status", ["schema-only", "resolved"])
+def test_v21_forbidden_headers_allow_case_variants_and_extras(status):
+    value = example() if status == "schema-only" else resolved()
+    value["privacy"]["forbiddenRequestHeaders"] = [
+        name.upper() for name in value["privacy"]["forbiddenRequestHeaders"]
+    ] + ["x-extra-denied-header"]
+    assert "x-extra-denied-header" in load(value).forbidden_headers
+
+
+@pytest.mark.parametrize("field", ["tenantId", "callerClientId", "audience"])
+def test_schema_only_requires_placeholder_auth(field):
+    value = example()
+    assert load(value).status == "schema-only"
+    value["auth"][field] = _manifest()["auth"][field]
+    if field == "tenantId":
+        value["auth"]["issuer"] = _manifest()["auth"]["issuer"]
+    elif field == "audience":
+        value["auth"]["scope"] = value["auth"]["audience"] + "/.default"
+    with pytest.raises(SharedGatewayManifestError, match="schema-only"):
+        load(value)
+
+
+@pytest.mark.parametrize("audience", ["api://example.invalid", "api://notexample.invalid"])
+def test_schema_only_requires_dotted_placeholder_audience(audience):
+    value = example()
+    value["auth"]["audience"] = audience
+    value["auth"]["scope"] = audience + "/.default"
+    with pytest.raises(SharedGatewayManifestError, match="schema-only"):
+        load(value)
+
+
 @pytest.mark.parametrize("version", ["2.2.0", "3.0.0", None, 2])
 def test_unknown_versions_refuse(version):
     value = example()
