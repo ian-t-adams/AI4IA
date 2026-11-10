@@ -312,8 +312,10 @@ production pool or set a production ceiling.
 For production preflight, a source deployment is required when either
 `provisioningEnabled` or `runtimeEnabled` is true (each defaults true). Only a
 dual-disabled candidate can be absent, after successful complete regional
-inventory; unknown/failed/continued inventory is not absence. Missing production
-metadata is allowed for that absent candidate only. A present provisioning-disabled
+inventory; unknown/failed/continued inventory is not absence.
+Inventory failure diagnostics retain the region, operation and failure type
+only; untrusted CLI stderr is withheld, not made safe by credential regexes.
+Missing production metadata is allowed for that absent candidate only. A present provisioning-disabled
 deployment must have exact scoped identity/model/version/SKU/state/upgrade-policy
 evidence and reviewed production capacity/bounds. Pool accounting preserves its
 actual positive integer allocation within those bounds, not an unexecuted desired

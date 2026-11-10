@@ -1199,10 +1199,10 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                 )
                 self.assertNotEqual(code, 0)
                 self.assertIn("deployment inventory in eastus2", text)
-                self.assertIn("synthetic failure", text)
-                self.assertIn("could not list model deployments", text)
+                self.assertIn("SystemExit: account selection/deployment inventory failed", text)
                 for private in (
-                    "private-bearer", "private-key", "private-password", "private-signature", "a" * 40,
+                    "synthetic failure", "private-bearer", "private-key", "private-password",
+                    "private-signature", "a" * 40,
                 ):
                     self.assertNotIn(private, text)
                 self.assertFalse(offers or quota_reads)
@@ -1211,10 +1211,51 @@ class RetainedProductionPreflightTests(unittest.TestCase):
         detail = preflight._inventory_diagnostic(SystemExit(
             "synthetic failure\x1b\nabcdefgh.ijklmnop.qrstuvwx " + "word " * 2000,
         ))
-        self.assertIn("synthetic failure", detail)
+        self.assertIn("SystemExit: account selection/deployment inventory failed", detail)
+        self.assertNotIn("synthetic failure", detail)
         self.assertNotIn("abcdefgh.ijklmnop.qrstuvwx", detail)
         self.assertLessEqual(len(detail), 512)
         self.assertNotRegex(detail, r"[\x00-\x1f\x7f-\x9f]")
+
+    def test_inventory_diagnostics_never_echo_known_or_unknown_credential_formats(self):
+        models, _, inventory, _ = self.fixture()
+        for deployment in models["catalog"][0]["deployments"]:
+            for row in inventory.values():
+                if row["region"] == deployment["region"]:
+                    row["capacity"] = deployment["production"]["capacity"]
+        payloads = (
+            "client_secret=synthetic-secret",
+            "Authorization: Basic c3ludGhldGlj",
+            "Cookie: synthetic-session",
+            "Custom-Unrecognized-Header: short-private-value",
+            '{"unknown_credential_field": "unrecognized-private-value"}',
+            "not-a-known-header arbitrary-private-text",
+            "\x1b[31mclient_secret=private\x1b[0m\n" + "private " * 2000,
+        )
+        expected = (
+            "SystemExit: account selection/deployment inventory failed; "
+            "untrusted error detail withheld."
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload[:60]):
+                self.assertEqual(preflight._inventory_diagnostic(SystemExit(payload)), expected)
+                for profile in ("baseline", "maximum", "production"):
+                    code, text, _, offers, quota_reads = self.run_main(
+                        models, inventory, profile=profile,
+                        failure="mf-demo-example-eastus2-abcdefghijklm", failure_detail=payload,
+                    )
+                    self.assertNotEqual(code, 0)
+                    self.assertIn(f"ERROR: deployment inventory in eastus2: {expected}", text)
+                    self.assertNotIn(payload, text)
+                    for private in (
+                        "synthetic-secret", "c3ludGhldGlj", "synthetic-session", "short-private-value",
+                        "unrecognized-private-value", "arbitrary-private-text", "client_secret=private",
+                    ):
+                        self.assertNotIn(private, text)
+                    self.assertFalse(offers or quota_reads)
+        code, text, _, _, _ = self.run_main(models, inventory)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn(expected, text)
 
     def test_os_inventory_failure_keeps_typed_reason_without_exception_payload(self):
         models, _, _, _ = self.fixture()

@@ -372,23 +372,12 @@ def existing_deployment_inventory(
     return inventory, []
 
 
-def _inventory_diagnostic(exc: SystemExit) -> str:
-    """Keep operator failure context bounded without credential-bearing payloads."""
-    detail = str(exc)[:8192]
-    detail = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", detail)
-    detail = re.sub(r"\bBearer\s+\S+", "[REDACTED]", detail, flags=re.IGNORECASE)
-    detail = re.sub(
-        r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", "[REDACTED]", detail,
+def _inventory_diagnostic(_exc: SystemExit) -> str:
+    """Project fixed operation/type context, never regex-redacted CLI payloads."""
+    return (
+        "SystemExit: account selection/deployment inventory failed; "
+        "untrusted error detail withheld."
     )
-    detail = re.sub(
-        r"""(\b(?:api[_-]?key|x-api-key|access[_-]?token|token|authorization|secret|password"""
-        r"""|ocp-apim-subscription-key|subscription[_-]?key|s7p[_-]?key)\b["']?\s*[:=]\s*)"""
-        r"""("[^"]*"|'[^']*'|[^\s,;]+)""",
-        r"\1[REDACTED]", detail, flags=re.IGNORECASE,
-    )
-    detail = re.sub(r"https?://\S+", "[URL REDACTED]", detail, flags=re.IGNORECASE)
-    detail = re.sub(r"[A-Za-z0-9_+/=-]{32,}(?:\.[A-Za-z0-9_+/=-]+)*", "[REDACTED]", detail)
-    return " ".join(detail.split())[:512] or "inventory read failed"
 
 
 def _regional_deployment_inventory(
