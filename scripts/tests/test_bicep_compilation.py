@@ -1128,7 +1128,9 @@ param selections = {
 class SourceInventoryCompiledTests(unittest.TestCase):
     """Evaluate the actual root projections locally, then drive the actual PS gate."""
 
-    def build_evidence(self, document: dict, profile: str = "baseline") -> subprocess.CompletedProcess[str]:
+    def build_evidence(
+        self, document: dict, profile: str = "baseline", projection: str = "both",
+    ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ("capacity.bicep", "model-targets.bicep"):
@@ -1153,7 +1155,10 @@ var regionList = map(items(models.regions), r => { name: r.key })
 """
             fixture += f"var modelCapacityProfile = '{profile}'\n{deployable[0]}\n"
             fixture += "var modelDeploymentsByRegion = " + records
-            fixture += "\nparam evidence = modelEvidenceByRegion\nparam deployments = modelDeploymentsByRegion\n"
+            if projection in ("both", "evidence"):
+                fixture += "\nparam evidence = modelEvidenceByRegion\n"
+            if projection in ("both", "deployments"):
+                fixture += "\nparam deployments = modelDeploymentsByRegion\n"
             parameters = root / "fixture.bicepparam"
             parameters.write_text(fixture, encoding="utf-8")
             bicep = shutil.which("bicep")
@@ -1174,7 +1179,9 @@ var regionList = map(items(models.regions), r => { name: r.key })
     def test_flags_required_vs_staged_and_resource_projection_are_independent(self) -> None:
         for flags, required, provisioned in (
             ({}, True, True),
+            ({"runtimeEnabled": True}, True, True),
             ({"runtimeEnabled": False}, True, True),
+            ({"provisioningEnabled": True}, True, True),
             ({"provisioningEnabled": True, "runtimeEnabled": True}, True, True),
             ({"provisioningEnabled": True, "runtimeEnabled": False}, True, True),
             ({"provisioningEnabled": False}, True, False),
@@ -1185,6 +1192,9 @@ var regionList = map(items(models.regions), r => { name: r.key })
                 document = production_document()
                 document["catalog"][0].update(flags, deploymentNameBase="azure-safe-synthetic")
                 actual = self.selections(document)
+                for projection in ("evidence", "deployments"):
+                    isolated = self.build_evidence(document, projection=projection)
+                    self.assertEqual(isolated.returncode, 0, isolated.stderr)
                 for index, region in enumerate(sorted(document["regions"])):
                     evidence = actual["evidence"][index][0]
                     self.assertIs(evidence["required"], required)
@@ -1222,14 +1232,22 @@ var regionList = map(items(models.regions), r => { name: r.key })
 
     def test_present_malformed_flags_fail_actual_evaluation(self) -> None:
         for field in ("runtimeEnabled", "provisioningEnabled"):
-            for value in (None, "false", 0):
-                document = production_document()
-                document["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=False)
-                document["catalog"][0][field] = value
-                with self.subTest(field=field, value=value):
-                    denied = self.build_evidence(document)
-                    self.assertNotEqual(denied.returncode, 0)
-                    self.assertIn("Error", denied.stderr)
+            other = "provisioningEnabled" if field == "runtimeEnabled" else "runtimeEnabled"
+            for other_value in ("omitted", True, False):
+                for value in (None, "false", 0):
+                    document = production_document()
+                    model = document["catalog"][0]
+                    model.pop(other, None)
+                    if other_value != "omitted":
+                        model[other] = other_value
+                    model[field] = value
+                    for projection in ("evidence", "deployments"):
+                        with self.subTest(
+                            field=field, other=other_value, value=value, projection=projection,
+                        ):
+                            denied = self.build_evidence(document, projection=projection)
+                            self.assertNotEqual(denied.returncode, 0)
+                            self.assertIn("Error BCP338", denied.stderr)
 
     def test_profiles_unknown_optional_capacity_and_required_failure(self) -> None:
         document = production_document()

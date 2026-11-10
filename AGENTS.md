@@ -66,7 +66,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    voice-provider projections all honor disablement.
    `provisioningEnabled` independently defaults true and gates desired deployment
    construction, not runtime or deletion. A staged default-off row needs both
-   flags explicitly false. The source postprovision output retains legacy names
+   flags explicitly false. Source Bicep resource and verification projections
+   eagerly validate both typed flags; Boolean short-circuiting must not admit a
+   malformed peer flag. The source postprovision output retains legacy names
    and adds versioned exact-identity/capacity evidence: only dual-disabled rows
    may be absent after complete inventory; retained rows still verify exactly.
    Unknown optional production capacity stays null and refuses a present row,
