@@ -52,6 +52,11 @@
             "default": true,
             "description": "False keeps this row's deployments and historical metadata in desired infrastructure, quota and retirement inventory, but leaves it with no eligible runtime options or generated HTTP/realtime routes. It is not physical deletion or free quota; deployment removal is a separate operator-approved cleanup."
           },
+          "provisioningEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "False excludes this model from every Bicep model-deployment entrypoint independently of runtimeEnabled, including Anthropic provider terms. Omission preserves legacy provisioning. Omitting a resource from an incremental deployment does not delete an already-deployed resource; cleanup is separate and operator-approved."
+          },
           "api": {
             "type": "string",
             "enum": ["chat", "responses", "anthropic", "mai", "bfl", "mistral_ocr", "decision"],

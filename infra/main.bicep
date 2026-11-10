@@ -3,7 +3,7 @@
 targetScope = 'subscription'
 
 import { selectedCapacity } from './capacity.bicep'
-import { deploymentTarget, deploymentRouting, deploymentNameBase } from './model-targets.bicep'
+import { deploymentTarget, deploymentProvisioningEnabled, deploymentRouting, deploymentNameBase } from './model-targets.bicep'
 
 @minLength(3)
 @maxLength(20)
@@ -411,7 +411,7 @@ var effectiveSearchLocation = empty(searchLocation) ? location : searchLocation
 var models = loadJsonContent('models.json')
 var skuShort = models.naming.skuShort
 var catalog = models.catalog
-var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'source' && model.format != 'Anthropic')
+var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'source' && model.format != 'Anthropic' && deploymentProvisioningEnabled(model))
 // azd substitutes environment values into main.parameters.json without JSON
 // escaping, so the JSON-valued settings arrive as UTF-8 base64 transports derived
 // from the raw operator variables (scripts/_json_transport.py). Decode them here;

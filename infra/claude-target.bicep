@@ -1,6 +1,6 @@
 targetScope = 'resourceGroup'
 
-import { deploymentTarget } from './model-targets.bicep'
+import { deploymentTarget, deploymentProvisioningEnabled } from './model-targets.bicep'
 
 @description('Separate operator-approved account/model provisioning. Default OFF. This is never called by main.bicep or the deploy workflow.')
 param provisionClaude bool = false
@@ -25,7 +25,7 @@ param claudeCountryCode string
 param claudeIndustry string
 
 var models = loadJsonContent('models.json')
-var external = filter(models.catalog, model => deploymentTarget(model) == 'external-claude')
+var external = filter(models.catalog, model => deploymentTarget(model) == 'external-claude' && deploymentProvisioningEnabled(model))
 var deploymentRows = flatten(map(external, model => map(model.deployments, deployment => {
   deploymentName: '${model.name}-${models.naming.subscriptionToken}-${deployment.region}-${models.naming.skuShort[deployment.sku]}'
   modelName: model.name
@@ -35,9 +35,9 @@ var deploymentRows = flatten(map(external, model => map(model.deployments, deplo
   capacity: deployment.capacity
 })))
 var accountName = 'mf-claude-${environmentName}-${uniqueString(subscription().id, resourceGroup().id, environmentName)}'
-var location = external[0].deployments[0].region
+var location = !empty(external) ? external[0].deployments[0].region : resourceGroup().location
 
-resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if (provisionClaude) {
+resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if (provisionClaude && !empty(deploymentRows)) {
   name: accountName
   location: location
   tags: {
@@ -54,7 +54,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if 
   }
 }
 
-module deployments 'modules/models.bicep' = if (provisionClaude) {
+module deployments 'modules/models.bicep' = if (provisionClaude && !empty(deploymentRows)) {
   name: 'claude-models'
   params: {
     accountName: account.name
@@ -65,6 +65,6 @@ module deployments 'modules/models.bicep' = if (provisionClaude) {
   }
 }
 
-output plannedAccountName string = accountName
+output plannedAccountName string = empty(deploymentRows) ? '' : accountName
 output expectedDeployments array = deploymentRows
-output targetEndpoint string = 'https://${accountName}.services.ai.azure.com'
+output targetEndpoint string = empty(deploymentRows) ? '' : 'https://${accountName}.services.ai.azure.com'

@@ -100,6 +100,15 @@ procedure: [greenfield standup §5](runbooks/greenfield-standup.md#5-select-envi
 | Subscription token | `naming.subscriptionToken` (default `slurmfactory`) | Every model deployment: `{model}-<token>-<region>-<sku>`. Must match between Bicep (creates the deployments) and the runtime catalog (routes to them) — a single edit + `scripts/gen-model-catalog.py` keeps them in sync. |
 | Foundry token | `naming.foundryToken` (default `aiforia`) | Foundry accounts/projects (`mf-<token>-<env>-<region>`) and the computed toolbox MCP URL. |
 
+Each model's optional `provisioningEnabled` catalog Boolean defaults to `true`;
+`false` excludes that row from both the main-stack and separate Claude-target
+model deployment templates, independently of `runtimeEnabled`. Omission preserves
+existing catalog behavior. New candidate rows must explicitly set this field to
+`false` until their deployment scope is approved. This is a desired-template
+opt-out, not deletion: the current incremental deployment mode does not delete an
+already-deployed resource when it is omitted. Physical cleanup requires a separate
+reviewed, operator-approved operation.
+
 ## Feature flags and prerequisites
 
 A flag is set one of two ways, and they are not interchangeable.

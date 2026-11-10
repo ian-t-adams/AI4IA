@@ -59,6 +59,18 @@ def runtime_enabled(model: dict[str, Any]) -> bool:
     return value
 
 
+def provisioning_enabled(model: dict[str, Any]) -> bool:
+    """Read the strict optional ``provisioningEnabled`` Boolean (default true).
+
+    False excludes the model from infrastructure deployment generation; unlike
+    ``runtimeEnabled``, it does not retain desired deployment inventory.
+    """
+    value = model.get("provisioningEnabled", True)
+    if type(value) is not bool:
+        raise ValueError("provisioningEnabled must be a Boolean")
+    return value
+
+
 def image_editing(model: dict[str, Any]) -> bool:
     """Read the strict optional ``imageEditing`` Boolean (default false).
 

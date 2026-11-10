@@ -136,6 +136,25 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
         )
         self.assertIn("not(equals(lambdaVariables('model').format, 'Anthropic'))", self.template["variables"]["deployableCatalog"])
 
+    def test_model_provisioning_opt_out_filters_both_deployment_entrypoints(self) -> None:
+        main_filter = json.dumps(self.template["variables"]["deployableCatalog"])
+        self.assertIn("__bicep.deploymentProvisioningEnabled", main_filter)
+
+        result = _compile(ROOT / "infra" / "claude-target.bicep")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = json.loads(result.stdout)
+        external_filter = json.dumps(target["variables"]["external"])
+        self.assertIn("__bicep.deploymentProvisioningEnabled", external_filter)
+        deployment_rows = json.dumps(target["variables"]["deploymentRows"])
+        self.assertIn("variables('external')", deployment_rows)
+
+        resources = target["resources"]
+        rows = list(resources.values()) if isinstance(resources, dict) else resources
+        account = next(row for row in rows if row["type"] == "Microsoft.CognitiveServices/accounts")
+        deployment_module = next(row for row in rows if row["type"] == "Microsoft.Resources/deployments")
+        self.assertIn("not(empty(variables('deploymentRows')))", account["condition"])
+        self.assertIn("not(empty(variables('deploymentRows')))", deployment_module["condition"])
+
     def test_decision_alias_changes_resource_token_not_provider_model(self) -> None:
         inputs = next(row["input"] for row in self.template["variables"]["copy"]
                       if row["name"] == "modelDeploymentsByRegion")
@@ -355,7 +374,12 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
                 resources = template["resources"]
                 rows = list(resources.values()) if isinstance(resources, dict) else resources
                 self.assertEqual({row["type"] for row in rows}, allowed)
-                self.assertTrue(all(row["condition"] == f"[parameters('{gate}')]" for row in rows))
+                expected_condition = f"[parameters('{gate}')]"
+                if filename == "claude-target.bicep":
+                    expected_condition = (
+                        f"[and(parameters('{gate}'), not(empty(variables('deploymentRows'))))]"
+                    )
+                self.assertTrue(all(row["condition"] == expected_condition for row in rows))
                 if filename == "claude-target.bicep":
                     network = template["parameters"]["networkMode"]
                     self.assertNotIn("defaultValue", network)
