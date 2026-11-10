@@ -108,8 +108,40 @@ try {
   await results.waitFor();
   assert.equal(runs.length, 3);
 
-  // Only these option-error/empty fixtures are browser-intercepted; successful
-  // options and all Run requests above traversed the real same-origin API.
+  // Reproduce a POST promise that ignores AbortSignal, without sending it.
+  await page.evaluate(() => {
+    const original = window.fetch;
+    let stalled = false;
+    window.fetch = (...args) => {
+      if (!stalled && args[0] === "/api/decisions/run") {
+        stalled = true;
+        return new Promise((resolve) => {
+          window.finishCancelledDecision = () => resolve(Response.json({ stale: true }));
+        });
+      }
+      return original(...args);
+    };
+    window.restoreDecisionFetch = () => { window.fetch = original; };
+  });
+  await page.getByRole("button", { name: "Run decision", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel run", exact: true }).click();
+  await page.getByText("Cancelled. Already accepted work may still be billed.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Run decision", exact: true }).isEnabled(), true);
+  assert.equal(await results.count(), 0);
+  assert.equal(runs.length, 3, "The cancelled fetch fixture must never reach the API");
+  await page.getByRole("button", { name: "Run decision", exact: true }).click();
+  await results.waitFor();
+  await page.evaluate(async () => {
+    window.finishCancelledDecision();
+    window.restoreDecisionFetch();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  assert.match(await results.innerText(), /Yes probability: 75.0%/);
+  assert.equal(await page.getByRole("region", { name: "Decision playground", exact: true }).getByRole("alert").count(), 0);
+  assert.equal(runs.length, 4, "Only another explicit Run may issue a request");
+
+  // Apart from the deliberately unsent cancellation above, successful options
+  // and Run requests traverse the API. Only these option failures are intercepted.
   await page.route("**/api/decisions/options", (route) => route.fulfill({
     status: 503, json: { detail: "Synthetic options outage" },
   }));
@@ -126,10 +158,10 @@ try {
   await page.getByText("No Decision model is available under the current model and residency policy.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Decisions", exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Run decision", exact: true }).isEnabled(), false);
-  assert.equal(runs.length, 3);
+  assert.equal(runs.length, 4);
   assert.deepEqual(unexpected, [], "No external traffic or unrelated write is allowed");
   assert.deepEqual(pageErrors, []);
-  console.log("PASS: real browser -> Next proxy -> FastAPI -> native transport fixture; text/JSON, all answer types, failure/recovery, availability gating.");
+  console.log("PASS: real browser -> Next proxy -> FastAPI -> native transport fixture; text/JSON, all answer types, failure/recovery, availability gating; abort-ignoring cancellation and explicit recovery.");
   if (interactive) {
     await page.unroute("**/api/decisions/options");
     await page.reload();

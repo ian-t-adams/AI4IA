@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { DecisionPlayground } from "./DecisionPlayground";
 import { apiFetch } from "@/lib/auth";
-import type { DecisionRequest } from "@/lib/decisions";
+import { runDecision, type DecisionRequest } from "@/lib/decisions";
 
 vi.mock("@/lib/auth", () => ({ apiFetch: vi.fn() }));
 const fetchMock = vi.mocked(apiFetch);
@@ -36,6 +36,34 @@ async function example() {
 }
 
 describe("Decision playground", () => {
+  it.each([true, false])("removes its abort listener when an uncancelled request succeeds=%s", async (succeeds) => {
+    const request: DecisionRequest = {
+      model, input: "Synthetic", inputFormat: "text",
+      questions: [{ name: "check", type: "noul", instructions: "Synthetic check" }],
+    };
+    fetchMock.mockResolvedValue(succeeds ? Response.json(result(request))
+      : Response.json({ detail: "Synthetic failure" }, { status: 503 }));
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    if (succeeds) await expect(runDecision(request, controller.signal)).resolves.toEqual(result(request));
+    else await expect(runDecision(request, controller.signal)).rejects.toThrow("Synthetic failure");
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledExactlyOnceWith("abort", add.mock.calls[0][1]);
+    controller.abort();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start an already cancelled run", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(runDecision({
+      model, input: "Synthetic", inputFormat: "text",
+      questions: [{ name: "check", type: "noul", instructions: "Synthetic check" }],
+    }, controller.signal)).rejects.toBe(controller.signal.reason);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("waits for explicit Run, sends all native question shapes and renders typed results", async () => {
     await example();
     const form = screen.getByRole("form", { name: "Decision input" });
@@ -76,6 +104,9 @@ describe("Decision playground", () => {
     expect(screen.getByRole("button", { name: "Running..." })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
     expect(fetchMock.mock.calls[1][1]?.signal?.aborted).toBe(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run decision" })).toBeEnabled());
+    expect(screen.getByText("Cancelled. Already accepted work may still be billed.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Content to evaluate")).toBeEnabled();
     await act(async () => resolve(Response.json(result(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))))));
     expect(screen.queryByRole("heading", { name: "Results" })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);

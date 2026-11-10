@@ -205,7 +205,9 @@ availability does not send a model call or discard your question/input drafts.
 Only **Run decision** sends a call. Editing and duplicate submissions are blocked
 while it runs; **Cancel run** stops waiting and cancels the outbound request where
 possible, but already accepted work may still be billed. There is no automatic
-retry. A rate-limit error shows a bounded provider retry delay when supplied,
+retry. Cancellation unlocks the form even if sign-in, fetch or a response-body
+read is still pending; late completion cannot replace a later explicit run.
+A rate-limit error shows a bounded provider retry delay when supplied,
 but only another explicit Run can retry. Errors never become an empty successful result. Changing a field clears
 the previous result. Leaving the tab discards its transient input and results.
 
@@ -252,7 +254,9 @@ The runner starts and stops its own loopback-only Next.js and FastAPI servers.
 It checks `#/decisions`, real options loading, text and parsed-JSON runs with all
 three answer types, a visible upstream failure and explicit recovery. It also
 intercepts options responses to check unavailable/error/reload states. The
-browser, same-origin proxy, API validation, catalog admission, native Decision
+cancel check stalls one browser POST without sending it, verifies that Cancel
+unlocks the form, then checks a real explicit run and ignores the stale completion.
+The browser, same-origin proxy, API validation, catalog admission, native Decision
 adapter and in-memory usage are real; only the native model HTTP transport is a
 deterministic fixture. No Azure credentials, cloud access or billing are involved.
 The fixture ignores workstation API configuration and refuses non-loopback
