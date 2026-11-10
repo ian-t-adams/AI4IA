@@ -354,6 +354,12 @@ function Test-ModelDeployment {
       Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'invalid account inventory record'
       continue
     }
+    $hasEvidence = $null -ne $target.PSObject.Properties['verificationVersion']
+    if ($hasEvidence -and ($target.accountName -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($target.accountName))) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'invalid versioned account name'
+      continue
+    }
     $account = "$($target.accountName)".Trim()
     if ($accounts.ContainsKey($account)) {
       Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'duplicate account inventory record'
@@ -361,7 +367,6 @@ function Test-ModelDeployment {
     }
     $accounts[$account] = $true
     $accountId = "/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.CognitiveServices/accounts/$account"
-    $hasEvidence = $null -ne $target.PSObject.Properties['verificationVersion']
     if ($hasEvidence) {
       try {
         if ($target.verificationVersion -cne 1 -or

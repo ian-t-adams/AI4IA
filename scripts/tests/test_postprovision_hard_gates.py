@@ -297,6 +297,20 @@ class TokenAcquisitionTests(unittest.TestCase):
 
 
 class ModelDeploymentHardGateTests(unittest.TestCase):
+    def test_versioned_account_name_requires_nonblank_string(self):
+        target, actual = self.evidence_fixture()
+        self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+        for value in ([target["accountName"]], 12345, None, "", "   ", True):
+            with self.subTest(value=value):
+                bad_target, bad_actual = deepcopy(target), deepcopy(actual)
+                bad_target["accountName"] = value
+                if type(value) is int:
+                    bad_target["accountId"] = target["accountId"].replace(target["accountName"], str(value))
+                    bad_actual["id"] = actual["id"].replace(target["accountName"], str(value))
+                payload = self.run_evidence(bad_target, [bad_actual])
+                self.assertEqual(payload["results"][0]["status"], "FAIL", payload)
+                self.assertIsNone(payload["captured"])
+
     def test_json_integer_representations_and_invalid_types(self):
         for required in (True, False):
             target, actual = self.evidence_fixture()
