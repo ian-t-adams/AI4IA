@@ -337,6 +337,52 @@ def check_increase_headroom(
     return increase
 
 
+def retained_identity(
+    scope: evidence.Scope, deployment: evidence.Deployment, row: dict[str, Any],
+    routing: dict | None = None,
+) -> None:
+    """Verify unchanged source deployments using canonical catalog/scope identities."""
+    if not evidence.owned_account_name(scope, deployment.region, row.get("accountName")):
+        raise evidence.EvidenceError("production_account_mismatch")
+    account_path = scope.account_path(row["accountName"])
+    if row.get("id") != f"{account_path}/deployments/{deployment.name}":
+        raise evidence.EvidenceError("retained_deployment_identity_mismatch")
+    if (
+        row.get("region"), row.get("deploymentName"), row.get("format"), row.get("modelName"),
+        row.get("version"), row.get("sku"), row.get("provisioningState"), row.get("versionUpgradeOption"),
+    ) != (
+        deployment.region, deployment.name, deployment.model.format, deployment.model.name,
+        deployment.model.version, deployment.model.sku, "Succeeded", "NoAutoUpgrade",
+    ):
+        raise evidence.EvidenceError("retained_deployment_mismatch")
+    if routing is not None and not routing_matches(row.get("routing"), routing):
+        raise evidence.EvidenceError("retained_deployment_routing_mismatch")
+
+
+def retained_source_identity_errors(
+    models: dict, inventory: dict[tuple[str, str], dict[str, Any]], *,
+    subscription: str, resource_group: str, environment: str,
+) -> list[str]:
+    """Check only present unmanaged source rows; optional absence is handled separately."""
+    scope = evidence.Scope(subscription, resource_group, environment, _catalog(models, ""))
+    errors = []
+    for model in models["catalog"]:
+        if model_target(model) != "source" or provisioning_enabled(model):
+            continue
+        routing = routing_configuration(model, models)
+        names = {deployment_name(models, model["name"], item) for item in model["deployments"]}
+        for deployment in scope.catalog.deployments:
+            if deployment.name not in names:
+                continue
+            row = inventory.get((deployment.region, deployment.name.casefold()))
+            if row is not None:
+                try:
+                    retained_identity(scope, deployment, row, routing)
+                except evidence.EvidenceError as exc:
+                    errors.append(f"{deployment.name} ({deployment.region}): {exc.code}")
+    return errors
+
+
 def preflight_membership(
     policy: Policy, inventory: dict[tuple[str, str], dict[str, Any]], *,
     include_anthropic: bool, complete_regions: frozenset[str] = frozenset(),
@@ -361,21 +407,7 @@ def preflight_membership(
         config = configured.get(key)
         if config is None or config.capacity is None:
             raise evidence.EvidenceError("retained_production_capacity_not_configured")
-        if not evidence.owned_account_name(policy.scope, deployment.region, row.get("accountName")):
-            raise evidence.EvidenceError("production_account_mismatch")
-        account_path = policy.scope.account_path(row["accountName"])
-        if row.get("id") != f"{account_path}/deployments/{deployment.name}":
-            raise evidence.EvidenceError("retained_deployment_identity_mismatch")
-        if (
-            row.get("region"), row.get("deploymentName"), row.get("format"), row.get("modelName"),
-            row.get("version"), row.get("sku"), row.get("provisioningState"), row.get("versionUpgradeOption"),
-        ) != (
-            deployment.region, deployment.name, deployment.model.format, deployment.model.name,
-            deployment.model.version, deployment.model.sku, "Succeeded", "NoAutoUpgrade",
-        ):
-            raise evidence.EvidenceError("retained_deployment_mismatch")
-        if intent.routing is not None and not routing_matches(row.get("routing"), intent.routing):
-            raise evidence.EvidenceError("retained_deployment_routing_mismatch")
+        retained_identity(policy.scope, deployment, row, intent.routing)
         integer(row.get("capacity"), config.floor, config.ceiling)
         active.add(key)
     return active

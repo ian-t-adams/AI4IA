@@ -322,10 +322,13 @@ apply: retained 100 + outside 40 + reserved 90 cannot fit a counter limit of 190
 No absent candidate creates free quota, and no template change reconciles a
 retained deployment. Preflight rejects retained capacity differing from the
 selected profile's exact postprovision evidence in all three profiles, even
-when conservative pool accounting alone would fit. Unknown expected/actual
-capacity refuses; changing the catalog cannot apply a retained-capacity change.
-Baseline/maximum planning, capacity reporting and video routing retain their
-separate staging blockers; this production check does not enable them.
+when conservative pool accounting alone would fit. Those profiles also share
+the exact retained account/resource identity, model/format/version/SKU,
+Succeeded state, upgrade-policy and configured routing checks; matching capacity
+alone cannot admit a retained resource. Ordinary provisioning-enabled resources
+still follow reconciliation checks. Unknown expected/actual capacity refuses;
+changing the catalog cannot apply a retained-capacity change. These source
+checks do not authorize deployment, prove live quota or enable video routing.
 
 ### Prepare, recommend, review, then select
 

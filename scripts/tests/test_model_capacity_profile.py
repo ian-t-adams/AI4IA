@@ -746,6 +746,99 @@ class RetainedProductionPreflightTests(unittest.TestCase):
                         if not exact:
                             self.assertIn("retained_deployment_capacity_mismatch", text)
 
+    def test_retained_identity_matches_real_bicep_and_ps_gate_all_profiles(self):
+        from scripts.tests.test_bicep_compilation import SourceInventoryCompiledTests
+        from scripts.tests.test_postprovision_hard_gates import _run_model
+
+        for profile in ("baseline", "maximum", "production"):
+            for runtime in (False, True):
+                models, policy, inventory, _ = self.fixture(runtime=runtime)
+                compiled = SourceInventoryCompiledTests().selections(models, profile)
+                for index, region in enumerate(sorted(models["regions"])):
+                    inventory[(region, compiled["evidence"][index][0]["name"].casefold())]["capacity"] = (
+                        compiled["evidence"][index][0]["capacity"]
+                    )
+                region = "eastus2"
+                index = sorted(models["regions"]).index(region)
+                key = region, compiled["evidence"][index][0]["name"].casefold()
+                for field, value in (
+                    (None, None), ("modelName", "different-model"), ("format", "different-format"),
+                    ("version", "99"), ("sku", "Standard"), ("provisioningState", "Failed"),
+                    ("versionUpgradeOption", "OnceNewDefaultVersionAvailable"),
+                    ("id", inventory[key]["id"].replace(inventory[key]["accountName"], "foreign-account")),
+                ):
+                    with self.subTest(profile=profile, runtime=runtime, field=field):
+                        actual_inventory = copy.deepcopy(inventory)
+                        row = actual_inventory[key]
+                        if field is not None:
+                            row[field] = value
+                        target = {
+                            "region": region, "accountName": row["accountName"],
+                            "accountId": policy.scope.account_path(row["accountName"]),
+                            "verificationVersion": 1, "deploymentNames": [],
+                            "deploymentEvidence": compiled["evidence"][index],
+                        }
+                        actual = {
+                            "name": row["deploymentName"], "id": row["id"],
+                            "sku": {"name": row["sku"], "capacity": row["capacity"]},
+                            "properties": {
+                                "model": {
+                                    "name": row["modelName"], "format": row["format"], "version": row["version"],
+                                },
+                                "provisioningState": row["provisioningState"],
+                                "versionUpgradeOption": row["versionUpgradeOption"],
+                            },
+                        }
+                        gate = _run_model(overrides={
+                            "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target]),
+                            "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                            "AZURE_RESOURCE_GROUP": policy.scope.resource_group,
+                        }, deployments=[actual])
+                        self.assertEqual(gate["results"][0]["status"], "PASS" if field is None else "FAIL")
+                        code, text, _, offers, quota_reads = self.run_main(
+                            models, actual_inventory, profile=profile,
+                        )
+                        self.assertEqual(code, 0 if field is None else 1, text)
+                        if field is not None:
+                            self.assertIn("retained_deployment_", text)
+                            self.assertFalse(offers or quota_reads)
+
+    def test_provisioned_identity_drift_still_reconciles_with_legacy_defaults(self):
+        for profile in ("baseline", "maximum"):
+            for runtime in ("omitted", False, True):
+                with self.subTest(profile=profile, runtime=runtime):
+                    models, _, inventory, _ = self.fixture(provisioning=True)
+                    del models["catalog"][0]["provisioningEnabled"]
+                    if runtime == "omitted":
+                        del models["catalog"][0]["runtimeEnabled"]
+                    else:
+                        models["catalog"][0]["runtimeEnabled"] = runtime
+                    for row in inventory.values():
+                        row.update(provisioningState="Failed", versionUpgradeOption="OnceNewDefaultVersionAvailable")
+                    code, text, _, _, _ = self.run_main(models, inventory, profile=profile)
+                    self.assertEqual(code, 0, text)
+
+    def test_retained_identity_requires_each_native_evidence_field(self):
+        models, policy, inventory, _ = self.fixture()
+        scope = policy.scope
+        args = {
+            "subscription": scope.subscription, "resource_group": scope.resource_group,
+            "environment": scope.environment,
+        }
+        self.assertEqual(preflight.retained_source_identity_errors(models, inventory, **args), [])
+        key = next(iter(inventory))
+        for field in (
+            "region", "deploymentName", "accountName", "id", "format", "modelName",
+            "version", "sku", "provisioningState", "versionUpgradeOption",
+        ):
+            for value in (None, False, [], {}, 7):
+                with self.subTest(field=field, value=value):
+                    actual = copy.deepcopy(inventory)
+                    actual[key][field] = value
+                    errors = preflight.retained_source_identity_errors(models, actual, **args)
+                    self.assertEqual(len(errors), 1)
+                    self.assertIn("mismatch", errors[0])
+
     def test_account_filtering_cannot_establish_optional_absence(self):
         models, _, inventory, _ = self.fixture()
         for malformed in (

@@ -88,6 +88,7 @@ from _production_capacity import (
     effective_capacity,
     parse_policy,
     preflight_membership,
+    retained_source_identity_errors,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1381,6 +1382,23 @@ def main() -> int:
         }
         if any(read.status != "observed" for read in region_reads.values()):
             print("ERROR: deployment inventory is unavailable.", file=sys.stderr)
+            return 1
+        if any(
+            not item["provisioningEnabled"]
+            and (_normal_location(region), item["deploymentName"].casefold()) in existing_deployments
+            for region, requirements in by_region.items() for item in requirements
+        ):
+            try:
+                retained_errors.extend(retained_source_identity_errors(
+                    models, existing_deployments, subscription=account["id"],
+                    resource_group=resource_group, environment=environment_name,
+                ))
+            except capacity_evidence.EvidenceError as exc:
+                print(f"ERROR: retained deployment verification unavailable: {exc.code}", file=sys.stderr)
+                return 1
+        if retained_errors:
+            for error in retained_errors:
+                print(f"ERROR: {error}", file=sys.stderr)
             return 1
     if args.capacity_profile == "production" and policy is not None:
         try:
