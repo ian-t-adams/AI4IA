@@ -552,9 +552,11 @@ def _exercise(case: str) -> None:
                 from opentelemetry.sdk.trace.sampling import Decision
                 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
                 from azure.monitor.opentelemetry.exporter._constants import _SAMPLE_RATE_KEY
-                dropped_parent = trace.set_span_in_context(NonRecordingSpan(SpanContext(
-                    123, 456, is_remote=False, trace_flags=TraceFlags.DEFAULT,
-                )), Context())
+                dropped_span = NonRecordingSpan(SpanContext(
+                    123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.DEFAULT),
+                ))
+                assert dropped_span.get_span_context().trace_flags.sampled is False
+                dropped_parent = trace.set_span_in_context(dropped_span, Context())
                 denied = actual_provider.sampler.should_sample(
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
                 )
@@ -565,8 +567,9 @@ def _exercise(case: str) -> None:
                         return True
                 from ai4ia_api.request_telemetry import _RequestSpan
                 source_parent = RecordedParent(SpanContext(
-                    123, 456, is_remote=False, trace_flags=TraceFlags.SAMPLED,
+                    123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.SAMPLED),
                 ))
+                assert source_parent.get_span_context().trace_flags.sampled is True
                 recorded = _RequestSpan(source_parent, frozenset(), SpanKind.SERVER)
                 inheritance_control = RateLimitedSampler(0)
                 admitted = inheritance_control.should_sample(
