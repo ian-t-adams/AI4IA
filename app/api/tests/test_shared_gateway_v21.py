@@ -99,10 +99,18 @@ def test_complete_resolved_family_and_exact_port(family):
 
 
 @pytest.mark.parametrize("status", ["schema-only", "resolved"])
-def test_mixed_synthetic_hosts_refuse_in_both_states(status):
+@pytest.mark.parametrize("synthetic_host", ["example.invalid", "gateway.example.invalid"])
+def test_mixed_synthetic_hosts_refuse_in_both_states(status, synthetic_host):
     value = resolved() if status == "resolved" else example()
+    if status == "schema-only":
+        value["gateway"]["allowedHosts"] = [synthetic_host]
+        for field in ("baseUrl", "anthropicBaseUrl", "videoBaseUrl"):
+            value["gateway"][field] = value["gateway"][field].replace(
+                "gateway.example.invalid", synthetic_host,
+            )
+    assert load(value).status == status
     value["gateway"]["allowedHosts"].append(
-        "gateway.example.invalid" if status == "resolved" else "gateway.test",
+        synthetic_host if status == "resolved" else "gateway.test",
     )
     with pytest.raises(SharedGatewayManifestError):
         load(value)
