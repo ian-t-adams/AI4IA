@@ -48,23 +48,36 @@ def _az_executable() -> str:
 
 
 def _az_json(*args: str) -> Any:
-    result = subprocess.run(
-        [_az_executable(), *args, "-o", "json"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    operation = next((label for prefix, label in (
+        (("account", "show"), "account show"),
+        (("cognitiveservices", "account", "deployment", "list"), "deployment inventory"),
+        (("cognitiveservices", "account", "list"), "account inventory"),
+        (("cognitiveservices", "usage", "list"), "quota usage"),
+        (("rest", "--method", "GET"), "platform capacity read"),
+    ) if args[:len(prefix)] == prefix), "unrecognized read")
+    if "--location" in args:
+        index = args.index("--location") + 1
+        region = args[index] if index < len(args) else ""
+        operation += f" in {region}" if re.fullmatch(r"[a-z][a-z0-9]{0,62}", region, flags=re.ASCII) else " in unknown region"
+    try:
+        result = subprocess.run(
+            [_az_executable(), *args, "-o", "json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        raise RuntimeError(f"Azure CLI {operation} failed (OSError); untrusted error detail withheld.") from None
     if result.returncode != 0:
         raise RuntimeError(
-            f"Azure CLI failed: az {' '.join(args)}\n"
-            f"{result.stderr.strip() or 'No error detail was returned.'}"
+            f"Azure CLI {operation} failed (nonzero exit status); untrusted error detail withheld."
         )
     try:
         return json.loads(result.stdout or "null")
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"Azure CLI returned invalid JSON for az {' '.join(args)}: {exc.msg}"
+            f"Azure CLI {operation} returned invalid JSON: {exc.msg}"
         ) from exc
 
 

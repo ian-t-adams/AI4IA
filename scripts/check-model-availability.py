@@ -127,12 +127,11 @@ def active_subscription(expected_subscription_id: str | None = None) -> dict[str
         "json",
     )
     if result.returncode != 0:
-        detail = result.stderr.strip() or "Azure CLI returned no account."
         raise SystemExit(
             "ERROR: the model availability/quota preflight requires Azure CLI "
             "credentials for the target subscription. Run `az login` and "
-            "`az account set --subscription <id>` before `azd provision`.\n"
-            f"Azure CLI: {detail}"
+            "`az account set --subscription <id>` before `azd provision`. "
+            "Azure CLI account show failed (nonzero exit status); untrusted error detail withheld."
         )
     try:
         account = json.loads(result.stdout or "{}")
@@ -221,10 +220,9 @@ def catalog_requirements(
 
 def _json_result(result: subprocess.CompletedProcess[str], context: str) -> Any:
     if result.returncode != 0:
-        detail = result.stderr.strip() or "Azure CLI returned no detail."
         raise SystemExit(
-            f"ERROR: {context}; existing-state lifecycle safety cannot be evaluated.\n"
-            f"Azure CLI: {detail}"
+            f"ERROR: {context}; existing-state lifecycle safety cannot be evaluated. "
+            "Azure CLI command failed (nonzero exit status); untrusted error detail withheld."
         )
     if len((result.stdout or "").encode("utf-8")) > MAX_AZURE_RESPONSE_BYTES:
         raise SystemExit(f"ERROR: {context}; Azure CLI response exceeded the 16 MiB read budget.")
@@ -772,12 +770,7 @@ def run_retirement_report(
 
 def quota_usage(region: str) -> list[dict[str, Any]]:
     result = _az("cognitiveservices", "usage", "list", "--location", region, "-o", "json")
-    if result.returncode != 0:
-        raise SystemExit(
-            f"ERROR: could not read quota in {region}. Run `az login` and "
-            f"`az account set --subscription <id>` first.\n{result.stderr.strip()}"
-        )
-    return json.loads(result.stdout or "[]")
+    return _json_result(result, f"could not read quota in {region}")
 
 
 def _quota_keys(sku: str, model: str) -> list[str]:

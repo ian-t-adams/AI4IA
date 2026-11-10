@@ -435,6 +435,156 @@ class QuotaReductionTests(unittest.TestCase):
                 capacity.reduce_capacity_to_quota(models, live, quota)
 
 
+class CliDiagnosticPrivacyTests(unittest.TestCase):
+    PAYLOADS = (
+        "client_secret=synthetic-secret",
+        "Authorization: Basic c3ludGhldGlj",
+        "Cookie: synthetic-session",
+        "X-Unknown-Credential: synthetic-private-value",
+        '{"credentials":{"unrecognized":"synthetic-private-value"}}',
+        "synthetic-private-value\n\x1b[31mforged diagnostic\x1b[0m",
+        "synthetic-private-value" * 2048,
+    )
+
+    def test_preflight_direct_entry_points_withhold_failure_payloads(self):
+        for payload in self.PAYLOADS:
+            failed = subprocess.CompletedProcess(["az"], 1, stdout=payload, stderr=payload)
+            calls = (
+                ("account show", lambda: preflight.active_subscription("sub"), [failed]),
+                ("account inventory", lambda: preflight._json_result(failed, "account inventory"), []),
+                ("quota in eastus2", lambda: preflight.quota_usage("eastus2"), [failed]),
+                ("offerings in eastus2", lambda: preflight.offered_models("eastus2"), [failed]),
+                ("resource group rg-demo-example", lambda: preflight.existing_deployment_inventory(
+                    _models(), resource_group="rg-demo-example", environment_name="example",
+                ), [failed]),
+                ("accounts in rg-demo-example", lambda: preflight.existing_deployment_inventory(
+                    _models(), resource_group="rg-demo-example", environment_name="example",
+                ), [subprocess.CompletedProcess(["az"], 0, stdout="true", stderr=""), failed]),
+            )
+            for operation, call, results in calls:
+                output = io.StringIO()
+                with (
+                    self.subTest(operation=operation, payload=payload[:64]),
+                    patch.object(preflight, "_az", side_effect=results) as read,
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(output),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    call()
+                diagnostic = str(raised.exception)
+                with self.subTest(operation=operation, payload=payload[:64], evidence="diagnostic"):
+                    self.assertNotIn(payload, diagnostic)
+                    self.assertNotIn("synthetic-", diagnostic)
+                    self.assertNotIn("\x1b", diagnostic)
+                    self.assertIn(operation, diagnostic)
+                    self.assertIn("nonzero exit status", diagnostic)
+                    self.assertIn("untrusted error detail withheld", diagnostic)
+                    self.assertLess(len(diagnostic), 512)
+                    self.assertEqual(output.getvalue(), "")
+                    self.assertEqual(read.call_count, len(results))
+
+    def test_preflight_successful_reads_keep_native_results(self):
+        for value, call, expected in (
+            ({"id": "sub", "name": "fixture", "tenantId": "tenant"},
+             lambda: preflight.active_subscription("sub"), {"id": "sub", "name": "fixture", "tenantId": "tenant"}),
+            ([{"name": "native quota"}], lambda: preflight.quota_usage("eastus2"), [{"name": "native quota"}]),
+            ([], lambda: preflight.offered_models("eastus2"), []),
+            (False, lambda: preflight.existing_deployment_inventory(
+                _models(), resource_group="rg-demo-example", environment_name="example",
+            ), None),
+        ):
+            result = subprocess.CompletedProcess(["az"], 0, stdout=json.dumps(value), stderr=self.PAYLOADS[0])
+            with self.subTest(value=value), patch.object(preflight, "_az", return_value=result) as read:
+                actual = call()
+            if expected is None:
+                self.assertEqual(actual[0], {})
+            else:
+                self.assertEqual(actual, expected)
+            self.assertEqual(preflight._json_result(result, "synthetic operation"), value)
+            read.assert_called_once()
+
+    def test_sync_failure_and_invalid_json_context_never_echoes_arguments(self):
+        operations = (
+            (("account", "show"), "account show"),
+            (("cognitiveservices", "account", "list"), "account inventory"),
+            (("cognitiveservices", "account", "deployment", "list"), "deployment inventory"),
+            (("cognitiveservices", "usage", "list", "--location", "eastus2"), "quota usage in eastus2"),
+            (("rest", "--method", "GET"), "platform capacity read"),
+            (("unknown-synthetic-command",), "unrecognized read"),
+            (("cognitiveservices", "usage", "list", "--location", "Cookie: synthetic-session"), "quota usage in unknown region"),
+        )
+        for args, operation in operations:
+            args = (*args, "--name", "synthetic-private-argument")
+            for payload in self.PAYLOADS:
+                for failure in ("exit", "json", "os"):
+                    result = subprocess.CompletedProcess(
+                        ["az"], 1 if failure == "exit" else 0,
+                        stdout="!" + payload if failure == "json" else payload, stderr=payload,
+                    )
+                    with (
+                        self.subTest(operation=operation, failure=failure, payload=payload[:64]),
+                        patch.object(capacity.subprocess, "run", **(
+                            {"side_effect": OSError(payload)} if failure == "os" else {"return_value": result}
+                        )) as read,
+                        self.assertRaises(RuntimeError) as raised,
+                    ):
+                        capacity._az_json(*args)
+                    diagnostic = str(raised.exception)
+                    with self.subTest(operation=operation, failure=failure, payload=payload[:64], evidence="diagnostic"):
+                        self.assertNotIn(payload, diagnostic)
+                        self.assertNotIn("synthetic-", diagnostic)
+                        self.assertIn(operation, diagnostic)
+                        self.assertIn(
+                            {"exit": "nonzero exit status", "json": "invalid JSON", "os": "OSError"}[failure],
+                            diagnostic,
+                        )
+                        self.assertLess(len(diagnostic), 256)
+                        read.assert_called_once()
+            with patch.object(capacity.subprocess, "run", return_value=subprocess.CompletedProcess(
+                ["az"], 0, stdout='{"value":[1]}', stderr=self.PAYLOADS[0],
+            )):
+                self.assertEqual(capacity._az_json(*args), {"value": [1]})
+
+    def test_sync_cli_account_and_quota_failures_stop_without_writing(self):
+        for phase in ("account", "quota"):
+            for apply in (False, True):
+                for payload in self.PAYLOADS:
+                    with self.subTest(phase=phase, apply=apply, payload=payload[:64]), tempfile.TemporaryDirectory() as directory:
+                        catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                        original = json.dumps(_models())
+                        catalog.write_text(original, encoding="utf-8")
+                        failed = subprocess.CompletedProcess(["az"], 1, stdout=payload, stderr=payload)
+                        results = ([subprocess.CompletedProcess(
+                            ["az"], 0, stdout=json.dumps({"id": SUBSCRIPTION}), stderr="",
+                        )] if phase == "quota" else []) + [failed]
+                        argv = [
+                            "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                            "--environment-name", "example", "--output-plan", str(output),
+                        ] + (["--apply"] if apply else [])
+                        captured = io.StringIO()
+                        with (
+                            patch.object(capacity, "MODELS_FILE", catalog),
+                            patch.object(capacity, "ROOT", Path(directory)),
+                            patch.object(capacity, "_collect_live", return_value=_live("GlobalStandard")) as live,
+                            patch.object(capacity, "_collect_platform") as platform,
+                            patch.object(capacity.subprocess, "run", side_effect=results) as read,
+                            patch.object(sys, "argv", argv),
+                            contextlib.redirect_stdout(captured),
+                            contextlib.redirect_stderr(captured),
+                            self.assertRaises(RuntimeError) as raised,
+                        ):
+                            capacity.main()
+                        self.assertNotIn(payload, str(raised.exception))
+                        self.assertIn("account show" if phase == "account" else "quota usage in eastus2", str(raised.exception))
+                        self.assertNotIn("synthetic-", str(raised.exception))
+                        self.assertEqual(read.call_count, len(results))
+                        self.assertEqual(live.call_count, 0 if phase == "account" else 1)
+                        platform.assert_not_called()
+                        self.assertEqual(captured.getvalue(), "")
+                        self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                        self.assertFalse(output.exists())
+
+
 class SyncCounterSafetyTests(unittest.TestCase):
     def fixture(self, *, reduce=False, staged=False, outside=True):
         models = QuotaReductionTests().models() if reduce else _models()

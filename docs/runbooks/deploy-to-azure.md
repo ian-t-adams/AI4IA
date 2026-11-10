@@ -315,6 +315,10 @@ dual-disabled candidate can be absent, after successful complete regional
 inventory; unknown/failed/continued inventory is not absence.
 Inventory failure diagnostics retain the region, operation and failure type
 only; untrusted CLI stderr is withheld, not made safe by credential regexes.
+This also applies before regional inventory collection (account context,
+account lists and quota reads) and to the capacity sync CLI. Sync failure
+messages use fixed operation labels, not full command arguments or provider
+payloads; failed reads never authorize a plan or catalog write.
 Missing production metadata is allowed for that absent candidate only. A present provisioning-disabled
 deployment must have exact scoped identity/model/version/SKU/state/upgrade-policy
 evidence and reviewed production capacity/bounds. Pool accounting preserves its
