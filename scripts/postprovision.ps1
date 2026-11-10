@@ -364,7 +364,8 @@ function Test-ModelDeployment {
     $hasEvidence = $null -ne $target.PSObject.Properties['verificationVersion']
     if ($hasEvidence) {
       try {
-        if ($target.verificationVersion -cne 1 -or $target.verificationVersion -isnot [long] -or
+        if ($target.verificationVersion -cne 1 -or
+            ($target.verificationVersion -isnot [int] -and $target.verificationVersion -isnot [long]) -or
             $target.accountId -isnot [string] -or $target.accountId -ine $accountId -or
             $target.deploymentEvidence -isnot [array] -or [string]::IsNullOrWhiteSpace($account)) {
           throw 'invalid versioned account evidence'
@@ -380,7 +381,8 @@ function Test-ModelDeployment {
               $item.versionUpgradeOption -isnot [string] -or
               $item.versionUpgradeOption -cne 'NoAutoUpgrade' -or
               $null -eq $item.PSObject.Properties['capacity'] -or
-              ($null -ne $item.capacity -and ($item.capacity -isnot [long] -or $item.capacity -le 0)) -or
+              ($null -ne $item.capacity -and
+                (($item.capacity -isnot [int] -and $item.capacity -isnot [long]) -or $item.capacity -le 0)) -or
               ($item.required -and $null -eq $item.capacity)) {
             throw 'invalid or duplicate deployment evidence'
           }
@@ -457,7 +459,8 @@ function Test-ModelDeployment {
             $actual.properties.model.name -cne $item.model.name -or
             $actual.properties.model.version -cne $item.model.version -or
             $actual.sku.name -isnot [string] -or
-            $actual.sku.name -cne $item.sku -or $actual.sku.capacity -isnot [long] -or
+            $actual.sku.name -cne $item.sku -or
+            ($actual.sku.capacity -isnot [int] -and $actual.sku.capacity -isnot [long]) -or
             $actual.sku.capacity -ne $item.capacity -or
             $actual.properties.provisioningState -isnot [string] -or
             $actual.properties.provisioningState -cne 'Succeeded' -or

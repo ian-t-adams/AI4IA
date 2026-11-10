@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.tests._postprovision import _ps_literal, _run_pwsh
 
@@ -294,6 +297,33 @@ class TokenAcquisitionTests(unittest.TestCase):
 
 
 class ModelDeploymentHardGateTests(unittest.TestCase):
+    def test_json_integer_representations_and_invalid_types(self):
+        for required in (True, False):
+            target, actual = self.evidence_fixture()
+            target["deploymentEvidence"][0]["required"] = required
+            if not required:
+                target["deploymentNames"] = []
+            for capacity in (1, 10, 40, 2147483648):
+                with self.subTest(required=required, capacity=capacity):
+                    target["deploymentEvidence"][0]["capacity"] = capacity
+                    actual["sku"]["capacity"] = capacity
+                    self.assertEqual(self.run_evidence(target, [actual])["results"][0]["status"], "PASS")
+            target["deploymentEvidence"][0]["capacity"] = 1
+            actual["sku"]["capacity"] = 1
+            for field in ("version", "expected", "actual"):
+                for value in (True, False, 1.0, "1", None, 0, -1):
+                    with self.subTest(required=required, field=field, value=value):
+                        bad_target, bad_actual = deepcopy(target), deepcopy(actual)
+                        if field == "version":
+                            bad_target["verificationVersion"] = value
+                        elif field == "expected":
+                            bad_target["deploymentEvidence"][0]["capacity"] = value
+                        else:
+                            bad_actual["sku"]["capacity"] = value
+                        self.assertEqual(
+                            self.run_evidence(bad_target, [bad_actual])["results"][0]["status"], "FAIL",
+                        )
+
     def evidence_fixture(self):
         account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-ai4ia-test/providers/Microsoft.CognitiveServices/accounts/mf-example-sweden"
         evidence = {
@@ -520,6 +550,21 @@ class ModelDeploymentHardGateTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["status"], "FAIL")
         self.assertIn("unexpected stale deployment", payload["results"][0]["detail"])
         self.assertIn("removed-from-catalog", payload["results"][0]["detail"])
+
+
+@unittest.skipUnless(os.name == "nt", "Windows PowerShell 5.1 requires Windows")
+class WindowsPowerShell51ModelDeploymentTests(ModelDeploymentHardGateTests):
+    def setUp(self):
+        executable = (
+            Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell"
+            / "v1.0" / "powershell.exe"
+        )
+        if not executable.is_file():
+            self.skipTest("Windows PowerShell 5.1 is unavailable")
+        runner = partial(_run_pwsh, executable=str(executable))
+        runner_patch = patch(__name__ + "._run_pwsh", runner)
+        self.addCleanup(runner_patch.stop)
+        runner_patch.start()
 
 
 class GatewayTopologyHardGateTests(unittest.TestCase):
