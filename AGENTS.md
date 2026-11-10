@@ -1487,8 +1487,9 @@ does not prove an Azure pool boundary or change warning-only nonproduction
 currentValue checks.
 Maximum preflight must compare regional counter identity/limit observations
 within each declared pool, not accept whichever replica was merged first.
-Its regional quota index rejects duplicate/overlapping lookup aliases rather
-than choosing one counter by response order.
+Its regional quota index rejects duplicate/overlapping selected lookup aliases,
+including loose candidates, rather than choosing one counter by response order.
+Unrelated ambiguous keys are omitted without blocking unambiguous selected keys.
 A GlobalStandard usage counter reported with the same limit in every region is
 often one subscription-wide pool, not per-region headroom: `gpt-image-2.5-*`
 has a single 2-unit pool, so its eastus2 replica consumed it and the swedencentral

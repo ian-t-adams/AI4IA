@@ -477,7 +477,8 @@ class DeclaredPoolMembershipTests(unittest.TestCase):
                 patch.object(preflight, "_az", side_effect=azure) as read,
                 patch.object(preflight, "verify_configured", return_value=0),
                 patch.object(preflight, "offered_models", return_value=[{
-                    "model": {"name": "model-a", "format": "OpenAI", "version": "1", "skus": [{"name": "DataZoneStandard"}]},
+                    "model": {"name": models["catalog"][0]["name"], "format": "OpenAI", "version": "1",
+                              "skus": [{"name": "DataZoneStandard"}]},
                 }]) as offers,
                 patch.object(preflight, "quota_usage", side_effect=lambda region: quota_rows if quota_rows is not None else [{
                     "name": {"value": (counters or {}).get(region, "AIServices.DataZoneStandard.model-a")},
@@ -563,6 +564,49 @@ class DeclaredPoolMembershipTests(unittest.TestCase):
                     self.assertIn("ambiguous quota counter lookup aliases", text)
                 else:
                     self.assertNotIn("ambiguous", text)
+
+    def test_unrelated_collisions_do_not_block_but_selected_loose_aliases_do(self):
+        valid = {
+            "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 220,
+        }
+        for name, expected in (("other-model", 0), ("modela", 1), ("model-a.Azure", 1), ("model-a.0", 1)):
+            collisions = [
+                {**valid, "name": {"value": f"{publisher}.DataZoneStandard.{name}"}}
+                for publisher in ("AIServices", "OpenAI")
+            ]
+            for rows in (
+                [valid, *collisions], [*reversed(collisions), valid],
+                [collisions[0], valid, collisions[1]],
+            ):
+                with self.subTest(name=name, rows=[row["name"]["value"] for row in rows]):
+                    code, text, reads, offers, quotas = self.preflight(self.fixture(), quota_rows=rows)
+                    self.assertEqual(code, expected, text)
+                    self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                    self.assertEqual("ambiguous quota counter lookup aliases" in text, bool(expected))
+                    self.assertNotIn("other-model", text)
+        unrelated = [
+            {**valid, "name": {"value": f"{publisher}.DataZoneStandard.other-model"}}
+            for publisher in ("AIServices", "OpenAI")
+        ]
+        index = preflight.index_quota(
+            [valid, *unrelated, unrelated[0]], reject_ambiguous=True,
+            required_keys=set(preflight._quota_keys("DataZoneStandard", "model-a")),
+        )
+        self.assertEqual(index, {"datazonestandard|modela": {
+            "limit": 220, "current": 100, "counter": valid["name"]["value"],
+        }})
+        # A selected model's loose key still protects against overlapping rows,
+        # even when its preferred exact key is present and unambiguous.
+        models = self.fixture()
+        models["catalog"][0]["name"] = "model-a.Azure"
+        exact = {**valid, "name": {"value": "AIServices.DataZoneStandard.model-a.Azure"}}
+        code, text, *_ = self.preflight(models, quota_rows=[exact])
+        self.assertEqual(code, 0, text)
+        code, text, *_ = self.preflight(models, quota_rows=[
+            exact, valid, {**valid, "name": {"value": "OpenAI.DataZoneStandard.model-a"}},
+        ])
+        self.assertEqual(code, 1, text)
+        self.assertIn("ambiguous quota counter lookup aliases", text)
 
     def test_valid_shared_distinct_region_and_global_pool_controls(self):
         for kind, expected in (("shared", 1), ("distinct", 0), ("region", 0), ("global", 1)):

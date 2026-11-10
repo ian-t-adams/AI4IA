@@ -813,15 +813,18 @@ def _quota_keys(sku: str, model: str) -> list[str]:
 
 def index_quota(
     raw: Iterable[dict[str, Any]], *, reject_ambiguous: bool = False,
+    required_keys: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Index usage counters as {"<sku>|<model>": {limit, current, counter}}.
 
     Keys are normalised the same way as :func:`_quota_keys`, and the publisher
     prefix (`OpenAI.` / `AIServices.`) is dropped so both namespaces land in one
     index -- the catalog does not record which publisher a model belongs to.
-    Maximum-mode callers reject collisions instead of selecting the first row.
+    Maximum-mode callers reject collisions on any selected lookup candidate.
+    Unrelated ambiguous keys are omitted rather than selecting a winning row.
     """
     index: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
     for item in raw:
         counter = (item.get("name") or {}).get("value")
         if not counter or counter.count(".") < 2:
@@ -833,8 +836,12 @@ def index_quota(
         if not sku or not model:
             continue
         for key in dict.fromkeys(_quota_keys(sku, model)):
-            if reject_ambiguous and key in index:
-                raise ValueError("ambiguous quota counter lookup aliases; maximum capacity cannot be revalidated")
+            if reject_ambiguous and (key in index or key in ambiguous):
+                if required_keys is None or key in required_keys:
+                    raise ValueError("ambiguous quota counter lookup aliases; maximum capacity cannot be revalidated")
+                index.pop(key, None)
+                ambiguous.add(key)
+                continue
             index.setdefault(
                 key,
                 {
@@ -1455,6 +1462,10 @@ def main() -> int:
     merged_quota: dict[str, dict[str, Any]] = {}
     regional_quota: dict[str, dict[str, dict[str, Any]]] = {}
     production_quotas: dict[str, list[dict]] = {}
+    selected_quota_keys = {
+        key for rows in by_region.values() for item in rows
+        for key in _quota_keys(item["sku"], item["name"])
+    }
     for region in regions:
         required = by_region.get(region, [])
         if not required and args.capacity_profile != "production":
@@ -1505,6 +1516,7 @@ def main() -> int:
             try:
                 quota_index = index_quota(
                     raw_quota, reject_ambiguous=args.capacity_profile == "maximum",
+                    required_keys=selected_quota_keys,
                 ) if args.capacity_profile != "production" else {}
             except ValueError:
                 errors.append(

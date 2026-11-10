@@ -497,7 +497,10 @@ identities or limits within one declared pool refuse regardless of read order.
 Separate valid region/data-zone pools retain their independent limits; this
 does not strengthen the warning-only nonproduction `currentValue` check.
 Maximum mode also rejects duplicate/overlapping normalized counter aliases
-within one regional response, rather than choosing a publisher by row order.
+within one regional response when any selected deployment's candidate lookup
+key overlaps, including loose aliases. Unrelated ambiguous keys are omitted
+without blocking a selected model's unambiguous evidence; row order never
+selects a winner for an ambiguous key.
 
 Both modes refuse nonzero unattributed usage instead of calculating outside
 allocation from a guessed pool. The selected counter's complete, unique native
