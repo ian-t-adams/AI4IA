@@ -262,7 +262,7 @@ For hands-on testing, run the same command with `-- --interactive`. After the
 checks pass, an offline browser and Playwright Inspector remain open: use
 **Load synthetic example**, edit questions and **Run decision**. Enter the exact
 text `fixture:upstream-error` in Text mode for a visible failure, then replace it
-and run again. Close the Inspector/browser to finish. If using installed Edge,
+and run again. Click **Resume** in the Inspector to finish. If using installed Edge,
 set `$env:AI4IA_BROWSER_CHANNEL = "msedge"` instead of installing Chromium.
 `AI4IA_TEST_PYTHON` can point to another prepared API virtual environment.
 These synthetic answers prove integration, not model quality or a live deployment.

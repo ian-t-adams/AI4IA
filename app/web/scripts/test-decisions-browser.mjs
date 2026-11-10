@@ -133,7 +133,7 @@ try {
   if (interactive) {
     await page.unroute("**/api/decisions/options");
     await page.reload();
-    console.log("Offline playground ready. Use Load synthetic example / Run decision. Input fixture:upstream-error produces a visible failure. Close the Inspector to finish.");
+    console.log("Offline playground ready. Use Load synthetic example / Run decision. Input fixture:upstream-error produces a visible failure. Resume in the Inspector to finish.");
     await page.pause();
   }
 } finally {
