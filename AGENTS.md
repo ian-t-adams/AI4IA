@@ -68,7 +68,9 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    construction, not runtime or deletion. A staged default-off row needs both
    flags explicitly false. Source Bicep resource and verification projections
    eagerly validate both typed flags; Boolean short-circuiting must not admit a
-   malformed peer flag. The source postprovision output retains legacy names
+   malformed peer flag. The separate default-off Claude target validates both
+   flags too, while only provisioning controls its deployment selection.
+   The source postprovision output retains legacy names
    and adds versioned exact-identity/capacity evidence: only dual-disabled rows
    may be absent after complete inventory; retained rows still verify exactly.
    Unknown optional production capacity stays null and refuses a present row,

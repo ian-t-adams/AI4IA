@@ -1,6 +1,6 @@
 targetScope = 'resourceGroup'
 
-import { deploymentTarget, deploymentProvisioningEnabled } from './model-targets.bicep'
+import { deploymentTarget, deploymentProvisioningEnabled, deploymentRuntimeEnabled } from './model-targets.bicep'
 
 @description('Separate operator-approved account/model provisioning. Default OFF. This is never called by main.bicep or the deploy workflow.')
 param provisionClaude bool = false
@@ -25,7 +25,7 @@ param claudeCountryCode string
 param claudeIndustry string
 
 var models = loadJsonContent('models.json')
-var external = filter(models.catalog, model => deploymentTarget(model) == 'external-claude' && deploymentProvisioningEnabled(model))
+var external = filter(models.catalog, model => deploymentTarget(model) == 'external-claude' && [deploymentProvisioningEnabled(model), deploymentRuntimeEnabled(model)][0])
 var deploymentRows = flatten(map(external, model => map(model.deployments, deployment => {
   deploymentName: '${model.name}-${models.naming.subscriptionToken}-${deployment.region}-${models.naming.skuShort[deployment.sku]}'
   modelName: model.name

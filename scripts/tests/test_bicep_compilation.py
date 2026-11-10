@@ -1125,6 +1125,62 @@ param selections = {
         self.assertIn("__bicep.selectedCapacity", json.dumps(template["variables"]["copy"]))
 
 
+class ExternalClaudeFlagsCompiledTests(unittest.TestCase):
+    """Evaluate the operator target's actual filter, without provisioning."""
+
+    def evaluate(self, flags: dict) -> subprocess.CompletedProcess[str]:
+        document = production_document()
+        document["catalog"][0].update(deploymentTarget="external-claude", format="Anthropic", **flags)
+        source = (ROOT / "infra" / "claude-target.bicep").read_text(encoding="utf-8")
+        declaration = re.search(r"^var external = .+$", source, re.MULTILINE)
+        imports = re.search(r"^import \{.+\} from './model-targets\.bicep'$", source, re.MULTILINE)
+        self.assertIsNotNone(declaration)
+        self.assertIsNotNone(imports)
+        assert declaration is not None and imports is not None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(ROOT / "infra" / "model-targets.bicep", root)
+            (root / "models.json").write_text(json.dumps(document), encoding="utf-8")
+            parameters = root / "fixture.bicepparam"
+            parameters.write_text("\n".join((
+                "using none", imports[0], "var models = loadJsonContent('models.json')",
+                declaration[0], "param projection = external", "",
+            )), encoding="utf-8")
+            bicep = shutil.which("bicep")
+            self.assertIsNotNone(bicep, "The infra-validate Bicep compiler is required.")
+            return subprocess.run(
+                [str(bicep), "build-params", str(parameters), "--stdout"],
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+
+    def test_valid_flags_preserve_provisioning_only_selection(self):
+        for runtime in ("omitted", True, False):
+            for provisioning in ("omitted", True, False):
+                flags = {key: value for key, value in (
+                    ("runtimeEnabled", runtime), ("provisioningEnabled", provisioning),
+                ) if value != "omitted"}
+                with self.subTest(flags=flags):
+                    result = self.evaluate(flags)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    envelope = json.loads(result.stdout)
+                    payload = json.loads(envelope["parametersJson"]) if "parametersJson" in envelope else envelope
+                    rows = payload["parameters"]["projection"]["value"]
+                    self.assertEqual(len(rows), 0 if provisioning is False else 1)
+
+    def test_both_malformed_flags_fail_with_peer_omitted_true_or_false(self):
+        for field in ("runtimeEnabled", "provisioningEnabled"):
+            peer = "provisioningEnabled" if field == "runtimeEnabled" else "runtimeEnabled"
+            for peer_value in ("omitted", True, False):
+                for value in (None, "false", 0):
+                    flags = {field: value}
+                    if peer_value != "omitted":
+                        flags[peer] = peer_value
+                    with self.subTest(flags=flags):
+                        result = self.evaluate(flags)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("Error BCP338", result.stderr)
+
+
 class SourceInventoryCompiledTests(unittest.TestCase):
     """Evaluate the actual root projections locally, then drive the actual PS gate."""
 
