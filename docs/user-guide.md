@@ -194,6 +194,9 @@ named questions and their instructions. **Yes/no** returns the probability that
 the condition holds; its optional criteria define both yes and no. **Choice**
 uses named options with descriptions. **Score** uses ordered labels, lowest
 first: a three-level scale is 0 through 2, and its result can be fractional.
+Changing answer type retains your options. If a Choice has more than ten
+options, Score asks you to remove the excess before running; switch back to
+Choice to keep them all.
 **Load synthetic example** fills an editable demo without making a model call.
 
 Availability loading waits at most 20 seconds, including sign-in token
