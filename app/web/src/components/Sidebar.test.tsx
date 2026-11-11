@@ -5,11 +5,18 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DeletionFeedback } from "@/lib/conversationDeletion";
+import * as api from "@/lib/api";
 import { Sidebar } from "./Sidebar";
 import { makeChatSession } from "./chatTestFixtures";
 
-vi.mock("./AdminLink", () => ({ AdminLink: () => null }));
-vi.mock("./UserMenu", () => ({ UserMenu: () => null }));
+vi.mock("./AdminLink", () => ({
+  AdminLink: ({ disabled }: { disabled?: boolean }) => <a href={disabled ? undefined : "/admin"} aria-disabled={disabled}>Admin</a>,
+}));
+vi.mock("./UserMenu", () => ({
+  UserMenu: ({ onBeforeSignOut }: { onBeforeSignOut?: () => boolean | void }) => (
+    <button type="button" onClick={onBeforeSignOut}>Sign out</button>
+  ),
+}));
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -24,10 +31,122 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("responsive sidebar", () => {
+  it.each(["expanded", "collapsed", "drawer"] as const)("keeps pending approvals mounted and visible with utilities closed (%s)", async (mode) => {
+    vi.spyOn(api, "getWorkflowAutomationConfig").mockResolvedValue({
+      approvalsAvailable: true, schedulesAvailable: false, maxSchedules: 0,
+      maxRuntimeSeconds: 300, hardDollarCapAvailable: false,
+    });
+    const list = vi.spyOn(api, "listWorkflowApprovals").mockResolvedValue({ runs: [{
+      runId: "run", sessionId: "session", workflow: "Review report",
+      status: "preparation_unavailable", reason: null, revision: 1, step: 0,
+      deadline: "2099-01-01T00:00:00Z", approval: null,
+    }] });
+    render(<Sidebar mode={mode} sessions={[]} activeId={null} onSelect={vi.fn()}
+      onNewChat={vi.fn()} onDelete={vi.fn()} onRename={vi.fn()} onOpenDeletionStatus={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Workflow approvals (1)" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Settings & more" })).toBeVisible();
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Workflow approvals (1)" })).toBeVisible();
+  });
+
+  it("orders primary destinations before history and keeps secondary actions in one disclosure", async () => {
+    const user = userEvent.setup();
+    render(<Sidebar sessions={[makeChatSession("A")]} activeId="A"
+      onSelect={vi.fn()} onNewChat={vi.fn()} onDelete={vi.fn()} onRename={vi.fn()}
+      onOpenDeletionStatus={vi.fn()} decisionsAvailable libraryAvailable photoAvatarsAvailable />);
+    const destinations = screen.getByRole("list", { name: "Destinations" });
+    expect(within(destinations).getAllByRole("button").map((button) => button.textContent))
+      .toEqual(["Chat", "Decisions", "Studio"]);
+    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Document library" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Session A" })).toBeVisible();
+    const toggle = screen.getByRole("button", { name: "Settings & more" });
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const footer = screen.getByRole("group", { name: "Utilities and account" });
+    expect(footer.closest('[data-testid="sidebar-scroll"]')).not.toBeNull();
+    for (const name of ["Document library", "Photo avatars", "Settings", "Deletion status"]) {
+      expect(within(footer).getByRole("button", { name })).toBeVisible();
+    }
+    for (const name of ["Documentation (opens in new tab)", "Status (opens in new tab)"]) {
+      expect(within(footer).getByRole("link", { name })).toHaveAttribute("target", "_blank");
+    }
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.keyboard("{Escape}");
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Deletion status" })).toBeNull();
+  });
+
+  it.each(["expanded", "drawer"] as const)("closes open utilities before the drawer when Escape starts on their toggle (%s)", async (mode) => {
+    const onCollapse = vi.fn();
+    const user = userEvent.setup();
+    render(<Sidebar mode={mode} sessions={[]} activeId={null} onSelect={vi.fn()}
+      onNewChat={vi.fn()} onDelete={vi.fn()} onRename={vi.fn()}
+      onOpenDeletionStatus={vi.fn()} onCollapse={onCollapse} />);
+    const toggle = screen.getByRole("button", { name: "Settings & more" });
+    await user.click(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+    expect(onCollapse).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(onCollapse).toHaveBeenCalledTimes(mode === "drawer" ? 1 : 0);
+  });
+
+  it("opens utilities directly when the rail expands and Escape closes only utilities in a drawer", async () => {
+    const onCollapse = vi.fn();
+    function Harness() {
+      const [mode, setMode] = useState<"collapsed" | "drawer">("collapsed");
+      return <Sidebar mode={mode} sessions={[]} activeId={null} onSelect={vi.fn()}
+        onNewChat={vi.fn()} onDelete={vi.fn()} onRename={vi.fn()} onOpenDeletionStatus={vi.fn()}
+        onExpand={() => setMode("drawer")} onCollapse={onCollapse} libraryAvailable />;
+    }
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Settings & more" }));
+    expect(screen.getByRole("dialog", { name: "Chat sessions" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Document library" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Deletion status" }));
+    await user.keyboard("{Escape}");
+    expect(onCollapse).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Settings & more" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(onCollapse).toHaveBeenCalledOnce();
+  });
+
+  it.each(["expanded", "collapsed", "drawer"] as const)("offers recovery, not a feature grant, after an availability failure (%s)", async (mode) => {
+    const retry = vi.fn();
+    const user = userEvent.setup();
+    render(<Sidebar mode={mode} sessions={[]} activeId={null} onSelect={vi.fn()}
+      onNewChat={vi.fn()} onDelete={vi.fn()} onRename={vi.fn()} onOpenDeletionStatus={vi.fn()}
+      decisionsAvailabilityError onRetryDecisions={retry} />);
+    expect(screen.queryByRole("button", { name: "Decisions" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Retry Decision availability/i }));
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it("preserves account sign-out and disabled admin in the utility area", async () => {
+    const beforeSignOut = vi.fn();
+    const user = userEvent.setup();
+    render(<Sidebar sessions={[]} activeId={null} onSelect={vi.fn()} onNewChat={vi.fn()}
+      onDelete={vi.fn()} onRename={vi.fn()} onOpenDeletionStatus={vi.fn()}
+      disabled onBeforeSignOut={beforeSignOut} />);
+    await user.click(screen.getByRole("button", { name: "Settings & more" }));
+    expect(screen.getByText("Admin")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("Admin")).not.toHaveAttribute("href");
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(beforeSignOut).toHaveBeenCalledOnce();
+  });
+
   it("makes the background inert and restores explicit opener focus on every close path", async () => {
     function Harness() {
       const [open, setOpen] = useState(false);
@@ -140,6 +259,7 @@ describe("responsive sidebar", () => {
         name: "A very long conversation title that must not overlap controls",
       }),
     ).toHaveAttribute("aria-current", "true");
+    await user.click(screen.getByRole("button", { name: "Settings & more" }));
     const status = screen.getByRole("link", {
       name: "Status (opens in new tab)",
     });
@@ -161,6 +281,7 @@ describe("responsive sidebar", () => {
     };
     const user = userEvent.setup();
     render(<Sidebar {...props} />);
+    await user.click(screen.getByRole("button", { name: "Settings & more" }));
     await user.click(screen.getByRole("button", { name: "Deletion status" }));
     expect(props.onOpenDeletionStatus).toHaveBeenCalledTimes(1);
     expect(props.onSelect).not.toHaveBeenCalled();
@@ -210,17 +331,20 @@ describe("responsive sidebar", () => {
       sessions: [makeChatSession("A")],
       activeId: "A", onSelect: vi.fn(), onNewChat: vi.fn(), onDelete: vi.fn(),
       onRename: vi.fn(), onOpenDeletionStatus: vi.fn(), onNavigate,
-      libraryAvailable: true, photoAvatarsAvailable: true,
+      libraryAvailable: true, photoAvatarsAvailable: true, decisionsAvailable: true,
     };
     const view = render(<Sidebar {...base} />);
+    await user.click(screen.getByRole("button", { name: "Settings & more" }));
     await user.click(screen.getByRole("button", { name: "Document library" }));
     await user.click(screen.getByRole("button", { name: "Photo avatars" }));
-    await user.click(screen.getByRole("button", { name: "Agents & workflows" }));
+    await user.click(screen.getByRole("button", { name: "Studio: Agents & workflows" }));
+    await user.click(screen.getByRole("button", { name: "Decisions" }));
     await user.click(screen.getByRole("button", { name: "Settings" }));
     expect(onNavigate.mock.calls.map(([target]) => target)).toEqual([
       "library",
       "avatars",
       "studio",
+      "decisions",
       "settings",
     ]);
 
@@ -228,7 +352,7 @@ describe("responsive sidebar", () => {
     const reason = "Wait for the current reply to finish generating.";
     view.rerender(<Sidebar {...base} view="avatars" disabled disabledReason={reason} />);
     expect(screen.getByRole("button", { name: "Photo avatars" })).toHaveAttribute("aria-current", "page");
-    for (const name of ["Document library", "Agents & workflows"]) {
+    for (const name of ["Document library", "Studio: Agents & workflows", "Decisions"]) {
       const button = screen.getByRole("button", { name });
       expect(button).toHaveAttribute("aria-disabled", "true");
       expect(button).toHaveAccessibleDescription(reason);
@@ -253,9 +377,31 @@ describe("responsive sidebar", () => {
     );
     expect(screen.queryByRole("button", { name: "Document library" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Photo avatars" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Agents & workflows" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Decisions" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Studio: Agents & workflows" })).toBeInTheDocument();
     expect(screen.getByText("No conversations yet.")).toBeInTheDocument();
   });
+
+  it.each(["expanded", "collapsed", "drawer"] as const)(
+    "offers Decisions only with server availability in the %s sidebar",
+    async (mode) => {
+      const onNavigate = vi.fn();
+      const props = {
+        mode, sessions: [], activeId: null, onSelect: vi.fn(), onNewChat: vi.fn(),
+        onDelete: vi.fn(), onRename: vi.fn(), onOpenDeletionStatus: vi.fn(), onNavigate,
+      };
+      const user = userEvent.setup();
+      const view = render(<Sidebar {...props} />);
+      expect(screen.queryByRole("button", { name: "Decisions" })).toBeNull();
+      view.rerender(<Sidebar {...props} decisionsAvailable view="decisions" />);
+      const entry = screen.getByRole("button", { name: "Decisions" });
+      expect(entry).toHaveAttribute("aria-current", "page");
+      await user.click(entry);
+      expect(onNavigate).toHaveBeenCalledExactlyOnceWith("decisions");
+      view.rerender(<Sidebar {...props} />);
+      expect(screen.queryByRole("button", { name: "Decisions" })).toBeNull();
+    },
+  );
 
   it("groups conversations by recency and offers search once the list is long", async () => {
     const user = userEvent.setup();
@@ -326,13 +472,12 @@ describe("responsive sidebar", () => {
     expect(screen.queryByRole("button", { name: "Session A" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Expand sidebar" }));
     await user.click(screen.getByRole("button", { name: "New chat" }));
-    await user.click(screen.getByRole("button", { name: "Conversation" }));
-    await user.click(screen.getByRole("button", { name: "Photo avatars" }));
+    await user.click(screen.getByRole("button", { name: "Chat" }));
     expect(onExpand).toHaveBeenCalledTimes(1);
     expect(onNewChat).toHaveBeenCalledTimes(1);
-    expect(onNavigate.mock.calls.map(([target]) => target)).toEqual(["chat", "avatars"]);
-    expect(screen.getByRole("link", { name: "Documentation (opens in new tab)" })).toHaveAttribute("target", "_blank");
-    expect(screen.getByRole("link", { name: "Status (opens in new tab)" })).toHaveAttribute("target", "_blank");
+    expect(onNavigate.mock.calls.map(([target]) => target)).toEqual(["chat"]);
+    await user.click(screen.getByRole("button", { name: "Settings & more" }));
+    expect(onExpand).toHaveBeenCalledTimes(2);
   });
 
   describe("deleting a conversation", () => {
@@ -477,4 +622,3 @@ describe("responsive sidebar", () => {
     });
   });
 });
-
