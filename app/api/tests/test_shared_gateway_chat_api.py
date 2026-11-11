@@ -13,9 +13,18 @@ from fastapi.testclient import TestClient
 from ai4ia_api.config import Settings
 from ai4ia_api.auth.base import AuthenticatedUser
 from ai4ia_api.auth.dependencies import get_current_user
+from ai4ia_api.catalog import ModelCatalog, load_catalog
 from ai4ia_api.gateway.client import ModelGatewayClient
 from ai4ia_api.main import create_app
 from tests.test_shared_gateway_staging import TOKEN, _manifest, _settings, _token
+
+
+def _catalog_with_api_override(catalog: ModelCatalog, model_id: str, api: str) -> ModelCatalog:
+    isolated = catalog.model_copy(deep=True)
+    entry = isolated.get(model_id)
+    assert entry is not None
+    entry.api = api
+    return isolated
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +93,26 @@ def test_external_socket_guard(method):
 def test_external_dns_guard():
     with pytest.raises(AssertionError, match="must not open external sockets"):
         socket.getaddrinfo("gateway.example.invalid", 443)
+
+
+@pytest.mark.parametrize("api", ["chat", "responses"])
+def test_api_override_does_not_mutate_cached_catalog(api):
+    settings = _settings(enabled=False, manifest=_manifest())
+    catalog = load_catalog(
+        settings.model_catalog_path,
+        settings.data_residency,
+        settings.claude_runtime_enabled,
+    )
+    cached_entry = catalog.get("gpt-5.2")
+    assert cached_entry is not None
+    assert cached_entry.api == "chat"
+
+    isolated = _catalog_with_api_override(catalog, "gpt-5.2", api)
+
+    isolated_entry = isolated.get("gpt-5.2")
+    assert isolated_entry is not None
+    assert isolated_entry.api == api
+    assert cached_entry.api == "chat"
 
 
 @pytest.mark.parametrize("api", ["chat", "responses"])
@@ -180,9 +209,12 @@ def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persi
         return httpx.Response(200, stream=httpx.ByteStream(body.encode()))
 
     with TestClient(app) as client:
+        app.state.catalog = _catalog_with_api_override(
+            app.state.catalog, "gpt-5.2", api
+        )
         entry = app.state.catalog.get("gpt-5.2")
         assert entry is not None
-        entry.api = api
+        assert entry.api == api
         deployment = app.state.catalog.resolve_deployment("gpt-5.2")
         assert deployment is not None
         manifest["models"] = {
