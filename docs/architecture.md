@@ -100,8 +100,12 @@ non-streaming request, with a sanitized message and validated `Retry-After`
 and optional `retryAfterSeconds`. The UI displays that text without resubmitting.
 Other upstream HTTP failures remain sanitized HTTP 502 or generic SSE errors;
 provider bodies, endpoints and private headers are not returned. Streaming and
-non-streaming calls use the existing gateway timeout profile. This source
-prepares a canary selector only; resolved values, synthetic hub proof, a
+non-streaming calls use the existing gateway timeout profile. The client
+refuses every shared HTTP 3xx without following the redirect or reading its body,
+even when an injected HTTP client enables redirect following. Redirects become
+sanitized HTTP 502 or the existing generic SSE error, never a second dispatch.
+This client guard does not establish redirect or retry behavior inside the proxy.
+The source prepares a canary selector only; resolved values, synthetic hub proof, a
 reviewed deployment plan and approval remain prerequisites to activation.
 Additional review/study capture and user attribution are still disabled and
 unavailable; ordinary owner conversation persistence, receipts and content-free

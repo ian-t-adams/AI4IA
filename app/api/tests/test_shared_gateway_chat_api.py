@@ -148,6 +148,12 @@ def test_chat_api_non_throttled_controls(api, stream, enabled, status):
     _exercise(api, stream, enabled, status, "17", None)
 
 
+@pytest.mark.parametrize("api", ["chat", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_shared_redirect_uses_existing_sanitized_api_error(api, stream):
+    _exercise(api, stream, True, 307, None, None)
+
+
 def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persistence=False):
     manifest = _manifest()
     settings = _settings(enabled=enabled, manifest=manifest).model_copy(

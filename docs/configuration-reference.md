@@ -338,13 +338,31 @@ ordinary/non-shared error handling is unchanged. Client disconnect closes the
 upstream SSE stream. These MockTransport API controls are not deployed APIM or
 SimpleL7Proxy proof; end-to-end live 429 acceptance remains an activation gate.
 The proxy can delayed-requeue a 429 only when `S7PREQUEUE: true` is returned;
-the shared-gateway policy must strip that header for APIM to remain the sole
-retry owner. Gateway v3 source deletes this header on its outbound policy path,
+the shared-gateway policy must strip that header, but stripping it alone does
+not establish APIM as the sole retry owner. Gateway v3 source deletes this header
+on its outbound policy path,
 and its offline tests cover that policy plus a simulated direct 429. This does
 not prove APIM-generated 429/503 responses, inbound `return-response`, `on-error`,
 retry-exhaustion responses, or inherited/global/workspace policies cannot return
 `S7PREQUEUE`; those remain acceptance blockers for a sole-retry claim. This is
 offline source evidence, not live route evidence.
+Configuration-dependent, real-worker loopback controls also observed the
+ordinary proxy route immediately fail over after 429/500 without `S7PREQUEUE`,
+lose `Retry-After` on a final 429, and follow a redirect with a dummy backend
+key. These offline observations do not establish deployed behavior. The exact
+onboarded proxy configuration must separately prove no extra attempt or requeue,
+retry-guidance preservation and redirect refusal before activation. The bounded
+no-replay path is not a substitute: shared selection currently refuses that
+contract. Neither the dedicated proxy topology nor this transport proof is
+provided by AI4IA's selector.
+
+At the API's own HTTPX boundary, shared dispatch explicitly disables redirect
+following regardless of injected client defaults. Every HTTP 3xx is rejected
+without reading its body or using its target, including responses without
+`Location`; it maps to sanitized HTTP 502 or the existing generic SSE error
+(HTTP 200 if streaming has already begun). There is no retry or legacy fallback.
+Legacy HTTPX redirect behavior is unchanged. This client-side guard does not
+prevent a proxy from following redirects on its own downstream connection.
 The existing `AI4IA_GATEWAY_TIMEOUT_SECONDS` profile (120 seconds by default)
 applies; HTTPX phase/read timeouts are not a total wall-clock deadline.
 

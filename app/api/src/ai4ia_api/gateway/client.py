@@ -844,7 +844,16 @@ class ModelGatewayClient:
                     kwargs["content"] = attempt.body
                     kwargs["follow_redirects"] = False
                 with telemetry.http_scope() if telemetry is not None else nullcontext():
-                    response = await client.post(url, **kwargs)
+                    if gateway_url is not None:
+                        kwargs["follow_redirects"] = False
+                        response = await stack.enter_async_context(
+                            client.stream("POST", url, **kwargs)
+                        )
+                        if 300 <= response.status_code < 400:
+                            raise ModelGatewayError(502, _REQUEST_FAILED, shared_gateway=True)
+                        await response.aread()
+                    else:
+                        response = await client.post(url, **kwargs)
                 if attempt is not None:
                     attempt.check_response(response)
             if (admission.reservation is not None or admission.workflow_observed) and response.is_success:
@@ -905,6 +914,8 @@ class ModelGatewayClient:
             async with AsyncExitStack() as stack:
                 headers = req.headers
                 body_args: dict[str, Any] = {"json": admission.payload}
+                if gateway_url is not None:
+                    body_args["follow_redirects"] = False
                 if attempt is not None:
                     client = await stack.enter_async_context(bounded_http_client(self._timeout))
                     headers = attempt.claim(admission.payload, headers)
@@ -915,6 +926,8 @@ class ModelGatewayClient:
                     ))
                 if attempt is not None:
                     attempt.check_response(response)
+                if gateway_url is not None and 300 <= response.status_code < 400:
+                    raise ModelGatewayError(502, _STREAM_FAILED, shared_gateway=True)
                 yield response, admission
 
     def _auth_headers(self, correlation_id: str | None) -> dict[str, str]:
