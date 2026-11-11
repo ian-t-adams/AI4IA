@@ -86,13 +86,20 @@ AI4IA_PATCH_REASONS = {
         "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, "
         "mandatory versioned route and non-stripping scoped-host membership, "
         "pre-send claim, unsupported-shape and upstream caller-control refusal, "
-        "and nonredirecting HTTP/1.1 transport."
+        "and nonredirecting HTTP/1.1 transport; share the independent Decision "
+        "persistence refusal without granting an attempts-v1 capability."
+    ),
+    "SimpleL7Proxy/Proxy/DecisionRequest.cs": (
+        "Reduce deployment-scoped Decision requests to synchronous, nonpersistent, "
+        "unrequeued work; sanitize terminal errors and retain only bounded 429 "
+        "Retry-After guidance."
     ),
     "SimpleL7Proxy/Proxy/ProxyWorker.cs": (
         "Fence bounded sends, host fallback, requeue and recovery, including the "
         "iterator's all-open-circuit requeue; retain one-use HTTP clients through "
         "streaming; construct portable diagnostic URIs from the same destination "
-        "builder as the transport."
+        "builder as the transport; refuse all-open-circuit Decision work promptly, "
+        "allow at most one backend attempt and preserve sanitized final errors."
     ),
     "SimpleL7Proxy/Proxy/ProxyData.cs": (
         "Dispose the bounded request's dedicated transport after its response body."
@@ -105,7 +112,8 @@ AI4IA_PATCH_REASONS = {
     ),
     "SimpleL7Proxy/DTO/RequestDataDtoV1.cs": (
         "Refuse bounded request persistence and reject recovered attempt metadata "
-        "or versioned paths even when all attempt fields are absent."
+        "or versioned paths even when all attempt fields are absent; reject "
+        "persistence and recovery of deployment-scoped Decision requests."
     ),
     "SimpleL7Proxy/SimpleL7Proxy.csproj": (
         "Keep runtime dependencies current, including IdentityModel 8.23.0, "

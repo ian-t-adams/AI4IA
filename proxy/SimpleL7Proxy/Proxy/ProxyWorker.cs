@@ -865,6 +865,8 @@ public class ProxyWorker : IConfigChangeSubscriber
         ArgumentNullException.ThrowIfNull(request.Headers, nameof(request.Headers));
         ArgumentNullException.ThrowIfNull(request.Method, nameof(request.Method));
         NoReplayAttempt.ValidateState(request);
+        DecisionRequest.ValidateState(request);
+        bool decision = DecisionRequest.Matches(request);
 
         _logger.LogDebug("[ProxyToBackEnd:{Guid}] Starting proxy attempt - Path: {Path}, Method: {Method}",
             request.Guid, request.Path, request.Method);
@@ -909,7 +911,7 @@ public class ProxyWorker : IConfigChangeSubscriber
         // Use helper method to abstract over shared vs per-request iterators
 
         BaseHostHealth? host;
-        while (request.NoReplay?.Claimed != true
+        while (request.NoReplay?.Claimed != true && (!decision || request.LifetimeBackendAttempts == 0)
             && TryGetHost(iterator, iterationState, request, out host) && host != null)
         {
             DateTime proxyStartDate = DateTime.UtcNow;
@@ -1106,7 +1108,14 @@ public class ProxyWorker : IConfigChangeSubscriber
 
                             // DO NOT ADD A USING BLOCK HERE - we need to process the response outside of this block
 
-                            boundedClient = request.NoReplay is not null ? NoReplayAttempt.CreateClient() : null;
+                            boundedClient = request.NoReplay is not null || decision ? NoReplayAttempt.CreateClient() : null;
+                            if (decision)
+                            {
+                                proxyRequest.Version = HttpVersion.Version11;
+                                proxyRequest.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
+                                proxyRequest.Headers.ExpectContinue = false;
+                                proxyRequest.Headers.ConnectionClose = true;
+                            }
                             request.NoReplay?.Claim(request, proxyRequest, bodyBytes, host.Config);
                             var proxyResponse = await (boundedClient ?? _options.Client!).SendAsync(
                                 proxyRequest, HttpCompletionOption.ResponseHeadersRead, requestCts.Token).ConfigureAwait(false);
@@ -1134,6 +1143,12 @@ public class ProxyWorker : IConfigChangeSubscriber
 
                             // Check if the status code of the response is in the set of allowed status codes, else try the next host
                             intCode = (int)proxyResponse.StatusCode;
+                            if (decision && proxyResponse.StatusCode != HttpStatusCode.OK)
+                            {
+                                var failure = DecisionRequest.Failure(request, proxyResponse.StatusCode, responseHeaders);
+                                proxyResponse.Dispose();
+                                return failure;
+                            }
                             var acceptableStatusCode = _options.AcceptableStatusCodes.Contains(intCode);
                             if (request.NoReplay is null && !acceptableStatusCode &&
                                 ((intCode > 300 && intCode < 400) || intCode == 404 || intCode == 412 || intCode >= 500))
@@ -1219,7 +1234,7 @@ public class ProxyWorker : IConfigChangeSubscriber
                                 }
                             }
 
-                            var (shouldRequeue, retryMs) = request.NoReplay is null && !acceptableStatusCode
+                            var (shouldRequeue, retryMs) = !decision && request.NoReplay is null && !acceptableStatusCode
                                 ? CheckRequeueResponse(proxyResponse, intCode, requestAttempt, ref requestState)
                                 : (false, 0);
 
@@ -1440,6 +1455,8 @@ public class ProxyWorker : IConfigChangeSubscriber
         }
 
         // all hosts exhausted
+        if (decision)
+            return DecisionRequest.Failure(request, intCode == 0 ? lastStatusCode : (HttpStatusCode)intCode);
 
         // If we get here, then no hosts were able to handle the request
 
@@ -1653,6 +1670,11 @@ public class ProxyWorker : IConfigChangeSubscriber
         try
         {
             return iterator.TryGet(state, out host);
+        }
+        catch (S7PRequeueException) when (DecisionRequest.Matches(request))
+        {
+            host = null;
+            return false;
         }
         catch (S7PRequeueException) when (request.NoReplay is not null)
         {

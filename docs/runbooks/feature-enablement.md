@@ -59,6 +59,14 @@ There is no direct-provider exception, new API key or Copilot credential reuse.
 Decision calls do not select the separate attempts-v1 transport or establish a
 verified hard-dollar bound. Application/APIM retries and proxy requeue hints
 are suppressed for this operation; accepted work is never replayed by the client.
+The proxy also refuses Decision persistence/requeue and makes at most one backend
+attempt, without redirect or automatic failover after that attempt. It may skip
+an open host before sending; if every matching host is open, it returns 503
+promptly rather than scheduling a delayed first send after the caller leaves.
+Terminal errors expose a fixed safe body, with only validated 0-86400-second
+`Retry-After` guidance on 429 (a bounded HTTP date is normalized to seconds).
+An explicit later Run is a new request, not an automatic retry. Cancellation
+does not undo work already accepted by a backend, which may still be billed.
 
 The wire contract is the
 [official Foundry Decision documentation](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision).

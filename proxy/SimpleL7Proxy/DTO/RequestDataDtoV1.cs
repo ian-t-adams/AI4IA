@@ -148,6 +148,8 @@ namespace SimpleL7Proxy.DTO
         public void PopulateInto(RequestData data)
         {
             NoReplayAttempt.RefusePersistence(data);
+            if (DecisionRequest.Matches(Method, Path))
+                throw new InvalidOperationException("Decision requests cannot be recovered.");
             if (AttemptContract is not null || NoReplayAttempt.IsVersionedPath(Path) ||
                 Headers.Keys.Any(NoReplayAttempt.IsInternalHeader))
                 throw new InvalidOperationException("Bounded gateway requests cannot be recovered.");
