@@ -2572,6 +2572,7 @@ async def chat(
     plain_fallback_usage = TokenUsage.empty()
     plain_tool_run: AgentRunResult | None = None
     plain_model_attempts = 0
+    plain_tool_loop_attempted = False
     plain_compute_active = (
         compute is not None
         and compute_decision is not None
@@ -2649,6 +2650,7 @@ async def chat(
                     f"plain-chat synthetic tool names collide: {collisions}"
                 )
             if plain_tools:
+                plain_tool_loop_attempted = True
                 turn_timing.mark_tool_loop()
                 if body.stream:
                     # Live-stream the tool activity + answer. If the tool turn yields
@@ -2948,7 +2950,10 @@ async def chat(
             if continuation is not None:
                 await continuation.begin_fallback()
             shared_gateway_options: dict[str, Any] = {}
-            if request.app.state.settings.shared_gateway_enabled:
+            if (
+                request.app.state.settings.shared_gateway_enabled
+                and not plain_tool_loop_attempted
+            ):
                 shared_gateway_options = {
                     "shared_gateway_eligible": api in {"chat", "responses"},
                     "shared_gateway_sku": deployment.sku,

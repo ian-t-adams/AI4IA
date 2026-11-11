@@ -85,6 +85,9 @@ manifest binds the private HTTPS endpoint, managed-identity audience and app
 client ID, exact operations, and lowercase deployment/alias plus SKU mapping;
 startup also matches the manifest caller ID to `AZURE_CLIENT_ID`. The existing factory base URL is
 unchanged, and a selected shared request never silently falls back to it.
+Tool-capable turns and their empty/error completion fallback stay on the
+existing gateway route for the whole turn; only standalone no-tools dispatches
+can select the shared gateway.
 Stateful Responses (`store=true`, prior response, background, or conversation),
 embeddings, images, speech, Anthropic, realtime/Voice Live, Agent Service, CU,
 Search, and specialist routes remain on their existing paths.
