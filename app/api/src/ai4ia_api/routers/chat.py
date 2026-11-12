@@ -172,7 +172,7 @@ class _RawJsonObjectPairs(list[tuple[str, Any]]):
         super().__init__(
             (key, value)
             for key, value in pairs
-            if key in {"params", "max_tokens", "max_completion_tokens"}
+            if key in {"params", "max_tokens", "max_completion_tokens", "max_output_tokens"}
         )
 
 
@@ -204,7 +204,7 @@ async def _require_pilot_output_tokens(request: Request) -> None:
 
     token_fields = [
         (key, value) for key, value in params_values[0]
-        if key in {"max_tokens", "max_completion_tokens"}
+        if key in {"max_tokens", "max_completion_tokens", "max_output_tokens"}
     ]
     if (
         len(token_fields) != 1

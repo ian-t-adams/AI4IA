@@ -403,6 +403,9 @@ token control, and the API checks the normalized request and final serialized
 gateway body immediately before dispatch; an absent, malformed, conflicting or
 changed value is rejected without sending it. Reasoning tokens consume the same
 256-token output budget, so a response may be short or have no visible answer.
+The Chat Completions pilot refuses `max_output_tokens`, including when paired
+with a valid limit. Raw input is checked before normalization; duplicate token
+keys in serialized dispatch bodies are rejected rather than collapsed.
 
 Sessions must set `toolsEnabled=false`, and chat requests must explicitly set
 `allowTools=false` and `allowAutomaticMemory=false`; agents, documents, image

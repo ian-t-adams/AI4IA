@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -26,6 +27,18 @@ from tests.test_shared_gateway_staging import (
 )
 
 PILOT_WEB_CLIENT_ID = "00000000-0000-0000-0000-000000000098"
+
+
+@pytest.fixture(autouse=True)
+def _deny_real_http_transport(monkeypatch):
+    async def deny_async(*_args, **_kwargs):
+        pytest.fail("Real HTTP transport is prohibited in pilot isolation tests.")
+
+    def deny_sync(*_args, **_kwargs):
+        pytest.fail("Real HTTP transport is prohibited in pilot isolation tests.")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", deny_async)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", deny_sync)
 
 
 def _pilot_configuration(
@@ -600,6 +613,10 @@ def test_pilot_startup_rejects_non_chat_or_extra_model_routes(manifest_change):
         ({"max_tokens": "256"}, 422),
         ({"max_tokens": True}, 422),
         ({"max_tokens": 256, "max_completion_tokens": 256}, 422),
+        ({"max_tokens": 256, "max_output_tokens": 4096}, 422),
+        ({"max_output_tokens": 256}, 422),
+        ('{"max_tokens":256,"max_tokens":256}', 422),
+        ('{"max_tokens":256,"max_output_tokens":256}', 422),
     ],
 )
 def test_pilot_chat_dispatch_requires_exactly_256_output_tokens(
@@ -686,14 +703,21 @@ def test_pilot_chat_dispatch_requires_exactly_256_output_tokens(
             messages_url = f"/api/sessions/{created.json()['id']}/messages"
             messages_before = client.get(messages_url)
             assert messages_before.status_code == 200
-            chat = client.post("/api/chat", json={
+            chat_body = {
                 "sessionId": created.json()["id"],
                 "content": "synthetic prompt",
                 "stream": True,
                 "allowTools": False,
                 "allowAutomaticMemory": False,
-                "params": params,
-            })
+            }
+            if isinstance(params, str):
+                chat = client.post(
+                    "/api/chat",
+                    content=json.dumps(chat_body)[:-1] + ',"params":' + params + "}",
+                    headers={"content-type": "application/json"},
+                )
+            else:
+                chat = client.post("/api/chat", json={**chat_body, "params": params})
             assert chat.status_code == expected_status
             messages_after = client.get(messages_url)
             assert messages_after.status_code == 200
@@ -714,9 +738,22 @@ def test_pilot_chat_dispatch_requires_exactly_256_output_tokens(
         assert requests[0].url.path == "/openai/v1/chat/completions"
 
 
-@pytest.mark.parametrize("streaming", [True, False])
-def test_pilot_rechecks_mutated_dispatch_payload_before_transport(monkeypatch, streaming):
-    settings, _, _ = _pilot_configuration()
+@pytest.mark.parametrize(
+    ("streaming", "shared_post"), [(True, False), (False, False), (False, True)],
+)
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"max_completion_tokens": 257},
+        {"max_output_tokens": 4096},
+        {"max_output_tokens": 256},
+        {"max_tokens": 256},
+    ],
+)
+def test_pilot_rechecks_mutated_dispatch_payload_before_transport(
+    monkeypatch, streaming, shared_post, mutation,
+):
+    settings, _, _ = _pilot_configuration(model_gateway_url="https://gateway.example.invalid")
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -739,7 +776,7 @@ def test_pilot_rechecks_mutated_dispatch_payload_before_transport(monkeypatch, s
     @asynccontextmanager
     async def mutate_dispatch_payload(*args, **kwargs):
         async with original_admitted_dispatch(*args, **kwargs) as admission:
-            admission.payload["max_completion_tokens"] = 257
+            admission.payload.update(mutation)
             yield admission
 
     monkeypatch.setattr(gateway_module, "admitted_dispatch", mutate_dispatch_payload)
@@ -762,6 +799,7 @@ def test_pilot_rechecks_mutated_dispatch_payload_before_transport(monkeypatch, s
                     deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
                     payload=req.json,
                     json=req.json,
+                    gateway_url="https://gateway.example.invalid" if shared_post else None,
                 )
 
     try:
@@ -769,6 +807,117 @@ def test_pilot_rechecks_mutated_dispatch_payload_before_transport(monkeypatch, s
     finally:
         asyncio.run(http.aclose())
     assert requests == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"max_output_tokens": 256},
+        {"max_tokens": 256, "max_output_tokens": 4096},
+        {"max_tokens": 256, "max_completion_tokens": 256},
+        {"max_tokens": "256"},
+        {"max_tokens": True},
+    ],
+)
+def test_pilot_rejects_ambiguous_raw_gateway_params(params):
+    settings, _, _ = _pilot_configuration()
+    gateway = ModelGatewayClient(settings, shared_gateway_token_provider=_token)
+    with pytest.raises(ModelGatewayError, match="exactly 256 output tokens"):
+        gateway.build_request(
+            deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
+            messages=[],
+            params=params,
+        )
+
+
+@pytest.mark.parametrize(
+    ("streaming", "shared_post"), [(True, False), (False, False), (False, True)],
+)
+@pytest.mark.parametrize("pilot", [True, False])
+@pytest.mark.parametrize(
+    ("body", "valid"),
+    [
+        (b'{"max_completion_tokens":256}', True),
+        (b'{"max_tokens":256}', True),
+        (b'{"max_output_tokens":256}', False),
+        (b'{"max_completion_tokens":256,"max_output_tokens":4096}', False),
+        (b'{"max_completion_tokens":256,"max_output_tokens":256}', False),
+        (b'{"max_completion_tokens":256,"max_completion_tokens":256}', False),
+        (b'{"max_completion_tokens":257,"max_completion_tokens":256}', False),
+        (b'{"max_completion_tokens":256,"max_tokens":256}', False),
+        (b'{"max_tokens":256,"max_tokens":256}', False),
+        (b'{"max_completion_tokens":"256"}', False),
+        (b'{"max_completion_tokens":true}', False),
+        (b'{"max_completion_tokens":256.0}', False),
+        (b'{}', False),
+    ],
+)
+def test_pilot_checks_serialized_attempt_after_claim(
+    monkeypatch, streaming, shared_post, pilot, body, valid,
+):
+    import ai4ia_api.gateway.client as gateway_module
+
+    settings, _, _ = _pilot_configuration(model_gateway_url="https://gateway.example.invalid")
+    gateway = ModelGatewayClient(
+        settings.model_copy(update={"chat_pilot_isolation_enabled": pilot}),
+        shared_gateway_token_provider=_token,
+    )
+    requests: list[httpx.Request] = []
+    http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(200, json={}),
+    ))
+    req = gateway.build_request(
+        deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
+        messages=[],
+        params={"max_tokens": 256},
+        stream=streaming,
+    )
+    attempt = SimpleNamespace(body=json.dumps(req.json).encode())
+
+    def claim(*_args):
+        attempt.body = body
+        return {}
+
+    attempt.claim = claim
+    attempt.check_response = lambda _response: None
+
+    @asynccontextmanager
+    async def prepare(*_args, **_kwargs):
+        yield attempt
+
+    @asynccontextmanager
+    async def bounded_client(*_args):
+        yield http
+
+    monkeypatch.setattr(gateway_module, "prepare_attempt", prepare)
+    monkeypatch.setattr(gateway_module, "bounded_http_client", bounded_client)
+
+    async def dispatch():
+        if streaming:
+            async with gateway._stream_request(
+                http, req, deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
+                evidence=None,
+            ):
+                pass
+        else:
+            await gateway._post(
+                http, req.url, surface="chat",
+                deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
+                payload=req.json, json=req.json,
+                gateway_url="https://gateway.example.invalid" if shared_post else None,
+            )
+
+    try:
+        if pilot and not valid:
+            with pytest.raises(ModelGatewayError, match="exactly 256 output tokens"):
+                asyncio.run(dispatch())
+            assert requests == []
+        else:
+            asyncio.run(dispatch())
+            assert len(requests) == 1
+            assert requests[0].content == body
+    finally:
+        asyncio.run(http.aclose())
 
 
 @pytest.mark.parametrize("upstream_status", [200, 429])
