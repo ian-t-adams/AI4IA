@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..catalog import ModelCatalog, ModelEntry
+from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ..config import Settings
 from ..chat_timing import ChatTiming, bind_chat_timing
 from ..request_constraints import arm_fresh_dispatch, constrain_request, conversation_tools_check, tools_allowed
@@ -851,6 +851,16 @@ async def chat(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        body.allowTools
+        or body.allowAutomaticMemory
+        or body.requireFreshSession
+        or body.approvals
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests must disable tools and automatic memory.",
+        )
     repo: SessionRepository = request.app.state.session_repo
     continuation: ChatContinuationController | None = None
     resume_message: Message | None = getattr(request.state, "chat_resume", None)
@@ -921,6 +931,18 @@ async def chat(
     )
 
     session = await repo.get_session(user.internal_user_id, body.sessionId)
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        session.toolsEnabled
+        or session.agentName is not None
+        or session.toolOverrides.added
+        or session.toolOverrides.removed
+        or session.libraryDocumentIds
+        or session.imagePreferences.models
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This conversation has capabilities unavailable in isolated chat-pilot mode.",
+        )
     if resume_seed is not None and _chat_session_binding(session) != resume_seed["sessionBinding"]:
         raise HTTPException(409, "Conversation settings changed. Send a fresh request.")
     if resume_seed is not None and resume_seed["sourceAgent"] is not None:
@@ -943,6 +965,13 @@ async def chat(
         )
 
     parsed = parse_input(body.content)
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        parsed.agent is not None or parsed.command is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests accept plain chat messages only.",
+        )
     if body.requireFreshSession and (parsed.agent is not None or parsed.command is not None):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1211,8 +1240,24 @@ async def chat(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No model selected for this chat",
         )
+    deployment_option_filter = None
+    if request.app.state.settings.chat_pilot_isolation_enabled:
+        entry_for_routing = catalog.get(model_id)
+        if entry_for_routing is not None:
+            def pilot_option_filter(option: DeploymentOption) -> bool:
+                return gateway.chat_pilot_model_key(
+                    entry_for_routing.api,
+                    option.deploymentName,
+                    option.sku,
+                    model_id=entry_for_routing.id,
+                ) is not None
+
+            deployment_option_filter = pilot_option_filter
     deployment = catalog.resolve_deployment(
-        model_id, region=body.region, data_zone=body.dataZone
+        model_id,
+        region=body.region,
+        data_zone=body.dataZone,
+        option_filter=deployment_option_filter,
     )
     if deployment is None:
         raise HTTPException(

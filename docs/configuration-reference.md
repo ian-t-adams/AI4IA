@@ -271,7 +271,9 @@ When OFF, the manifest is not selected and the existing model-gateway route,
 request shaping, credentials, conversation persistence and specialty paths
 remain unchanged. When ON, preprovision validation and API startup require a
 strict `contractVersion: "2.0.0"` or `"2.1.0"` manifest with `status: "resolved"`; the API
-also verifies that `callerClientId` matches its assigned `AZURE_CLIENT_ID`.
+also verifies that `callerClientId` matches
+`AZURE_CLIENT_ID`, the API's existing managed identity. Its existing
+data-plane permissions remain unchanged.
 Only the exact HTTPS host, OAuth issuer/audience/scope, operation and model
 allowlists in that manifest are used. No endpoint, tenant, audience, identity
 or deployment value is supplied by this repository. A manifest is not proof of
@@ -293,16 +295,27 @@ These settings validate eligibility only; no family dispatcher or infrastructure
 wiring is supplied in this slice. Provider targets, network reachability, runtime
 transport, pricing and per-route activation approval remain separate dependencies.
 
-Onboarding dependency: `gateway.baseUrl` must identify the reachable,
-per-app SimpleL7Proxy endpoint, not APIM and not AI4IA's existing key-only
-proxy. The API sends a managed-identity bearer token for the manifest audience;
-the dedicated proxy must validate that audience and allowlist the API MI client
-ID, then use its own distinct proxy UAMI for APIM. Current AI4IA infrastructure
-creates only the key-authenticated proxy and does not create this
-bearer-validating proxy, its identity/allowlist, or its private APIM network and
-DNS path. Those are separate reviewed onboarding dependencies; no endpoint,
-identity, or network value is supplied or inferred here. Keep the selector OFF
-until that path is provisioned and verified under a separately approved plan.
+Onboarding dependency: `gateway.baseUrl` must identify a reachable,
+dedicated bearer-validating SimpleL7Proxy, not APIM and not AI4IA's existing
+key-only proxy. The API sends a managed-identity bearer token for the manifest
+audience; the proxy must validate that audience and allowlist the API's
+authenticated managed identity, then use its own distinct proxy UAMI for APIM.
+The source option for a hub-hosted proxy is maintained in
+`ian-t-adams/planetexpress-gateway`; AI4IA does not duplicate that proxy. Its
+configuration is not proof that the mutable deployed image contains or loads
+the same behavior: `UserConfigRequired=false` means readiness alone does not
+prove that the caller allowlist loaded. Verify exact image provenance and
+effective loaded auth configuration before treating caller validation or
+allowlisting as established; do not infer upstream-image behavior from AI4IA's
+vendored fork.
+The current v2 global APIM policy accepts only the shared proxy UAMI. The
+gateway owner is working on an app-facing v2 protocol backed by the existing
+Catalog 3 partition policy; its exact compatible source and runtime behavior
+remain pending. Cross-VNet reachability, DNS, exact base URL/host allowlist,
+and runtime auth/retry behavior are also unproven. No endpoint, identity,
+network value, or APIM grant is supplied or inferred here. Keep the selector
+OFF until those gaps are resolved and the path is verified under a separately
+approved plan.
 
 The selector is limited to the standard chat router's final model dispatch:
 
@@ -337,6 +350,91 @@ HTTP failures still map to sanitized HTTP 502 or generic SSE errors, and
 ordinary/non-shared error handling is unchanged. Client disconnect closes the
 upstream SSE stream. These MockTransport API controls are not deployed APIM or
 SimpleL7Proxy proof; end-to-end live 429 acceptance remains an activation gate.
+The gateway client retains upstream 400, 401 and 403 status internally, but
+`/api/chat` maps non-429 failures to sanitized HTTP 502 or a generic terminal
+SSE error after HTTP 200 has begun. These statuses are not returned as caller-
+visible 401/403 responses, and do not trigger app retry or legacy fallback.
+
+### Isolated chat-pilot source mode (default OFF)
+
+`AI4IA_CHAT_PILOT_ISOLATION_ENABLED` is a source-level, default-OFF guard for a
+separately built API candidate; it is not wired by the normal API Bicep module
+and does not create an isolated deployment. When enabled, startup requires
+`AI4IA_ENV=dev`, Entra auth, `AI4IA_SESSION_STORE=memory`,
+`AI4IA_MEMORY_STORE=disabled`, the existing resolved shared-gateway contract,
+and no Cosmos, Search, Blob, Content Understanding, Code Interpreter, WebIQ,
+Durable Task, Azure Monitor, Log Analytics, or Application Insights endpoint.
+It disables the legacy model-gateway route: configure
+`AI4IA_MODEL_GATEWAY_AUTH_MODE=none` with no `AI4IA_MODEL_GATEWAY_API_KEY`.
+Only the resolved shared-gateway manifest can route eligible chat; an
+unavailable or ineligible shared call fails rather than falling back. This
+exception is limited to the isolated pilot; ordinary deployments still require
+their validated SimpleL7Proxy `/openai` URL and authentication.
+The pilot manifest must contain exactly one model alias, bound to one deployment
+and one SKU, and allow only `POST /chat/completions`. The alias must exactly match
+the catalog model ID; model discovery and dispatch both enforce that binding.
+Responses, additional aliases, SKUs, or operations fail closed.
+It also requires explicit GUID values for `AI4IA_CHAT_PILOT_ALLOWED_OID` and
+`AI4IA_CHAT_PILOT_ALLOWED_AZP`; the former is the approved user's Entra object
+ID and has no default, while the latter is the verified web client application
+ID. For a separate single-tenant pilot SPA registration, set the web runtime
+`ENTRA_CLIENT_ID` and API `AI4IA_CHAT_PILOT_ALLOWED_AZP` to that same new
+registration's client ID; do not modify the production SPA redirect array. Its
+redirect URI must be the exact pilot HTTPS origin, with only the required
+delegated consent. The v2 access-token audience is the API application's client-ID GUID, and
+the delegated `scp` claim must contain the exact `access_as_user` token. The
+API's `api://.../access_as_user` identifier is the requested scope, not the v2
+token audience. Admission requires signed `oid`, `tid`, `iss`, `ver=2.0`, and
+`azp` claims to match that configured contract; it never falls back to `sub`.
+Although the API registration and web configuration declare the intended
+version/scope/client contract, no actual access token was captured. No approved
+pilot object ID is configured, so enabling the guard currently fails closed.
+It also refuses enabled document, image, voice, tool, workflow, user-directory,
+entitlement, hard-quota, group-policy, publication, Claude, and gateway-attempt
+features. Validation runs before logging/telemetry setup.
+
+The ASGI boundary permits only health, model listing, session create/list/read/
+messages, and `POST /api/chat`; the session initialization/deletion routes,
+other HTTP routes, and all WebSockets refuse.
+Sessions must set `toolsEnabled=false`, and chat requests must explicitly set
+`allowTools=false` and `allowAutomaticMemory=false`; agents, documents, image
+preferences, commands, and tool-capable turns are refused. Eligible chat remains
+stateless over the shared gateway contract; an ineligible dispatch errors rather
+than falling back to the existing proxy route. In pilot mode, v2.0 manifests also
+reject duplicate JSON keys; model lookup is exact on deployment, SKU, and
+operation. Direct names and aliases may split operations only when each lookup is
+unique; conflicting matches fail validation, and `/api/models` lists only the
+same manifest intersection that streaming dispatch accepts. The HTTP client
+disables environment-proxy discovery, and startup refuses any set upper- or
+lower-case HTTP/HTTPS/ALL proxy environment variable and `WEB_CONCURRENCY`
+values other than `1`.
+Conversation and usage records are process-local and are lost on restart. This
+does not prove a single serving worker/replica/revision, a private ingress or
+egress boundary, DNS, identity/RBAC isolation, or image provenance; those require
+separate infrastructure review and evidence. This is not a review-capture feature
+or a browser control. Normal API Bicep still selects Cosmos; ingress/egress,
+identity/RBAC scope, logs, image provenance, APIM/S7P auth, redirect and
+first-byte behavior remain separate review gates before any candidate is run.
+
+The web has a separate default-OFF `chatPilotUiEnabled` / server-side
+`CHAT_PILOT_UI_ENABLED` compatibility flag. When enabled, it creates sessions
+with `toolsEnabled=false`, sends `allowTools=false` and
+`allowAutomaticMemory=false` on chat, and restricts the interface/proxy to
+models, session list/create/read/messages, and plain-text chat. Other API paths
+are rejected by the same-origin proxy and out-of-scope controls are hidden.
+The flag does not choose or verify a backend. The pilot-only
+`CHAT_PILOT_API_ALLOWED_HOST` must exactly match the hostname in the HTTPS
+`API_BASE_URL`, and that hostname must be an ACA internal FQDN
+(`*.internal.*.azurecontainerapps.io`); missing, mismatched, non-HTTPS, public,
+or non-origin values fail closed before the web proxy sends a request. The
+hostname is operator-selected only after the internal API target is verified.
+Pilot upstream redirects remain refused without retry or forwarding redirect
+headers. Flag-off against the
+pilot API remains incompatible and is rejected by the API guard; flag-on
+against an ordinary API sends request-only denials and does not make that API
+an isolated pilot. The browser auth path and `ENTRA_API_SCOPE` are unchanged.
+This source path is not a UI cutover or readiness claim.
+
 The proxy can delayed-requeue a 429 only when `S7PREQUEUE: true` is returned;
 the shared-gateway policy must strip that header, but stripping it alone does
 not establish APIM as the sole retry owner. Gateway v3 source deletes this header
@@ -346,11 +444,23 @@ not prove APIM-generated 429/503 responses, inbound `return-response`, `on-error
 retry-exhaustion responses, or inherited/global/workspace policies cannot return
 `S7PREQUEUE`; those remain acceptance blockers for a sole-retry claim. This is
 offline source evidence, not live route evidence.
-Configuration-dependent, real-worker loopback controls also observed the
-ordinary proxy route immediately fail over after 429/500 without `S7PREQUEUE`,
-lose `Retry-After` on a final 429, and follow a redirect with a dummy backend
-key. These offline observations do not establish deployed behavior. The exact
-onboarded proxy configuration must separately prove no extra attempt or requeue,
+The synthetic AI4IA API tests inject `S7PREQUEUE` from a fake per-app gateway
+and assert it is not returned to the caller. Their test-only bearer-to-partition
+map exercises Catalog 3 selection shape; it does not validate JWTs or prove the
+deployed S7P/APIM policies strip the header on every response path.
+Earlier default-status loopback observations for the vendored worker's ordinary
+proxy route are not evidence about gateway #2's configured accepted statuses;
+in particular, a default-status final-429 `Retry-After` loss must not be
+attributed to that configuration. A separate synthetic loopback characterization
+using gateway #2's source `AcceptableStatusCodes` observed 429 with
+`Retry-After: 17` accepted for streaming and non-streaming with one API send,
+one backend request and no requeue; injecting `S7PREQUEUE` on an accepted 429
+also caused no requeue. A synthetic downstream 307 reached a second loopback
+listener with the synthetic prompt and dummy key and returned 200. These used a
+synthetic host, fake bearer ingress and dummy backend key, not the #2 image,
+real UAMI auth, deployed APIM or complete runtime configuration. They neither
+establish deployed retry/header behavior nor make redirects safe. The exact
+onboarded proxy configuration must separately prove first-byte/no-replay,
 retry-guidance preservation and redirect refusal before activation. The bounded
 no-replay path is not a substitute: shared selection currently refuses that
 contract. Neither the dedicated proxy topology nor this transport proof is
@@ -378,8 +488,10 @@ v2 manifest or runtime evidence, and private model/backend inventory is not
 stored here. Until AI4IA-specific identity, endpoint, audience, scope, egress,
 and allowlist values are issued in a resolved manifest and per-canary approval
 is granted, leave the selector OFF and the existing v2 manifest contract
-unchanged. Shared-gateway 400, 401, and 403 responses are surfaced without an
-app retry or fallback to the current gateway path.
+unchanged. Upstream 400, 401, and 403 statuses remain internal to the gateway
+client for diagnostics, with no app retry or fallback; `/api/chat` returns
+sanitized HTTP 502 for non-streaming calls or a generic SSE error after HTTP 200
+has begun.
 The v2 manifest continues to bind each routing key to the selected deployment
 and SKU. The gateway-internal v3 catalog has no SKU field: Global and
 DataZoneStandard options must be explicit target deployments, with no implicit
@@ -401,19 +513,31 @@ approved canary executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED` from a GitHub
 Actions repository variable and the activation manifest from a GitHub Actions
 secret; leave both unset in production so the parameter default remains false
 and the manifest empty. Do not configure production values or use this workflow
-for a canary. The operator and rollback owner remain unassigned until Ian
-approves the canary plan. If approved, the designated operator would use a
-separate `azd` environment: set
-`AI4IA_SHARED_GATEWAY_ENABLED=true` and the private
-`AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run `azd provision` under that
-approved plan so the existing hook derives the bounded secret transport and
-preflight validates the manifest before provisioning. Verify only with the
-separately approved synthetic canary. Do not change production variables,
-dispatch the production workflow, deploy, or send live model traffic from this
-change. Rollback is a configuration change in that same isolated `azd`
-environment: set `AI4IA_SHARED_GATEWAY_ENABLED=false` and run the approved
-operator provision again. The API then uses its normal route; it never silently
-falls back while enabled. No hot in-process emergency bypass is implemented.
+for a canary. The reviewed plan must name the operator and rollback owner.
+Execution remains held for coordinator review of the exact candidate and
+sequencing and completion of the independent safety gates; this text is not
+execution approval. The isolated-`azd` example is only for a separately approved
+isolated test environment; it does not authorize use of either existing API app.
+Do not use whole-estate `azd provision` for that pilot. Any pilot must use a
+separately provisioned and reviewed API target; neither existing legacy nor
+web-serving private API app may be selected or modified. Keep both untouched. A
+distinct, separately authorized serving-app change would require capturing its
+exact known-good serving revision, template, image and replica settings; it is
+not part of this pilot. Do not change production variables, dispatch the
+production workflow, deploy, or send live model traffic from this change.
+Normal, separately authorized non-pilot rollback follows its own reviewed
+configuration and revision procedure; it does not apply to this isolated pilot.
+Turning `AI4IA_SHARED_GATEWAY_ENABLED` off by itself is not a pilot rollback:
+`AI4IA_CHAT_PILOT_ISOLATION_ENABLED=true` requires the shared-gateway selector,
+so selector-off fails startup validation. Do not disable the isolation guard or
+route to a legacy service as a workaround. Under the reviewed pilot plan, isolate
+ingress and stop/remove the pilot, or restore a previously verified isolated
+revision after checking its actual ready serving revision. Revision copy does not
+revert identity attachments, secrets, APIM policy/access, or network changes;
+handle those separately under their reviewed rollback plans. See the deployment
+runbook's [automatic and manual rollback](runbooks/deployment.md#automatic-and-manual-rollback).
+The API never silently falls back while enabled. No hot in-process emergency
+bypass is implemented.
 
 Additional review/study capture and per-user gateway attribution remain
 unavailable. The Settings notice is an unchecked disabled control and saves no

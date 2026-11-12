@@ -430,6 +430,15 @@ class CommittedParametersTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("hardQuotaEnabled=true requires hardQuotaRolloutId", err)
 
+    def test_shared_gateway_requires_private_api_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _environment():
+            code, _, err = _run(_write_parameters(tmp, {
+                "sharedGatewayEnabled": True,
+                "apiNetworkPhase": "legacy",
+            }))
+        self.assertEqual(code, 1)
+        self.assertIn("requires apiNetworkPhase=private", err)
+
     def test_hard_quota_default_off_and_activation_requires_a_selected_rollout(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
         self.assertEqual(parameters["hardQuotaEnabled"]["value"], "${AI4IA_HARD_QUOTA_ENABLED=false}")

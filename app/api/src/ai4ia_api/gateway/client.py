@@ -550,6 +550,7 @@ class ModelGatewayClient:
             load_shared_gateway_manifest(
                 settings.shared_gateway_activation_manifest,
                 api_identity_client_id=settings.api_identity_client_id,
+                pilot_mode=settings.chat_pilot_isolation_enabled,
             )
             if self._shared_enabled
             else None
@@ -583,6 +584,7 @@ class ModelGatewayClient:
         self._audio_api_version = settings.gateway_audio_api_version
         self._audio_timeout = settings.gateway_audio_timeout_seconds
         self._http = http_client
+        self._chat_pilot_isolation = settings.chat_pilot_isolation_enabled
         self._hard_quota_enabled = settings.hard_quota_enabled
         self._model_telemetry = ModelTelemetry(settings)
         self._group_policy_enabled = settings.group_policy_enabled
@@ -596,10 +598,56 @@ class ModelGatewayClient:
         if self._shared_credential is not None:
             await self._shared_credential.close()
 
+    def chat_pilot_model_key(
+        self, api: str, deployment: str, sku: str | None, *,
+        streaming: bool = True, model_id: str | None = None,
+    ) -> str | None:
+        if not self._chat_pilot_isolation or self._shared_manifest is None:
+            return None
+        try:
+            resolved_api = _resolved_api(api, deployment)
+        except ValueError:
+            return None
+        if resolved_api != "chat":
+            return None
+        path = "/chat/completions"
+        if streaming and not self._shared_manifest.operations.get(path, False):
+            return None
+        model_key = self._shared_manifest.resolve_model_key(deployment, sku, path)
+        if model_id is not None and model_key != model_id:
+            return None
+        return model_key
+
+    def _guard_chat_pilot_dispatch(
+        self, api: str, deployment: str, eligible: bool, sku: str | None, *,
+        streaming: bool,
+    ) -> None:
+        if not self._chat_pilot_isolation:
+            return
+        try:
+            resolved_api = _resolved_api(api, deployment)
+        except ValueError:
+            resolved_api = ""
+        if (
+            not eligible
+            or resolved_api not in {"chat", "responses"}
+            or self.chat_pilot_model_key(
+                resolved_api, deployment, sku, streaming=streaming,
+            ) is None
+        ):
+            raise ModelGatewayError(
+                400,
+                "This operation is not eligible for isolated shared-gateway chat.",
+                shared_gateway=True,
+            )
+
     async def _shared_request(
         self, req: GatewayRequest, *, deployment: str, api: str, eligible: bool,
         sku: str | None,
     ) -> tuple[GatewayRequest, str | None]:
+        self._guard_chat_pilot_dispatch(
+            api, deployment, eligible, sku, streaming=req.json.get("stream") is True,
+        )
         if not self._shared_enabled or not eligible:
             return req, None
         manifest = self._shared_manifest
@@ -625,25 +673,33 @@ class ModelGatewayClient:
                     400, "Only stateless Responses requests are eligible for shared routing."
                 )
         deployment_key = deployment.lower()
-        model_key = deployment_key
-        if (
-            manifest.model_kinds.get(model_key) != "deployment-name"
-            or manifest.model_deployments.get(model_key) != deployment
-            or sku not in manifest.model_skus.get(model_key, frozenset())
-        ):
-            aliases = [
-                key for key, target in manifest.model_deployments.items()
-                if manifest.model_kinds[key] == "alias"
-                and target == deployment
-                and path in manifest.model_operations[key]
-                and sku in manifest.model_skus[key]
-            ]
-            if len(aliases) != 1:
+        if self._chat_pilot_isolation:
+            model_key = manifest.resolve_model_key(deployment, sku, path)
+            if model_key is None:
                 raise ModelGatewayError(
                     400, "This model or operation is not eligible for shared routing.",
                     shared_gateway=True,
                 )
-            model_key = aliases[0]
+        else:
+            model_key = deployment_key
+            if (
+                manifest.model_kinds.get(model_key) != "deployment-name"
+                or manifest.model_deployments.get(model_key) != deployment
+                or sku not in manifest.model_skus.get(model_key, frozenset())
+            ):
+                aliases = [
+                    key for key, target in manifest.model_deployments.items()
+                    if manifest.model_kinds[key] == "alias"
+                    and target == deployment
+                    and path in manifest.model_operations[key]
+                    and sku in manifest.model_skus[key]
+                ]
+                if len(aliases) != 1:
+                    raise ModelGatewayError(
+                        400, "This model or operation is not eligible for shared routing.",
+                        shared_gateway=True,
+                    )
+                model_key = aliases[0]
         model_paths = manifest.model_operations.get(model_key)
         if (
             model_paths is None
@@ -729,7 +785,9 @@ class ModelGatewayClient:
         try:
             async with asyncio.timeout(min(self._timeout, 60)), AsyncExitStack() as stack:
                 client = self._http or await stack.enter_async_context(
-                    httpx.AsyncClient(timeout=min(self._timeout, 60), follow_redirects=False)
+                    self._new_client(
+                        timeout=min(self._timeout, 60), follow_redirects=False
+                    )
                 )
                 async with admitted_dispatch(
                     "decision", payload, deployment=deployment, target=url,
@@ -1214,7 +1272,7 @@ class ModelGatewayClient:
         if self._http is not None:
             client, owned = self._http, False
         else:
-            client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
+            client, owned = self._new_client(timeout=self._image_timeout), True
         try:
             resp = await self._post(
                 client, surface="image", deployment=deployment, payload=req.json,
@@ -1293,7 +1351,7 @@ class ModelGatewayClient:
         if self._http is not None:
             client, owned = self._http, False
         else:
-            client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
+            client, owned = self._new_client(timeout=self._image_timeout), True
         try:
             resp = await self._post(
                 client, url, surface="image", deployment=deployment, payload=payload,
@@ -1370,7 +1428,7 @@ class ModelGatewayClient:
         if self._http is not None:
             client, owned = self._http, False
         else:
-            client, owned = httpx.AsyncClient(timeout=self._image_timeout), True
+            client, owned = self._new_client(timeout=self._image_timeout), True
         try:
             response = await self._post(
                 client, req.url, surface="document", deployment=deployment, payload=req.json,
@@ -1451,7 +1509,7 @@ class ModelGatewayClient:
         if self._http is not None:
             client, owned = self._http, False
         else:
-            client, owned = httpx.AsyncClient(timeout=self._audio_timeout), True
+            client, owned = self._new_client(timeout=self._audio_timeout), True
         try:
             resp = await self._post(
                 client, req.url, surface="speech", deployment=deployment, payload=req.json,
@@ -1497,7 +1555,7 @@ class ModelGatewayClient:
         if self._http is not None:
             client, owned = self._http, False
         else:
-            client, owned = httpx.AsyncClient(timeout=self._audio_timeout), True
+            client, owned = self._new_client(timeout=self._audio_timeout), True
         try:
             resp = await self._post(
                 client, url, surface="transcription", deployment=deployment,
@@ -1525,7 +1583,16 @@ class ModelGatewayClient:
     def _client(self) -> tuple[httpx.AsyncClient, bool]:
         if self._http is not None:
             return self._http, False
-        return httpx.AsyncClient(timeout=self._timeout), True
+        return self._new_client(timeout=self._timeout), True
+
+    def _new_client(
+        self, *, timeout: float, follow_redirects: bool = False,
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+            trust_env=not self._chat_pilot_isolation,
+        )
 
     async def complete(
         self,
@@ -1539,6 +1606,10 @@ class ModelGatewayClient:
         shared_gateway_sku: str | None = None,
     ) -> dict[str, Any]:
         resolved_api = _resolved_api(api, deployment)
+        self._guard_chat_pilot_dispatch(
+            resolved_api, deployment, shared_gateway_eligible, shared_gateway_sku,
+            streaming=False,
+        )
         if resolved_api == "responses":
             req = self.build_responses_request(
                 deployment=deployment,
@@ -1695,6 +1766,10 @@ class ModelGatewayClient:
         telemetry: ModelSpan | None = None
         try:
             resolved_api = _resolved_api(api, deployment)
+            self._guard_chat_pilot_dispatch(
+                resolved_api, deployment, shared_gateway_eligible, shared_gateway_sku,
+                streaming=True,
+            )
             telemetry = self._model_telemetry.start(deployment, resolved_api)
             from ..catalog import load_catalog
 

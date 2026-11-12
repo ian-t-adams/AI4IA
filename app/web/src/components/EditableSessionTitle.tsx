@@ -13,6 +13,7 @@ export function EditableSessionTitle({
   compact = false,
   onOpen,
   current = false,
+  allowRename = true,
 }: {
   title: string;
   onSave: (title: string) => Promise<void>;
@@ -22,6 +23,7 @@ export function EditableSessionTitle({
   compact?: boolean;
   onOpen?: () => void;
   current?: boolean;
+  allowRename?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(title);
@@ -115,14 +117,16 @@ export function EditableSessionTitle({
             }
           }}
         />
-        <button
-          type="button"
-          disabled={saving}
-          onPointerDown={(event) => event.preventDefault()}
-          onClick={() => void save()}
-        >
-          {saving ? "Saving..." : "Save"}
-        </button>
+        {allowRename ? (
+          <button
+            type="button"
+            disabled={saving}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => void save()}
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={saving}
@@ -154,7 +158,7 @@ export function EditableSessionTitle({
           onKeyDown={(event) => {
             if (event.key === "F2") {
               event.preventDefault();
-              if (disabled) return;
+              if (!allowRename || disabled) return;
               begin();
             }
           }}
@@ -164,28 +168,30 @@ export function EditableSessionTitle({
       ) : (
         <span className="editable-session-title-text">{title || "Untitled"}</span>
       )}
-      <button
-        ref={triggerRef}
-        type="button"
-        className="editable-session-title-trigger"
-        aria-disabled={disabled || undefined}
-        aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
-        title={disabled ? undefined : "Rename (F2)"}
-        onClick={() => {
-          if (disabled) return;
-          begin();
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "F2") {
-            event.preventDefault();
+      {allowRename ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          className="editable-session-title-trigger"
+          aria-disabled={disabled || undefined}
+          aria-describedby={disabled && disabledReasonId ? disabledReasonId : undefined}
+          title={disabled ? undefined : "Rename (F2)"}
+          onClick={() => {
             if (disabled) return;
             begin();
-          }
-        }}
-      >
-        <Icon name="pencil" size={16} />
-        <span className="visually-hidden">Rename</span>
-      </button>
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "F2") {
+              event.preventDefault();
+              if (disabled) return;
+              begin();
+            }
+          }}
+        >
+          <Icon name="pencil" size={16} />
+          <span className="visually-hidden">Rename</span>
+        </button>
+      ) : null}
       <span className="visually-hidden" role="status" aria-live="polite">
         {status}
       </span>

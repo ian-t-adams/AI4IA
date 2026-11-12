@@ -189,6 +189,11 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         errors.append(str(exc))
     json_values = transported_json(parameters, errors)
     if truthy(parameter_value(parameters, "sharedGatewayEnabled", False)):
+        if text(parameter_value(parameters, "apiNetworkPhase", "legacy")).lower() != "private":
+            errors.append(
+                "Shared gateway routing requires apiNetworkPhase=private for the "
+                "active private-API pilot."
+            )
         if text(parameter_value(parameters, "apiAuthProvider", "dev")).lower() != "entra":
             errors.append("Shared gateway routing requires apiAuthProvider=entra.")
         if text(parameter_value(parameters, "appEnvironment", "dev")).lower() == "local":

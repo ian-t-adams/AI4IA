@@ -24,6 +24,7 @@ from .agents.summarization import build_summarization_service
 from .agents.tool_exec import attachable_tool_names, build_tools
 from .catalog import load_catalog
 from .config import Environment, Settings, get_settings
+from .chat_pilot import IsolatedChatPilot
 from .official_mcp_catalog import load_official_mcp_catalog
 from .errors import error_response, register_error_handlers
 from .entitlements.factory import build_default_entitlement, build_entitlement_store
@@ -146,15 +147,21 @@ FASTAPI_NATIVE_TELEMETRY: TelemetryConfig = {
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    if settings.chat_pilot_isolation_enabled:
+        settings.validate_runtime()
     configure_logging(settings.log_level)
     # Configure the shared exporter first; instrument the actual app instance
     # below, not the FastAPI class bound when this module was imported.
     configure_telemetry(settings.applicationinsights_connection_string)
-    settings.validate_runtime()
+    if not settings.chat_pilot_isolation_enabled:
+        settings.validate_runtime()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        http = httpx.AsyncClient(timeout=settings.gateway_timeout_seconds)
+        http = httpx.AsyncClient(
+            timeout=settings.gateway_timeout_seconds,
+            trust_env=not settings.chat_pilot_isolation_enabled,
+        )
         app.state.settings = settings
         app.state.auth_provider = build_auth_provider(settings)
         app.state.session_repo = build_session_repository(settings)
@@ -345,7 +352,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # fresh row may still belong to another healthy replica during rolling
         # deploy/scale-out, so the ingestor applies a conservative age lease and
         # preserves the user's raw upload. Best-effort, startup-only.
-        if app.state.document_ingestor is not None and not settings.private_recovery_candidate:
+        if (
+            app.state.document_ingestor is not None
+            and not settings.private_recovery_candidate
+            and not settings.chat_pilot_isolation_enabled
+        ):
             try:
                 await app.state.document_ingestor.recover_interrupted()
             except Exception:  # noqa: BLE001 - startup sweep must not block boot
@@ -446,7 +457,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.workflow_automation = build_workflow_automation(app.state)
         await check_workflow_automation_ready(app.state)
         app.state.durable_workflows = None
-        if settings.durable_workflows_enabled and not settings.private_recovery_candidate:
+        if (
+            settings.durable_workflows_enabled
+            and not settings.private_recovery_candidate
+            and not settings.chat_pilot_isolation_enabled
+        ):
             from .workflows.durable import DurableWorkflowService
 
             durable = DurableWorkflowService(
@@ -465,12 +480,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
         # Surface store init problems (auth/network/DDL) loudly at startup, but
         # never fail startup over them: the store retries lazily on first use.
-        try:
-            await asyncio.wait_for(
-                app.state.memory.warmup(), timeout=_MEMORY_WARMUP_TIMEOUT_S
-            )
-        except Exception:  # noqa: BLE001 - warmup is best-effort/diagnostic
-            logger.warning("memory warmup failed; will initialize lazily", exc_info=True)
+        if not settings.chat_pilot_isolation_enabled:
+            try:
+                await asyncio.wait_for(
+                    app.state.memory.warmup(), timeout=_MEMORY_WARMUP_TIMEOUT_S
+                )
+            except Exception:  # noqa: BLE001 - warmup is best-effort/diagnostic
+                logger.warning("memory warmup failed; will initialize lazily", exc_info=True)
         try:
             yield
         finally:
@@ -534,6 +550,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from .private_recovery import PrivateRecoveryCandidate
 
         app.add_middleware(PrivateRecoveryCandidate)
+    if settings.chat_pilot_isolation_enabled:
+        app.add_middleware(IsolatedChatPilot)
 
     @app.exception_handler(PublicationError)
     async def _publication_refused(_request: Request, exc: PublicationError):

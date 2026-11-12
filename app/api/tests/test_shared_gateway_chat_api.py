@@ -173,6 +173,7 @@ def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persi
     )
     requests = []
     tokens = []
+    selected_partitions = []
     failed_writes = []
 
     async def token(scope):
@@ -182,7 +183,37 @@ def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persi
 
     def handler(request):
         requests.append(request)
-        headers = {"retry-after": retry.encode("utf-8")} if retry is not None else {}
+        headers = {"S7PREQUEUE": "true"}
+        if retry is not None:
+            headers["retry-after"] = retry.encode("utf-8")
+        if enabled:
+            operation = "/responses" if api == "responses" else "/chat/completions"
+            routes = {
+                "ai4ia": {
+                    "token": TOKEN,
+                    "models": {deployment.deploymentName.lower(): {operation}},
+                },
+                "shared": {
+                    "token": "synthetic-shared-partition-token",
+                    "models": {"shared-only": {"/chat/completions"}},
+                },
+            }
+            authorization = request.headers.get("authorization")
+            partition = next(
+                (
+                    name
+                    for name, policy in routes.items()
+                    if authorization == f"Bearer {policy['token']}"
+                ),
+                None,
+            )
+            if partition is None:
+                return httpx.Response(401, headers=headers)
+            selected_partitions.append(partition)
+            request_model = json.loads(request.content).get("model", "").lower()
+            if operation not in routes[partition]["models"].get(request_model, set()):
+                return httpx.Response(403, headers=headers)
+            assert partition == "ai4ia"
         if status != 200:
             return httpx.Response(
                 status, headers=headers, content=b"PRIVATE upstream token endpoint body"
@@ -207,12 +238,17 @@ def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persi
                 {"type": "response.output_text.delta", "delta": "synthetic answer"},
                 {"type": "response.completed", "response": data},
             ]
+        success_headers = {"S7PREQUEUE": "true"}
         body = (
             "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
             if stream
             else json.dumps(data)
         )
-        return httpx.Response(200, stream=httpx.ByteStream(body.encode()))
+        return httpx.Response(
+            200,
+            headers=success_headers,
+            stream=httpx.ByteStream(body.encode()),
+        )
 
     with TestClient(app) as client:
         app.state.catalog = _catalog_with_api_override(
@@ -273,6 +309,7 @@ def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persi
 
     assert len(requests) == 1
     assert requests[0].method == "POST"
+    assert selected_partitions == (["ai4ia"] if enabled else [])
     operation = "/responses" if api == "responses" else "/chat/completions"
     assert requests[0].url.path == (
         f"/openai/v1{operation}"
@@ -286,6 +323,8 @@ def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persi
     )
     assert len(tokens) == int(enabled)
     assert requests[0].headers.get("authorization") == (f"Bearer {TOKEN}" if enabled else None)
+    assert response.headers.get("S7PREQUEUE") is None
+    assert "S7PREQUEUE" not in response.text
     request_body = json.loads(requests[0].content)
     if api == "responses":
         assert request_body["store"] is False

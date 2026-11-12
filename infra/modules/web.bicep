@@ -87,6 +87,12 @@ param documentLibraryEnabled bool = false
 @description('Enable the custom-tools / BYO remote-MCP browser UI. Default OFF (no custom-tools control is surfaced).')
 param customToolsEnabled bool = false
 
+@description('Enable the text-only chat-pilot UI compatibility path. Default OFF; the API target is configured separately.')
+param chatPilotUiEnabled bool = false
+
+@description('Exact API hostname allowed for the pilot web proxy.')
+param chatPilotApiAllowedHost string = ''
+
 // Always tell the web runtime when Entra was requested. It validates the three
 // values and renders an explicit configuration error when any are missing;
 // silently omitting the provider here would incorrectly fall back to dev auth.
@@ -169,6 +175,17 @@ var customToolsEnv = customToolsEnabled ? [
   }
 ] : []
 
+var chatPilotUiEnv = chatPilotUiEnabled ? [
+  {
+    name: 'CHAT_PILOT_UI_ENABLED'
+    value: 'true'
+  }
+  {
+    name: 'CHAT_PILOT_API_ALLOWED_HOST'
+    value: chatPilotApiAllowedHost
+  }
+] : []
+
 var webEnv = concat([
   {
     name: 'PORT'
@@ -182,7 +199,7 @@ var webEnv = concat([
     name: 'API_BASE_URL'
     value: apiBaseUrl
   }
-], entraEnv, devUserEnv, voiceLiveEnv, voiceLiveToolsEnv, documentLibraryEnv, customToolsEnv)
+], entraEnv, devUserEnv, voiceLiveEnv, voiceLiveToolsEnv, documentLibraryEnv, customToolsEnv, chatPilotUiEnv)
 
 // Custom-domain binding. The Azure-managed cert lives at the environment scope and
 // is referenced from the app ingress so `azd provision` keeps the binding durable

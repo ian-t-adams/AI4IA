@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PhotoAvatar, PhotoAvatarConfig } from "@/lib/photoAvatars";
 import { voiceProviderCatalog } from "@/lib/data/voice_provider_catalog";
 import { VOICE_PREFERENCES_STORAGE_NAME } from "@/lib/voicePreferences";
-import type { ToolCatalogItem } from "@/lib/types";
+import type { Message, ToolCatalogItem } from "@/lib/types";
 import { ChatApp } from "./ChatApp";
 import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 import { CHAT_MODEL_CATALOG, resetChatAppMocks } from "./chatTestFixtures";
@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   getVoiceLiveConfig: vi.fn(),
   voiceEnabled: false,
+  libraryEnabled: false,
   voiceSupported: false,
   voiceActive: false,
   voiceSaving: false,
@@ -90,14 +91,20 @@ vi.mock("@/lib/avatarVideo", async (importOriginal) => ({
   supportsAvatarVideo: () => mocks.avatarVideoSupported,
 }));
 vi.mock("./LibraryProvider", () => ({
-  useLibraryConfig: () => ({ enabled: false }),
+  useLibraryConfig: () => ({ enabled: mocks.libraryEnabled }),
 }));
 vi.mock("./CustomToolsProvider", () => ({
   useCustomToolsConfig: () => ({ enabled: false }),
 }));
 vi.mock("./AdminLink", () => ({ AdminLink: () => null }));
 vi.mock("./UserMenu", () => ({ UserMenu: () => null }));
-vi.mock("./MessageList", () => ({ MessageList: () => null }));
+vi.mock("./MessageList", () => ({
+  MessageList: ({ messages }: { messages: Message[] }) => (
+    <div aria-label="Conversation">
+      {messages.map((message) => <p key={message.id}>{message.content}</p>)}
+    </div>
+  ),
+}));
 vi.mock("./InlineVoiceLive", () => ({
   InlineVoiceLiveStatus: () => null,
   mergeDisplayMessages: (messages: unknown[]) => messages,
@@ -200,6 +207,7 @@ beforeEach(() => {
   resetChatAppMocks(mocks);
   mocks.apiFetch.mockReset();
   mocks.voiceEnabled = false;
+  mocks.libraryEnabled = false;
   mocks.voiceSupported = false;
   mocks.voiceActive = false;
   mocks.voiceSaving = false;
@@ -271,6 +279,60 @@ describe("photo avatars in the workspace", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "Photo avatars" })).toBeNull());
     expect(window.location.hash).toBe("");
     expect(entry).not.toHaveAttribute("aria-current");
+  });
+
+  it("skips unsupported document, library, and avatar-config reads when selecting a pilot session", async () => {
+    mocks.libraryEnabled = true;
+    mocks.listMessages.mockResolvedValue([{
+      id: "loaded-user",
+      sessionId: "A",
+      userId: "u1",
+      role: "user",
+      content: "Loaded conversation",
+      status: "complete",
+      model: "gpt-5.2",
+      agent: null,
+      createdAt: "2026-10-22T00:00:00Z",
+    } satisfies Message]);
+    serve(DISABLED);
+    const user = userEvent.setup();
+    render(<ChatApp chatPilotCompatibilityEnabled />);
+    await user.click(await screen.findByRole("button", { name: "Session A" }));
+    await screen.findByText("Loaded conversation");
+
+    expect(mocks.listDocuments).not.toHaveBeenCalled();
+    expect(mocks.listLibraryDocuments).not.toHaveBeenCalled();
+    expect(mocks.listSharedWithMe).not.toHaveBeenCalled();
+    expect(configReads()).toHaveLength(0);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("retains document, library, and avatar-config reads when pilot mode is off", async () => {
+    mocks.libraryEnabled = true;
+    mocks.listMessages.mockResolvedValue([{
+      id: "loaded-user",
+      sessionId: "A",
+      userId: "u1",
+      role: "user",
+      content: "Loaded conversation",
+      status: "complete",
+      model: "gpt-5.2",
+      agent: null,
+      createdAt: "2026-10-22T00:00:00Z",
+    } satisfies Message]);
+    serve(DISABLED);
+    const user = userEvent.setup();
+    render(<ChatApp />);
+    await screen.findByRole("button", { name: "Session A" });
+    await waitFor(() => expect(configReads()).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Session A" }));
+    await screen.findByText("Loaded conversation");
+
+    expect(mocks.listDocuments).toHaveBeenCalledWith("A");
+    expect(mocks.listLibraryDocuments).toHaveBeenCalledOnce();
+    expect(mocks.listSharedWithMe).toHaveBeenCalledOnce();
+    expect(configReads()).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 
@@ -400,6 +462,71 @@ describe("gallery-to-voice integration", () => {
     await user.click(screen.getByRole("button", { name: "Start live voice conversation" }));
     expect(mocks.startVoice).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["expanded", "0"],
+    ["compact", "1"],
+  ] as const)(
+    "suppresses the hydrated saved %s avatar lobby in pilot mode",
+    async (_layout, compactValue) => {
+      enableVoice();
+      const savedPreferences = JSON.stringify({
+        provider: "speech_voice_live",
+        speechAvatarId: READY.id,
+      });
+      window.localStorage.setItem(VOICE_PREFERENCES_STORAGE_NAME, savedPreferences);
+      window.localStorage.setItem("ai4ia.lobbyCompact", compactValue);
+      serve({ ...ENABLED, available: true, reason: "available" }, [READY]);
+      render(<ChatApp chatPilotCompatibilityEnabled />);
+
+      await waitFor(() =>
+        expect(mocks.useInlineVoiceLive).toHaveBeenLastCalledWith(expect.objectContaining({
+          providerId: "speech_voice_live",
+          avatar: null,
+        })),
+      );
+      expect(screen.queryByRole("region", { name: "Avatar voice" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Choose avatar" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Photo avatars" })).toBeNull();
+      expect(window.location.hash).toBe("");
+      expect(window.localStorage.getItem(VOICE_PREFERENCES_STORAGE_NAME)).toBe(savedPreferences);
+      expect(window.localStorage.getItem("ai4ia.lobbyCompact")).toBe(compactValue);
+      expect(configReads()).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["expanded", "0", "Minimize the avatar stage"],
+    ["compact", "1", "Show the avatar stage"],
+  ] as const)(
+    "keeps the saved %s avatar lobby controls when pilot mode is off",
+    async (_layout, compactValue, layoutControl) => {
+      enableVoice();
+      const savedPreferences = JSON.stringify({
+        provider: "speech_voice_live",
+        speechAvatarId: READY.id,
+      });
+      window.localStorage.setItem(VOICE_PREFERENCES_STORAGE_NAME, savedPreferences);
+      window.localStorage.setItem("ai4ia.lobbyCompact", compactValue);
+      serve({ ...ENABLED, available: true, reason: "available" }, [READY]);
+      const user = userEvent.setup();
+      render(<ChatApp />);
+
+      await waitFor(() =>
+        expect(mocks.useInlineVoiceLive).toHaveBeenLastCalledWith(expect.objectContaining({
+          providerId: "speech_voice_live",
+          avatar: { id: READY.id, label: "AI-generated" },
+        })),
+      );
+      await screen.findByRole("button", { name: layoutControl });
+      const chooseAvatar = await screen.findByRole("button", { name: "Choose avatar" });
+      await user.click(chooseAvatar);
+      await screen.findByRole("region", { name: "Photo avatars" });
+      expect(window.location.hash).toBe("#/avatars");
+      expect(window.localStorage.getItem(VOICE_PREFERENCES_STORAGE_NAME)).toBe(savedPreferences);
+      expect(window.localStorage.getItem("ai4ia.lobbyCompact")).toBe(compactValue);
+    },
+  );
 
   it("remembers a minimized lobby and shows the stage again when an avatar is chosen", async () => {
     enableVoice();

@@ -160,20 +160,25 @@ async def test_off_mode_keeps_the_existing_http_route_and_auth_headers():
         raise AssertionError("OFF mode must not request a shared gateway token")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        client = ModelGatewayClient(
-            _settings(enabled=False, manifest=_manifest()),
-            http_client=http,
-            shared_gateway_token_provider=unexpected_token,
-        )
-        await client.complete(
-            deployment=DEPLOYMENT,
-            messages=[{"role": "user", "content": "synthetic prompt"}],
-            correlation_id="synthetic-correlation",
-            shared_gateway_eligible=True,
-            shared_gateway_sku="GlobalStandard",
-        )
+        for manifest in (None, _manifest()):
+            client = ModelGatewayClient(
+                _settings(enabled=False, manifest=manifest),
+                http_client=http,
+                shared_gateway_token_provider=unexpected_token,
+            )
+            await client.complete(
+                deployment=DEPLOYMENT,
+                messages=[{"role": "user", "content": "synthetic prompt"}],
+                correlation_id="synthetic-correlation",
+                shared_gateway_eligible=True,
+                shared_gateway_sku="GlobalStandard",
+            )
 
-    assert len(requests) == 1
+    assert len(requests) == 2
+    assert requests[0].method == requests[1].method == "POST"
+    assert requests[0].url == requests[1].url
+    assert requests[0].content == requests[1].content
+    assert requests[0].headers == requests[1].headers
     assert requests[0].url.host == "existing-gateway.example.invalid"
     assert requests[0].url.path.endswith(
         f"/deployments/{DEPLOYMENT}/chat/completions"
@@ -358,6 +363,36 @@ async def test_chat_uses_only_manifest_model_path_and_managed_identity_headers()
     assert not ({"partition", "app_id", "appid", "azp"} & body.keys())
 
 
+async def test_internal_aca_gateway_host_is_allowlisted_without_redirect_or_fallback():
+    host = "gateway.internal.synthetic.eastus2.azurecontainerapps.io"
+    manifest = _manifest()
+    manifest["gateway"]["baseUrl"] = f"https://{host}/openai/v1"
+    manifest["gateway"]["allowedHosts"] = [host]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            307,
+            headers={"location": "https://legacy-gateway.example.invalid/openai/v1/chat/completions"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = _client(http, manifest=manifest)
+        with pytest.raises(ModelGatewayError) as error:
+            await client.complete(
+                deployment=DEPLOYMENT,
+                messages=[{"role": "user", "content": "synthetic prompt"}],
+                shared_gateway_eligible=True,
+                shared_gateway_sku="GlobalStandard",
+            )
+
+    assert error.value.status_code == 502
+    assert len(requests) == 1
+    assert str(requests[0].url) == f"https://{host}/openai/v1/chat/completions"
+    assert requests[0].headers["authorization"] == f"Bearer {TOKEN}"
+
+
 async def test_alias_routing_requires_exact_lowercase_alias_operation_and_sku():
     requests: list[httpx.Request] = []
     manifest = _manifest()
@@ -389,7 +424,18 @@ async def test_alias_routing_requires_exact_lowercase_alias_operation_and_sku():
     assert json.loads(requests[0].content)["model"] == "synthetic-alias"
 
 
-async def test_unlisted_model_fails_without_falling_back_or_requesting_a_token():
+@pytest.mark.parametrize(
+    ("api", "streaming"),
+    [
+        ("chat", False),
+        ("chat", True),
+        ("responses", False),
+        ("responses", True),
+    ],
+)
+async def test_unlisted_model_fails_without_falling_back_or_requesting_a_token(
+    api: str, streaming: bool,
+):
     calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -406,11 +452,21 @@ async def test_unlisted_model_fails_without_falling_back_or_requesting_a_token()
             shared_gateway_token_provider=unexpected_token,
         )
         with pytest.raises(ModelGatewayError, match="not eligible"):
-            await client.complete(
-                deployment="unlisted-deployment",
-                messages=[],
-                shared_gateway_eligible=True,
-            )
+            if streaming:
+                async for _ in client.stream(
+                    deployment="unlisted-deployment",
+                    messages=[],
+                    api=api,
+                    shared_gateway_eligible=True,
+                ):
+                    pass
+            else:
+                await client.complete(
+                    deployment="unlisted-deployment",
+                    messages=[],
+                    api=api,
+                    shared_gateway_eligible=True,
+                )
     assert calls == []
 
 

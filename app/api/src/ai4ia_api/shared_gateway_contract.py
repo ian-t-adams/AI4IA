@@ -39,11 +39,65 @@ class SharedGatewayManifest:
     model_kinds: dict[str, str]
     model_deployments: dict[str, str]
     model_skus: dict[str, frozenset[str]]
+    model_target_counts: dict[str, int]
     terminal_usage_verified: bool
     forbidden_headers: frozenset[str]
     contract_version: str = "2.0.0"
     status: str = "resolved"
     capabilities: dict[str, SharedGatewayCapability] = field(default_factory=dict)
+
+    def matching_model_keys(self, deployment: str, sku: str | None, path: str) -> tuple[str, ...]:
+        if sku is None:
+            return ()
+        return tuple(sorted(
+            key
+            for key, target in self.model_deployments.items()
+            if target == deployment
+            and sku in self.model_skus[key]
+            and path in self.model_operations[key]
+        ))
+
+    def resolve_model_key(self, deployment: str, sku: str | None, path: str) -> str | None:
+        matches = self.matching_model_keys(deployment, sku, path)
+        return matches[0] if len(matches) == 1 else None
+
+    def validate_pilot_routing(self) -> None:
+        if self.status != "resolved" or any(
+            capability.enabled for capability in self.capabilities.values()
+        ):
+            raise SharedGatewayManifestError(
+                "The isolated chat pilot requires a resolved chat-only gateway contract."
+            )
+        if (
+            set(self.operations) != {"/chat/completions"}
+            or len(self.model_deployments) != 1
+        ):
+            raise SharedGatewayManifestError(
+                "The isolated chat pilot requires exactly one model alias and POST /chat/completions only."
+            )
+        model_key = next(iter(self.model_deployments))
+        if (
+            self.model_kinds[model_key] != "alias"
+            or self.model_operations[model_key] != frozenset({"/chat/completions"})
+            or len(self.model_skus[model_key]) != 1
+            or self.model_target_counts[model_key] != 1
+        ):
+            raise SharedGatewayManifestError(
+                "The isolated chat pilot requires one alias bound to one deployment and SKU."
+            )
+        for deployment in set(self.model_deployments.values()):
+            skus = {
+                sku
+                for key, target in self.model_deployments.items()
+                if target == deployment
+                for sku in self.model_skus[key]
+            }
+            for sku in skus:
+                for path in self.operations:
+                    if len(self.matching_model_keys(deployment, sku, path)) > 1:
+                        raise SharedGatewayManifestError(
+                            "The isolated chat-pilot model, SKU, and operation binding is ambiguous."
+                        )
 
 
 @dataclass(frozen=True)
@@ -65,7 +119,7 @@ def _guid(value: object) -> bool:
 
 def load_shared_gateway_manifest(
     raw: str | None, *, api_identity_client_id: str | None,
-    require_api_identity: bool = True,
+    require_api_identity: bool = True, pilot_mode: bool = False,
 ) -> SharedGatewayManifest:
     if not isinstance(raw, str) or not raw:
         raise SharedGatewayManifestError("A resolved shared gateway contract v2 manifest is required.")
@@ -76,32 +130,40 @@ def load_shared_gateway_manifest(
     if len(manifest_bytes) > _MAX_MANIFEST_BYTES:
         raise SharedGatewayManifestError("Shared gateway manifest exceeds 65536 UTF-8 bytes.")
     try:
-        manifest = json.loads(raw)
+        manifest = json.loads(
+            raw, object_pairs_hook=_unique_keys if pilot_mode else None
+        )
+    except SharedGatewayManifestError:
+        raise
     except (TypeError, ValueError) as exc:
         raise SharedGatewayManifestError("Shared gateway manifest JSON is invalid.") from exc
 
     if isinstance(manifest, dict) and manifest.get("contractVersion") == "2.1.0":
-        manifest = json.loads(raw, object_pairs_hook=_unique_keys)
-        return _load_v21(
+        if not pilot_mode:
+            manifest = json.loads(raw, object_pairs_hook=_unique_keys)
+        loaded = _load_v21(
             manifest, api_identity_client_id=api_identity_client_id,
             require_api_identity=require_api_identity,
         )
+    else:
+        top = _object(
+            manifest,
+            {
+                "contractVersion", "status", "gateway", "auth", "operations", "models",
+                "retry", "responses", "streaming", "correlation", "privacy", "bypass",
+            },
+            "top-level",
+        )
+        if top["contractVersion"] != "2.0.0" or top["status"] != "resolved":
+            raise SharedGatewayManifestError("Only a resolved shared gateway contract v2 is enableable.")
 
-    top = _object(
-        manifest,
-        {
-            "contractVersion", "status", "gateway", "auth", "operations", "models",
-            "retry", "responses", "streaming", "correlation", "privacy", "bypass",
-        },
-        "top-level",
-    )
-    if top["contractVersion"] != "2.0.0" or top["status"] != "resolved":
-        raise SharedGatewayManifestError("Only a resolved shared gateway contract v2 is enableable.")
-
-    return _load_common(
-        top, api_identity_client_id=api_identity_client_id,
-        require_api_identity=require_api_identity,
-    )
+        loaded = _load_common(
+            top, api_identity_client_id=api_identity_client_id,
+            require_api_identity=require_api_identity,
+        )
+    if pilot_mode:
+        loaded.validate_pilot_routing()
+    return loaded
 
 
 def _load_common(
@@ -202,6 +264,7 @@ def _load_common(
     model_kinds: dict[str, str] = {}
     model_deployments: dict[str, str] = {}
     model_skus: dict[str, frozenset[str]] = {}
+    model_target_counts: dict[str, int] = {}
     for model_key, model in models_value.items():
         if not isinstance(model_key, str) or _MODEL_KEY.fullmatch(model_key) is None:
             raise SharedGatewayManifestError("Shared gateway model keys must be exact lowercase names.")
@@ -245,6 +308,7 @@ def _load_common(
         model_kinds[model_key] = item["kind"]
         model_deployments[model_key] = next(iter(target_names))
         model_skus[model_key] = frozenset(target["sku"] for target in targets)
+        model_target_counts[model_key] = len(targets)
 
     retry = _object(
         top["retry"],
@@ -332,6 +396,7 @@ def _load_common(
         model_kinds=model_kinds,
         model_deployments=model_deployments,
         model_skus=model_skus,
+        model_target_counts=model_target_counts,
         terminal_usage_verified=streaming["terminalUsage"] == "verified",
         forbidden_headers=frozenset(name.lower() for name in forbidden_headers),
     )
@@ -341,7 +406,7 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> dict:
     result: dict = {}
     for key, value in pairs:
         if key in result:
-            raise SharedGatewayManifestError("Shared gateway 2.1 duplicate JSON key.")
+            raise SharedGatewayManifestError("Shared gateway duplicate JSON key.")
         result[key] = value
     return result
 

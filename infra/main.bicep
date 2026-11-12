@@ -159,6 +159,12 @@ param gatewayAttemptsV1Staged bool = false
 @description('Select the AI4IA stateless shared-gateway route only with a resolved v2 manifest and after separate canary approval. Default OFF.')
 param sharedGatewayEnabled bool = false
 
+@description('Enable the default-off text-only chat-pilot UI compatibility path. This does not select or verify the API target.')
+param chatPilotUiEnabled bool = false
+
+@description('Exact API hostname allowed for the pilot web proxy; required when the pilot UI is enabled.')
+param chatPilotApiAllowedHost string = ''
+
 @secure()
 @description('Private, resolved AI4IA activation manifest carried as UTF-8 base64; schema-only or empty values cannot enable the route.')
 @maxLength(87384)
@@ -1081,6 +1087,8 @@ module web 'modules/web.bicep' = {
     webIdentityResourceId: webIdentity.resourceId
     acrLoginServer: platform.outputs.acrLoginServer
     apiBaseUrl: servingApiUrl
+    chatPilotUiEnabled: chatPilotUiEnabled
+    chatPilotApiAllowedHost: chatPilotApiAllowedHost
     appEnvironment: appEnvironment
     // Dev user only matters while the api runs the dev auth provider.
     devUser: appEnvironment == 'prod' ? '' : webDevUser

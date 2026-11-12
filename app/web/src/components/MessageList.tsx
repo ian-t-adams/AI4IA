@@ -592,6 +592,7 @@ function CopyAction({ text }: { text: string }) {
 
 function Bubble({
   msg,
+  textOnly,
   speechState,
   onToggleSpeak,
   onCitation,
@@ -599,6 +600,7 @@ function Bubble({
   onEditImage,
 }: {
   msg: DisplayMessage;
+  textOnly: boolean;
   speechState: SpeechState;
   onToggleSpeak: (id: string, text: string) => void;
   onCitation?: (target: CitationTarget) => void;
@@ -610,7 +612,7 @@ function Bubble({
   const isSystem = msg.role === "system";
   if (isSystem) return null;
   const label = isUser ? "You" : "Assistant";
-  const speakable = !isUser && !msg.pending && msg.content.trim().length > 0;
+  const speakable = !textOnly && !isUser && !msg.pending && msg.content.trim().length > 0;
   const images = msg.attachments?.filter((attachment) =>
     ["image", "image_error"].includes(attachment.kind),
   ) ?? [];
@@ -696,7 +698,12 @@ function Bubble({
         >
           {images.map((attachment) => (
             <li key={attachment.id}>
-              {attachment.kind === "image" ? (
+              {attachment.kind === "image" && textOnly ? (
+                <p role="note">
+                  Image unavailable in text-only pilot mode.
+                  {" "}{attachment.prompt?.trim() || "Generated image"}
+                </p>
+              ) : attachment.kind === "image" ? (
                 <ImageAttachmentView
                   attachment={attachment}
                   onEdit={msg.pending ? undefined : onEditImage}
@@ -711,6 +718,11 @@ function Bubble({
       {msg.attachments?.map((att) =>
         att.kind === "video" ? (
           <RetiredVideoAttachmentView key={att.id} attachment={att} />
+        ) : att.kind === "document" && textOnly ? (
+          <p key={att.id} role="note">
+            Document unavailable in text-only pilot mode.
+            {" "}{att.filename?.trim() || "Processed document"}
+          </p>
         ) : att.kind === "document" ? (
           <DocumentAttachmentView key={att.id} attachment={att} />
         ) : null,
@@ -749,6 +761,7 @@ function Bubble({
 
 export function MessageList({
   messages,
+  textOnly = false,
   conversationId,
   onError,
   onCitation,
@@ -757,6 +770,7 @@ export function MessageList({
   emptyActions,
 }: {
   messages: DisplayMessage[];
+  textOnly?: boolean;
   conversationId?: string | null;
   onError?: (message: string) => void;
   onCitation?: (target: CitationTarget) => void;
@@ -826,10 +840,16 @@ export function MessageList({
             <div className="message-empty">
               <h2>Start a conversation</h2>
               <p>
-                Ask anything, attach a document to ground the reply, type <strong>/</strong> for
-                commands or <strong>@</strong> to bring in an agent.
+                {textOnly ? (
+                  "Send a text message to start a conversation. Attachments, commands, agents and speech actions are unavailable in text-only pilot mode."
+                ) : (
+                  <>
+                    Ask anything, attach a document to ground the reply, type <strong>/</strong> for
+                    commands or <strong>@</strong> to bring in an agent.
+                  </>
+                )}
               </p>
-              {emptyActions && emptyActions.length > 0 ? (
+              {!textOnly && emptyActions && emptyActions.length > 0 ? (
                 <div className="message-empty-actions">
                   {emptyActions.map((action) => (
                     <button
@@ -864,6 +884,7 @@ export function MessageList({
               <Bubble
                 key={m.id}
                 msg={m}
+                textOnly={textOnly}
                 speechState={
                   playback.activeId === m.id
                     ? "playing"
@@ -872,9 +893,9 @@ export function MessageList({
                       : "idle"
                 }
                 onToggleSpeak={playback.toggle}
-                onCitation={onCitation}
-                onInspectMemory={onInspectMemory}
-                onEditImage={onEditImage}
+                onCitation={textOnly ? undefined : onCitation}
+                onInspectMemory={textOnly ? undefined : onInspectMemory}
+                onEditImage={textOnly ? undefined : onEditImage}
               />
             ))
           )}

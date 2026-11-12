@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { MessageList, type DisplayMessage } from "./MessageList";
@@ -81,6 +81,79 @@ describe("MessageList retired video history", () => {
 });
 
 describe("MessageList", () => {
+  it.each([true, false])(
+    "keeps real history text and gates speech, artifacts and citation actions (textOnly=%s)",
+    async (textOnly) => {
+      vi.mocked(fetchImageArtifact).mockClear();
+      vi.mocked(fetchDocumentArtifact).mockClear();
+      vi.mocked(fetchImageArtifact).mockResolvedValue(new Blob(["png"], { type: "image/png" }));
+      vi.mocked(fetchDocumentArtifact).mockResolvedValue("Retained document body");
+      URL.createObjectURL = vi.fn(() => "blob:pilot-history");
+      URL.revokeObjectURL = vi.fn();
+      const onCitation = vi.fn();
+      const messages = [msg({
+        id: "history",
+        role: "assistant",
+        content: "Retained answer [[cite:lecture.mp3@12:34]]",
+        attachments: [
+          { id: "stored-image", kind: "image", mimeType: "image/png", prompt: "Retained landscape", model: "", size: "" },
+          { id: "stored-document", kind: "document", mimeType: "text/markdown", filename: "retained.md", prompt: "", model: "", size: "" },
+        ],
+      })];
+      const saved = JSON.stringify(messages);
+      const user = userEvent.setup();
+      const rendered = render(
+        <MessageList messages={messages} textOnly={textOnly} onCitation={onCitation} />,
+      );
+      expect(screen.getByText(/Retained answer/)).toBeVisible();
+      expect(screen.getByText(/lecture\.mp3/)).toBeVisible();
+
+      if (textOnly) {
+        expect(screen.getByText(/Image unavailable in text-only pilot mode/)).toHaveTextContent("Retained landscape");
+        expect(screen.getByText(/Document unavailable in text-only pilot mode/)).toHaveTextContent("retained.md");
+        expect(fetchImageArtifact).not.toHaveBeenCalled();
+        expect(fetchDocumentArtifact).not.toHaveBeenCalled();
+        expect(screen.queryByRole("button", { name: "Read message aloud" })).toBeNull();
+        expect(screen.queryByRole("button", { name: /Play lecture/ })).toBeNull();
+        expect(mockToggle).not.toHaveBeenCalled();
+        expect(onCitation).not.toHaveBeenCalled();
+      } else {
+        expect(await screen.findByRole("img", { name: "Retained landscape" })).toBeVisible();
+        expect(await screen.findByText("Retained document body")).toBeInTheDocument();
+        expect(fetchImageArtifact).toHaveBeenCalledExactlyOnceWith("stored-image");
+        expect(fetchDocumentArtifact).toHaveBeenCalledExactlyOnceWith("stored-document");
+        await user.click(screen.getByRole("button", { name: "Read message aloud" }));
+        expect(mockToggle).toHaveBeenCalledExactlyOnceWith("history", messages[0].content);
+        await user.click(screen.getByRole("button", { name: /Play lecture/ }));
+        expect(onCitation).toHaveBeenCalledExactlyOnceWith({
+          documentId: null, filename: "lecture.mp3", ms: 754000,
+        });
+      }
+      expect(JSON.stringify(messages)).toBe(saved);
+      rendered.unmount();
+      vi.mocked(fetchImageArtifact).mockImplementation(() => new Promise<Blob>(() => {}));
+      vi.mocked(fetchDocumentArtifact).mockImplementation(() => new Promise<string>(() => {}));
+    },
+  );
+
+  it.each([true, false])("describes the available empty chat accurately (textOnly=%s)", async (textOnly) => {
+    const action = vi.fn();
+    render(<MessageList messages={[]} textOnly={textOnly} emptyActions={[
+      { label: "Attach document", icon: "docs", onClick: action },
+    ]} />);
+    expect(screen.getByText("Start a conversation")).toBeVisible();
+    if (textOnly) {
+      expect(screen.getByText(/Send a text message to start a conversation/)).toBeVisible();
+      expect(screen.queryByText(/Ask anything, attach a document/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Attach document" })).toBeNull();
+      expect(action).not.toHaveBeenCalled();
+    } else {
+      expect(screen.getByText(/Ask anything, attach a document/)).toBeVisible();
+      await userEvent.click(screen.getByRole("button", { name: "Attach document" }));
+      expect(action).toHaveBeenCalledOnce();
+    }
+  });
+
   it("renders the empty-state prompt when there are no messages", () => {
     render(<MessageList messages={[]} />);
     expect(screen.getByText("Start a conversation")).toBeInTheDocument();
@@ -1253,7 +1326,7 @@ describe("MessageList execution receipt", () => {
     expect(screen.queryByText(/Library retrieval is (unavailable|partial)/)).not.toBeInTheDocument();
   });
 
-  it("connects recorded memory references to the inspector and the full receipt", async () => {
+  it.each([true, false])("retains recorded memory and gates inspector actions (textOnly=%s)", async (textOnly) => {
     const inspect = vi.fn();
     render(<MessageList messages={[msg({
       id: "memory-ref", role: "assistant", content: "answer",
@@ -1263,10 +1336,20 @@ describe("MessageList execution receipt", () => {
           sources: [{ id: "owned", version: "2" }], sourceCount: 1,
         }],
       }),
-    })]} onInspectMemory={inspect} />);
+    })]} textOnly={textOnly} onInspectMemory={inspect} />);
+    const provenance = screen.getByText("Memories supplied").closest("details");
+    if (!provenance) throw new Error("Expected the recorded memory disclosure.");
     await userEvent.click(screen.getByText("Memories supplied"));
-    await userEvent.click(await screen.findByRole("button", { name: "Inspect memory owned" }));
-    expect(inspect).toHaveBeenCalledWith("owned");
+    expect(await within(provenance).findByText("A recorded owner excerpt")).toBeVisible();
+    if (textOnly) {
+      expect(screen.getByText("Memory owned")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Inspect memory owned" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Manage memories" })).toBeNull();
+      expect(inspect).not.toHaveBeenCalled();
+    } else {
+      await userEvent.click(screen.getByRole("button", { name: "Inspect memory owned" }));
+      expect(inspect).toHaveBeenCalledWith("owned");
+    }
     await userEvent.click(screen.getByRole("button", { name: "Open full execution receipt" }));
     const summary = screen.getByText(/^Execution receipt/);
     expect(summary.closest("details")).toHaveAttribute("open");

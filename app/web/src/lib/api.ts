@@ -1099,6 +1099,7 @@ export function streamChat(
     continuation?: { messageId: string; requestId: string; grant: string };
   },
   handlers: StreamHandlers,
+  options: { rejectRedirects?: boolean } = {},
 ): () => void {
   const controller = new AbortController();
 
@@ -1113,6 +1114,7 @@ export function streamChat(
           sessionId: input.sessionId, ...input.continuation, action: "approve",
         } : { ...input, stream: true }),
         signal: controller.signal,
+        ...(options.rejectRedirects ? { redirect: "error" as const } : {}),
       });
       if (!resp.ok || !resp.body) {
         const detail = await resp.text().catch(() => resp.statusText);

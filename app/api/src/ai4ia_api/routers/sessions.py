@@ -332,6 +332,18 @@ async def create_session(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> Session:
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        body.toolsEnabled
+        or body.agentName is not None
+        or body.toolOverrides.added
+        or body.toolOverrides.removed
+        or body.libraryDocumentIds
+        or body.imagePreferences != ImageGenerationPreferences()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot sessions cannot enable tools, agents, documents, or image generation.",
+        )
     agent_name, overrides, document_ids, agent_version = await _validate_policy_fields(
         request,
         user,

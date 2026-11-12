@@ -22,6 +22,63 @@ function sseResponse(chunks: string[]): Response {
 afterEach(() => mockApiFetch.mockReset());
 
 describe("streamChat", () => {
+  it.each([undefined, false, true])(
+    "rejects redirects only when explicitly requested (rejectRedirects=%s)",
+    async (rejectRedirects) => {
+      mockApiFetch.mockResolvedValue(sseResponse([
+        'data: {"metadata":{"userMessageId":"u1","assistantMessageId":"a1"}}\n\n',
+        "data: [DONE]\n\n",
+      ]));
+      const input = { sessionId: "s1", content: "synthetic question" };
+      await new Promise<void>((resolve, reject) => {
+        streamChat(input, {
+          onMetadata: vi.fn(),
+          onDelta: vi.fn(),
+          onDone: resolve,
+          onError: (message) => reject(new Error(message)),
+        }, rejectRedirects === undefined ? undefined : { rejectRedirects });
+      });
+
+      expect(mockApiFetch).toHaveBeenCalledOnce();
+      expect(mockApiFetch.mock.calls[0][0]).toBe("/api/chat");
+      const init = mockApiFetch.mock.calls[0][1];
+      expect(init?.method).toBe("POST");
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if (rejectRedirects) expect(init?.redirect).toBe("error");
+      else expect(init).not.toHaveProperty("redirect");
+      expect(JSON.parse(String(init?.body))).toEqual({ ...input, stream: true });
+    },
+  );
+
+  it("reports a rejected browser fetch as ambiguous without replay or completion", async () => {
+    mockApiFetch.mockRejectedValue(new TypeError("Failed to fetch"));
+    const onDone = vi.fn();
+    const onDelta = vi.fn();
+    const onMetadata = vi.fn();
+    const onError = vi.fn();
+    await new Promise<void>((resolve) => {
+      streamChat({ sessionId: "s1", content: "synthetic question" }, {
+        onMetadata,
+        onDelta,
+        onDone,
+        onError: (message, info) => {
+          onError(message, info);
+          resolve();
+        },
+      }, { rejectRedirects: true });
+    });
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith("Failed to fetch", {
+      accepted: false, persistenceFailed: false, definitePreAcceptance: false,
+    });
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onDelta).not.toHaveBeenCalled();
+    expect(onMetadata).not.toHaveBeenCalled();
+    expect(mockApiFetch).toHaveBeenCalledOnce();
+    expect(mockApiFetch.mock.calls[0][1]?.redirect).toBe("error");
+  });
+
   it("surfaces shared throttling after metadata without retrying or completing", async () => {
     const message = "Model gateway throttled this request. Try again in 17 seconds.";
     mockApiFetch.mockResolvedValue(sseResponse([
