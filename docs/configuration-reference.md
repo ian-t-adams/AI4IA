@@ -406,6 +406,8 @@ changed value is rejected without sending it. Reasoning tokens consume the same
 The Chat Completions pilot refuses `max_output_tokens`, including when paired
 with a valid limit. Raw input is checked before normalization; duplicate token
 keys in serialized dispatch bodies are rejected rather than collapsed.
+The final field must match the deployment's catalog-normalized spelling; for
+GPT-5.4-mini this is `max_completion_tokens`, not the legacy `max_tokens` alias.
 
 Sessions must set `toolsEnabled=false`, and chat requests must explicitly set
 `allowTools=false` and `allowAutomaticMemory=false`; agents, documents, image

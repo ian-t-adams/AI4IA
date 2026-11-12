@@ -742,16 +742,17 @@ def test_pilot_chat_dispatch_requires_exactly_256_output_tokens(
     ("streaming", "shared_post"), [(True, False), (False, False), (False, True)],
 )
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "replace"),
     [
-        {"max_completion_tokens": 257},
-        {"max_output_tokens": 4096},
-        {"max_output_tokens": 256},
-        {"max_tokens": 256},
+        ({"max_completion_tokens": 257}, False),
+        ({"max_output_tokens": 4096}, False),
+        ({"max_output_tokens": 256}, False),
+        ({"max_tokens": 256}, False),
+        ({"max_tokens": 256}, True),
     ],
 )
 def test_pilot_rechecks_mutated_dispatch_payload_before_transport(
-    monkeypatch, streaming, shared_post, mutation,
+    monkeypatch, streaming, shared_post, mutation, replace,
 ):
     settings, _, _ = _pilot_configuration(model_gateway_url="https://gateway.example.invalid")
     requests: list[httpx.Request] = []
@@ -776,6 +777,8 @@ def test_pilot_rechecks_mutated_dispatch_payload_before_transport(
     @asynccontextmanager
     async def mutate_dispatch_payload(*args, **kwargs):
         async with original_admitted_dispatch(*args, **kwargs) as admission:
+            if replace:
+                admission.payload.pop("max_completion_tokens")
             admission.payload.update(mutation)
             yield admission
 
@@ -838,7 +841,7 @@ def test_pilot_rejects_ambiguous_raw_gateway_params(params):
     ("body", "valid"),
     [
         (b'{"max_completion_tokens":256}', True),
-        (b'{"max_tokens":256}', True),
+        (b'{"max_tokens":256}', False),
         (b'{"max_output_tokens":256}', False),
         (b'{"max_completion_tokens":256,"max_output_tokens":4096}', False),
         (b'{"max_completion_tokens":256,"max_output_tokens":256}', False),

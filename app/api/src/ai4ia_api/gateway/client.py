@@ -117,7 +117,9 @@ class _JsonObjectPairs(list[tuple[str, Any]]):
         )
 
 
-def _require_chat_pilot_output_tokens(payload: Any) -> None:
+def _require_chat_pilot_output_tokens(
+    payload: Any, *, expected_field: str | None = None,
+) -> None:
     """Require one integer 256-token field in the final pilot request body."""
     if isinstance(payload, (str, bytes, bytearray)):
         try:
@@ -143,6 +145,7 @@ def _require_chat_pilot_output_tokens(payload: Any) -> None:
     if (
         len(fields) != 1
         or fields[0][0] == "max_output_tokens"
+        or (expected_field is not None and fields[0][0] != expected_field)
         or type(fields[0][1]) is not int
         or fields[0][1] != _CHAT_PILOT_REQUIRED_OUTPUT_TOKENS
     ):
@@ -972,8 +975,9 @@ class ModelGatewayClient:
                     if gateway_url is not None:
                         kwargs["follow_redirects"] = False
                         if self._chat_pilot_isolation and surface == "chat" and api == "chat":
-                            _require_chat_pilot_output_tokens(
-                                attempt.body if attempt is not None else admission.payload
+                            self._require_chat_pilot_dispatch_output_tokens(
+                                attempt.body if attempt is not None else admission.payload,
+                                deployment,
                             )
                         response = await stack.enter_async_context(
                             client.stream("POST", url, **kwargs)
@@ -983,8 +987,9 @@ class ModelGatewayClient:
                         await response.aread()
                     else:
                         if self._chat_pilot_isolation and surface == "chat" and api == "chat":
-                            _require_chat_pilot_output_tokens(
-                                attempt.body if attempt is not None else admission.payload
+                            self._require_chat_pilot_dispatch_output_tokens(
+                                attempt.body if attempt is not None else admission.payload,
+                                deployment,
                             )
                         response = await client.post(url, **kwargs)
                 if attempt is not None:
@@ -1055,8 +1060,9 @@ class ModelGatewayClient:
                     body_args = {"content": attempt.body, "follow_redirects": False}
                 with telemetry.http_scope() if telemetry is not None else nullcontext():
                     if self._chat_pilot_isolation and api == "chat":
-                        _require_chat_pilot_output_tokens(
-                            attempt.body if attempt is not None else admission.payload
+                        self._require_chat_pilot_dispatch_output_tokens(
+                            attempt.body if attempt is not None else admission.payload,
+                            deployment,
                         )
                     response = await stack.enter_async_context(client.stream(
                         "POST", url, headers=headers, **body_args,
@@ -1104,6 +1110,16 @@ class ModelGatewayClient:
         self._apply_priority(headers)
         return headers
 
+    def _require_chat_pilot_dispatch_output_tokens(
+        self, payload: Any, deployment: str,
+    ) -> None:
+        from ..catalog import load_catalog
+
+        profile = load_catalog(self._catalog_path).for_deployment(deployment)
+        normalized = {"max_tokens": _CHAT_PILOT_REQUIRED_OUTPUT_TOKENS}
+        _normalize_params_for_deployment(normalized, deployment, profile)
+        _require_chat_pilot_output_tokens(payload, expected_field=next(iter(normalized)))
+
     def build_request(
         self,
         *,
@@ -1136,7 +1152,7 @@ class ModelGatewayClient:
         _normalize_params_for_deployment(body, deployment, profile)
         if self._chat_pilot_isolation:
             _cap_chat_pilot_output_tokens(body, profile)
-            _require_chat_pilot_output_tokens(body)
+            self._require_chat_pilot_dispatch_output_tokens(body, deployment)
         if stream:
             body["stream"] = True
             # Set after merging caller params so it can't be accidentally
