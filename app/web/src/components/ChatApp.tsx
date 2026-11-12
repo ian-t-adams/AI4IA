@@ -3566,8 +3566,9 @@ export function ChatApp({
         {chatPilotCompatibilityEnabled ? (
           <div className="inspector-empty" role="status">
             Isolated chat-pilot compatibility is enabled. This view supports plain-text chat only;
-            other routes are blocked. The configured API target, identity boundary, and session
-            persistence are not verified here.
+            replies are capped at 1,024 output tokens and token controls are unavailable. Other
+            routes are blocked. The configured API target, identity boundary, and session persistence
+            are not verified here.
           </div>
         ) : null}
         <div className="app-view" hidden={view !== "chat"}>

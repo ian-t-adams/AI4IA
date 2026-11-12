@@ -587,7 +587,18 @@ def test_pilot_startup_rejects_non_chat_or_extra_model_routes(manifest_change):
         }).validate_runtime()
 
 
-def test_pilot_catalog_and_dispatch_are_bound_to_one_exact_model_alias(monkeypatch):
+@pytest.mark.parametrize(
+    ("params", "expected_output_tokens"),
+    [
+        ({}, 1024),
+        ({"max_tokens": 1024}, 1024),
+        ({"max_tokens": 4096}, 1024),
+        ({"max_tokens": 256}, 256),
+    ],
+)
+def test_pilot_catalog_and_dispatch_are_bound_to_one_exact_model_alias(
+    monkeypatch, params, expected_output_tokens,
+):
     settings, catalog, manifest = _pilot_configuration()
     model_id = "gpt-5.4-mini"
     deployment = "gpt-5.4-mini-slurmfactory-eastus2-glbl"
@@ -672,6 +683,7 @@ def test_pilot_catalog_and_dispatch_are_bound_to_one_exact_model_alias(monkeypat
                 "stream": True,
                 "allowTools": False,
                 "allowAutomaticMemory": False,
+                "params": params,
             })
             assert chat.status_code == 200
             assert "synthetic answer" in chat.text
@@ -680,7 +692,9 @@ def test_pilot_catalog_and_dispatch_are_bound_to_one_exact_model_alias(monkeypat
 
     assert len(requests) == 1
     assert requests[0].url.path == "/openai/v1/chat/completions"
-    assert json.loads(requests[0].content)["model"] == model_id
+    sent = json.loads(requests[0].content)
+    assert sent["model"] == model_id
+    assert sent["max_completion_tokens"] == expected_output_tokens
 
 
 @pytest.mark.parametrize("upstream_status", [200, 429])

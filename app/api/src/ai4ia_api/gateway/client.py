@@ -104,6 +104,8 @@ _SERVER_OWNED_BODY_KEYS = (
     "stream_options",
 )
 
+_CHAT_PILOT_MAX_OUTPUT_TOKENS = 1024
+
 
 def _without_server_owned(params: dict[str, Any] | None) -> dict[str, Any]:
     """Copy ``params`` without any field the gateway owns (see above)."""
@@ -135,6 +137,26 @@ def _normalize_params_for_deployment(
             value = body.pop("max_tokens")
             if value is not None:
                 body.setdefault("max_completion_tokens", value)
+
+
+def _cap_chat_pilot_output_tokens(
+    body: dict[str, Any], profile: ModelEntry | None,
+) -> None:
+    token_fields = [
+        key for key in ("max_tokens", "max_completion_tokens") if key in body
+    ]
+    if not token_fields:
+        token_fields = [
+            profile.maxTokensParameter
+            if profile is not None and profile.maxTokensParameter is not None
+            else "max_tokens"
+        ]
+        body[token_fields[0]] = _CHAT_PILOT_MAX_OUTPUT_TOKENS
+    for key in token_fields:
+        value = body[key]
+        if type(value) is not int or value < 1:
+            raise ValueError("Chat-pilot output maximum must be a positive integer.")
+        body[key] = min(value, _CHAT_PILOT_MAX_OUTPUT_TOKENS)
 
 
 # --- Responses API -------------------------------------------------------
@@ -1053,6 +1075,8 @@ class ModelGatewayClient:
         if profile is not None and profile.conversational and not profile.supportsTools:
             require_text_only(messages, body, profile="catalog")
         _normalize_params_for_deployment(body, deployment, profile)
+        if self._chat_pilot_isolation:
+            _cap_chat_pilot_output_tokens(body, profile)
         if stream:
             body["stream"] = True
             # Set after merging caller params so it can't be accidentally

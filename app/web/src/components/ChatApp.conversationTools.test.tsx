@@ -212,7 +212,9 @@ describe("ChatApp conversation tools", () => {
     await screen.findByRole("button", { name: "Session A" });
     await user.click(screen.getByRole("button", { name: "New chat" }));
 
-    expect(screen.getByText(/Isolated chat-pilot compatibility is enabled/)).toBeVisible();
+    expect(screen.getByText(/Isolated chat-pilot compatibility is enabled/)).toHaveTextContent(
+      /capped at 1,024 output tokens and token controls are unavailable/,
+    );
     expect(screen.queryByRole("button", { name: "Open conversation inspector" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Attach files" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
