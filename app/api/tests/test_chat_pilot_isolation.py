@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import httpx
@@ -588,16 +589,21 @@ def test_pilot_startup_rejects_non_chat_or_extra_model_routes(manifest_change):
 
 
 @pytest.mark.parametrize(
-    ("params", "expected_output_tokens"),
+    ("params", "expected_status"),
     [
-        ({}, 1024),
-        ({"max_tokens": 1024}, 1024),
-        ({"max_tokens": 4096}, 1024),
-        ({"max_tokens": 256}, 256),
+        ({"max_tokens": 256}, 200),
+        ({}, 422),
+        ({"max_tokens": 1024}, 422),
+        ({"max_tokens": 4096}, 422),
+        ({"max_tokens": 255}, 422),
+        ({"max_tokens": 257}, 422),
+        ({"max_tokens": "256"}, 422),
+        ({"max_tokens": True}, 422),
+        ({"max_tokens": 256, "max_completion_tokens": 256}, 422),
     ],
 )
-def test_pilot_catalog_and_dispatch_are_bound_to_one_exact_model_alias(
-    monkeypatch, params, expected_output_tokens,
+def test_pilot_chat_dispatch_requires_exactly_256_output_tokens(
+    monkeypatch, params, expected_status,
 ):
     settings, catalog, manifest = _pilot_configuration()
     model_id = "gpt-5.4-mini"
@@ -677,6 +683,9 @@ def test_pilot_catalog_and_dispatch_are_bound_to_one_exact_model_alias(
                 json={"model": model_id, "toolsEnabled": False},
             )
             assert created.status_code == 201
+            messages_url = f"/api/sessions/{created.json()['id']}/messages"
+            messages_before = client.get(messages_url)
+            assert messages_before.status_code == 200
             chat = client.post("/api/chat", json={
                 "sessionId": created.json()["id"],
                 "content": "synthetic prompt",
@@ -685,16 +694,81 @@ def test_pilot_catalog_and_dispatch_are_bound_to_one_exact_model_alias(
                 "allowAutomaticMemory": False,
                 "params": params,
             })
-            assert chat.status_code == 200
-            assert "synthetic answer" in chat.text
+            assert chat.status_code == expected_status
+            messages_after = client.get(messages_url)
+            assert messages_after.status_code == 200
+            if expected_status == 200:
+                assert "synthetic answer" in chat.text
+                assert len(requests) == 1
+                sent = json.loads(requests[0].content)
+                assert sent["model"] == model_id
+                assert sent["max_completion_tokens"] == 256
+                assert "max_tokens" not in sent
+            else:
+                assert messages_after.json() == messages_before.json()
     finally:
         asyncio.run(http.aclose())
 
-    assert len(requests) == 1
-    assert requests[0].url.path == "/openai/v1/chat/completions"
-    sent = json.loads(requests[0].content)
-    assert sent["model"] == model_id
-    assert sent["max_completion_tokens"] == expected_output_tokens
+    assert len(requests) == (1 if expected_status == 200 else 0)
+    if expected_status == 200:
+        assert requests[0].url.path == "/openai/v1/chat/completions"
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_pilot_rechecks_mutated_dispatch_payload_before_transport(monkeypatch, streaming):
+    settings, _, _ = _pilot_configuration()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = ModelGatewayClient(settings, http_client=http, shared_gateway_token_provider=_token)
+    req = gateway.build_request(
+        deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
+        messages=[{"role": "user", "content": "synthetic"}],
+        params={"max_tokens": 256},
+        stream=streaming,
+    )
+
+    import ai4ia_api.gateway.client as gateway_module
+
+    original_admitted_dispatch = gateway_module.admitted_dispatch
+
+    @asynccontextmanager
+    async def mutate_dispatch_payload(*args, **kwargs):
+        async with original_admitted_dispatch(*args, **kwargs) as admission:
+            admission.payload["max_completion_tokens"] = 257
+            yield admission
+
+    monkeypatch.setattr(gateway_module, "admitted_dispatch", mutate_dispatch_payload)
+
+    async def dispatch() -> None:
+        with pytest.raises(ModelGatewayError, match="exactly 256 output tokens"):
+            if streaming:
+                async with gateway._stream_request(
+                    http,
+                    req,
+                    deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
+                    evidence=None,
+                ):
+                    pytest.fail("mutated pilot payload reached the transport")
+            else:
+                await gateway._post(
+                    http,
+                    req.url,
+                    surface="chat",
+                    deployment="gpt-5.4-mini-slurmfactory-eastus2-glbl",
+                    payload=req.json,
+                    json=req.json,
+                )
+
+    try:
+        asyncio.run(dispatch())
+    finally:
+        asyncio.run(http.aclose())
+    assert requests == []
 
 
 @pytest.mark.parametrize("upstream_status", [200, 429])
@@ -797,6 +871,7 @@ def test_pilot_streaming_chat_uses_startup_validated_contract(
             "stream": True,
             "allowTools": False,
             "allowAutomaticMemory": False,
+            "params": {"max_tokens": 256},
         })
         assert response.status_code == 200
         if upstream_status == 200:
@@ -927,6 +1002,7 @@ def test_pilot_gateway_failures_persist_without_redirect_retry_or_fallback(
                 "stream": stream,
                 "allowTools": False,
                 "allowAutomaticMemory": False,
+                "params": {"max_tokens": 256},
             })
             assert response.status_code == (200 if stream else 502)
             assert private_detail not in response.text
@@ -1095,6 +1171,7 @@ def test_pilot_chat_dispatch_uses_only_manifest_advertised_catalog_options(
                 "stream": stream,
                 "allowTools": False,
                 "allowAutomaticMemory": False,
+                "params": {"max_tokens": 256},
             }
             if region is not None:
                 body["region"] = region

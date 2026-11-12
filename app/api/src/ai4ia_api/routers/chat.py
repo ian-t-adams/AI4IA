@@ -167,6 +167,57 @@ router = APIRouter(prefix="/api", tags=["chat"])
 MAX_CHAT_CONTENT_CHARS = 32_000
 
 
+class _RawJsonObjectPairs(list[tuple[str, Any]]):
+    def __init__(self, pairs: list[tuple[str, Any]]) -> None:
+        super().__init__(
+            (key, value)
+            for key, value in pairs
+            if key in {"params", "max_tokens", "max_completion_tokens"}
+        )
+
+
+async def _require_pilot_output_tokens(request: Request) -> None:
+    if not request.app.state.settings.chat_pilot_isolation_enabled:
+        return
+
+    try:
+        raw_body = json.loads(
+            await request.body(),
+            object_pairs_hook=_RawJsonObjectPairs,
+        )
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        ) from exc
+
+    params_values = (
+        [value for key, value in raw_body if key == "params"]
+        if isinstance(raw_body, _RawJsonObjectPairs)
+        else []
+    )
+    if len(params_values) != 1 or not isinstance(params_values[0], _RawJsonObjectPairs):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        )
+
+    token_fields = [
+        (key, value) for key, value in params_values[0]
+        if key in {"max_tokens", "max_completion_tokens"}
+    ]
+    if (
+        len(token_fields) != 1
+        or token_fields[0][0] != "max_tokens"
+        or type(token_fields[0][1]) is not int
+        or token_fields[0][1] != 256
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        )
+
+
 class ChatParams(BaseModel):
     """Generation controls a CLIENT may set, as a strict allowlist.
 
@@ -845,12 +896,27 @@ def _ephemeral_tool_agent(name: str) -> AgentSpec:
     )
 
 
-@router.post("/chat", dependencies=[Depends(_request_constraints, scope="request")])
+@router.post(
+    "/chat",
+    dependencies=[
+        Depends(_request_constraints, scope="request"),
+        Depends(_require_pilot_output_tokens),
+    ],
+)
 async def chat(
     body: ChatRequest,
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        body.params is None
+        or type(body.params.max_tokens) is not int
+        or body.params.max_tokens != 256
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        )
     if request.app.state.settings.chat_pilot_isolation_enabled and (
         body.allowTools
         or body.allowAutomaticMemory

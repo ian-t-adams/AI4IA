@@ -396,6 +396,14 @@ features. Validation runs before logging/telemetry setup.
 The ASGI boundary permits only health, model listing, session create/list/read/
 messages, and `POST /api/chat`; the session initialization/deletion routes,
 other HTTP routes, and all WebSockets refuse.
+
+Every pilot chat requires the raw request to contain exactly one integer
+`params.max_tokens: 256`. The browser submits that fixed value with no editable
+token control, and the API checks the normalized request and final serialized
+gateway body immediately before dispatch; an absent, malformed, conflicting or
+changed value is rejected without sending it. Reasoning tokens consume the same
+256-token output budget, so a response may be short or have no visible answer.
+
 Sessions must set `toolsEnabled=false`, and chat requests must explicitly set
 `allowTools=false` and `allowAutomaticMemory=false`; agents, documents, image
 preferences, commands, and tool-capable turns are refused. Eligible chat remains

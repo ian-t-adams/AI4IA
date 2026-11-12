@@ -105,6 +105,50 @@ _SERVER_OWNED_BODY_KEYS = (
 )
 
 _CHAT_PILOT_MAX_OUTPUT_TOKENS = 1024
+_CHAT_PILOT_REQUIRED_OUTPUT_TOKENS = 256
+_CHAT_PILOT_OUTPUT_TOKEN_FIELDS = ("max_tokens", "max_completion_tokens")
+
+
+class _JsonObjectPairs(list[tuple[str, Any]]):
+    def __init__(self, pairs: list[tuple[str, Any]]) -> None:
+        super().__init__(
+            (key, value) for key, value in pairs
+            if key in _CHAT_PILOT_OUTPUT_TOKEN_FIELDS
+        )
+
+
+def _require_chat_pilot_output_tokens(payload: Any) -> None:
+    """Require one integer 256-token field in the final pilot request body."""
+    if isinstance(payload, (str, bytes, bytearray)):
+        try:
+            payload = json.loads(payload, object_pairs_hook=_JsonObjectPairs)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            raise ModelGatewayError(
+                400, "Isolated chat-pilot requests require exactly 256 output tokens.",
+                shared_gateway=True,
+            ) from exc
+
+    if isinstance(payload, _JsonObjectPairs):
+        fields = [
+            value for key, value in payload
+            if key in _CHAT_PILOT_OUTPUT_TOKEN_FIELDS
+        ]
+    elif isinstance(payload, dict):
+        fields = [
+            payload[key] for key in _CHAT_PILOT_OUTPUT_TOKEN_FIELDS if key in payload
+        ]
+    else:
+        fields = []
+
+    if (
+        len(fields) != 1
+        or type(fields[0]) is not int
+        or fields[0] != _CHAT_PILOT_REQUIRED_OUTPUT_TOKENS
+    ):
+        raise ModelGatewayError(
+            400, "Isolated chat-pilot requests require exactly 256 output tokens.",
+            shared_gateway=True,
+        )
 
 
 def _without_server_owned(params: dict[str, Any] | None) -> dict[str, Any]:
@@ -926,6 +970,10 @@ class ModelGatewayClient:
                 with telemetry.http_scope() if telemetry is not None else nullcontext():
                     if gateway_url is not None:
                         kwargs["follow_redirects"] = False
+                        if self._chat_pilot_isolation and surface == "chat" and api == "chat":
+                            _require_chat_pilot_output_tokens(
+                                attempt.body if attempt is not None else admission.payload
+                            )
                         response = await stack.enter_async_context(
                             client.stream("POST", url, **kwargs)
                         )
@@ -933,6 +981,10 @@ class ModelGatewayClient:
                             raise ModelGatewayError(502, _REQUEST_FAILED, shared_gateway=True)
                         await response.aread()
                     else:
+                        if self._chat_pilot_isolation and surface == "chat" and api == "chat":
+                            _require_chat_pilot_output_tokens(
+                                attempt.body if attempt is not None else admission.payload
+                            )
                         response = await client.post(url, **kwargs)
                 if attempt is not None:
                     attempt.check_response(response)
@@ -1001,6 +1053,10 @@ class ModelGatewayClient:
                     headers = attempt.claim(admission.payload, headers)
                     body_args = {"content": attempt.body, "follow_redirects": False}
                 with telemetry.http_scope() if telemetry is not None else nullcontext():
+                    if self._chat_pilot_isolation and api == "chat":
+                        _require_chat_pilot_output_tokens(
+                            attempt.body if attempt is not None else admission.payload
+                        )
                     response = await stack.enter_async_context(client.stream(
                         "POST", url, headers=headers, **body_args,
                     ))
@@ -1059,6 +1115,11 @@ class ModelGatewayClient:
     ) -> GatewayRequest:
         path = self._chat_path.format(deployment=deployment)
         url = f"{self._base}{path if path.startswith('/') else '/' + path}"
+        pilot_token_field_count = (
+            sum(key in params for key in _CHAT_PILOT_OUTPUT_TOKEN_FIELDS)
+            if self._chat_pilot_isolation and params is not None
+            else 0
+        )
 
         # Caller params first, then every server-owned field, so a crafted
         # ``params`` can neither replace the server-built history nor smuggle in
@@ -1077,6 +1138,12 @@ class ModelGatewayClient:
         _normalize_params_for_deployment(body, deployment, profile)
         if self._chat_pilot_isolation:
             _cap_chat_pilot_output_tokens(body, profile)
+            if pilot_token_field_count != 1:
+                raise ModelGatewayError(
+                    400, "Isolated chat-pilot requests require exactly 256 output tokens.",
+                    shared_gateway=True,
+                )
+            _require_chat_pilot_output_tokens(body)
         if stream:
             body["stream"] = True
             # Set after merging caller params so it can't be accidentally

@@ -203,6 +203,7 @@ describe("ChatApp conversation tools", () => {
     );
     expect(streams[0].input).not.toHaveProperty("allowTools");
     expect(streams[0].input).not.toHaveProperty("allowAutomaticMemory");
+    expect(streams[0].input.params.max_tokens).toBe(1024);
     expect(mocks.streamChat.mock.calls[0]).toHaveLength(2);
   });
 
@@ -213,7 +214,10 @@ describe("ChatApp conversation tools", () => {
     await user.click(screen.getByRole("button", { name: "New chat" }));
 
     expect(screen.getByText(/Isolated chat-pilot compatibility is enabled/)).toHaveTextContent(
-      /capped at 1,024 output tokens and token controls are unavailable/,
+      /fixed 256 output-token budget/,
+    );
+    expect(screen.getByText(/Isolated chat-pilot compatibility is enabled/)).toHaveTextContent(
+      /Reasoning tokens count against that budget and may leave a short or empty visible reply/,
     );
     expect(screen.queryByRole("button", { name: "Open conversation inspector" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Attach files" })).not.toBeInTheDocument();
@@ -237,6 +241,7 @@ describe("ChatApp conversation tools", () => {
     expect(streams[0].input).toMatchObject({
       allowTools: false,
       allowAutomaticMemory: false,
+      params: { max_tokens: 256 },
     });
     expect(streams[0].input).not.toHaveProperty("requireFreshSession");
     expect(mocks.streamChat.mock.calls[0]).toHaveLength(3);

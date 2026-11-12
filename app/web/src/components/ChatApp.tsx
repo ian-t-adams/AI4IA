@@ -3164,7 +3164,12 @@ export function ChatApp({
         chatPilotCompatibilityEnabled ? [{ rejectRedirects: true }] : [];
       abortRef.current = api.streamChat(
         {
-          sessionId, content, model: selectedModel, params, approvals, ...requestRestrictions,
+          sessionId,
+          content,
+          model: selectedModel,
+          params: chatPilotCompatibilityEnabled ? { max_tokens: 256 } : params,
+          approvals,
+          ...requestRestrictions,
           ...(continuation?.messageId ? { continuation: {
             messageId: continuation.messageId, requestId: continuation.id, grant: continuation.grant,
           } } : {}),
@@ -3566,9 +3571,10 @@ export function ChatApp({
         {chatPilotCompatibilityEnabled ? (
           <div className="inspector-empty" role="status">
             Isolated chat-pilot compatibility is enabled. This view supports plain-text chat only;
-            replies are capped at 1,024 output tokens and token controls are unavailable. Other
-            routes are blocked. The configured API target, identity boundary, and session persistence
-            are not verified here.
+            every reply has a fixed 256 output-token budget. Reasoning tokens count against that
+            budget and may leave a short or empty visible reply. Token controls are unavailable.
+            Other routes are blocked. The configured API target, identity boundary, and session
+            persistence are not verified here.
           </div>
         ) : null}
         <div className="app-view" hidden={view !== "chat"}>
