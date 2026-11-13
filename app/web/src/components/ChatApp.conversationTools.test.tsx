@@ -203,7 +203,7 @@ describe("ChatApp conversation tools", () => {
     );
     expect(streams[0].input).not.toHaveProperty("allowTools");
     expect(streams[0].input).not.toHaveProperty("allowAutomaticMemory");
-    expect(streams[0].input.params.max_tokens).toBe(1024);
+    expect(streams[0].input.params?.max_tokens).toBe(1024);
     expect(mocks.streamChat.mock.calls[0]).toHaveLength(2);
   });
 
