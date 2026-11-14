@@ -188,6 +188,19 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     except ValueError as exc:
         errors.append(str(exc))
     json_values = transported_json(parameters, errors)
+    revisions_mode = text(parameter_value(parameters, "apiActiveRevisionsMode", "Single"))
+    traffic_revision = text(parameter_value(parameters, "apiTrafficRevisionName", "")).strip()
+    if revisions_mode not in {"Single", "Multiple"}:
+        errors.append("apiActiveRevisionsMode must be Single or Multiple.")
+    elif revisions_mode == "Multiple" and not re.fullmatch(
+        r"[a-z][a-z0-9-]{0,30}--[a-z0-9][a-z0-9-]{0,62}", traffic_revision
+    ):
+        errors.append(
+            "apiActiveRevisionsMode=Multiple requires apiTrafficRevisionName to name the exact "
+            "serving revision; provisioning must never fall back to latestRevision traffic."
+        )
+    elif revisions_mode == "Single" and traffic_revision:
+        errors.append("apiTrafficRevisionName must be empty when apiActiveRevisionsMode=Single.")
     shared_enabled = truthy(parameter_value(parameters, "sharedGatewayEnabled", False))
     opted_in = {
         item.strip()

@@ -319,6 +319,11 @@ OFF fails validation. Empty (the default) emits no variable.
 `AI4IA_API_ACTIVE_REVISIONS_MODE` (Bicep `apiActiveRevisionsMode`) defaults to
 `Single`. `Multiple` exists only for a reviewed staged traffic cutover while
 the deploy pipeline is frozen; see the feature-enablement runbook.
+`AI4IA_API_TRAFFIC_REVISION_NAME` (Bicep `apiTrafficRevisionName`) is required
+with `Multiple` and must be empty with `Single`. It names the exact serving
+revision; provisioning then emits only that revision at 100% traffic and never
+a `latestRevision` rule, so a re-provision cannot shift traffic to a newer
+revision. Validation refuses `Multiple` without it.
 
 Onboarding dependency: `gateway.baseUrl` must identify a reachable,
 dedicated bearer-validating SimpleL7Proxy, not APIM and not AI4IA's existing

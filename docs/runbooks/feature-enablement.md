@@ -764,10 +764,16 @@ them with guessed values or retrofit the existing key-only proxy as a fallback.
 
 The current `deploy.yml` is production-scoped and is not an approved canary
 executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED`,
-`AI4IA_SHARED_GATEWAY_DEPLOYMENTS` and `AI4IA_API_ACTIVE_REVISIONS_MODE` from
+`AI4IA_SHARED_GATEWAY_DEPLOYMENTS`, `AI4IA_API_ACTIVE_REVISIONS_MODE` and
+`AI4IA_API_TRAFFIC_REVISION_NAME` from
 GitHub Actions repository variables and the activation manifest from a GitHub
-Actions secret; leave all four unset in production so the parameter defaults
-remain false, empty and `Single`. Any production staged cutover (Multiple
+Actions secret; leave all five unset in production so the parameter defaults
+remain false, empty, `Single` and empty. Validation refuses `Multiple` unless
+`AI4IA_API_TRAFFIC_REVISION_NAME` names the exact serving revision; the template
+then emits only that revision at 100% traffic (never `latestRevision`), so an
+accidental provision during a staged cutover cannot shift serving traffic.
+The pin does not make provisioning safe otherwise: it still creates a revision
+and may change other settings. Any production staged cutover (Multiple
 revision mode, a labelled 0% revision, then traffic shifts) requires a
 separately approved plan with the deploy workflow frozen for its duration,
 because a provision or deploy creates a new revision from the template. Do not configure production values or use this workflow for a
@@ -843,7 +849,11 @@ images, identities and secrets:
 ```
 
 Once C1 has completed and fresh readback confirms unchanged template, image,
-latest/ready identity and named R0=100 traffic, capture new snapshots. After
+latest/ready identity and named R0=100 traffic, capture new snapshots. Before
+any later provision, the persisted desired configuration must match: repository
+variables `AI4IA_API_ACTIVE_REVISIONS_MODE=Multiple` and
+`AI4IA_API_TRAFFIC_REVISION_NAME=<R0>` (otherwise a `Single` provision collapses
+to one revision). After
 separately approved manifest-secret setup, construct C3:
 
 ```powershell

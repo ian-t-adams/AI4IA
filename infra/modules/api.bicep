@@ -110,6 +110,9 @@ param sharedGatewayDeployments string = ''
 ])
 param activeRevisionsMode string = 'Single'
 
+@description('Serving revision pinned at 100% when activeRevisionsMode is Multiple, so a provision PUT cannot fall back to the latest-revision default. Required with Multiple; must be empty with Single.')
+param trafficRevisionName string = ''
+
 @secure()
 @description('Private resolved activation manifest for AI4IA shared gateway v2. Empty unless privately supplied after approved synthetic proof.')
 param sharedGatewayActivationManifest string = ''
@@ -1166,14 +1169,23 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
     configuration: {
       activeRevisionsMode: activeRevisionsMode
       secrets: inheritsSecrets ? concat(inheritedSecrets, sharedGatewayManifestSecrets) : concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets, sharedGatewayManifestSecrets)
-      ingress: {
+      // Single mode emits no traffic block (unchanged). Multiple mode always names
+      // the pinned revision so an omitted rule never defaults to the newest revision.
+      ingress: union({
         // External for v1 so the api is directly testable before the web app
         // exists. Flip to internal once web is the only public frontend.
         external: true
         targetPort: 8080
         transport: 'auto'
         allowInsecure: false
-      }
+      }, activeRevisionsMode == 'Multiple' ? {
+        traffic: [
+          {
+            revisionName: trafficRevisionName
+            weight: 100
+          }
+        ]
+      } : {})
       registries: [
         {
           server: acrLoginServer

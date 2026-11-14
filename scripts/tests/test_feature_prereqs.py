@@ -451,6 +451,10 @@ class CommittedParametersTests(unittest.TestCase):
             parameters["apiActiveRevisionsMode"]["value"],
             "${AI4IA_API_ACTIVE_REVISIONS_MODE=Single}",
         )
+        self.assertEqual(
+            parameters["apiTrafficRevisionName"]["value"],
+            "${AI4IA_API_TRAFFIC_REVISION_NAME=}",
+        )
         with tempfile.TemporaryDirectory() as tmp, _environment():
             code, _, err = _run(REAL_PARAMETERS)
             self.assertEqual(code, 0, err)
@@ -459,6 +463,31 @@ class CommittedParametersTests(unittest.TestCase):
             }))
             self.assertEqual(code, 1)
             self.assertIn("resolved shared gateway contract v2 manifest is required", err)
+
+    def test_multiple_revision_mode_requires_explicit_traffic_pin(self) -> None:
+        pinned = "ca-api-private-slurmfactory--azd-1793658361"
+        cases = [
+            ("Single", "", 0),
+            ("Single", pinned, 1),
+            ("Multiple", "", 1),
+            ("Multiple", "latest", 1),
+            ("Multiple", pinned, 0),
+            ("multiple", pinned, 1),
+        ]
+        for mode, revision, expected in cases:
+            with self.subTest(mode=mode, revision=revision), _environment(
+                AI4IA_API_ACTIVE_REVISIONS_MODE=mode,
+                AI4IA_API_TRAFFIC_REVISION_NAME=revision,
+            ):
+                code, _, err = _run(REAL_PARAMETERS)
+                self.assertEqual(code, expected, err)
+                self.assertEqual(
+                    "apiActiveRevisionsMode" in err or "apiTrafficRevisionName" in err,
+                    expected == 1,
+                )
+        api = (ROOT / "infra" / "modules" / "api.bicep").read_text(encoding="utf-8")
+        self.assertNotIn("latestRevision", api)
+        self.assertIn("revisionName: trafficRevisionName", api)
 
     def test_versioned_gateway_staging_is_default_off_and_never_activates_hard_quota(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]

@@ -169,6 +169,9 @@ param sharedGatewayDeployments string = ''
 ])
 param apiActiveRevisionsMode string = 'Single'
 
+@description('Exact API revision pinned at 100% traffic in Multiple mode; required with Multiple and empty with Single. Never emits latestRevision.')
+param apiTrafficRevisionName string = ''
+
 @description('Enable the default-off text-only chat-pilot UI compatibility path. This does not select or verify the API target.')
 param chatPilotUiEnabled bool = false
 
@@ -941,6 +944,7 @@ module api 'modules/api.bicep' = {
     sharedGatewayDeployments: sharedGatewayDeployments
     sharedGatewayActivationManifest: sharedGatewayActivationManifest
     activeRevisionsMode: apiActiveRevisionsMode
+    trafficRevisionName: apiTrafficRevisionName
     // Realtime stays on the FastAPI relay -> APIM path because the proxy does
     // not support WebSockets. The separately scoped subscription key cannot call
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.

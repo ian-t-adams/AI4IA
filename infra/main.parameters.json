@@ -249,6 +249,9 @@
     "apiActiveRevisionsMode": {
       "value": "${AI4IA_API_ACTIVE_REVISIONS_MODE=Single}"
     },
+    "apiTrafficRevisionName": {
+      "value": "${AI4IA_API_TRAFFIC_REVISION_NAME=}"
+    },
     "realtimeProtocol": {
       "value": "${AI4IA_REALTIME_PROTOCOL=preview}"
     },
