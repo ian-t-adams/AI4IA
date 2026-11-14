@@ -1,6 +1,7 @@
 """Strict, secretless validation for the resolved shared gateway v2 manifest."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 import json
 import re
@@ -12,6 +13,12 @@ _MODEL_KEY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _HOST = re.compile(r"^[a-z0-9.-]+$")
 _BASE_URL = re.compile(r"^https://[a-z0-9.-]+(?::[0-9]+)?/openai/v1$")
+# 2.2.0 dedicated lane: one lowercase DNS-label segment followed by /v1. No dots, so
+# no traversal; the client appends only /chat/completions or /responses.
+_PATH_PREFIX_V22 = re.compile(r"^/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/v1$")
+_BASE_URL_V22 = re.compile(
+    r"^https://[a-z0-9.-]+(?::[0-9]+)?(/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/v1)$"
+)
 _AUDIENCE = re.compile(r"^api://[A-Za-z0-9._-]+$")
 _MODEL_SKUS = frozenset({
     "GlobalStandard", "DataZoneStandard", "Standard", "ProvisionedManaged",
@@ -60,6 +67,48 @@ class SharedGatewayManifest:
     def resolve_model_key(self, deployment: str, sku: str | None, path: str) -> str | None:
         matches = self.matching_model_keys(deployment, sku, path)
         return matches[0] if len(matches) == 1 else None
+
+    def resolve_shared_model_key(
+        self, deployment: str, sku: str | None, path: str,
+    ) -> str | None:
+        """Non-pilot binding: the exact deployment-name entry, else one unique alias."""
+        if sku is None:
+            return None
+        model_key = deployment.lower()
+        if (
+            self.model_kinds.get(model_key) != "deployment-name"
+            or self.model_deployments.get(model_key) != deployment
+            or sku not in self.model_skus.get(model_key, frozenset())
+        ):
+            aliases = [
+                key for key, target in self.model_deployments.items()
+                if self.model_kinds[key] == "alias"
+                and target == deployment
+                and path in self.model_operations[key]
+                and sku in self.model_skus[key]
+            ]
+            if len(aliases) != 1:
+                return None
+            model_key = aliases[0]
+        if (
+            path not in self.model_operations.get(model_key, frozenset())
+            or path not in self.operations
+            or sku not in self.model_skus.get(model_key, frozenset())
+        ):
+            return None
+        return model_key
+
+    def unresolved_opt_ins(self, deployments: Iterable[str]) -> list[str]:
+        """Opted-in deployment names that resolve for no manifest SKU and operation."""
+        skus = {sku for values in self.model_skus.values() for sku in values}
+        return [
+            deployment for deployment in sorted(set(deployments))
+            if not any(
+                self.resolve_shared_model_key(deployment, sku, path)
+                for sku in skus
+                for path in self.operations
+            )
+        ]
 
     def validate_pilot_routing(self) -> None:
         if self.status != "resolved" or any(
@@ -138,12 +187,17 @@ def load_shared_gateway_manifest(
     except (TypeError, ValueError) as exc:
         raise SharedGatewayManifestError("Shared gateway manifest JSON is invalid.") from exc
 
-    if isinstance(manifest, dict) and manifest.get("contractVersion") == "2.1.0":
+    version = manifest.get("contractVersion") if isinstance(manifest, dict) else None
+    if version == "2.2.0" and pilot_mode:
+        raise SharedGatewayManifestError(
+            "The isolated chat pilot does not accept a shared gateway 2.2 contract."
+        )
+    if version in ("2.1.0", "2.2.0"):
         if not pilot_mode:
             manifest = json.loads(raw, object_pairs_hook=_unique_keys)
         loaded = _load_v21(
             manifest, api_identity_client_id=api_identity_client_id,
-            require_api_identity=require_api_identity,
+            require_api_identity=require_api_identity, contract_version=version,
         )
     else:
         top = _object(
@@ -168,7 +222,7 @@ def load_shared_gateway_manifest(
 
 def _load_common(
     top: dict, *, api_identity_client_id: str | None, require_api_identity: bool,
-    extra_gateway_fields: set[str] | None = None,
+    extra_gateway_fields: set[str] | None = None, lane_path_prefix: bool = False,
 ) -> SharedGatewayManifest:
     gateway = _object(
         top["gateway"],
@@ -176,10 +230,23 @@ def _load_common(
         "gateway",
     )
     base_url = gateway["baseUrl"]
+    path_prefix = gateway["pathPrefix"]
+    if lane_path_prefix:
+        lane = _BASE_URL_V22.fullmatch(base_url) if isinstance(base_url, str) else None
+        prefix_ok = (
+            lane is not None
+            and isinstance(path_prefix, str)
+            and _PATH_PREFIX_V22.fullmatch(path_prefix) is not None
+            and lane.group(1) == path_prefix
+        )
+    else:
+        prefix_ok = (
+            isinstance(base_url, str)
+            and _BASE_URL.fullmatch(base_url) is not None
+            and path_prefix == "/openai/v1"
+        )
     if (
-        not isinstance(base_url, str)
-        or _BASE_URL.fullmatch(base_url) is None
-        or gateway["pathPrefix"] != "/openai/v1"
+        not prefix_ok
         or not isinstance(gateway["allowedHosts"], list)
         or not gateway["allowedHosts"]
         or any(
@@ -413,7 +480,9 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> dict:
 
 def _load_v21(
     manifest: object, *, api_identity_client_id: str | None, require_api_identity: bool,
+    contract_version: str = "2.1.0",
 ) -> SharedGatewayManifest:
+    lane = contract_version == "2.2.0"
     top = _object(
         manifest,
         {
@@ -429,9 +498,14 @@ def _load_v21(
     if not isinstance(gateway, dict):
         raise SharedGatewayManifestError("Shared gateway 2.1 gateway shape is invalid.")
     extras = set(gateway) & {"anthropicBaseUrl", "videoBaseUrl"}
+    if lane and extras:
+        raise SharedGatewayManifestError(
+            "Shared gateway 2.2 lanes carry chat/Responses only; family URLs are not allowed."
+        )
     common = _load_common(
         top, api_identity_client_id=api_identity_client_id,
         require_api_identity=require_api_identity, extra_gateway_fields=extras,
+        lane_path_prefix=lane,
     )
     for key, deployment in common.model_deployments.items():
         if (
@@ -473,6 +547,7 @@ def _load_v21(
             type(family["enabled"]) is not bool
             or family["operations"] != template
             or not isinstance(models, dict)
+            or lane and (family["enabled"] or models)
         ):
             raise SharedGatewayManifestError("Shared gateway 2.1 capability is invalid.")
         paths = {operation["path"] for operation in template.values()}
@@ -545,5 +620,5 @@ def _load_v21(
     ):
         raise SharedGatewayManifestError("Shared gateway resolved contract contains placeholders.")
     return replace(
-        common, contract_version="2.1.0", status=top["status"], capabilities=parsed,
+        common, contract_version=contract_version, status=top["status"], capabilities=parsed,
     )

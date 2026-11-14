@@ -100,6 +100,16 @@ param gatewayAttemptsV1Staged bool = false
 @description('Select the AI4IA stateless shared-gateway route only with a resolved v2 manifest and after separate canary approval. Default OFF.')
 param sharedGatewayEnabled bool = false
 
+@description('Comma-separated exact catalog deployment names opted into the shared gateway outside the pilot. Empty emits no variable; unlisted deployments stay on the legacy proxy.')
+param sharedGatewayDeployments string = ''
+
+@description('Container App revision mode. Single preserves current behavior; Multiple is only for a reviewed staged traffic cutover.')
+@allowed([
+  'Single'
+  'Multiple'
+])
+param activeRevisionsMode string = 'Single'
+
 @secure()
 @description('Private resolved activation manifest for AI4IA shared gateway v2. Empty unless privately supplied after approved synthetic proof.')
 param sharedGatewayActivationManifest string = ''
@@ -453,6 +463,11 @@ var sharedGatewayEnv = concat([
   {
     name: 'AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST'
     secretRef: 'shared-gateway-activation-manifest'
+  }
+] : [], !empty(sharedGatewayDeployments) ? [
+  {
+    name: 'AI4IA_SHARED_GATEWAY_DEPLOYMENTS'
+    value: sharedGatewayDeployments
   }
 ] : [])
 var gatewayKeyEnv = hasGatewayKey ? [
@@ -1149,7 +1164,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-10-02-preview' = {
   properties: {
     managedEnvironmentId: containerEnvId
     configuration: {
-      activeRevisionsMode: 'Single'
+      activeRevisionsMode: activeRevisionsMode
       secrets: inheritsSecrets ? concat(inheritedSecrets, sharedGatewayManifestSecrets) : concat(gatewaySecrets, realtimeGatewaySecrets, realtimeGaGatewaySecrets, speechVoiceLiveGatewaySecrets, codeInterpreterSecrets, adminSecrets, webIqSecrets, officialMcpSecrets, sharedGatewayManifestSecrets)
       ingress: {
         // External for v1 so the api is directly testable before the web app

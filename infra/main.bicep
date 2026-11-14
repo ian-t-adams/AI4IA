@@ -159,6 +159,16 @@ param gatewayAttemptsV1Staged bool = false
 @description('Select the AI4IA stateless shared-gateway route only with a resolved v2 manifest and after separate canary approval. Default OFF.')
 param sharedGatewayEnabled bool = false
 
+@description('Comma-separated exact catalog deployment names opted into the shared gateway outside the pilot. Empty keeps every deployment on the legacy proxy; non-empty requires sharedGatewayEnabled.')
+param sharedGatewayDeployments string = ''
+
+@description('API Container App revision mode. Single (default) preserves current behavior; Multiple is only for a reviewed, pipeline-frozen staged traffic cutover.')
+@allowed([
+  'Single'
+  'Multiple'
+])
+param apiActiveRevisionsMode string = 'Single'
+
 @description('Enable the default-off text-only chat-pilot UI compatibility path. This does not select or verify the API target.')
 param chatPilotUiEnabled bool = false
 
@@ -928,7 +938,9 @@ module api 'modules/api.bicep' = {
     modelGatewayApiKeyHeader: 'S7P-KEY'
     gatewayAttemptsV1Staged: gatewayAttemptsV1Staged
     sharedGatewayEnabled: sharedGatewayEnabled
+    sharedGatewayDeployments: sharedGatewayDeployments
     sharedGatewayActivationManifest: sharedGatewayActivationManifest
+    activeRevisionsMode: apiActiveRevisionsMode
     // Realtime stays on the FastAPI relay -> APIM path because the proxy does
     // not support WebSockets. The separately scoped subscription key cannot call
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.

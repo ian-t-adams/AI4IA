@@ -17,7 +17,7 @@ from ai4ia_api.gateway.client import ModelGatewayClient
 from ai4ia_api.main import create_app
 from tests.test_chat_websearch_api import FakeWebClient, _inject_web
 from tests.test_shared_gateway_staging import (
-    _manifest,
+    _catalog_manifest,
     _settings,
     _token,
 )
@@ -188,8 +188,10 @@ def test_successful_tool_loop_stays_on_legacy_gateway(api, model, enabled):
 
 
 def _exercise_tool_turn(*, api, model, stream, enabled, first_result):
-    manifest = _manifest()
-    settings = _settings(enabled=enabled, manifest=manifest).model_copy(
+    manifest, deployment_name = _catalog_manifest(model)
+    settings = _settings(
+        enabled=enabled, manifest=manifest, deployments=deployment_name,
+    ).model_copy(
         update={
             "model_gateway_auth_mode": "api_key",
             "model_gateway_api_key": "synthetic-proxy-key",

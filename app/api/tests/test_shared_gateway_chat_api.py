@@ -16,7 +16,9 @@ from ai4ia_api.auth.dependencies import get_current_user
 from ai4ia_api.catalog import ModelCatalog, load_catalog
 from ai4ia_api.gateway.client import ModelGatewayClient
 from ai4ia_api.main import create_app
-from tests.test_shared_gateway_staging import TOKEN, _manifest, _settings, _token
+from tests.test_shared_gateway_staging import (
+    TOKEN, _catalog_manifest, _manifest, _settings, _token,
+)
 
 
 def _catalog_with_api_override(catalog: ModelCatalog, model_id: str, api: str) -> ModelCatalog:
@@ -155,8 +157,10 @@ def test_shared_redirect_uses_existing_sanitized_api_error(api, stream):
 
 
 def _exercise(api, stream, enabled, status, retry, expected_retry, *, fail_persistence=False):
-    manifest = _manifest()
-    settings = _settings(enabled=enabled, manifest=manifest).model_copy(
+    manifest, deployment_name = _catalog_manifest("gpt-5.2")
+    settings = _settings(
+        enabled=enabled, manifest=manifest, deployments=deployment_name,
+    ).model_copy(
         update={
             "model_gateway_auth_mode": "api_key",
             "model_gateway_api_key": "synthetic-proxy-key",

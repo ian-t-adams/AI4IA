@@ -188,7 +188,15 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     except ValueError as exc:
         errors.append(str(exc))
     json_values = transported_json(parameters, errors)
-    if truthy(parameter_value(parameters, "sharedGatewayEnabled", False)):
+    shared_enabled = truthy(parameter_value(parameters, "sharedGatewayEnabled", False))
+    opted_in = {
+        item.strip()
+        for item in text(parameter_value(parameters, "sharedGatewayDeployments", "")).split(",")
+        if item.strip()
+    }
+    if opted_in and not shared_enabled:
+        errors.append("sharedGatewayDeployments requires sharedGatewayEnabled=true.")
+    if shared_enabled:
         if text(parameter_value(parameters, "apiNetworkPhase", "legacy")).lower() != "private":
             errors.append(
                 "Shared gateway routing requires apiNetworkPhase=private for the "
@@ -200,11 +208,23 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             errors.append("Shared gateway routing is unavailable in the local environment.")
         try:
             # The deployed API compares this caller id with its actual AZURE_CLIENT_ID.
-            load_shared_gateway_manifest(
+            manifest = load_shared_gateway_manifest(
                 json_values.get("sharedGatewayActivationManifest"),
                 api_identity_client_id=None,
                 require_api_identity=False,
             )
+            # The loader accepts schema-only fixtures; only a resolved manifest may provision.
+            if manifest.status != "resolved":
+                raise ValueError("a resolved manifest is required; schema-only cannot enable routing.")
+            if not opted_in:
+                raise ValueError(
+                    "sharedGatewayEnabled requires a non-empty sharedGatewayDeployments opt-in list."
+                )
+            unresolved = manifest.unresolved_opt_ins(opted_in)
+            if unresolved:
+                raise ValueError(
+                    f"opt-in deployment {unresolved[0]!r} is not in the manifest."
+                )
         except ValueError as exc:
             errors.append(f"Shared gateway activation: {exc}")
     model_capacity_profile = text(

@@ -270,7 +270,7 @@ transport variable directly. The manifest is limited to 64 KiB.
 When OFF, the manifest is not selected and the existing model-gateway route,
 request shaping, credentials, conversation persistence and specialty paths
 remain unchanged. When ON, preprovision validation and API startup require a
-strict `contractVersion: "2.0.0"` or `"2.1.0"` manifest with `status: "resolved"`; the API
+strict `contractVersion: "2.0.0"`, `"2.1.0"` or `"2.2.0"` manifest with `status: "resolved"`; the API
 also verifies that `callerClientId` matches
 `AZURE_CLIENT_ID`, the API's existing managed identity. Its existing
 data-plane permissions remain unchanged.
@@ -294,6 +294,31 @@ capability and the existing Entra/API identity validation, or startup refuses.
 These settings validate eligibility only; no family dispatcher or infrastructure
 wiring is supplied in this slice. Provider targets, network reachability, runtime
 transport, pricing and per-route activation approval remain separate dependencies.
+
+Contract `2.2.0` (non-pilot only) is the 2.1 schema plus one dedicated lane
+prefix: `gateway.pathPrefix` must match `/<dns-label>/v1` (for production,
+`/ai4ia-prod/v1`), `gateway.baseUrl` must equal the exact host plus that prefix,
+the gateway object carries only `baseUrl`, `allowedHosts` and `pathPrefix`,
+and both capability families stay disabled with no models. 2.0/2.1 keep the
+`/openai/v1` prefix; the isolated pilot rejects 2.2.0. The API posts to
+`{baseUrl}/chat/completions` or `{baseUrl}/responses`, so the proxy route must
+forward the prefix unchanged (strip-prefix off) to a separate APIM API.
+
+Outside the pilot, ON also requires `AI4IA_SHARED_GATEWAY_DEPLOYMENTS`
+(Bicep `sharedGatewayDeployments`), a comma-separated list of exact,
+case-sensitive catalog deployment names. Each must resolve to a manifest
+model (lowercased `deployment-name` key with the case-preserved target, or one
+unique alias), and at API startup to exactly one eligible catalog chat or
+Responses option with that SKU and operation; otherwise preprovision or startup
+refuses. Unlisted deployments, stateful Responses (`store` not `false`, or
+`previous_response_id`, `background`, `conversation`), Claude, embeddings,
+images, audio and realtime stay on the existing proxy by configuration; a
+gateway failure never falls back to it. Setting the list while the selector is
+OFF fails validation. Empty (the default) emits no variable.
+
+`AI4IA_API_ACTIVE_REVISIONS_MODE` (Bicep `apiActiveRevisionsMode`) defaults to
+`Single`. `Multiple` exists only for a reviewed staged traffic cutover while
+the deploy pipeline is frozen; see the feature-enablement runbook.
 
 Onboarding dependency: `gateway.baseUrl` must identify a reachable,
 dedicated bearer-validating SimpleL7Proxy, not APIM and not AI4IA's existing

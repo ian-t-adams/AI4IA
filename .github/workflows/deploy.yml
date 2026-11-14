@@ -360,7 +360,10 @@ jobs:
       # an explicit operator variable; its resolved manifest is sensitive and must
       # come from a GitHub secret, then pass the preprovision validator.
       AI4IA_SHARED_GATEWAY_ENABLED: ${{ vars.AI4IA_SHARED_GATEWAY_ENABLED }}
+      AI4IA_SHARED_GATEWAY_DEPLOYMENTS: ${{ vars.AI4IA_SHARED_GATEWAY_DEPLOYMENTS }}
       AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST: ${{ secrets.AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST }}
+      # Single unless a reviewed, pipeline-frozen staged cutover selects Multiple.
+      AI4IA_API_ACTIVE_REVISIONS_MODE: ${{ vars.AI4IA_API_ACTIVE_REVISIONS_MODE }}
       AI4IA_WEB_SEARCH_ENABLED: ${{ vars.AI4IA_WEB_SEARCH_ENABLED }}
       AI4IA_WEBIQ_BASE_URL: ${{ vars.AI4IA_WEBIQ_BASE_URL }}
       AI4IA_WEB_SEARCH_MAX_RESULTS: ${{ vars.AI4IA_WEB_SEARCH_MAX_RESULTS }}

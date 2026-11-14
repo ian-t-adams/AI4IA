@@ -607,6 +607,12 @@ def _default_transcription_path(style: GatewayProviderStyle) -> str:
     return "/audio/transcriptions"
 
 
+def _stateful_responses_body(body: dict[str, Any]) -> bool:
+    return body.get("store") is not False or any(
+        field in body for field in ("previous_response_id", "background", "conversation")
+    )
+
+
 class ModelGatewayClient:
     def __init__(
         self, settings: Settings, http_client: httpx.AsyncClient | None = None, *,
@@ -616,6 +622,7 @@ class ModelGatewayClient:
         settings.validate_shared_gateway()
         self._base = settings.model_gateway_url.rstrip("/")
         self._shared_enabled = settings.shared_gateway_enabled
+        self._shared_deployments = settings.shared_gateway_deployment_set
         self._shared_manifest: SharedGatewayManifest | None = (
             load_shared_gateway_manifest(
                 settings.shared_gateway_activation_manifest,
@@ -720,6 +727,13 @@ class ModelGatewayClient:
         )
         if not self._shared_enabled or not eligible:
             return req, None
+        if not self._chat_pilot_isolation and (
+            deployment not in self._shared_deployments
+            or api == "responses" and _stateful_responses_body(req.json)
+        ):
+            # Explicit per-deployment opt-in: unlisted deployments and stateful
+            # Responses deliberately stay on the legacy proxy path.
+            return req, None
         manifest = self._shared_manifest
         if manifest is None:
             raise ModelGatewayError(
@@ -731,45 +745,20 @@ class ModelGatewayClient:
             raise QuotaError("Shared routing is unavailable for no-replay dispatches.")
         path = "/chat/completions" if api == "chat" else "/responses"
         body = dict(req.json)
-        if api == "responses":
-            if (
-                body.get("store") is not False
-                or any(
-                    field in body
-                    for field in ("previous_response_id", "background", "conversation")
-                )
-            ):
-                raise ModelGatewayError(
-                    400, "Only stateless Responses requests are eligible for shared routing."
-                )
-        deployment_key = deployment.lower()
-        if self._chat_pilot_isolation:
-            model_key = manifest.resolve_model_key(deployment, sku, path)
-            if model_key is None:
-                raise ModelGatewayError(
-                    400, "This model or operation is not eligible for shared routing.",
-                    shared_gateway=True,
-                )
-        else:
-            model_key = deployment_key
-            if (
-                manifest.model_kinds.get(model_key) != "deployment-name"
-                or manifest.model_deployments.get(model_key) != deployment
-                or sku not in manifest.model_skus.get(model_key, frozenset())
-            ):
-                aliases = [
-                    key for key, target in manifest.model_deployments.items()
-                    if manifest.model_kinds[key] == "alias"
-                    and target == deployment
-                    and path in manifest.model_operations[key]
-                    and sku in manifest.model_skus[key]
-                ]
-                if len(aliases) != 1:
-                    raise ModelGatewayError(
-                        400, "This model or operation is not eligible for shared routing.",
-                        shared_gateway=True,
-                    )
-                model_key = aliases[0]
+        if api == "responses" and _stateful_responses_body(body):
+            raise ModelGatewayError(
+                400, "Only stateless Responses requests are eligible for shared routing."
+            )
+        model_key = (
+            manifest.resolve_model_key(deployment, sku, path)
+            if self._chat_pilot_isolation
+            else manifest.resolve_shared_model_key(deployment, sku, path)
+        )
+        if model_key is None:
+            raise ModelGatewayError(
+                400, "This model or operation is not eligible for shared routing.",
+                shared_gateway=True,
+            )
         model_paths = manifest.model_operations.get(model_key)
         if (
             model_paths is None

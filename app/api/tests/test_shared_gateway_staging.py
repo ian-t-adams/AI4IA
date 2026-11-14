@@ -13,6 +13,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from ai4ia_api import logging_setup
+from ai4ia_api.catalog import load_catalog
 from ai4ia_api.gateway.client import GatewayRequest, ModelGatewayClient, ModelGatewayError
 from ai4ia_api.main import create_app
 from tests.conftest import make_settings
@@ -99,7 +100,10 @@ def _manifest(*, status: str = "resolved", terminal_usage: str = "unverified") -
     }
 
 
-def _settings(*, enabled: bool = True, manifest: dict | None = None):
+def _settings(
+    *, enabled: bool = True, manifest: dict | None = None,
+    deployments: str | None = DEPLOYMENT,
+):
     return make_settings(
         env="dev",
         auth_provider="entra",
@@ -108,11 +112,32 @@ def _settings(*, enabled: bool = True, manifest: dict | None = None):
         model_gateway_url="https://existing-gateway.example.invalid",
         model_gateway_allowed_hosts="existing-gateway.example.invalid",
         shared_gateway_enabled=enabled,
+        shared_gateway_deployments=deployments if enabled else None,
         shared_gateway_activation_manifest=(
             json.dumps(manifest) if manifest is not None else None
         ),
         AZURE_CLIENT_ID=CALLER_CLIENT_ID,
     )
+
+
+def _catalog_manifest(model: str) -> tuple[dict, str]:
+    """A manifest keyed to a real catalog deployment so startup opt-in validates."""
+    settings = _settings(enabled=False)
+    deployment = load_catalog(
+        settings.model_catalog_path,
+        settings.data_residency,
+        settings.claude_runtime_enabled,
+    ).resolve_deployment(model)
+    assert deployment is not None
+    manifest = _manifest()
+    manifest["models"] = {
+        deployment.deploymentName.lower(): {
+            "kind": "deployment-name",
+            "operations": ["/chat/completions", "/responses"],
+            "targets": [{"deployment": deployment.deploymentName, "sku": deployment.sku}],
+        },
+    }
+    return manifest, deployment.deploymentName
 
 
 def _client(http: httpx.AsyncClient, *, manifest: dict | None = None) -> ModelGatewayClient:
@@ -252,7 +277,49 @@ def test_manifest_has_a_bounded_utf8_size():
 def test_manifest_accepts_lowercase_key_with_case_preserved_target():
     manifest = _manifest()
     manifest["models"][DEPLOYMENT]["targets"][0]["deployment"] = "Synthetic-Deployment"
-    _settings(manifest=manifest).validate_shared_gateway()
+    _settings(manifest=manifest, deployments="Synthetic-Deployment").validate_shared_gateway()
+
+
+def test_enabled_nonpilot_requires_an_explicit_opt_in_list():
+    with pytest.raises(RuntimeError, match="explicit AI4IA_SHARED_GATEWAY_DEPLOYMENTS"):
+        _settings(manifest=_manifest(), deployments=" , ").validate_shared_gateway()
+
+
+def test_opt_in_list_requires_enabled_selector():
+    settings = _settings(enabled=False, manifest=_manifest()).model_copy(
+        update={"shared_gateway_deployments": DEPLOYMENT},
+    )
+    with pytest.raises(RuntimeError, match="requires AI4IA_SHARED_GATEWAY_ENABLED"):
+        settings.validate_shared_gateway()
+
+
+@pytest.mark.parametrize(
+    "deployments",
+    ["unlisted-deployment", f"{DEPLOYMENT},unlisted-deployment", "Synthetic-Deployment"],
+)
+def test_opt_in_deployment_must_exactly_resolve_in_manifest(deployments):
+    with pytest.raises(RuntimeError, match="is not in the manifest"):
+        _settings(manifest=_manifest(), deployments=deployments).validate_shared_gateway()
+
+
+def test_startup_requires_opt_in_to_be_an_eligible_catalog_deployment():
+    with pytest.raises(RuntimeError, match="eligible catalog chat/Responses"):
+        _settings(manifest=_manifest()).validate_shared_gateway_catalog()
+
+    manifest, deployment_name = _catalog_manifest("gpt-5.2")
+    _settings(manifest=manifest, deployments=deployment_name).validate_shared_gateway_catalog()
+
+    wrong_sku = json.loads(json.dumps(manifest))
+    for model in wrong_sku["models"].values():
+        model["targets"][0]["sku"] = "ProvisionedManaged"
+    with pytest.raises(RuntimeError, match="eligible catalog chat/Responses"):
+        _settings(
+            manifest=wrong_sku, deployments=deployment_name,
+        ).validate_shared_gateway_catalog()
+
+
+def test_flags_off_ignores_opt_in_catalog_validation():
+    _settings(enabled=False, manifest=_manifest()).validate_shared_gateway_catalog()
 
 
 def test_manifest_deployment_name_key_must_match_lowercased_target():
@@ -424,50 +491,34 @@ async def test_alias_routing_requires_exact_lowercase_alias_operation_and_sku():
     assert json.loads(requests[0].content)["model"] == "synthetic-alias"
 
 
-@pytest.mark.parametrize(
-    ("api", "streaming"),
-    [
-        ("chat", False),
-        ("chat", True),
-        ("responses", False),
-        ("responses", True),
-    ],
-)
-async def test_unlisted_model_fails_without_falling_back_or_requesting_a_token(
-    api: str, streaming: bool,
-):
-    calls: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request)
-        return httpx.Response(200, json={"choices": []})
-
+@pytest.mark.parametrize("api", ["chat", "responses"])
+async def test_unlisted_deployment_stays_on_legacy_route_without_a_token(api: str):
     async def unexpected_token(scope: str) -> str:
-        raise AssertionError("an unlisted model must be rejected before token acquisition")
+        raise AssertionError("an unlisted deployment must not request a shared token")
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}))
+    ) as http:
         client = ModelGatewayClient(
             _settings(manifest=_manifest()),
             http_client=http,
             shared_gateway_token_provider=unexpected_token,
         )
-        with pytest.raises(ModelGatewayError, match="not eligible"):
-            if streaming:
-                async for _ in client.stream(
-                    deployment="unlisted-deployment",
-                    messages=[],
-                    api=api,
-                    shared_gateway_eligible=True,
-                ):
-                    pass
-            else:
-                await client.complete(
-                    deployment="unlisted-deployment",
-                    messages=[],
-                    api=api,
-                    shared_gateway_eligible=True,
-                )
-    assert calls == []
+        request = GatewayRequest(
+            url="https://existing-gateway.example.invalid/openai/deployments/unlisted/x",
+            headers={"api-key": "synthetic-legacy-key"},
+            json={"model": "unlisted-deployment"},
+        )
+        selected, shared_url = await client._shared_request(
+            request,
+            deployment="unlisted-deployment",
+            api=api,
+            eligible=True,
+            sku="GlobalStandard",
+        )
+
+    assert selected is request
+    assert shared_url is None
 
 
 async def test_ineligible_specialist_request_keeps_its_existing_route():
@@ -549,7 +600,11 @@ async def test_mixed_case_deployment_uses_lowercase_key_and_exact_target():
     }
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        result = await _client(http, manifest=manifest).complete(
+        result = await ModelGatewayClient(
+            _settings(manifest=manifest, deployments="Synthetic-Deployment"),
+            http_client=http,
+            shared_gateway_token_provider=_token,
+        ).complete(
             deployment="Synthetic-Deployment",
             messages=[{"role": "user", "content": "synthetic prompt"}],
             shared_gateway_eligible=True,
@@ -562,16 +617,7 @@ async def test_mixed_case_deployment_uses_lowercase_key_and_exact_target():
     assert json.loads(requests[0].content)["model"] == "synthetic-deployment"
 
 
-async def test_mixed_case_target_mismatch_fails_before_token_or_http():
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, json={"choices": []})
-
-    async def unexpected_token(scope: str) -> str:
-        raise AssertionError("a case-mismatched deployment target must not be admitted")
-
+async def test_mixed_case_target_mismatch_fails_at_startup_before_token_or_http():
     manifest = _manifest()
     manifest["models"] = {
         "synthetic-deployment": {
@@ -583,21 +629,18 @@ async def test_mixed_case_target_mismatch_fails_before_token_or_http():
         },
     }
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        client = ModelGatewayClient(
-            _settings(manifest=manifest),
-            http_client=http,
-            shared_gateway_token_provider=unexpected_token,
-        )
-        with pytest.raises(ModelGatewayError, match="not eligible"):
-            await client.complete(
-                deployment="Synthetic-Deployment",
-                messages=[{"role": "user", "content": "synthetic prompt"}],
-                shared_gateway_eligible=True,
-                shared_gateway_sku="GlobalStandard",
-            )
+    async def unexpected_token(scope: str) -> str:
+        raise AssertionError("a case-mismatched deployment target must not be admitted")
 
-    assert requests == []
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: pytest.fail("no HTTP expected"))
+    ) as http:
+        with pytest.raises(RuntimeError, match="is not in the manifest"):
+            ModelGatewayClient(
+                _settings(manifest=manifest, deployments="Synthetic-Deployment"),
+                http_client=http,
+                shared_gateway_token_provider=unexpected_token,
+            )
 
 
 async def test_responses_is_explicitly_non_storing_and_uses_v2_path():
@@ -634,8 +677,11 @@ async def test_responses_is_explicitly_non_storing_and_uses_v2_path():
     assert not ({"previous_response_id", "background", "conversation"} & body.keys())
 
 
-@pytest.mark.parametrize("forbidden", ["previous_response_id", "background", "conversation"])
-async def test_stateful_responses_fields_are_rejected_before_token_or_http(forbidden):
+@pytest.mark.parametrize(
+    "stateful",
+    [{"store": True}, {"previous_response_id": "r"}, {"background": True}, {"conversation": "c"}],
+)
+async def test_stateful_responses_stay_on_legacy_route_without_a_token(stateful):
     calls: list[httpx.Request] = []
     manifest = _manifest()
 
@@ -644,7 +690,7 @@ async def test_stateful_responses_fields_are_rejected_before_token_or_http(forbi
         return httpx.Response(200, json={})
 
     async def unexpected_token(scope: str) -> str:
-        raise AssertionError("stateful requests must fail before token acquisition")
+        raise AssertionError("stateful Responses must not request a shared token")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = ModelGatewayClient(
@@ -654,14 +700,15 @@ async def test_stateful_responses_fields_are_rejected_before_token_or_http(forbi
         )
         request = GatewayRequest(
             url="https://existing.example.invalid/responses",
-            headers={"Authorization": "untrusted"},
-            json={"model": DEPLOYMENT, "store": False, forbidden: False},
+            headers={"api-key": "synthetic-legacy-key"},
+            json={"model": DEPLOYMENT, **stateful},
         )
-        with pytest.raises(ModelGatewayError, match="stateless"):
-            await client._shared_request(
-                request, deployment=DEPLOYMENT, api="responses", eligible=True,
-                sku="GlobalStandard",
-            )
+        selected, shared_url = await client._shared_request(
+            request, deployment=DEPLOYMENT, api="responses", eligible=True,
+            sku="GlobalStandard",
+        )
+    assert selected is request
+    assert shared_url is None
     assert calls == []
 
 

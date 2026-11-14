@@ -1443,6 +1443,7 @@ class GatewayPolicyTests(unittest.TestCase):
         # production; the secret manifest must never be sourced from vars.
         operator_canary = {
             "AI4IA_SHARED_GATEWAY_ENABLED",
+            "AI4IA_SHARED_GATEWAY_DEPLOYMENTS",
             "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
         }
         self.assertIn(
@@ -1484,6 +1485,10 @@ class GatewayPolicyTests(unittest.TestCase):
         self.assertTrue(operator_canary <= exported)
         self.assertIn(
             "AI4IA_SHARED_GATEWAY_ENABLED: ${{ vars.AI4IA_SHARED_GATEWAY_ENABLED }}",
+            deploy_env,
+        )
+        self.assertIn(
+            "AI4IA_SHARED_GATEWAY_DEPLOYMENTS: ${{ vars.AI4IA_SHARED_GATEWAY_DEPLOYMENTS }}",
             deploy_env,
         )
         self.assertIn(

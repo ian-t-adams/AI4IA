@@ -61,7 +61,9 @@ def _pilot_configuration(
         "model_gateway_api_key": None,
     }
     values.update(overrides)
-    settings = _settings(enabled=True, manifest=_manifest()).model_copy(update=values)
+    settings = _settings(
+        enabled=True, manifest=_manifest(), deployments=None,
+    ).model_copy(update=values)
     catalog = load_catalog(
         settings.model_catalog_path,
         settings.data_residency,
@@ -277,7 +279,10 @@ def test_pilot_rejects_v20_duplicate_keys_at_startup_without_changing_nonpilot(
         create_app(settings)
     assert events == []
 
-    ordinary = _settings(enabled=True, manifest=manifest).model_copy(update={
+    ordinary = _settings(
+        enabled=True, manifest=manifest,
+        deployments=manifest["models"]["gpt-5.2"]["targets"][0]["deployment"],
+    ).model_copy(update={
         "shared_gateway_activation_manifest": raw,
     })
     ordinary.validate_shared_gateway()
@@ -860,9 +865,16 @@ def test_pilot_checks_serialized_attempt_after_claim(
 ):
     import ai4ia_api.gateway.client as gateway_module
 
-    settings, _, _ = _pilot_configuration(model_gateway_url="https://gateway.example.invalid")
+    settings, _, manifest = _pilot_configuration(
+        model_gateway_url="https://gateway.example.invalid",
+    )
     gateway = ModelGatewayClient(
-        settings.model_copy(update={"chat_pilot_isolation_enabled": pilot}),
+        settings.model_copy(update={
+            "chat_pilot_isolation_enabled": pilot,
+            "shared_gateway_deployments": None if pilot else (
+                manifest["models"]["gpt-5.2"]["targets"][0]["deployment"]
+            ),
+        }),
         shared_gateway_token_provider=_token,
     )
     requests: list[httpx.Request] = []

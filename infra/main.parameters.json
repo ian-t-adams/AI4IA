@@ -243,6 +243,12 @@
     "sharedGatewayActivationManifestBase64": {
       "value": "${AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64=}"
     },
+    "sharedGatewayDeployments": {
+      "value": "${AI4IA_SHARED_GATEWAY_DEPLOYMENTS=}"
+    },
+    "apiActiveRevisionsMode": {
+      "value": "${AI4IA_API_ACTIVE_REVISIONS_MODE=Single}"
+    },
     "realtimeProtocol": {
       "value": "${AI4IA_REALTIME_PROTOCOL=preview}"
     },

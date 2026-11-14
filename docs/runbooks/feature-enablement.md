@@ -736,9 +736,12 @@ retry/timeout/cancellation contract and rollback. Do not set
 resolved v2 manifest, synthetic authentication/routing/SSE proof is complete,
 and the canary environment and deployment plan have separate operator approval.
 The preprovision validator rejects an enabled flag without a resolved manifest
-and requires `apiNetworkPhase=private`; API startup rechecks the contract and
-the caller managed-identity client ID against the API's existing
-`AZURE_CLIENT_ID`.
+(schema-only fixtures load but cannot enable routing), requires
+`apiNetworkPhase=private`, and outside the pilot requires a non-empty
+`AI4IA_SHARED_GATEWAY_DEPLOYMENTS` whose every name resolves in the manifest;
+a list with the flag off is rejected. API startup rechecks the contract, the
+opt-in list against the model catalog, and the caller managed-identity client
+ID against the API's existing `AZURE_CLIENT_ID`.
 
 The resolved manifest's `gateway.baseUrl` must be the reachable dedicated
 bearer-validating SimpleL7Proxy endpoint. It must not point directly to APIM or
@@ -760,10 +763,14 @@ access, and cross-VNet routing/DNS remain separate dependencies; do not fill
 them with guessed values or retrofit the existing key-only proxy as a fallback.
 
 The current `deploy.yml` is production-scoped and is not an approved canary
-executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED` from a GitHub Actions
-repository variable and the activation manifest from a GitHub Actions secret;
-leave both unset in production so the parameter default remains false and the
-manifest empty. Do not configure production values or use this workflow for a
+executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED`,
+`AI4IA_SHARED_GATEWAY_DEPLOYMENTS` and `AI4IA_API_ACTIVE_REVISIONS_MODE` from
+GitHub Actions repository variables and the activation manifest from a GitHub
+Actions secret; leave all four unset in production so the parameter defaults
+remain false, empty and `Single`. Any production staged cutover (Multiple
+revision mode, a labelled 0% revision, then traffic shifts) requires a
+separately approved plan with the deploy workflow frozen for its duration,
+because a provision or deploy creates a new revision from the template. Do not configure production values or use this workflow for a
 canary. The reviewed plan must name the operator and rollback owner. Execution
 remains held for coordinator review of the exact candidate and sequencing and
 completion of the independent safety gates; this text is not execution approval.

@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     shared_gateway_claude_messages_enabled: bool = False
     shared_gateway_video_jobs_enabled: bool = False
     shared_gateway_activation_manifest: str | None = None
+    # Explicit comma-separated opt-in of exact catalog deployment names for
+    # non-pilot shared routing. Unlisted deployments, and stateful Responses,
+    # deliberately stay on the legacy proxy. Must be empty when the selector is off.
+    shared_gateway_deployments: str | None = None
     api_identity_client_id: str | None = Field(
         default=None,
         validation_alias=AliasChoices("AZURE_CLIENT_ID"),
@@ -823,6 +827,10 @@ class Settings(BaseSettings):
         return self.claude_enabled and (self.claude_external_enabled != self.claude_gateway_enabled)
 
     @property
+    def shared_gateway_deployment_set(self) -> frozenset[str]:
+        return frozenset(_csv_items(self.shared_gateway_deployments))
+
+    @property
     def model_gateway_allowed_host_set(self) -> set[str]:
         return set(
             _csv_items(
@@ -1054,6 +1062,12 @@ class Settings(BaseSettings):
             "claudeMessages": self.shared_gateway_claude_messages_enabled,
             "videoJobs": self.shared_gateway_video_jobs_enabled,
         }
+        opted_in = self.shared_gateway_deployment_set
+        if opted_in and (not self.shared_gateway_enabled or self.chat_pilot_isolation_enabled):
+            raise RuntimeError(
+                "AI4IA_SHARED_GATEWAY_DEPLOYMENTS requires AI4IA_SHARED_GATEWAY_ENABLED=true "
+                "outside the isolated chat pilot."
+            )
         if not self.shared_gateway_enabled and not any(requested.values()):
             return
         if self.env == Environment.local or self.auth_provider != AuthProviderKind.entra:
@@ -1076,8 +1090,61 @@ class Settings(BaseSettings):
                     or not manifest.capabilities[name].enabled
                 ):
                     raise ValueError(f"Shared gateway {name} capability is unavailable.")
+            if self.shared_gateway_enabled and not self.chat_pilot_isolation_enabled:
+                self._validate_shared_gateway_deployments(manifest)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
+
+    def _validate_shared_gateway_deployments(self, manifest) -> None:
+        """Enabled non-pilot mode needs an explicit opt-in list whose every entry
+        resolves to exactly one manifest model key."""
+        opted_in = self.shared_gateway_deployment_set
+        if not opted_in:
+            raise ValueError(
+                "AI4IA_SHARED_GATEWAY_ENABLED requires an explicit "
+                "AI4IA_SHARED_GATEWAY_DEPLOYMENTS opt-in list."
+            )
+        unresolved = manifest.unresolved_opt_ins(opted_in)
+        if unresolved:
+            raise ValueError(
+                f"Shared gateway opt-in deployment {unresolved[0]!r} is not in the manifest."
+            )
+
+    def validate_shared_gateway_catalog(self) -> None:
+        """Startup check: every opted-in deployment is a catalog chat/Responses
+        deployment whose exact SKU and operation resolve in the manifest."""
+        if not self.shared_gateway_enabled or self.chat_pilot_isolation_enabled:
+            return
+        from .catalog import load_catalog
+        from .shared_gateway_contract import load_shared_gateway_manifest
+
+        manifest = load_shared_gateway_manifest(
+            self.shared_gateway_activation_manifest,
+            api_identity_client_id=self.api_identity_client_id,
+        )
+        catalog = load_catalog(
+            self.model_catalog_path, self.data_residency, self.claude_runtime_enabled
+        )
+        for deployment in sorted(self.shared_gateway_deployment_set):
+            entry = catalog.for_deployment(deployment)
+            options = [
+                option for option in (catalog.eligible_options(entry) if entry else [])
+                if option.deploymentName == deployment
+            ]
+            path = {"chat": "/chat/completions", "responses": "/responses"}.get(
+                entry.api if entry else ""
+            )
+            if (
+                entry is None
+                or not entry.conversational
+                or path is None
+                or len(options) != 1
+                or manifest.resolve_shared_model_key(deployment, options[0].sku, path) is None
+            ):
+                raise RuntimeError(
+                    f"Shared gateway opt-in deployment {deployment!r} does not resolve to "
+                    "an eligible catalog chat/Responses deployment in the manifest."
+                )
 
     def _validate_model_gateway_posture(self) -> None:
         """Require the deployed HTTP/SSE path to terminate at SimpleL7Proxy."""
@@ -1503,6 +1570,7 @@ class Settings(BaseSettings):
                 "AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key|bearer."
             )
         self.validate_shared_gateway()
+        self.validate_shared_gateway_catalog()
         if not pilot_shared_only:
             self._validate_model_gateway_posture()
         self.validate_gateway_attempts_v1()

@@ -135,6 +135,41 @@ def _write_parameters(tmpdir: str, overrides: dict[str, Any]) -> Path:
     return path
 
 
+def _lane_manifest(status: str) -> dict[str, Any]:
+    """Synthetic 2.2.0 lane manifest built from the pinned schema-only example."""
+    example = ROOT / "app" / "api" / "tests" / "shared_gateway_v21.example.json"
+    value = json.loads(example.read_text(encoding="utf-8"))
+    host = "gateway.example.invalid"
+    value["contractVersion"] = "2.2.0"
+    value["status"] = status
+    if status == "resolved":
+        host = "gateway.test"
+        tenant = "11111111-2222-4333-8444-555555555555"
+        value["auth"] = {
+            "tenantId": tenant,
+            "issuer": f"https://login.microsoftonline.com/{tenant}/v2.0",
+            "audience": "api://synthetic-gateway",
+            "scope": "api://synthetic-gateway/.default",
+            "accessTokenVersion": 2,
+            "callerClientId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "credential": "managed-identity",
+        }
+    value["gateway"] = {
+        "baseUrl": f"https://{host}/ai4ia-prod/v1",
+        "allowedHosts": [host],
+        "pathPrefix": "/ai4ia-prod/v1",
+    }
+    for capability in value["capabilities"].values():
+        capability["enabled"] = False
+        capability["models"] = {}
+    value["models"] = {"synthetic-deployment": {
+        "kind": "deployment-name",
+        "operations": ["/chat/completions", "/responses"],
+        "targets": [{"deployment": "Synthetic-Deployment", "sku": "GlobalStandard"}],
+    }}
+    return value
+
+
 class GroupPolicyPrerequisiteTests(unittest.TestCase):
     def test_group_policy_and_publication_are_unconfigured_by_default(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
@@ -408,6 +443,14 @@ class CommittedParametersTests(unittest.TestCase):
             parameters["sharedGatewayActivationManifestBase64"]["value"],
             "${AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64=}",
         )
+        self.assertEqual(
+            parameters["sharedGatewayDeployments"]["value"],
+            "${AI4IA_SHARED_GATEWAY_DEPLOYMENTS=}",
+        )
+        self.assertEqual(
+            parameters["apiActiveRevisionsMode"]["value"],
+            "${AI4IA_API_ACTIVE_REVISIONS_MODE=Single}",
+        )
         with tempfile.TemporaryDirectory() as tmp, _environment():
             code, _, err = _run(REAL_PARAMETERS)
             self.assertEqual(code, 0, err)
@@ -438,6 +481,41 @@ class CommittedParametersTests(unittest.TestCase):
             }))
         self.assertEqual(code, 1)
         self.assertIn("requires apiNetworkPhase=private", err)
+
+    def test_shared_gateway_admits_only_resolved_manifest_and_valid_opt_in(self) -> None:
+        def run(status: str, deployments: str | None, *, enabled: bool = True):
+            overrides: dict[str, Any] = {
+                "sharedGatewayEnabled": enabled,
+                "apiNetworkPhase": "private",
+                "apiPrivateVnetPrefix": "10.230.0.0/25",
+                "apiPrivateSubnetPrefix": "10.230.0.0/26",
+                "cosmosPrivateEndpointSubnetPrefix": "10.230.0.64/27",
+                "sharedGatewayActivationManifestBase64": encode(
+                    json.dumps(_lane_manifest(status))
+                ),
+            }
+            if deployments is not None:
+                overrides["sharedGatewayDeployments"] = deployments
+            with tempfile.TemporaryDirectory() as tmp, _environment(**PROD_ENV):
+                return _run(_write_parameters(tmp, overrides))
+
+        code, _, err = run("resolved", "Synthetic-Deployment")
+        self.assertEqual(code, 0, err)
+        cases = [
+            (("schema-only", "Synthetic-Deployment"), "resolved manifest is required"),
+            (("resolved", None), "non-empty sharedGatewayDeployments"),
+            (("resolved", " , "), "non-empty sharedGatewayDeployments"),
+            (("resolved", "synthetic-deployment"), "'synthetic-deployment' is not in the manifest"),
+            (("resolved", "Synthetic-Deployment,Other"), "'Other' is not in the manifest"),
+        ]
+        for args, message in cases:
+            with self.subTest(args=args):
+                code, _, err = run(*args)
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+        code, _, err = run("resolved", "Synthetic-Deployment", enabled=False)
+        self.assertEqual(code, 1)
+        self.assertIn("sharedGatewayDeployments requires sharedGatewayEnabled=true", err)
 
     def test_hard_quota_default_off_and_activation_requires_a_selected_rollout(self) -> None:
         parameters = json.loads(REAL_PARAMETERS.read_text(encoding="utf-8"))["parameters"]
