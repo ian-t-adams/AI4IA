@@ -769,11 +769,11 @@ executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED`,
 GitHub Actions repository variables and the activation manifest from a GitHub
 Actions secret; leave all five unset in production so the parameter defaults
 remain false, empty, `Single` and empty. Validation refuses `Multiple` unless
-`AI4IA_API_TRAFFIC_REVISION_NAME` names the exact serving revision; the template
-then emits only that revision at 100% traffic (never `latestRevision`), so an
-accidental provision during a staged cutover cannot shift serving traffic.
-The pin does not make provisioning safe otherwise: it still creates a revision
-and may change other settings. Any production staged cutover (Multiple
+`AI4IA_API_TRAFFIC_REVISION_NAME` has a revision-name-shaped value; validation
+does not check the actual serving revision. The template emits the supplied
+name at 100% (never `latestRevision`). A provision can change a traffic split
+or send traffic to a stale pin; it may also create a revision and change other
+settings. Any production staged cutover (Multiple
 revision mode, a labelled 0% revision, then traffic shifts) requires a
 separately approved plan with the deploy workflow frozen for its duration,
 because a provision or deploy creates a new revision from the template. Do not configure production values or use this workflow for a
@@ -849,12 +849,10 @@ images, identities and secrets:
 ```
 
 Once C1 has completed and fresh readback confirms unchanged template, image,
-latest/ready identity and named R0=100 traffic, capture new snapshots. Before
-any later provision, the persisted desired configuration must match: repository
-variables `AI4IA_API_ACTIVE_REVISIONS_MODE=Multiple` and
-`AI4IA_API_TRAFFIC_REVISION_NAME=<R0>` (otherwise a `Single` provision collapses
-to one revision). After
-separately approved manifest-secret setup, construct C3:
+latest/ready identity and named R0=100 traffic, capture new snapshots. Keep the
+pipeline frozen: a subsequent provision with a stale pin, a Single-mode
+setting, or any mismatch with the intended serving state can change traffic.
+After separately approved manifest-secret setup, construct C3:
 
 ```powershell
 python scripts\prepare-gateway-cutover.py --stage C3 --app app-before.json --revision r0-before.json --resource-id $resourceId --suffix gw22s1 --deployments opt-in.stage1.txt --manifest resolved-production.json --output c3.patch.json

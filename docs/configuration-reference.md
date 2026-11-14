@@ -320,10 +320,12 @@ OFF fails validation. Empty (the default) emits no variable.
 `Single`. `Multiple` exists only for a reviewed staged traffic cutover while
 the deploy pipeline is frozen; see the feature-enablement runbook.
 `AI4IA_API_TRAFFIC_REVISION_NAME` (Bicep `apiTrafficRevisionName`) is required
-with `Multiple` and must be empty with `Single`. It names the exact serving
-revision; provisioning then emits only that revision at 100% traffic and never
-a `latestRevision` rule, so a re-provision cannot shift traffic to a newer
-revision. Validation refuses `Multiple` without it.
+with `Multiple` and must be empty with `Single`. In Multiple mode the template
+specifies that name at 100% traffic and never emits a `latestRevision` rule.
+Validation checks the name's format, not whether it is the intended or current
+serving revision. A provision can change an existing split or send traffic to a
+stale pin. Keep the workflow frozen until a separately reviewed reconciliation;
+the pin is not evidence of Azure's atomic transition behavior.
 
 Onboarding dependency: `gateway.baseUrl` must identify a reachable,
 dedicated bearer-validating SimpleL7Proxy, not APIM and not AI4IA's existing
