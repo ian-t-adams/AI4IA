@@ -13,6 +13,7 @@ from ai4ia_api.decisions import DecisionExecution, DecisionRequest
 from ai4ia_api.gateway.client import ModelGatewayClient
 from ai4ia_api.main import create_app
 from ai4ia_api.usage.models import cost_bearing_attempt
+from tests.test_shared_gateway_staging import _manifest, _settings as shared_gateway_settings
 from tests.conftest import FakeUsage, make_settings
 
 MODEL = "Microsoft-Decision-1"
@@ -227,6 +228,34 @@ async def test_decision_is_never_dispatched_as_a_chat_protocol(api):
                 messages=[{"role": "user", "content": "synthetic"}], api=api,
             )
     assert not native.calls
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.asyncio
+async def test_decision_keeps_existing_route_when_shared_gateway_is_toggled(enabled):
+    native = NativeTransport()
+    async def unexpected_token(_scope: str) -> str:
+        raise AssertionError("Decision routing must not request a shared gateway token")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(native.handle)) as http:
+        gateway = ModelGatewayClient(
+            shared_gateway_settings(enabled=enabled, manifest=_manifest()),
+            http,
+            shared_gateway_token_provider=unexpected_token,
+        )
+        result = await gateway.decide(
+            deployment=DEPLOYMENT,
+            request=DecisionRequest.model_validate(BODY),
+            execution=DecisionExecution(),
+        )
+
+    assert result["answers"] == NATIVE["answers"]
+    assert len(native.calls) == 1
+    assert native.calls[0].method == "POST"
+    assert native.calls[0].url == (
+        f"https://existing-gateway.example.invalid/deployments/{DEPLOYMENT}/systemone"
+    )
+    assert "authorization" not in native.calls[0].headers
 
 
 def test_authentication_and_disabled_account(rig):

@@ -464,6 +464,23 @@
           "Microsoft.IdentityModel.Abstractions": "8.23.0"
         }
       },
+      "Microsoft.IdentityModel.Protocols": {
+        "type": "Transitive",
+        "resolved": "8.23.0",
+        "contentHash": "wQxyMdH/9Q25/kF7B56YgyqEaUBXJEQ5IY0TEKNH3oAPewNxVOl0ENuaKu0sazR0kw4owQDDSF+AvWcEFEvo2g==",
+        "dependencies": {
+          "Microsoft.IdentityModel.Tokens": "8.23.0"
+        }
+      },
+      "Microsoft.IdentityModel.Protocols.OpenIdConnect": {
+        "type": "Transitive",
+        "resolved": "8.23.0",
+        "contentHash": "QvvFeTznlWHZ7w3aE4cJ+Ln2BnKzKleVG+H7ywiNcQtGUWmo2XS3LJDizpTyv9N0b8FDWYOnvWAxNynaJapwMQ==",
+        "dependencies": {
+          "Microsoft.IdentityModel.Protocols": "8.23.0",
+          "System.IdentityModel.Tokens.Jwt": "8.23.0"
+        }
+      },
       "Microsoft.IdentityModel.Tokens": {
         "type": "Transitive",
         "resolved": "8.23.0",
@@ -618,6 +635,15 @@
           "System.Memory.Data": "10.0.10"
         }
       },
+      "System.IdentityModel.Tokens.Jwt": {
+        "type": "Transitive",
+        "resolved": "8.23.0",
+        "contentHash": "mUuRjk0KKvF3dlF7CKcnjHn/4TFaWRDGjDRtn1rACitoIflv96apfLD9KPDisyCEuc/0ierocnHCvIXBvCL4Sw==",
+        "dependencies": {
+          "Microsoft.IdentityModel.JsonWebTokens": "8.23.0",
+          "Microsoft.IdentityModel.Tokens": "8.23.0"
+        }
+      },
       "System.IO.Hashing": {
         "type": "Transitive",
         "resolved": "10.0.9",
@@ -661,6 +687,7 @@
           "Microsoft.ApplicationInsights.WorkerService": "[3.2.0, )",
           "Microsoft.Extensions.Configuration.AzureAppConfiguration": "[8.6.1, )",
           "Microsoft.IdentityModel.JsonWebTokens": "[8.23.0, )",
+          "Microsoft.IdentityModel.Protocols.OpenIdConnect": "[8.23.0, )",
           "Microsoft.IdentityModel.Tokens": "[8.23.0, )",
           "OpenTelemetry": "[1.20.1, )",
           "Shared": "[1.0.0, )",

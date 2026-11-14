@@ -727,6 +727,269 @@ acceptance case rather than adding a retry/probe loop.
 
 ## Enablement notes
 
+### Shared gateway canary
+
+The [shared-gateway configuration reference](../configuration-reference.md#shared-gateway-canary-default-off)
+documents the default-OFF stateless selector, manifest requirements, exclusions,
+retry/timeout/cancellation contract and rollback. Do not set
+`AI4IA_SHARED_GATEWAY_ENABLED=true` until the gateway owner has supplied the
+resolved v2 manifest, synthetic authentication/routing/SSE proof is complete,
+and the canary environment and deployment plan have separate operator approval.
+The preprovision validator rejects an enabled flag without a resolved manifest
+(schema-only fixtures load but cannot enable routing), requires
+`apiNetworkPhase=private`, and outside the pilot requires a non-empty
+`AI4IA_SHARED_GATEWAY_DEPLOYMENTS` whose every name resolves in the manifest;
+a list with the flag off is rejected. API startup rechecks the contract, the
+opt-in list against the model catalog, and the caller managed-identity client
+ID against the API's existing `AZURE_CLIENT_ID`.
+
+The resolved manifest's `gateway.baseUrl` must be the reachable dedicated
+bearer-validating SimpleL7Proxy endpoint. It must not point directly to APIM or
+AI4IA's existing key-only proxy. Gateway PR #2 source includes a hub-hosted
+proxy option configured to validate the caller MI token/audience and allowlist
+the caller client ID, then use a separate proxy UAMI for APIM. AI4IA does not
+duplicate that proxy. This source
+configuration is not proof that the mutable image configured for deployment
+contains or loads the same behavior: `UserConfigRequired=false` means
+readiness alone does not prove that the caller allowlist loaded. Verify the
+exact image provenance and effective loaded auth configuration before treating
+caller validation or allowlisting as established. Do not infer the upstream
+image's behavior from AI4IA's vendored fork. The current v2 global APIM policy
+accepts only the shared proxy UAMI. The gateway owner is working on an
+app-facing v2 protocol backed by the existing Catalog 3 partition policy; its
+exact compatible source and runtime
+behavior remain pending. Proxy deployment, exact caller allowlist and APIM
+access, and cross-VNet routing/DNS remain separate dependencies; do not fill
+them with guessed values or retrofit the existing key-only proxy as a fallback.
+
+The current `deploy.yml` is production-scoped and is not an approved canary
+executor. It reads `AI4IA_SHARED_GATEWAY_ENABLED`,
+`AI4IA_SHARED_GATEWAY_DEPLOYMENTS`, `AI4IA_API_ACTIVE_REVISIONS_MODE` and
+`AI4IA_API_TRAFFIC_REVISION_NAME` from
+GitHub Actions repository variables and the activation manifest from a GitHub
+Actions secret; leave all five unset in production so the parameter defaults
+remain false, empty, `Single` and empty. Validation refuses `Multiple` unless
+`AI4IA_API_TRAFFIC_REVISION_NAME` has a revision-name-shaped value; validation
+does not check the actual serving revision. The template emits the supplied
+name at 100% (never `latestRevision`). A provision can change a traffic split
+or send traffic to a stale pin; it may also create a revision and change other
+settings. Any production staged cutover (Multiple
+revision mode, a labelled 0% revision, then traffic shifts) requires a
+separately approved plan with the deploy workflow frozen for its duration,
+because a provision or deploy creates a new revision from the template. Do not configure production values or use this workflow for a
+canary. The reviewed plan must name the operator and rollback owner. Execution
+remains held for coordinator review of the exact candidate and sequencing and
+completion of the independent safety gates; this text is not execution approval.
+The isolated-`azd` example is only for a separately approved isolated test
+environment; it does not authorize use of either existing API app. Do not use
+whole-estate `azd provision` for that pilot. Any pilot must use a separately
+provisioned and reviewed API target; neither existing legacy nor web-serving
+private API app may be selected or modified. Keep both untouched. A distinct,
+separately authorized serving-app change would require capturing its exact
+known-good serving revision, template, image and replica settings; it is not
+part of this pilot. For an isolated environment, the designated operator would
+set `AI4IA_SHARED_GATEWAY_ENABLED=true` and the private
+`AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST`, then run the approved operator
+provision. The preprovision hook derives the bounded secret transport and the
+validator rejects an incomplete/unresolved manifest before provisioning.
+Verify only through the separately approved synthetic canary. No production
+values are documented or inferred here. Normal, separately authorized non-pilot
+rollback follows its own reviewed configuration and revision procedure; it does
+not apply to this isolated pilot. Turning `AI4IA_SHARED_GATEWAY_ENABLED` off by
+itself is not a pilot rollback: `AI4IA_CHAT_PILOT_ISOLATION_ENABLED=true`
+requires the shared-gateway selector, so selector-off fails startup validation.
+Do not disable the isolation guard or route to a legacy service as a workaround.
+Under the reviewed pilot plan, isolate ingress and stop/remove the pilot, or
+restore a previously verified isolated revision after checking its actual ready
+serving revision. Revision copy does not revert identity attachments, secrets,
+APIM policy/access, or network changes; handle those separately under their
+reviewed rollback plans. Follow [automatic and manual rollback](deployment.md#automatic-and-manual-rollback).
+There is no silent fallback or hot in-process emergency bypass when the flag
+is on. Do not dispatch the production workflow, change settings, or send
+traffic without that approval.
+
+#### Production C1/C3 request preparation (offline only)
+
+`scripts/prepare-gateway-cutover.py` constructs, but never submits, a single
+Container Apps JSON Merge PATCH per step using API `2025-01-01`.
+This is not a deployment executor. The production workflow must remain frozen
+during a separately authorized cutover. No merge, cloud write, registry upload
+or runtime request is authorized by this section.
+
+The constructor requires matching app and healthy active R0 revision snapshots,
+with R0 both latest and latest-ready and identical templates. C1 requires
+`Single`; C3 requires `Multiple` with an explicit named R0 traffic rule.
+Ambiguous traffic, labels and stale/template-drifted snapshots are refused.
+
+After authorization, obtain fresh ARM GET snapshots at the same API version.
+Use the actual resource ID returned by discovery, not an invented identity:
+
+```powershell
+# Read-only capture; $resourceId and $r0 must come from reviewed discovery.
+$url = "https://management.azure.com${resourceId}?api-version=2025-01-01"
+az rest --method get --url $url --subscription $sub --output json |
+  Set-Content -Encoding utf8 app-before.json
+az rest --method get --url "https://management.azure.com${resourceId}/revisions/${r0}?api-version=2025-01-01" --subscription $sub --output json |
+  Set-Content -Encoding utf8 r0-before.json
+
+# These Python commands perform no network access.
+python scripts\prepare-gateway-cutover.py --stage C1 --app app-before.json --revision r0-before.json --resource-id $resourceId --output c1.patch.json
+```
+
+C1 contains `location` and only this properties fragment; it omits `template`,
+images, identities and secrets:
+
+```json
+{
+  "configuration": {
+    "activeRevisionsMode": "Multiple",
+    "ingress": {"traffic": [{"revisionName": "<R0>", "weight": 100}]}
+  }
+}
+```
+
+Once C1 has completed and fresh readback confirms unchanged template, image,
+latest/ready identity and named R0=100 traffic, capture new snapshots. Keep the
+pipeline frozen: a subsequent provision with a stale pin, a Single-mode
+setting, or any mismatch with the intended serving state can change traffic.
+After separately approved manifest-secret setup, construct C3:
+
+```powershell
+python scripts\prepare-gateway-cutover.py --stage C3 --app app-before.json --revision r0-before.json --resource-id $resourceId --suffix gw22s1 --deployments opt-in.stage1.txt --manifest resolved-production.json --output c3.patch.json
+```
+
+C3 repeats the same explicit R0=100 rule, with no `latestRevision` property,
+and copies the full R0 template. It changes only `revisionSuffix` and the three
+shared-gateway environment entries. All other env entries, secret references,
+resources, probes, scale and image digest are preserved. The manifest must be
+resolved 2.2.0, match the API's caller identity and resolve every exact opt-in.
+The existing manifest secret must be present. Its **value** is not read or
+compared by this tool: secure transport/value reconciliation and catalog
+startup validation remain separate prerequisites. Ensure the suffix is unused
+across all revisions before approval. Snapshot and payload files may contain
+sensitive inherited env values; keep them private, never commit or log them.
+
+The exact submission shape, **not authorized to execute**, is:
+
+```powershell
+az rest --method patch --url $url --subscription $sub --headers "Content-Type=application/json" --body "@c1.patch.json"
+# After successful C1 completion/readback, secret setup, fresh capture and C3 review:
+az rest --method patch --url $url --subscription $sub --headers "Content-Type=application/json" --body "@c3.patch.json"
+```
+
+Do not substitute a PUT, whole-estate provision, or sequential update/traffic-set
+pair. Inspect and hash each exact payload; re-read before submission and stop if
+the app differs. The API does not document an If-Match precondition here; the
+freeze is necessary and this tool does not prevent concurrent writers.
+For HTTP 202, the operator must wait for the returned operation to complete
+before fresh GET/readback or proceeding.
+
+Offline tests prove request content and RFC 7396 merge semantics: C1 preserves
+the template and C3 changes only the intended env/suffix while traffic remains
+named R0=100. They **do not prove Azure's internal atomic transition or runtime
+zero-traffic behavior**. C1/C3 remain execution-gated on review of the actual
+payload, service behavior and Ian's authorization. Verify post-C3 R1 latest/ready,
+R0 healthy/active and still 100%, R1 absent from traffic, no latest rule, exact
+same image and intended template diff before labeling or testing. A later
+traffic correction is not proof of initial zero traffic. Gateway actual-value,
+network/auth, token-limit and separately counted runtime checks remain gates.
+
+Reference: [Container Apps Update, API 2025-01-01](https://learn.microsoft.com/rest/api/resource-manager/containerapps/container-apps/update?view=rest-resource-manager-containerapps-2025-01-01).
+
+#### Candidate isolated chat-API pilot shape (not approved)
+
+The pilot must not replace or receive traffic from the serving single revision.
+The `AI4IA_PRIVATE_RECOVERY_CANDIDATE` posture is not a chat pilot: its
+middleware rejects `POST /api/chat`. A copied API Bicep deployment is not
+isolated by default either; it exposes ingress and starts at one replica. Use a
+separately reviewed, chat-capable API Container App with no web/domain binding
+or production traffic weight, and restrict ingress to an explicitly approved
+synthetic caller. Do not use the private recovery candidate as a shortcut or
+change the active or legacy API's serving revision.
+
+This shape is only a deployment proposal. Before any write, review and bind
+these effects to exact resources and a rollback owner:
+
+The API source now has a default-OFF `AI4IA_CHAT_PILOT_ISOLATION_ENABLED`
+candidate guard. It is not wired by normal Bicep and is not sufficient to make a
+clone safe: when enabled, it rejects startup unless the app is dev/Entra-backed,
+uses process-local sessions and disabled semantic memory, has no external data
+store or telemetry endpoints, and has the existing resolved shared-gateway
+contract. It also requires legacy model-gateway authentication to be disabled
+(`AI4IA_MODEL_GATEWAY_AUTH_MODE=none`, no API key) and skips the legacy
+`/openai` posture check only in this mode. Eligible chat is sent only through the
+resolved shared-gateway manifest; dispatch guards refuse rather than fall back.
+Ordinary mode keeps the SimpleL7Proxy `/openai` validation unchanged. It also
+disables document recovery, durable workers, and other
+non-chat capabilities; only health, model catalog, session create/list/read/messages,
+and plain tool-free `POST /api/chat` are exposed. These controls are source
+guards, not ingress/egress firewalls, separate identity/RBAC, or a proof that
+the mutable image contains the code. A normal Bicep clone still targets Cosmos
+and shares the API identity's existing permissions. Do not select either
+existing API app as a pilot target. The source startup guard rejects
+`WEB_CONCURRENCY` unless it is `1`, but it cannot prove the ACA replica ceiling,
+prevent an explicit command-line worker override, or exclude another serving
+revision. Process-local sessions are lost on restart; any restart or revision
+switch requires an independently reviewed drain/session-loss plan. The current
+templates do not define or verify the dedicated internal environment, ingress
+and DNS, or private egress boundary; `external=false` alone does not establish
+private cross-environment access.
+
+The pilot Entra gate requires operator-supplied `AI4IA_CHAT_PILOT_ALLOWED_OID`
+and `AI4IA_CHAT_PILOT_ALLOWED_AZP` GUIDs; there is no OID default or identity
+inference. Use a separate single-tenant pilot SPA registration, setting the
+isolated web runtime's `ENTRA_CLIENT_ID` and API `AI4IA_CHAT_PILOT_ALLOWED_AZP`
+to that same client ID. Register only the exact pilot HTTPS redirect URI and
+grant the minimum delegated consent; do not edit the production SPA's redirect
+list or apply tenant-wide admin consent. It validates the exact configured
+`oid` and `tid`, tenant-matching
+issuer, `ver=2.0`, v2 API-client-ID `aud`, the configured web-client `azp`, and
+the delegated `access_as_user` scope. It rejects `sub` fallback and app-only
+tokens. Registration metadata and the deployed web scope/client settings
+establish intended configuration only; no real token was captured, and no
+approved pilot OID is configured. The candidate therefore cannot currently
+admit a pilot user.
+
+| Change | Required boundary and effects | Interruption risk and rollback |
+| --- | --- | --- |
+| Pilot API app and configuration | Create one separate API app from an approved immutable image; apply `AI4IA_SHARED_GATEWAY_ENABLED=true` and the exact reviewed resolved manifest only there. Pilot v2.0 parsing rejects duplicate JSON keys. The pilot requires exactly one alias equal to one catalog model ID, one deployment/SKU target, and only `POST /chat/completions`; extra aliases, SKUs, Responses operations, or direct-name bindings fail closed. `/api/models` uses that exact model-ID/deployment/SKU mapping and dispatch rechecks it. No client schema, web URL, custom domain, serving traffic or production setting changes. Explicitly restrict ingress, scaling, worker/automation capabilities, diagnostics and attached credentials; normal API Bicep defaults do not prove zero user traffic. The pilot client disables environment-proxy discovery and startup rejects proxy environment variables, but this does not prove private egress for other SDKs or the hosting platform. | A separate app avoids replacing the serving Single-mode revision, but an exposed endpoint or inherited worker/credential can still admit unintended work. Under the reviewed pilot rollback plan, isolate ingress and stop/remove only the pilot app after test-data disposition, or restore a previously verified isolated revision. Selector-off alone fails pilot startup validation; do not disable the isolation guard or route to a legacy service as a workaround. Identity, APIM, and network rollback remain separate reviewed actions. |
+| Caller identity and data | Use a separately reviewed caller identity with proven narrow RBAC; do not reuse the serving API identity, introduce an unverified caller-identity override, or accept client-supplied identity headers. Normal API Bicep hardcodes `AI4IA_SESSION_STORE=cosmos`; a clone therefore is not an in-memory or isolated store. Use an independently approved test database and narrowly scoped data access, or a separately reviewed test-store implementation; do not silently point the pilot at production Cosmos. Isolate other canonical/derived stores and owner data as well. Chat requests persist conversation data and model calls are billable even with zero user traffic. | An identity/configuration error can affect any resource the identity can access. Remove only the pilot app's attachment/configuration; do not assume copying an API revision rolls identity back. Delete only approved synthetic test data through its owner-scoped procedure. |
+| Dedicated proxy and APIM partition | Reuse the gateway-owned dedicated bearer-validating S7P source; do not create an AI4IA proxy fork. The reviewed gateway input must retain the existing shared Catalog 3 partition/routes and add only the approved AI4IA partition. It creates a dedicated proxy UAMI and app, partition APIM identity/secret references and narrowly scoped model roles, plus an APIM policy/service identity update. Exact policy, routes, IDs, model subset and ingress CIDR remain unresolved. | The APIM service identity/policy is shared infrastructure; a mistaken partition or policy update can interrupt existing gateway consumers. Capture exact prior policy and identity state; restore those gateway-owned resources under their change procedure and verify both partitions. API revision rollback alone does not undo these changes or role assignments. |
+| Private network and test access | Establish and verify the exact private API-to-proxy path, DNS, ingress and egress restrictions. Current source evidence does not establish VNet reachability; do not infer it from public ingress or a hostname. Keep these options distinct: an ACA private endpoint targets the whole managed environment and requires public network access disabled; Dedicated Plan Management is charged in addition to Private Link, including for a Consumption workload-profile environment. An internal VNet-integrated ACA environment with private DNS is a separate design and does not itself imply a private endpoint. Cost is unverified until the current region/rate and billing mapping are checked; do not sum meters or assert a price. Environment-scoped `Microsoft.App/managedEnvironments/httpRouteConfigs/write` can target any app in that environment, including one with `external=false`, without permission on the target app, and may create an external entry point where the environment/network allows. A momentary absence of routes is not durable isolation. Effective/inherited route-writer RBAC, route-change governance and inbound network controls require review; actual routes, RBAC and network state are unknown. Caller admission and the web-to-API path remain open gates for either design. No web configuration is changed. | Routing/DNS changes can interrupt existing private dependencies. Capture exact pre-state and use a reviewed, scoped rollback; do not add guessed peering, CIDRs or public fallback. |
+
+No separate test job is equivalent unless it exercises the same API deployment,
+identity and storage boundary. A separately scoped, default-OFF web
+compatibility path now exists: it creates sessions with `toolsEnabled=false`,
+sends `allowTools=false` and `allowAutomaticMemory=false`, and blocks unsupported
+UI/API paths. It does not choose or verify its backend. A deployment must pair
+`CHAT_PILOT_UI_ENABLED=true` with the separately approved HTTPS pilot
+`API_BASE_URL` and exact `CHAT_PILOT_API_ALLOWED_HOST` for an ACA internal
+FQDN (`*.internal.*.azurecontainerapps.io`). The web route refuses
+missing/mismatched or non-internal host pins before fetch and refuses upstream
+3xx without retrying or forwarding redirect headers. The hostname must be
+selected only after the internal API target is verified. The web auth scope is unchanged;
+configured registration values establish the intended API audience,
+delegated scope, and web client, but no real access token was captured and the
+approved pilot user OID remains unavailable. Flag-off against the pilot still
+fails the API guard; flag-on against an ordinary API only sends request denials
+and does not create an isolated pilot. The path is not a UI cutover or readiness
+claim. Process-local sessions are lost on API restart, and isolation,
+identity/admission, endpoint, and rollback gates remain open.
+Do not weaken the API guard or change deployed routing. Synthetic API callers
+must explicitly disable tools and automatic memory. Keep
+request/response capture disabled. The offline
+MockTransport matrix validates only AI4IA's request and caller-visible error
+boundaries; live tests would be a separately approved, small, billable synthetic
+acceptance on this isolated app, never a user canary or a substitute for verified
+APIM/S7P policy and network evidence.
+
+Do not change the shared factory base URL, use profile headers as user identity
+proof, reuse automatic-memory consent, or provision a review sink. The Settings
+notice is an unavailable-state disclosure, not saved opt-in or live capture
+evidence. Review/study capture and user attribution remain unavailable pending
+separate verified identity, global-deny, consent, reviewer and retention
+controls.
+
 ### Group policy and reviewed publishing
 
 These are source capabilities, not an approved live identity configuration.

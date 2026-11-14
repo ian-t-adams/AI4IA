@@ -12,9 +12,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 from functools import lru_cache
+import os
 import re
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+from uuid import UUID
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -110,6 +112,11 @@ class Settings(BaseSettings):
     env: Environment = Environment.local
     private_recovery_candidate: bool = False
     private_cosmos_required: bool = False
+    # Default-off source guard for a dev-only shared-gateway chat pilot. This
+    # requires process-local state and rejects inherited effectful features.
+    chat_pilot_isolation_enabled: bool = False
+    chat_pilot_allowed_oid: str | None = None
+    chat_pilot_allowed_azp: str | None = None
 
     # --- Auth ---
     auth_provider: AuthProviderKind = AuthProviderKind.dev
@@ -134,6 +141,21 @@ class Settings(BaseSettings):
     gateway_provider_style: GatewayProviderStyle = GatewayProviderStyle.azure_openai_native
     gateway_api_version: str = "2025-04-01-preview"
     gateway_timeout_seconds: float = 120.0
+    # Versioned, default-OFF stateless HTTP/SSE transport. The private manifest is
+    # required and validated before the selector can be enabled; capture remains
+    # unavailable in contract v2.
+    shared_gateway_enabled: bool = False
+    shared_gateway_claude_messages_enabled: bool = False
+    shared_gateway_video_jobs_enabled: bool = False
+    shared_gateway_activation_manifest: str | None = None
+    # Explicit comma-separated opt-in of exact catalog deployment names for
+    # non-pilot shared routing. Unlisted deployments, and stateful Responses,
+    # deliberately stay on the legacy proxy. Must be empty when the selector is off.
+    shared_gateway_deployments: str | None = None
+    api_identity_client_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AZURE_CLIENT_ID"),
+    )
     # Staging is not capability issuance or runtime selection.
     gateway_attempts_v1_staged: bool = False
     # Image generation has its own api-version + timeout: image models
@@ -805,6 +827,10 @@ class Settings(BaseSettings):
         return self.claude_enabled and (self.claude_external_enabled != self.claude_gateway_enabled)
 
     @property
+    def shared_gateway_deployment_set(self) -> frozenset[str]:
+        return frozenset(_csv_items(self.shared_gateway_deployments))
+
+    @property
     def model_gateway_allowed_host_set(self) -> set[str]:
         return set(
             _csv_items(
@@ -1029,6 +1055,96 @@ class Settings(BaseSettings):
             "library/access.py) before enabling multi-tenant auth, or run with a "
             "single tenant."
         )
+
+    def validate_shared_gateway(self) -> None:
+        """Validate the resolved, versioned shared gateway contract before selection."""
+        requested = {
+            "claudeMessages": self.shared_gateway_claude_messages_enabled,
+            "videoJobs": self.shared_gateway_video_jobs_enabled,
+        }
+        opted_in = self.shared_gateway_deployment_set
+        if opted_in and (not self.shared_gateway_enabled or self.chat_pilot_isolation_enabled):
+            raise RuntimeError(
+                "AI4IA_SHARED_GATEWAY_DEPLOYMENTS requires AI4IA_SHARED_GATEWAY_ENABLED=true "
+                "outside the isolated chat pilot."
+            )
+        if not self.shared_gateway_enabled and not any(requested.values()):
+            return
+        if self.env == Environment.local or self.auth_provider != AuthProviderKind.entra:
+            raise RuntimeError(
+                "Shared gateway routing requires a non-local Entra-authenticated API."
+            )
+        from .shared_gateway_contract import load_shared_gateway_manifest
+
+        try:
+            manifest = load_shared_gateway_manifest(
+                self.shared_gateway_activation_manifest,
+                api_identity_client_id=self.api_identity_client_id,
+                pilot_mode=self.chat_pilot_isolation_enabled,
+            )
+            if manifest.status != "resolved":
+                raise ValueError("Shared gateway routing requires a resolved manifest.")
+            for name, enabled in requested.items():
+                if enabled and (
+                    name not in manifest.capabilities
+                    or not manifest.capabilities[name].enabled
+                ):
+                    raise ValueError(f"Shared gateway {name} capability is unavailable.")
+            if self.shared_gateway_enabled and not self.chat_pilot_isolation_enabled:
+                self._validate_shared_gateway_deployments(manifest)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def _validate_shared_gateway_deployments(self, manifest) -> None:
+        """Enabled non-pilot mode needs an explicit opt-in list whose every entry
+        resolves to exactly one manifest model key."""
+        opted_in = self.shared_gateway_deployment_set
+        if not opted_in:
+            raise ValueError(
+                "AI4IA_SHARED_GATEWAY_ENABLED requires an explicit "
+                "AI4IA_SHARED_GATEWAY_DEPLOYMENTS opt-in list."
+            )
+        unresolved = manifest.unresolved_opt_ins(opted_in)
+        if unresolved:
+            raise ValueError(
+                f"Shared gateway opt-in deployment {unresolved[0]!r} is not in the manifest."
+            )
+
+    def validate_shared_gateway_catalog(self) -> None:
+        """Startup check: every opted-in deployment is a catalog chat/Responses
+        deployment whose exact SKU and operation resolve in the manifest."""
+        if not self.shared_gateway_enabled or self.chat_pilot_isolation_enabled:
+            return
+        from .catalog import load_catalog
+        from .shared_gateway_contract import load_shared_gateway_manifest
+
+        manifest = load_shared_gateway_manifest(
+            self.shared_gateway_activation_manifest,
+            api_identity_client_id=self.api_identity_client_id,
+        )
+        catalog = load_catalog(
+            self.model_catalog_path, self.data_residency, self.claude_runtime_enabled
+        )
+        for deployment in sorted(self.shared_gateway_deployment_set):
+            entry = catalog.for_deployment(deployment)
+            options = [
+                option for option in (catalog.eligible_options(entry) if entry else [])
+                if option.deploymentName == deployment
+            ]
+            path = {"chat": "/chat/completions", "responses": "/responses"}.get(
+                entry.api if entry else ""
+            )
+            if (
+                entry is None
+                or not entry.conversational
+                or path is None
+                or len(options) != 1
+                or manifest.resolve_shared_model_key(deployment, options[0].sku, path) is None
+            ):
+                raise RuntimeError(
+                    f"Shared gateway opt-in deployment {deployment!r} does not resolve to "
+                    "an eligible catalog chat/Responses deployment in the manifest."
+                )
 
     def _validate_model_gateway_posture(self) -> None:
         """Require the deployed HTTP/SSE path to terminate at SimpleL7Proxy."""
@@ -1255,8 +1371,146 @@ class Settings(BaseSettings):
                 "AI4IA_PHOTO_AVATARS_ENABLED requires usage metering so every creation is recorded."
             )
 
+    def validate_chat_pilot_isolation(self) -> None:
+        """Require a process-local, chat-only configuration for the pilot."""
+        if not self.chat_pilot_isolation_enabled:
+            return
+
+        violations: list[str] = []
+        if self.env != Environment.dev:
+            violations.append("AI4IA_ENV=dev")
+        if self.auth_provider != AuthProviderKind.entra:
+            violations.append("AI4IA_AUTH_PROVIDER=entra")
+        for name, value in (
+            ("AI4IA_ENTRA_TENANT_ID", self.entra_tenant_id),
+            ("AI4IA_CHAT_PILOT_ALLOWED_OID", self.chat_pilot_allowed_oid),
+            ("AI4IA_CHAT_PILOT_ALLOWED_AZP", self.chat_pilot_allowed_azp),
+        ):
+            try:
+                UUID(value or "")
+            except ValueError:
+                violations.append(f"{name} must be an explicitly configured GUID")
+        pilot_audience = (self.entra_audience or "").removeprefix("api://")
+        try:
+            audience_id = UUID(pilot_audience)
+        except ValueError:
+            audience_id = None
+            violations.append(
+                "AI4IA_ENTRA_AUDIENCE must resolve to the API client-ID GUID"
+            )
+        try:
+            oid = UUID(self.chat_pilot_allowed_oid or "")
+            azp = UUID(self.chat_pilot_allowed_azp or "")
+        except ValueError:
+            oid = azp = None
+        if oid is not None and (oid == azp or oid == audience_id):
+            violations.append(
+                "AI4IA_CHAT_PILOT_ALLOWED_OID must differ from the API and web client IDs"
+            )
+        if self.session_store != SessionStoreKind.memory or self.cosmos_endpoint:
+            violations.append("process-local session and application stores")
+        if self.memory_store != MemoryStoreKind.disabled:
+            violations.append("AI4IA_MEMORY_STORE=disabled")
+        if not self.shared_gateway_enabled:
+            violations.append("AI4IA_SHARED_GATEWAY_ENABLED=true")
+        if self.model_gateway_auth_mode != GatewayAuthMode.none:
+            violations.append("AI4IA_MODEL_GATEWAY_AUTH_MODE=none")
+        if self.model_gateway_api_key:
+            violations.append("AI4IA_MODEL_GATEWAY_API_KEY unset")
+        proxy_vars = (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+            "http_proxy", "https_proxy", "all_proxy",
+        )
+        if any(os.environ.get(name) for name in proxy_vars):
+            violations.append("no HTTP(S)_PROXY or ALL_PROXY environment variables")
+        worker_override = os.environ.get("WEB_CONCURRENCY")
+        if worker_override not in (None, "", "1"):
+            violations.append("WEB_CONCURRENCY unset or set to 1")
+
+        disabled_features = (
+            "allow_dev_auth",
+            "private_recovery_candidate",
+            "private_cosmos_required",
+            "session_deletion_enabled",
+            "document_understanding_enabled",
+            "document_compute_enabled",
+            "inline_document_compute_enabled",
+            "image_generation_enabled",
+            "image_editing_enabled",
+            "photo_avatars_enabled",
+            "realtime_enabled",
+            "speech_voice_live_enabled",
+            "realtime_tools_enabled",
+            "custom_tools_enabled",
+            "official_mcp_enabled",
+            "web_search_enabled",
+            "durable_workflows_enabled",
+            "workflow_approvals_enabled",
+            "workflow_scheduling_enabled",
+            "auto_summarization_enabled",
+            "tool_auto_approve_enabled",
+            "user_directory_enabled",
+            "resource_metrics_enabled",
+            "entitlements_enabled",
+            "hard_quota_enabled",
+            "group_policy_enabled",
+            "asset_publishing_enabled",
+            "shared_gateway_claude_messages_enabled",
+            "shared_gateway_video_jobs_enabled",
+            "gateway_attempts_v1_staged",
+            "claude_enabled",
+            "claude_external_enabled",
+            "claude_gateway_enabled",
+        )
+        violations.extend(
+            f"AI4IA_{name.upper()}=false"
+            for name in disabled_features
+            if getattr(self, name)
+        )
+        if self.group_policy_json and self.group_policy_json.strip():
+            violations.append("no inherited group-policy configuration")
+
+        external_data_and_telemetry = (
+            "cosmos_endpoint",
+            "search_endpoint",
+            "document_blob_account_url",
+            "image_blob_account_url",
+            "photo_avatar_blob_account_url",
+            "cu_base_url",
+            "code_interpreter_base_url",
+            "webiq_base_url",
+            "durable_task_endpoint",
+            "official_mcp_gateway_url",
+            "custom_tools_secret_vault_uri",
+            "realtime_base_url",
+            "realtime_ga_base_url",
+            "speech_voice_live_base_url",
+            "applicationinsights_connection_string",
+            "metrics_endpoint",
+            "metrics_search_endpoint",
+            "metrics_search_resource_id",
+            "metrics_cosmos_resource_id",
+            "metrics_container_app_resource_id",
+            "log_analytics_workspace_id",
+            "log_analytics_workspace_resource_id",
+        )
+        violations.extend(
+            f"unset {name}"
+            for name in external_data_and_telemetry
+            if (value := getattr(self, name)) is not None
+            and (not isinstance(value, str) or value.strip())
+        )
+        if violations:
+            raise RuntimeError(
+                "AI4IA_CHAT_PILOT_ISOLATION_ENABLED requires "
+                + ", ".join(violations)
+                + ". No pilot side effects were started."
+            )
+
     def validate_runtime(self) -> None:
         """Enforce fail-closed invariants. Call at startup."""
+        self.validate_chat_pilot_isolation()
+        self.validate_shared_gateway()
         if self.claude_external_enabled and self.claude_gateway_enabled:
             raise RuntimeError("Claude gateway-key and federated authentication modes are mutually exclusive.")
         if self.claude_enabled and not (self.claude_external_enabled or self.claude_gateway_enabled):
@@ -1305,15 +1559,20 @@ class Settings(BaseSettings):
                     "AI4IA_TOOL_AUTO_APPROVE_ENABLED requires durable Cosmos session state outside local."
                 )
         self._validate_library_sharing_is_tenant_walled()
+        pilot_shared_only = self.chat_pilot_isolation_enabled
         if (
             self.env != Environment.local
             and self.model_gateway_auth_mode == GatewayAuthMode.none
+            and not pilot_shared_only
         ):
             raise RuntimeError(
                 "Model gateway auth must not be 'none' outside local. Configure "
                 "AI4IA_MODEL_GATEWAY_AUTH_MODE=api_key|bearer."
             )
-        self._validate_model_gateway_posture()
+        self.validate_shared_gateway()
+        self.validate_shared_gateway_catalog()
+        if not pilot_shared_only:
+            self._validate_model_gateway_posture()
         self.validate_gateway_attempts_v1()
         if (
             self.model_gateway_auth_mode == GatewayAuthMode.api_key

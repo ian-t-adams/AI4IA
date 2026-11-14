@@ -1437,6 +1437,23 @@ class GatewayPolicyTests(unittest.TestCase):
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_PRINCIPAL_ID",
         }
+        # The shared-gateway selector is reserved for an explicitly approved,
+        # isolated operator canary. Its production pipeline exports are still
+        # required for parameter reachability, but both must remain unset in
+        # production; the secret manifest must never be sourced from vars.
+        operator_canary = {
+            "AI4IA_SHARED_GATEWAY_ENABLED",
+            "AI4IA_SHARED_GATEWAY_DEPLOYMENTS",
+            "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
+        }
+        self.assertIn(
+            '"value": "${AI4IA_SHARED_GATEWAY_ENABLED=false}"',
+            params,
+        )
+        self.assertIn(
+            '"value": "${AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64=}"',
+            params,
+        )
         deploy_start = workflow.index("\n  deploy:\n")
         env_start = workflow.index("\n    env:\n", deploy_start)
         steps_start = workflow.index("\n    steps:\n", env_start)
@@ -1458,11 +1475,31 @@ class GatewayPolicyTests(unittest.TestCase):
         )
         derived = {transports[token] for token in tokens & set(transports)}
         missing = sorted((tokens - azd_native - set(transports) - exported) | (derived - exported))
+        missing = [token for token in missing if token not in operator_canary]
         self.assertEqual(
             missing,
             [],
             "main.parameters.json reads these but deploy.yml never exports them, so "
             f"they always take their placeholder default: {missing}",
+        )
+        self.assertTrue(operator_canary <= exported)
+        self.assertIn(
+            "AI4IA_SHARED_GATEWAY_ENABLED: ${{ vars.AI4IA_SHARED_GATEWAY_ENABLED }}",
+            deploy_env,
+        )
+        self.assertIn(
+            "AI4IA_SHARED_GATEWAY_DEPLOYMENTS: ${{ vars.AI4IA_SHARED_GATEWAY_DEPLOYMENTS }}",
+            deploy_env,
+        )
+        self.assertIn(
+            "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST: "
+            "${{ secrets.AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST }}",
+            deploy_env,
+        )
+        self.assertNotIn(
+            "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST: "
+            "${{ vars.AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST }}",
+            deploy_env,
         )
 
     def test_no_azd_parameter_export_shadows_its_parameter_file_default(self) -> None:

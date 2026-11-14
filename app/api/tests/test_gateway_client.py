@@ -12,6 +12,8 @@ from ai4ia_api.gateway.client import (
     _responses_json_to_chat,
     parse_sse_line,
 )
+from ai4ia_api.catalog import load_catalog
+from ai4ia_api.routers.chat import _effective_params
 from tests.conftest import make_settings
 
 
@@ -36,6 +38,20 @@ def test_openai_compatible_url_and_model_in_body():
     req = client.build_request(deployment="dep-1", messages=[{"role": "user", "content": "hi"}])
     assert req.url == "http://gw.test/openai/chat/completions"
     assert req.json["model"] == "dep-1"
+
+
+def test_ordinary_chat_keeps_catalog_output_default_without_pilot_ceiling():
+    profile = load_catalog().get("gpt-5.4-mini")
+    assert profile is not None and profile.options
+    normalized = _effective_params({"max_tokens": 1024}, profile)
+    assert normalized["max_tokens"] == 128000
+
+    request = _client().build_request(
+        deployment=profile.options[0].deploymentName,
+        messages=[{"role": "user", "content": "synthetic"}],
+        params=normalized,
+    )
+    assert request.json["max_completion_tokens"] == 128000
 
 
 def test_no_double_openai_prefix_with_custom_path():

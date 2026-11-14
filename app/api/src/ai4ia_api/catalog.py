@@ -9,7 +9,7 @@ import json
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import (
     BaseModel, Field, SerializerFunctionWrapHandler, StrictBool, computed_field,
@@ -369,6 +369,7 @@ class ModelCatalog(BaseModel):
     def resolve_deployment(
         self, model_id: str, *, region: str | None = None, data_zone: str | None = None,
         policy_filter: bool = True,
+        option_filter: Callable[[DeploymentOption], bool] | None = None,
     ) -> DeploymentOption | None:
         """Pick a deployment for a model, honoring an explicit region/data zone.
 
@@ -398,6 +399,8 @@ class ModelCatalog(BaseModel):
         if entry is None or not entry.options:
             return None
         options = self.eligible_options(entry, policy_filter=policy_filter)
+        if option_filter is not None:
+            options = [option for option in options if option_filter(option)]
         if region:
             options = [o for o in options if o.region == region]
         if data_zone:

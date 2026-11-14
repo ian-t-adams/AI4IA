@@ -7,6 +7,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import aclosing
+from typing import Any
 
 from ..agents.activity import persisted_run_trace, persisted_trace, serialize_step
 from ..agents.approvals import (
@@ -752,6 +753,7 @@ async def _plain_gateway_stream(
     receipt_draft: ReceiptDraft | None = None,
     safety_provider: str | None = None,
     prepare_model_context: Callable[[list[dict]], Awaitable[None]] | None = None,
+    shared_gateway_enabled: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream a plain gateway call and own its terminal lifecycle."""
     parts: list[str] = []
@@ -787,12 +789,19 @@ async def _plain_gateway_stream(
         yield _stream_metadata(user_message_id, assistant.id, assistant.sources)
         if prepare_model_context is not None:
             await prepare_model_context(messages)
+        shared_gateway_options: dict[str, Any] = {}
+        if shared_gateway_enabled:
+            shared_gateway_options = {
+                "shared_gateway_eligible": api in {"chat", "responses"},
+                "shared_gateway_sku": deployment.sku,
+            }
         stream = gateway.stream(
             deployment=deployment.deploymentName,
             messages=messages,
             params=params,
             correlation_id=correlation_id,
             api=api,
+            **shared_gateway_options,
         )
         if receipt_draft is not None and receipt_draft.model_evidence is not None:
             stream = receipt_draft.model_evidence.observe_stream(stream)
@@ -859,7 +868,7 @@ async def _plain_gateway_stream(
             yield "data: [DONE]\n\n"
         else:
             yield f"data: {json.dumps({'error': 'Stream ended unexpectedly.'})}\n\n"
-    except ModelGatewayError:
+    except ModelGatewayError as exc:
         final = MessageStatus.error
         assistant.content = "".join(parts)
         assistant.status = final
@@ -873,6 +882,12 @@ async def _plain_gateway_stream(
             else "The failed reply could not be saved."
         )
         error_payload: dict[str, object] = {"error": detail}
+        if exc.shared_throttling_message is not None:
+            error_payload = {"error": exc.shared_throttling_message, "status": 429}
+            if exc.retry_after_seconds is not None:
+                error_payload["retryAfterSeconds"] = exc.retry_after_seconds
+            if not terminal_persisted:
+                error_payload["error"] = f"{exc.shared_throttling_message} {detail}"
         if not terminal_persisted:
             error_payload["persistenceFailed"] = True
         yield f"data: {json.dumps(error_payload)}\n\n"

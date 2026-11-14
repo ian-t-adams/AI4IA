@@ -4,10 +4,18 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import httpx
+import pytest
+
+from ai4ia_api.gateway.client import ModelGatewayClient
+from ai4ia_api.hard_quota.dispatch import admission_scope
 from ai4ia_api.hard_quota.coverage import COVERAGE, AttemptEnvelope, actual_amounts, reservation_bounds
-from ai4ia_api.hard_quota.models import MAX_QUANTITY, Amounts, Bounds
+from ai4ia_api.hard_quota.models import MAX_QUANTITY, Amounts, Bounds, QuotaError
 from ai4ia_api.usage.pricing import PriceRate, PricingBook, conservative_token_cost
 from tests.test_hard_quota_dispatch import DEPLOYMENT, Harness
+from tests.test_shared_gateway_staging import (
+    DEPLOYMENT as SHARED_DEPLOYMENT, _manifest, _settings, _token,
+)
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "ai4ia_api"
 
@@ -26,13 +34,76 @@ def test_every_gateway_post_and_stream_uses_the_guarded_transport_seams():
                 and node.func.attr in {"post", "put", "patch", "request", "send", "stream"}
             ):
                 sites.add((method.name, node.func.attr))
-    assert sites == {("_post", "post"), ("_stream_request", "stream"), ("decide", "stream")}
+    assert sites == {
+        ("_post", "post"), ("_post", "stream"),
+        ("_stream_request", "stream"), ("decide", "stream"),
+    }
     for name in ("_post", "_stream_request", "decide"):
         method = next(method for method in client.body if getattr(method, "name", None) == name)
         assert any(
             isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
             and node.func.id == "admitted_dispatch" for node in ast.walk(method)
         )
+    post = next(method for method in client.body if getattr(method, "name", None) == "_post")
+    assert any(
+        isinstance(node, ast.AsyncWith)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Name)
+            and item.context_expr.func.id == "admitted_dispatch"
+            for item in node.items
+        )
+        and any(
+            isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name) and call.func.value.id == "client"
+            and call.func.attr == "stream"
+            for statement in node.body for call in ast.walk(statement)
+        )
+        for node in ast.walk(post)
+    ), "the shared _post streaming transport must stay inside admitted_dispatch"
+
+
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("api", ["chat", "responses"])
+async def test_gateway_transport_refuses_unavailable_admission_before_send(shared, streaming, api):
+    requests: list[httpx.Request] = []
+    harness = Harness()
+    harness.store.available = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"choices": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = ModelGatewayClient(
+            _settings(enabled=shared, manifest=_manifest()).model_copy(
+                update={"hard_quota_enabled": True},
+            ),
+            http_client=http,
+            shared_gateway_token_provider=_token,
+        )
+        with admission_scope(harness.controller, "alice"):
+            with pytest.raises(QuotaError, match="unavailable"):
+                if streaming:
+                    async for _ in client.stream(
+                        deployment=SHARED_DEPLOYMENT if shared else DEPLOYMENT,
+                        messages=[{"role": "user", "content": "synthetic"}],
+                        api=api,
+                        shared_gateway_eligible=shared,
+                        shared_gateway_sku="GlobalStandard" if shared else None,
+                    ):
+                        pass
+                else:
+                    await client.complete(
+                        deployment=SHARED_DEPLOYMENT if shared else DEPLOYMENT,
+                        messages=[{"role": "user", "content": "synthetic"}],
+                        api=api,
+                        shared_gateway_eligible=shared,
+                        shared_gateway_sku="GlobalStandard" if shared else None,
+                    )
+
+    assert requests == []
 
 
 def _client_write_sites(path: Path, class_name: str) -> dict[tuple[str, str], ast.AST]:

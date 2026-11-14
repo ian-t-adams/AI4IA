@@ -209,7 +209,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
 
         InitVars();
 
-        return Task.CompletedTask;
+        return _authValidator.EnsureTrustedConfigurationAsync(cancellationToken);
     }
 
     public void BeginShutdown()
@@ -282,6 +282,7 @@ public class Server : BackgroundService, IConfigChangeSubscriber
             _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _probesCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+            await _authValidator.EnsureTrustedConfigurationAsync(cancellationToken).ConfigureAwait(false);
             _httpListener.Start();
 
             _logger.LogInformation($"[HTTP(s)] ✓ Server listening: {serverInfo}");
@@ -527,35 +528,43 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                             try
                             {
                                 rd.Debug = rd.Headers["S7PDEBUG"] != null && string.Equals(rd.Headers["S7PDEBUG"], "true", StringComparison.OrdinalIgnoreCase);
-                                string? authAppID = rd.Headers[_options.ValidateAuthAppIDHeader];
-                                bool authenticatedKey = false;
+                                string? authAppID = _authValidator.ValidateAuthViaOauthHeader
+                                    ? null
+                                    : rd.Headers[_options.ValidateAuthAppIDHeader];
+                                bool authenticatedIngress = false;
 
-                                if (_authValidator.ValidateAuthViaKey)
+                                if (_authValidator.ValidateAuthViaKey || _authValidator.ValidateAuthViaOauthHeader)
                                 {
                                     bool isValid = false;
-                                    string? incomingKey = rd.Headers[_authValidator.ValidateAuthViaKeyHeader]?.Trim();
-                                    bool isBearer = incomingKey != null && incomingKey.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
+                                    string authHeaderName = _authValidator.ValidateAuthViaOauthHeader
+                                        ? "Authorization"
+                                        : _authValidator.ValidateAuthViaKeyHeader;
+                                    string? incomingKey = rd.Headers[authHeaderName]?.Trim();
+                                    string authValue = incomingKey ?? string.Empty;
+                                    bool isBearer = authValue.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
                                     string message = string.Empty;
                                     var authMode = _authValidator.ValidateAuthMode;
 
                                     if (rd.Debug)
                                     {
-                                        _logger.LogInformation($"[{rd.Guid}] Auth Length: {incomingKey?.Length ?? 0} isBearer: {isBearer}");
+                                        _logger.LogInformation($"[{rd.Guid}] Auth Length: {authValue.Length} isBearer: {isBearer}");
+                                    }
+
+                                    if (_authValidator.ValidateAuthViaOauthHeader)
+                                    {
+                                        var token = isBearer ? authValue["Bearer ".Length..].Trim() : string.Empty;
+                                        (isValid, message, authAppID) =
+                                            await _authValidator.ValidateBearerTokenAsync(token).ConfigureAwait(false);
+                                    }
+                                    else if (_authValidator.ValidateAuthViaKey &&
+                                        authMode == IncomingAuthModeEnum.Key)
+                                    {
+                                        (isValid, message) = ValidateAuthKey(incomingKey, message);
                                     }
 
                                     if (incomingKey is null)
                                     {
                                         message = "Not Authorized : No auth provided";
-                                    }
-                                    else if (isBearer && authMode is IncomingAuthModeEnum.Mixed or IncomingAuthModeEnum.OAuth2)
-                                    {
-                                        var token = incomingKey["Bearer ".Length..].Trim();
-                                        (isValid, message, authAppID) = await ValidateBearerTokenAsync(token, message);
-                                    }
-                                    else if (authMode is IncomingAuthModeEnum.Mixed or IncomingAuthModeEnum.Key)
-                                    {
-                                        (isValid, message) = ValidateAuthKey(incomingKey, message);
-                                        authenticatedKey = isValid;
                                     }
 
                                     if (!isValid && string.IsNullOrEmpty(message))
@@ -571,13 +580,10 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                                             message
                                         );
                                     }
+                                    authenticatedIngress = isValid;
                                 }
 
-                                // Bind before configurable stripping/profiles can remove
-                                // the reduction or replace it with caller-controlled metadata.
-                                NoReplayAttempt.BindAuthenticated(rd, authenticatedKey, _options);
-
-                                if (_options.ValidateAuthAppID)
+                                if (_options.ValidateAuthAppID && !_authValidator.ValidateAuthViaOauthHeader)
                                 {
                                     if (!string.IsNullOrEmpty(authAppID) && _userProfile.IsAuthAppIDValid(authAppID))
                                     {
@@ -596,6 +602,10 @@ public class Server : BackgroundService, IConfigChangeSubscriber
                                         );
                                     }
                                 }
+
+                                // Bind only after the configured ingress identity has been authenticated
+                                // and, when enabled, authorized against the app-ID allowlist.
+                                NoReplayAttempt.BindAuthenticated(rd, authenticatedIngress, _options);
 
                                 // Remove any disallowed headers (FrozenSet for O(1) contains, but iterate to remove)
                                 foreach (var header in _disallowedHeaders)
@@ -968,62 +978,6 @@ public class Server : BackgroundService, IConfigChangeSubscriber
         }
 
         return (false, message);
-    }
-
-    private async Task<(bool isValid, string message, string appid)> ValidateBearerTokenAsync(string token, string message)
-    {
-        var appid = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return (false, "No token provided", appid);
-        }
-
-        try
-        {
-            var result = await s_tokenHandler.ValidateTokenAsync(token, _authValidator.validationParameters).ConfigureAwait(false);
-            if (!result.IsValid)
-            {
-                var detail = result.Exception switch
-                {
-                    SecurityTokenExpiredException => "expired token",
-                    SecurityTokenInvalidAudienceException => "invalid audience",
-                    SecurityTokenInvalidIssuerException => "invalid issuer",
-                    SecurityTokenInvalidSignatureException => "invalid signature",
-                    _ => "token validation failed"
-                };
-
-                //_logger.LogError($"Invalid token: {detail}");
-                return (false, $"Invalid Auth: {detail}", appid);
-            }
-
-            var claimMap = result.Claims
-                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value?.ToString(), StringComparer.OrdinalIgnoreCase);
-
-            appid = claimMap.TryGetValue("appid", out var appIdValue) && !string.IsNullOrWhiteSpace(appIdValue)
-                ? appIdValue
-                : claimMap.TryGetValue("appId", out appIdValue) && !string.IsNullOrWhiteSpace(appIdValue)
-                    ? appIdValue
-                    : claimMap.TryGetValue("azp", out appIdValue) && !string.IsNullOrWhiteSpace(appIdValue)
-                        ? appIdValue
-                        : string.Empty;
-
-            foreach (var expectedClaim in _authValidator.RequiredClaims)
-            {
-                if (!claimMap.TryGetValue(expectedClaim.Key, out var actualValue) ||
-                    !string.Equals(actualValue, expectedClaim.Value, StringComparison.OrdinalIgnoreCase))
-                {
-                    return (false, $"Claim {expectedClaim.Key} is not valid", appid);
-                }
-            }
-
-            return (true, message, appid);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, $"An error occurred while validating the token: {ex.Message}");
-            return (false, "An error occurred while validating the token: " + ex.Message, appid);
-        }
     }
 
 }

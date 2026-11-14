@@ -79,6 +79,40 @@ that header. A browser-supplied development identity is not trusted in productio
 
 ### Credential map
 
+The shared-gateway route is an explicit, default-OFF selector on only the
+ordinary chat router's final stateless HTTP/SSE model dispatch. A resolved v2
+manifest binds the private HTTPS endpoint, managed-identity audience and app
+client ID, exact operations, and lowercase deployment/alias plus SKU mapping;
+startup also matches the manifest caller ID to `AZURE_CLIENT_ID`. The existing factory base URL is
+unchanged, and a selected shared request never silently falls back to it.
+Tool-capable turns and their empty/error completion fallback stay on the
+existing gateway route for the whole turn; only standalone no-tools dispatches
+can select the shared gateway.
+Stateful Responses (`store=true`, prior response, background, or conversation),
+embeddings, images, speech, Anthropic, realtime/Voice Live, Agent Service, CU,
+Search, and specialist routes remain on their existing paths.
+
+The gateway owns retries. AI4IA makes one attempt and closes SSE when the caller
+disconnects. At `/api/chat`, a shared-gateway throttle becomes HTTP 429 for a
+non-streaming request, with a sanitized message and validated `Retry-After`
+(0-86,400 seconds) when present. A stream that has emitted metadata remains HTTP
+200; its existing SSE error event carries actionable sanitized text, `status: 429`
+and optional `retryAfterSeconds`. The UI displays that text without resubmitting.
+Other upstream HTTP failures remain sanitized HTTP 502 or generic SSE errors;
+provider bodies, endpoints and private headers are not returned. Streaming and
+non-streaming calls use the existing gateway timeout profile. The client
+refuses every shared HTTP 3xx without following the redirect or reading its body,
+even when an injected HTTP client enables redirect following. Redirects become
+sanitized HTTP 502 or the existing generic SSE error, never a second dispatch.
+This client guard does not establish redirect or retry behavior inside the proxy.
+The source prepares a canary selector only; resolved values, synthetic hub proof, a
+reviewed deployment plan and approval remain prerequisites to activation.
+Additional review/study capture and user attribution are still disabled and
+unavailable; ordinary owner conversation persistence, receipts and content-free
+telemetry remain separate and unchanged. The upstream foundation is tracked in
+[planetexpress-gateway#1](https://github.com/ian-t-adams/planetexpress-gateway/pull/1).
+See [the canary configuration and rollback boundary](configuration-reference.md#shared-gateway-canary-default-off).
+
 | Credential | Holder and allowed use |
 | --- | --- |
 | Proxy-ingress key | FastAPI authenticates to SimpleL7Proxy; its backing APIM product has no APIs |

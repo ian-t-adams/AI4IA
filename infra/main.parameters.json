@@ -237,6 +237,21 @@
     "gatewayAttemptsV1Staged": {
       "value": "${AI4IA_GATEWAY_ATTEMPTS_V1_STAGED=false}"
     },
+    "sharedGatewayEnabled": {
+      "value": "${AI4IA_SHARED_GATEWAY_ENABLED=false}"
+    },
+    "sharedGatewayActivationManifestBase64": {
+      "value": "${AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST_B64=}"
+    },
+    "sharedGatewayDeployments": {
+      "value": "${AI4IA_SHARED_GATEWAY_DEPLOYMENTS=}"
+    },
+    "apiActiveRevisionsMode": {
+      "value": "${AI4IA_API_ACTIVE_REVISIONS_MODE=Single}"
+    },
+    "apiTrafficRevisionName": {
+      "value": "${AI4IA_API_TRAFFIC_REVISION_NAME=}"
+    },
     "realtimeProtocol": {
       "value": "${AI4IA_REALTIME_PROTOCOL=preview}"
     },

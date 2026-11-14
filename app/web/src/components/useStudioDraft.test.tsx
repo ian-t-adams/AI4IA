@@ -4,8 +4,16 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useStudioDraft } from "./useStudioDraft";
 import { useWorkspacePanels } from "./useWorkspacePanels";
 
-function Workspace({ dirty = false, busy = false }) {
-  const { view, navigate } = useWorkspacePanels();
+function Workspace({
+  dirty = false,
+  busy = false,
+  chatOnly = false,
+}: {
+  dirty?: boolean;
+  busy?: boolean;
+  chatOnly?: boolean;
+}) {
+  const { view, navigate } = useWorkspacePanels({ chatOnly });
   return <><p>{view}</p><button onClick={() => navigate("studio")}>Studio</button>
     <button onClick={() => navigate("chat")}>Chat</button>
     {view === "studio" && <Draft dirty={dirty} busy={busy} />}</>;
@@ -21,6 +29,19 @@ afterEach(() => {
 });
 
 describe("Studio navigation protection", () => {
+  it("preserves ordinary deep-link and hash navigation when chat-only mode is off", () => {
+    window.history.replaceState(null, "", "/#/studio");
+    render(<Workspace />);
+    expect(screen.getByLabelText("Draft")).toBeInTheDocument();
+
+    act(() => {
+      window.history.replaceState(null, "", "/#/chat");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(screen.queryByLabelText("Draft")).toBeNull();
+    expect(screen.getByText("chat")).toBeInTheDocument();
+  });
+
   it("keeps a dirty editor on cancelled page navigation and permits confirmed navigation", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     render(<Workspace dirty />);

@@ -42,6 +42,11 @@ class AuthenticatedUser(BaseModel):
     name: str | None = None
     email: str | None = None
     claims: dict[str, Any] = Field(default_factory=dict)
+    oid: str | None = Field(default=None, exclude=True, repr=False)
+    tid: str | None = Field(default=None, exclude=True, repr=False)
+    iss: str | None = Field(default=None, exclude=True, repr=False)
+    ver: str | None = Field(default=None, exclude=True, repr=False)
+    azp: str | None = Field(default=None, exclude=True, repr=False)
     policy_claims: ValidatedPolicyClaims | None = Field(default=None, exclude=True, repr=False)
 
 

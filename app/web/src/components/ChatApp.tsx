@@ -85,7 +85,7 @@ import { MediaPlayer } from "./MediaPlayer";
 import { MessageList, type DisplayMessage, type EmptyAction } from "./MessageList";
 import type { CitationTarget } from "./Markdown";
 import { Composer, type UploadItem } from "./Composer";
-import { SessionToolConsentBanner } from "./ToolConsentControls";
+import { SessionToolConsentBanner, ToolConsentDetails } from "./ToolConsentControls";
 import { ToolApprovalPanel } from "./ToolApprovalPanel";
 import {
   InlineVoiceLiveStatus,
@@ -106,6 +106,7 @@ import {
 } from "@/lib/sessionMutation";
 import { performBoundUpload } from "@/lib/uploadSession";
 import { reloadPage, useStaleWebBuild } from "@/lib/webBuild";
+import { classifyPilotInput } from "@/lib/chatPilotInput";
 import { ChatHeader } from "./ChatHeader";
 import { StaleBuildBanner } from "./StaleBuildBanner";
 import { WorkspacePage } from "./WorkspacePage";
@@ -178,12 +179,16 @@ function sessionCreationDeadline(deadline: number): Promise<never> {
 function pickDefaultModel(models: ModelEntry[]): string | null {
   // Never default to a capability model: prefer a plain "chat" model, then any
   // conversational model, and only then give up.
-  const conversational = models.filter((m) => m.conversational);
+  const conversational = conversationalModels(models);
   return (
     conversational.find((m) => m.category === "chat")?.id ??
     conversational[0]?.id ??
     null
   );
+}
+
+function conversationalModels(models: ModelEntry[]): ModelEntry[] {
+  return models.filter((model) => model.conversational);
 }
 
 function providerModelRegion(models: ModelEntry[], modelId: string | null): string | null {
@@ -208,7 +213,11 @@ const LIVE_SESSION_LOCK_REASON =
 const STALE_BUILD_VOICE_REASON =
   "A new version of AI4IA is available. Reload the page before starting a voice session.";
 
-export function ChatApp() {
+export function ChatApp({
+  chatPilotCompatibilityEnabled = false,
+}: {
+  chatPilotCompatibilityEnabled?: boolean;
+}) {
   const owner = useCurrentOwner();
   const deletionOwnerRef = useRef(owner);
   const removedSessionIdsRef = useRef(new Set<string>());
@@ -284,7 +293,7 @@ export function ChatApp() {
     toggleLeftPanel,
     toggleRightPanel,
     openInspector,
-  } = useWorkspacePanels();
+  } = useWorkspacePanels({ chatOnly: chatPilotCompatibilityEnabled });
   const openAvatarsPage = useCallback(() => navigate("avatars"), [navigate]);
   const openLibraryPage = useCallback(() => navigate("library"), [navigate]);
   // The document library. When on, the Composer paperclip routes
@@ -294,7 +303,9 @@ export function ChatApp() {
   const libraryEnabled = libraryConfig.enabled;
   // Photo avatars follow the server's own /config (default off, and only for
   // the current owner). Visibility only: the API enforces the gate itself.
-  const photoAvatarsEnabled = usePhotoAvatarsEnabled(owner.key);
+  const photoAvatarsEnabled = usePhotoAvatarsEnabled(
+    chatPilotCompatibilityEnabled ? null : owner.key,
+  );
   // Closing the gallery refreshes the avatars live voice may offer.
   const [liveAvatarRefresh, setLiveAvatarRefresh] = useState(0);
   const [liveAvatarFocusRequest, setLiveAvatarFocusRequest] = useState(0);
@@ -359,8 +370,11 @@ export function ChatApp() {
   });
   const [systemPrompt, setSystemPrompt] = useState("");
   const emptyDraftDefaults = useMemo<ConversationDraftDefaults>(() => ({
-    agentName: null, toolOverrides: { added: [], removed: [] }, libraryDocumentIds: [],
-  }), []);
+    agentName: null,
+    toolOverrides: { added: [], removed: [] },
+    libraryDocumentIds: [],
+    ...(chatPilotCompatibilityEnabled ? { toolsEnabled: false } : {}),
+  }), [chatPilotCompatibilityEnabled]);
   const [draftState, setDraftState] = useState({ owner, defaults: emptyDraftDefaults });
   const draftDefaults = draftState.owner === owner ? draftState.defaults : emptyDraftDefaults;
   const setDraftDefaults = useCallback((defaults: ConversationDraftDefaults) => {
@@ -530,6 +544,7 @@ export function ChatApp() {
   // removes its token: only this entry's Promise.race actually settling
   // does, so the set stays accurate regardless of who's still listening.
   const creatingRef = useRef<SessionCreationEntry | null>(null);
+  const [sessionCreationPending, setSessionCreationPending] = useState(false);
   // Monotonic counter handing out `sequence` (see creatingRef) to every
   // newly created entry, in the exact order each DISTINCT creation intent
   // was issued. Never reset -- including across navigation -- since a
@@ -807,6 +822,7 @@ export function ChatApp() {
   }, [clearReconciliationTimers]);
 
   const loadAttachmentCapabilities = useCallback(async () => {
+    if (chatPilotCompatibilityEnabled) return;
     const generation = ++capabilityGenerationRef.current;
     setAttachmentCapabilities(null);
     setAttachmentCapabilitiesError(null);
@@ -818,7 +834,7 @@ export function ChatApp() {
       if (generation !== capabilityGenerationRef.current) return;
       setAttachmentCapabilitiesError((reason as Error).message);
     }
-  }, []);
+  }, [chatPilotCompatibilityEnabled]);
 
   // --- initial load ---
   useEffect(() => {
@@ -853,12 +869,12 @@ export function ChatApp() {
             ),
         ),
       ]);
-      void loadAttachmentCapabilities();
+      if (!chatPilotCompatibilityEnabled) void loadAttachmentCapabilities();
     })();
-  }, [filterRemovedSessions, loadAttachmentCapabilities]);
+  }, [chatPilotCompatibilityEnabled, filterRemovedSessions, loadAttachmentCapabilities]);
 
   useEffect(() => {
-    if (!voiceLiveConfig.enabled) return;
+    if (chatPilotCompatibilityEnabled || !voiceLiveConfig.enabled) return;
     let cancelled = false;
     void api
       .getVoiceLiveConfig()
@@ -871,7 +887,7 @@ export function ChatApp() {
     return () => {
       cancelled = true;
     };
-  }, [voiceLiveConfig.enabled]);
+  }, [chatPilotCompatibilityEnabled, voiceLiveConfig.enabled]);
 
   const refreshSessions = useCallback(async (
     isStillCurrent: () => boolean = () => true,
@@ -946,7 +962,9 @@ export function ChatApp() {
         const [msgs, all, docs] = await Promise.all([
           api.listMessages(id),
           api.listSessions(),
-          api.listDocuments(id).catch(() => [] as DocumentSummary[]),
+          chatPilotCompatibilityEnabled
+            ? Promise.resolve([] as DocumentSummary[])
+            : api.listDocuments(id).catch(() => [] as DocumentSummary[]),
         ]);
         if (generation !== selectionGenerationRef.current) return;
         if (
@@ -1004,19 +1022,19 @@ export function ChatApp() {
             if (s.model) setSelectedModel(s.model);
           }
           setSystemPrompt(s.systemPrompt ?? "");
-          if (libraryEnabled) {
-           const [owned, shared] = await Promise.all([
-             api.listLibraryDocuments(),
-             api.listSharedWithMe(),
-           ]);
-           if (
-             generation !== selectionGenerationRef.current ||
-             sessionIdRef.current !== id
-           ) return;
-           const byId = new Map(
-             [...owned, ...shared].map((document) => [document.id, document]),
-           );
-           const library = [...byId.values()];
+          if (libraryEnabled && !chatPilotCompatibilityEnabled) {
+            const [owned, shared] = await Promise.all([
+              api.listLibraryDocuments(),
+              api.listSharedWithMe(),
+            ]);
+            if (
+              generation !== selectionGenerationRef.current ||
+              sessionIdRef.current !== id
+            ) return;
+            const byId = new Map(
+              [...owned, ...shared].map((document) => [document.id, document]),
+            );
+            const library = [...byId.values()];
             if (s.libraryDocumentIds === null) {
               setLibraryDocs(library);
             } else {
@@ -1040,6 +1058,7 @@ export function ChatApp() {
     [
       clearReconciliationTimers,
       filterRemovedSessions,
+      chatPilotCompatibilityEnabled,
       libraryEnabled,
       markAssistantResolved,
       scheduleReconciliation,
@@ -1136,12 +1155,12 @@ export function ChatApp() {
   // Agents are an optional enhancement (the @-menu); never block chat on them.
   // The catalog belongs to the signed-in owner and is reloaded on every change.
   useEffect(() => {
-    if (owner.key === null) return;
+    if (chatPilotCompatibilityEnabled || owner.key === null) return;
     void api.listAgents().then(
       (list) => { if (isLiveOwner(owner)) setAgentCatalog({ owner, list }); },
       () => { /* non-fatal: no @-mention menu */ },
     );
-  }, [owner, isLiveOwner]);
+  }, [chatPilotCompatibilityEnabled, owner, isLiveOwner]);
 
   const openWorkflowRun = useCallback(
     (sessionId: string) => {
@@ -1564,7 +1583,9 @@ export function ChatApp() {
               systemPrompt: systemPrompt || null,
               agentName: draftDefaults.agentName,
               toolOverrides: draftDefaults.toolOverrides,
-              toolsEnabled: draftDefaults.toolsEnabled,
+              toolsEnabled: chatPilotCompatibilityEnabled
+                ? false
+                : draftDefaults.toolsEnabled,
               libraryDocumentIds: draftDefaults.libraryDocumentIds,
             },
             controller.signal,
@@ -1587,6 +1608,7 @@ export function ChatApp() {
           // installed its own newer entry while this one was in flight.
           if (creatingRef.current?.promise === creation) {
             creatingRef.current = null;
+            setSessionCreationPending(false);
           }
         });
         entry = {
@@ -1600,6 +1622,7 @@ export function ChatApp() {
           waiters: new Set(),
         };
         creatingRef.current = entry;
+        setSessionCreationPending(true);
       }
       // A send/upload waiter commits to this entry synchronously, before its
       // promise can settle. Whichever same-key waiter activates the entry can
@@ -1640,6 +1663,7 @@ export function ChatApp() {
         // `.finally()`, so this never produces an unhandled rejection.
         if (creatingRef.current === entry) {
           creatingRef.current = null;
+          setSessionCreationPending(false);
         }
         entry.controller.abort();
         throw waitError;
@@ -1821,7 +1845,14 @@ export function ChatApp() {
       // here instead, via this fallback path.
       return markConsumedIfOwning(sessionIdRef.current ?? id);
     },
-    [computeSessionIntentKey, draftDefaults, owner, selectedModel, systemPrompt],
+    [
+      chatPilotCompatibilityEnabled,
+      computeSessionIntentKey,
+      draftDefaults,
+      owner,
+      selectedModel,
+      systemPrompt,
+    ],
   );
 
   // Lets voice's "Stop waiting" release its OWN pending session creation
@@ -1869,6 +1900,7 @@ export function ChatApp() {
       entry.controller.abort();
       if (creatingRef.current === entry) {
         creatingRef.current = null;
+        setSessionCreationPending(false);
       }
     }
   }, []);
@@ -2414,6 +2446,7 @@ export function ChatApp() {
     setDeletionFeedback(null);
     const pendingCreation = creatingRef.current;
     creatingRef.current = null;
+    setSessionCreationPending(false);
     pendingCreation?.controller.abort();
     abortRef.current?.();
     abortRef.current = null;
@@ -2601,6 +2634,7 @@ export function ChatApp() {
   );
 
   useEffect(() => {
+    if (chatPilotCompatibilityEnabled) return;
     let cancelled = false;
     api.getImageOptions().then(
       (options) => {
@@ -2613,7 +2647,7 @@ export function ChatApp() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [chatPilotCompatibilityEnabled]);
 
   // Append a persisted edit exchange the same way voice turns are merged: the
   // server already stored both messages, so merge them into the view and then
@@ -2789,6 +2823,21 @@ export function ChatApp() {
       // New requests snapshot the draft. Continuations send only identifiers;
       // the server restores the original turn's reductions.
       const requestRestrictions = { ...restrictions };
+      const pilotInput = chatPilotCompatibilityEnabled
+        ? classifyPilotInput(content)
+        : null;
+      if (pilotInput?.unsupported) {
+        setError("Agent mentions and slash commands are unavailable in text-only pilot mode.");
+        return;
+      }
+      if (chatPilotCompatibilityEnabled && (approvals?.length || continuation)) {
+        setError("Tool approvals and continuations are unavailable in text-only pilot mode.");
+        return;
+      }
+      if (chatPilotCompatibilityEnabled) {
+        requestRestrictions.allowTools = false;
+        requestRestrictions.allowAutomaticMemory = false;
+      }
       setError(null);
       approvalGenerationRef.current += 1;
       setApprovalBusy(false);
@@ -2896,7 +2945,9 @@ export function ChatApp() {
         ? prev.map((message) => message.id === continuation.messageId ? { ...message, status: "streaming" } : message)
         : [...prev, optimisticUser]);
 
-      const isCommand = content.trimStart().startsWith("/");
+      const isCommand = pilotInput
+        ? pilotInput.slashCommand
+        : content.trimStart().startsWith("/");
       let metadata: {
         userMessageId: string | null;
         assistantMessageId: string;
@@ -3109,9 +3160,16 @@ export function ChatApp() {
         }
       };
 
+      const transportOptions: [options?: { rejectRedirects: true }] =
+        chatPilotCompatibilityEnabled ? [{ rejectRedirects: true }] : [];
       abortRef.current = api.streamChat(
         {
-          sessionId, content, model: selectedModel, params, approvals, ...requestRestrictions,
+          sessionId,
+          content,
+          model: selectedModel,
+          params: chatPilotCompatibilityEnabled ? { max_tokens: 256 } : params,
+          approvals,
+          ...requestRestrictions,
           ...(continuation?.messageId ? { continuation: {
             messageId: continuation.messageId, requestId: continuation.id, grant: continuation.grant,
           } } : {}),
@@ -3182,6 +3240,7 @@ export function ChatApp() {
             );
           },
         },
+        ...transportOptions,
       );
     },
     [
@@ -3196,6 +3255,7 @@ export function ChatApp() {
       selectedModel,
       messages,
       trackPendingAssistant,
+      chatPilotCompatibilityEnabled,
     ],
   );
 
@@ -3304,7 +3364,10 @@ export function ChatApp() {
       !inlineVoice.avatar.unsupported &&
       inlineVoice.avatar.element,
   );
-  const lobbyVisible = requestedLiveAvatarId !== null && !inlineVoice.active;
+  const lobbyVisible =
+    !chatPilotCompatibilityEnabled &&
+    requestedLiveAvatarId !== null &&
+    !inlineVoice.active;
   const [lobbyCompact, setLobbyCompactState] = useState(false);
   useEffect(() => {
     try {
@@ -3460,6 +3523,7 @@ export function ChatApp() {
       >
         {sidebarMode !== "hidden" ? (
           <Sidebar
+            chatOnly={chatPilotCompatibilityEnabled}
             mode={sidebarMode}
             sessions={sessions}
             activeId={activeId}
@@ -3471,7 +3535,7 @@ export function ChatApp() {
             deletionFeedback={deletionFeedback?.owner === owner ? deletionFeedback.byId : undefined}
             onDismissDeletionFeedback={dismissDeletionFeedback}
             view={view}
-            onNavigate={navigate}
+            onNavigate={chatPilotCompatibilityEnabled ? () => {} : navigate}
             libraryAvailable={libraryEnabled}
             photoAvatarsAvailable={photoAvatarsEnabled}
             onOpenDeletionStatus={() => setDeletionView({ owner, sessionId: null })}
@@ -3504,6 +3568,15 @@ export function ChatApp() {
         {staleBuild ? (
           <StaleBuildBanner blockedReason={reloadBlockedReason} onReload={reloadForNewVersion} />
         ) : null}
+        {chatPilotCompatibilityEnabled ? (
+          <div className="inspector-empty" role="status">
+            Isolated chat-pilot compatibility is enabled. This view supports plain-text chat only;
+            every reply has a fixed 256 output-token budget. Reasoning tokens count against that
+            budget and may leave a short or empty visible reply. Token controls are unavailable.
+            Other routes are blocked. The configured API target, identity boundary, and session
+            persistence are not verified here.
+          </div>
+        ) : null}
         <div className="app-view" hidden={view !== "chat"}>
           <ChatHeader
             title={
@@ -3511,7 +3584,7 @@ export function ChatApp() {
                 ? sessions.find((session) => session.id === activeId)?.title ?? "Untitled"
                 : null
             }
-            onRename={activeId ? (title) => renameSession(activeId, title) : undefined}
+            onRename={activeId && !chatPilotCompatibilityEnabled ? (title) => renameSession(activeId, title) : undefined}
             locked={streaming || voiceExitLocked}
             lockReason={sidebarDisabledReason}
             lockReasonId={headerLockReasonId}
@@ -3524,7 +3597,36 @@ export function ChatApp() {
             inspectorOpen={inspectorShown}
             onOpenInspector={toggleInspector}
             inspectorButtonRef={inspectorOpenerRef}
+            showSettings={!chatPilotCompatibilityEnabled}
           />
+          {chatPilotCompatibilityEnabled ? (
+            activeId ? (
+              <div className="pilot-model-readonly" role="status">
+                Model: {modelLabel ?? "Unknown"}
+              </div>
+            ) : (
+              <label className="pilot-model-picker">
+                Model for new conversation
+                <select
+                  aria-label="Model for new conversation"
+                  value={selectedModel ?? ""}
+                  disabled={
+                    streaming ||
+                    sessionLoading ||
+                    sessionCreationPending ||
+                    conversationalModels(models).length === 0
+                  }
+                  onChange={(event) => setSelectedModel(event.target.value || null)}
+                >
+                  {conversationalModels(models).map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )
+          ) : null}
 
         {deletionNotice?.owner === owner && (
           <ConversationDeletionNotice
@@ -3599,24 +3701,32 @@ export function ChatApp() {
               ) : null}
               <div className="chat-thread">
             {activeId && activeToolConsent ? (
-              <SessionToolConsentBanner
-                key={activeId}
-                sessionId={activeId}
-                consent={activeToolConsent}
-                available={currentConsentView.available}
-                active={currentConsentView.active}
-                status={currentConsentView.status}
-                onUpdated={onToolConsentUpdated}
-                onVerificationInvalidated={invalidateConsentVerification}
-                onRefresh={refreshConsentVerification}
-              />
+              chatPilotCompatibilityEnabled ? (
+                <aside aria-label="Stored session tool auto-approval">
+                  <p>Stored tool consent is unchanged. Verification and changes are unavailable in text-only pilot mode; tools are not used for pilot turns.</p>
+                  <ToolConsentDetails consent={activeToolConsent} />
+                </aside>
+              ) : (
+                <SessionToolConsentBanner
+                  key={activeId}
+                  sessionId={activeId}
+                  consent={activeToolConsent}
+                  available={currentConsentView.available}
+                  active={currentConsentView.active}
+                  status={currentConsentView.status}
+                  onUpdated={onToolConsentUpdated}
+                  onVerificationInvalidated={invalidateConsentVerification}
+                  onRefresh={refreshConsentVerification}
+                />
+              )
             ) : null}
             <MessageList
               messages={displayMessages}
+              textOnly={chatPilotCompatibilityEnabled}
               conversationId={activeId}
               onError={setError}
-              onCitation={libraryEnabled ? handleCitation : undefined}
-              onInspectMemory={(memoryId) => {
+              onCitation={!chatPilotCompatibilityEnabled && libraryEnabled ? handleCitation : undefined}
+              onInspectMemory={chatPilotCompatibilityEnabled ? undefined : (memoryId) => {
                 setMemoryTarget((current) => ({
                   sessionId: activeId, memoryId, request: (current?.request ?? 0) + 1,
                 }));
@@ -3659,6 +3769,14 @@ export function ChatApp() {
                 {showCallBar ? (
                   <InlineVoiceLiveStatus voice={inlineVoice} onRetry={startInlineVoice} />
                 ) : null}
+            {chatPilotCompatibilityEnabled ? (
+              visibleToolApprovals.length > 0 ? (
+                <aside aria-label="Stored pending tool approvals">
+                  <p>Pending tool approval history is unchanged. Review, approval and denial are unavailable in text-only pilot mode.</p>
+                  <ul>{visibleToolApprovals.map((prompt) => <li key={prompt.id}>{prompt.label}</li>)}</ul>
+                </aside>
+              ) : null
+            ) : (
             <ToolApprovalPanel
               prompts={visibleToolApprovals}
               busy={streaming || approvalBusy}
@@ -3715,7 +3833,9 @@ export function ChatApp() {
                 });
               }}
             />
+            )}
             <Composer
+              textOnly={chatPilotCompatibilityEnabled}
               disabled={streaming || settingsPending || sessionLoading || !selectedModel}
               streaming={streaming}
               agents={agents}
@@ -3740,7 +3860,7 @@ export function ChatApp() {
               onDraftChange={onComposerDraftChange}
               live={composerLive}
               voiceLive={
-                voiceLiveEnabled
+                voiceLiveEnabled && !chatPilotCompatibilityEnabled
                   ? {
                       active: inlineVoice.active,
                       supported: inlineVoice.supported,
@@ -3761,7 +3881,7 @@ export function ChatApp() {
           </div>
         </div>
 
-        {view !== "chat" ? (
+        {view !== "chat" && !chatPilotCompatibilityEnabled ? (
           <WorkspacePage
             id={`page-heading-${view}`}
             title={VIEW_TITLES[view]}
@@ -3848,7 +3968,7 @@ export function ChatApp() {
         inert={sidebarDrawerOpen || deletionPanelOpen ? true : undefined}
         aria-hidden={sidebarDrawerOpen || deletionPanelOpen ? true : undefined}
       >
-        {view === "chat" ? (
+        {view === "chat" && !chatPilotCompatibilityEnabled ? (
           <ConversationInspector
             key={JSON.stringify([owner.key, activeId])}
             sessionId={activeId}
