@@ -553,7 +553,7 @@ def _exercise(case: str) -> None:
                 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
                 from azure.monitor.opentelemetry.exporter._constants import _SAMPLE_RATE_KEY
                 dropped_parent = trace.set_span_in_context(NonRecordingSpan(SpanContext(
-                    123, 456, is_remote=False, trace_flags=TraceFlags.DEFAULT,
+                    123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.DEFAULT),
                 )), Context())
                 denied = actual_provider.sampler.should_sample(
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
@@ -565,7 +565,7 @@ def _exercise(case: str) -> None:
                         return True
                 from ai4ia_api.request_telemetry import _RequestSpan
                 source_parent = RecordedParent(SpanContext(
-                    123, 456, is_remote=False, trace_flags=TraceFlags.SAMPLED,
+                    123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.SAMPLED),
                 ))
                 recorded = _RequestSpan(source_parent, frozenset(), SpanKind.SERVER)
                 inheritance_control = RateLimitedSampler(0)
@@ -578,9 +578,14 @@ def _exercise(case: str) -> None:
                 assert inheritance_control.should_sample(
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
-                source_parent.attributes = {}
+                missing_rate_parent = RecordedParent(SpanContext(
+                   123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.DEFAULT),
+                ))
+                missing_rate_parent.attributes = {}
                 assert inheritance_control.should_sample(
-                    trace.set_span_in_context(recorded, Context()), 123, "chat",
+                   trace.set_span_in_context(
+                       _RequestSpan(missing_rate_parent, frozenset(), SpanKind.SERVER), Context(),
+                   ), 123, "chat",
                     kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
         assert network == []
