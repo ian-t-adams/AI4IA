@@ -802,6 +802,92 @@ There is no silent fallback or hot in-process emergency bypass when the flag
 is on. Do not dispatch the production workflow, change settings, or send
 traffic without that approval.
 
+#### Production C1/C3 request preparation (offline only)
+
+`scripts/prepare-gateway-cutover.py` constructs, but never submits, a single
+Container Apps JSON Merge PATCH per step using API `2025-01-01`.
+This is not a deployment executor. The production workflow must remain frozen
+during a separately authorized cutover. No merge, cloud write, registry upload
+or runtime request is authorized by this section.
+
+The constructor requires matching app and healthy active R0 revision snapshots,
+with R0 both latest and latest-ready and identical templates. C1 requires
+`Single`; C3 requires `Multiple` with an explicit named R0 traffic rule.
+Ambiguous traffic, labels and stale/template-drifted snapshots are refused.
+
+After authorization, obtain fresh ARM GET snapshots at the same API version.
+Use the actual resource ID returned by discovery, not an invented identity:
+
+```powershell
+# Read-only capture; $resourceId and $r0 must come from reviewed discovery.
+$url = "https://management.azure.com${resourceId}?api-version=2025-01-01"
+az rest --method get --url $url --subscription $sub --output json |
+  Set-Content -Encoding utf8 app-before.json
+az rest --method get --url "https://management.azure.com${resourceId}/revisions/${r0}?api-version=2025-01-01" --subscription $sub --output json |
+  Set-Content -Encoding utf8 r0-before.json
+
+# These Python commands perform no network access.
+python scripts\prepare-gateway-cutover.py --stage C1 --app app-before.json --revision r0-before.json --resource-id $resourceId --output c1.patch.json
+```
+
+C1 contains `location` and only this properties fragment; it omits `template`,
+images, identities and secrets:
+
+```json
+{
+  "configuration": {
+    "activeRevisionsMode": "Multiple",
+    "ingress": {"traffic": [{"revisionName": "<R0>", "weight": 100}]}
+  }
+}
+```
+
+Once C1 has completed and fresh readback confirms unchanged template, image,
+latest/ready identity and named R0=100 traffic, capture new snapshots. After
+separately approved manifest-secret setup, construct C3:
+
+```powershell
+python scripts\prepare-gateway-cutover.py --stage C3 --app app-before.json --revision r0-before.json --resource-id $resourceId --suffix gw22s1 --deployments opt-in.stage1.txt --manifest resolved-production.json --output c3.patch.json
+```
+
+C3 repeats the same explicit R0=100 rule, with no `latestRevision` property,
+and copies the full R0 template. It changes only `revisionSuffix` and the three
+shared-gateway environment entries. All other env entries, secret references,
+resources, probes, scale and image digest are preserved. The manifest must be
+resolved 2.2.0, match the API's caller identity and resolve every exact opt-in.
+The existing manifest secret must be present. Its **value** is not read or
+compared by this tool: secure transport/value reconciliation and catalog
+startup validation remain separate prerequisites. Ensure the suffix is unused
+across all revisions before approval. Snapshot and payload files may contain
+sensitive inherited env values; keep them private, never commit or log them.
+
+The exact submission shape, **not authorized to execute**, is:
+
+```powershell
+az rest --method patch --url $url --subscription $sub --headers "Content-Type=application/json" --body "@c1.patch.json"
+# After successful C1 completion/readback, secret setup, fresh capture and C3 review:
+az rest --method patch --url $url --subscription $sub --headers "Content-Type=application/json" --body "@c3.patch.json"
+```
+
+Do not substitute a PUT, whole-estate provision, or sequential update/traffic-set
+pair. Inspect and hash each exact payload; re-read before submission and stop if
+the app differs. The API does not document an If-Match precondition here; the
+freeze is necessary and this tool does not prevent concurrent writers.
+For HTTP 202, the operator must wait for the returned operation to complete
+before fresh GET/readback or proceeding.
+
+Offline tests prove request content and RFC 7396 merge semantics: C1 preserves
+the template and C3 changes only the intended env/suffix while traffic remains
+named R0=100. They **do not prove Azure's internal atomic transition or runtime
+zero-traffic behavior**. C1/C3 remain execution-gated on review of the actual
+payload, service behavior and Ian's authorization. Verify post-C3 R1 latest/ready,
+R0 healthy/active and still 100%, R1 absent from traffic, no latest rule, exact
+same image and intended template diff before labeling or testing. A later
+traffic correction is not proof of initial zero traffic. Gateway actual-value,
+network/auth, token-limit and separately counted runtime checks remain gates.
+
+Reference: [Container Apps Update, API 2025-01-01](https://learn.microsoft.com/rest/api/resource-manager/containerapps/container-apps/update?view=rest-resource-manager-containerapps-2025-01-01).
+
 #### Candidate isolated chat-API pilot shape (not approved)
 
 The pilot must not replace or receive traffic from the serving single revision.
