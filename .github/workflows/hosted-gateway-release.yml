@@ -1,0 +1,129 @@
+name: hosted gateway release
+
+on:
+  workflow_dispatch:
+    inputs:
+      admit:
+        description: "Admit exactly one stage after separate review"
+        type: boolean
+        default: false
+      reviewed_sha:
+        description: "Exact reviewed main commit"
+        type: string
+        required: true
+      stage:
+        description: "Exactly one release stage"
+        type: choice
+        options: [c1-web, c2-web, c1-api, c2-api, c3-api, rollback-api]
+        required: true
+      rollback_revision:
+        description: "rollback-api only: named active gateway-off API revision"
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      admitted: ${{ steps.gate.outputs.admitted }}
+    env:
+      ENABLED: ${{ vars.AI4IA_GATEWAY_RELEASE_ENABLED }}
+      ADMIT: ${{ inputs.admit }}
+      REVIEWED: ${{ inputs.reviewed_sha }}
+      CLIENT: ${{ vars.AZURE_CLIENT_ID }}
+      TENANT: ${{ vars.AZURE_TENANT_ID }}
+      SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${ADMIT}" = "false" ]; then
+            echo "admitted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$ADMIT" != true ] || [ "$ENABLED" != true ] \
+            || [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] \
+            || [ "$GITHUB_REF" != refs/heads/main ] \
+            || [ "$GITHUB_REPOSITORY" != ian-t-adams/AI4IA ] \
+            || ! [[ "$REVIEWED" =~ ^[0-9a-f]{40}$ ]] \
+            || [ "$REVIEWED" != "$GITHUB_SHA" ] \
+            || [ "$CLIENT" != ac8d62b9-904f-4c84-9444-c41512acf74f ] \
+            || [ "$TENANT" != 6907d2a4-685a-4aea-92ab-d930217467f1 ] \
+            || [ "$SUBSCRIPTION" != e852113b-6cb5-441c-ac68-26cff884e479 ]; then
+            echo "::error::Gateway release admission refused."
+            exit 1
+          fi
+          echo "admitted=true" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: admission
+    if: needs.admission.outputs.admitted == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    # Serializes with every production writer; there is no ARM compare-and-swap.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AI4IA_GATEWAY_RELEASE_ENABLED: ${{ vars.AI4IA_GATEWAY_RELEASE_ENABLED }}
+      AI4IA_GATEWAY_RELEASE_ADMIT: ${{ inputs.admit }}
+      AI4IA_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      AI4IA_RELEASE_STAGE: ${{ inputs.stage }}
+      AI4IA_ROLLBACK_REVISION: ${{ inputs.rollback_revision }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the locked API closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$AI4IA_REVIEWED_SHA"
+          git diff --exit-code --quiet
+          git diff --cached --exit-code --quiet
+          python -m venv "$RUNNER_TEMP/uv-venv"
+          "$RUNNER_TEMP/uv-venv/bin/python" -m pip --isolated install --quiet --no-input \
+            --disable-pip-version-check --index-url https://pypi.org/simple --no-deps \
+            --require-hashes --only-binary=:all: -r scripts/hosted_gateway_uv.txt
+          (cd app/api && UV_NO_PYTHON_DOWNLOADS=1 "$RUNNER_TEMP/uv-venv/bin/uv" export --frozen \
+            --no-dev --no-emit-project --format requirements-txt --no-header \
+            -o "$RUNNER_TEMP/gateway-release-requirements.txt")
+          python -m venv "$RUNNER_TEMP/release-venv"
+          "$RUNNER_TEMP/release-venv/bin/python" -m pip --isolated install --quiet --no-input \
+            --disable-pip-version-check --index-url https://pypi.org/simple --no-deps \
+            --require-hashes --only-binary=:all: -r "$RUNNER_TEMP/gateway-release-requirements.txt"
+          git diff --exit-code --quiet
+          git diff --cached --exit-code --quiet
+          test -z "$(git status --porcelain)"
+      - name: Apply one stage
+        shell: bash
+        env:
+          AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST: ${{ inputs.stage == 'c3-api' && secrets.AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST || '' }}
+          AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64: ${{ inputs.stage == 'c3-api' && secrets.AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64 || '' }}
+        run: |
+          set -euo pipefail
+          VENV="$RUNNER_TEMP/release-venv/bin/python"
+          "$VENV" -I scripts/hosted_gateway_release.py
+      - name: Upload redacted receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gateway-release-receipt-${{ inputs.stage }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/gateway-release-receipt.json
+          if-no-files-found: ignore
+          retention-days: 30
