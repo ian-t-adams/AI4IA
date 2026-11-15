@@ -690,6 +690,131 @@ class RollbackTests(ReleaseFlowBase):
 
 
 class CutoverIntegrationTests(unittest.TestCase):
+    def execute_c1(self, arm):
+        arm.app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
+        return release.execute(
+            env(AI4IA_RELEASE_STAGE="c1-api"), token_source=lambda e, t: "tok",
+            arm_class=lambda token: arm, now=lambda: NOW,
+        )
+
+    def test_empties_only_pass_and_are_audited_without_mutating_templates(self):
+        arm = FakeArm()
+        left = arm.app["properties"]["template"]
+        right = arm.revisions[R0]["properties"]["template"]
+        left.update(volumes=[], serviceBinds=None, scale={"rules": []})
+        left["containers"][0]["probes"] = None
+        right["containers"][0]["probes"] = []
+        right["initContainers"] = []
+        originals = copy.deepcopy((left, right))
+
+        receipt = self.execute_c1(arm)
+
+        self.assertEqual((receipt["outcome"], receipt["writes"]), ("complete", 1))
+        normalized = next(s for s in receipt["steps"] if s["step"] == "r0-template-normalized")
+        self.assertEqual(normalized["facts"], {"template_equal": False, "template_equal_canonical": True})
+        diff = normalized["template_diff"]
+        self.assertFalse(diff["truncated"])
+        self.assertEqual({e["kind"] for e in diff["entries"]}, {"absent_vs_empty", "null_vs_empty"})
+        self.assertIn({"path": ["containers", 0, "probes"], "kind": "null_vs_empty"}, diff["entries"])
+        self.assertEqual((left, right), originals)
+        self.assertTrue(all("template" not in body["properties"] for _, _, body, _ in arm.requests))
+
+    def test_value_missing_type_and_length_differences_refuse_without_content(self):
+        sentinel = "SYNTHETIC_PRIVATE_SENTINEL"
+        for field, a, b, kind in (
+            ("env", [{"name": sentinel, "value": sentinel}], [{"name": sentinel, "value": "different"}], "value"),
+            ("image", sentinel, sentinel + "-different", "value"),
+            ("args", [sentinel], None, "type"),
+            ("args", [sentinel], [sentinel, sentinel], "length"),
+        ):
+            arm = FakeArm()
+            arm.app["properties"]["template"]["containers"][0][field] = a
+            arm.revisions[R0]["properties"]["template"]["containers"][0][field] = b
+            with self.subTest(field=field, kind=kind):
+                receipt = self.execute_c1(arm)
+                self.assertEqual((receipt["phase"], receipt["writes"]), ("payload", 0))
+                self.assertEqual(receipt["detail"]["reason"], "r0-state")
+                entries = receipt["detail"]["template_diff"]["entries"]
+                self.assertIn(kind, [e["kind"] for e in entries])
+                self.assertEqual(entries[0]["path"][:3], ["containers", 0, field])
+                self.assertNotIn(sentinel, json.dumps(receipt))
+        for missing_side, kind in (("app", "missing_left"), ("revision", "missing_right")):
+            arm = FakeArm()
+            target = arm.revisions[R0] if missing_side == "app" else arm.app
+            target["properties"]["template"][sentinel] = sentinel
+            receipt = self.execute_c1(arm)
+            self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
+            self.assertEqual(receipt["detail"]["template_diff"]["entries"], [{"path": ["?"], "kind": kind}])
+            self.assertNotIn(sentinel, json.dumps(receipt))
+
+    def test_diff_cap_does_not_hide_a_nonempty_difference_after_32_empty_diffs(self):
+        arm = FakeArm()
+        left = arm.app["properties"]["template"]
+        right = arm.revisions[R0]["properties"]["template"]
+        left["containers"][0]["env"] = [
+            {"name": f"SECRET_ENV_{i}", "value": None} for i in range(33)]
+        right["containers"][0]["env"] = [{"name": f"SECRET_ENV_{i}"} for i in range(33)]
+        left["volumes"], right["volumes"] = [], {}
+        receipt = self.execute_c1(arm)
+        diff = receipt["detail"]["template_diff"]
+        self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
+        self.assertEqual(len(diff["entries"]), 32)
+        self.assertTrue(diff["truncated"])
+        self.assertTrue(all(e["kind"] == "absent_vs_empty" for e in diff["entries"]))
+        self.assertTrue(receipt["detail"]["facts"]["template_equal_canonical"])
+        self.assertNotIn("SECRET_ENV", json.dumps(receipt))
+
+    def test_33_empty_differences_can_pass_with_truncation_audited(self):
+        arm = FakeArm()
+        arm.app["properties"]["template"]["containers"][0]["env"] = [
+            {"name": str(i), "value": None} for i in range(33)]
+        arm.revisions[R0]["properties"]["template"]["containers"][0]["env"] = [
+            {"name": str(i)} for i in range(33)]
+        receipt = self.execute_c1(arm)
+        self.assertEqual((receipt["outcome"], receipt["writes"]), ("complete", 1))
+        diff = receipt["steps"][0]["template_diff"]
+        self.assertEqual(len(diff["entries"]), 32)
+        self.assertTrue(diff["truncated"])
+
+    def test_diff_depth_is_bounded_and_unknown_deep_difference_refuses(self):
+        arm = FakeArm()
+        a, b = {"value": "PRIVATE_LEFT"}, {"value": "PRIVATE_RIGHT"}
+        for _ in range(20):
+            a, b = {"custom": a}, {"custom": b}
+        arm.app["properties"]["template"]["scale"] = a
+        arm.revisions[R0]["properties"]["template"]["scale"] = b
+        receipt = self.execute_c1(arm)
+        diff = receipt["detail"]["template_diff"]
+        self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
+        self.assertTrue(diff["truncated"])
+        self.assertTrue(all(len(e["path"]) <= 16 for e in diff["entries"]))
+        self.assertNotIn("PRIVATE_", json.dumps(receipt))
+
+    def test_strict_invariance_and_emitted_c2_template_keep_empty_entries(self):
+        arm = FakeArm()
+        app, rev = copy.deepcopy(arm.app), copy.deepcopy(arm.revisions[R0])
+        app["properties"]["template"]["volumes"] = None
+        self.assertNotEqual(release.projection(app), release.projection(arm.app))
+        self.assertFalse(release.template_matches(
+            app["properties"]["template"], rev["properties"]["template"]))
+        with self.assertRaisesRegex(release.Refused, "concurrent-change"):
+            release.Release(arm, env(), {"steps": []}).guarded_patch(
+                "api", release.projection(app), {"properties": {}}, "must-not-write",
+            )
+        self.assertEqual(arm.writes, 0)
+        rev["properties"]["template"]["containers"][0]["probes"] = []
+        rev["properties"]["template"]["serviceBinds"] = None
+        now = datetime.now(UTC)
+        rows = release.revision_rows(arm, release.APPS["api"], now)
+        payload = release.build_payload(
+            app, rev, resource_id=release.APPS["api"], stage="C2", service="api",
+            suffix="candidate", api_image=release.IMAGES["api"], existing_revisions=rows,
+        )
+        template = payload["properties"]["template"]
+        self.assertIsNone(template["serviceBinds"])
+        self.assertEqual(template["containers"][0]["probes"], [])
+        self.assertNotIn("volumes", template)
+
     def test_real_c2_builder_preserves_references_and_released_image(self):
         baseline_env = [{"name": "VOICE_UNCHANGED", "secretRef": "voice"}]
         arm = FakeArm(extra_env=baseline_env)
