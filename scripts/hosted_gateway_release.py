@@ -793,6 +793,7 @@ def sanitize_smoke(result: Any) -> dict:
     calls = []
     for call in result.get("calls") or []:
         if not isinstance(call, dict) or call.get("deployment") not in DEPLOYMENTS:
+            calls.append({})
             continue
         status = call.get("status")
         calls.append({

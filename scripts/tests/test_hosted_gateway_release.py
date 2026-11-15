@@ -1438,8 +1438,43 @@ class SmokeTests(unittest.TestCase):
         result["phase"] = "secret text"
         clean = release.sanitize_smoke(result)
         self.assertNotIn("model said", json.dumps(clean))
+        self.assertNotIn("other", json.dumps(clean))
         self.assertIsNone(clean["phase"])
-        self.assertEqual(len(clean["calls"]), 4)
+        self.assertEqual(len(clean["calls"]), 5)
+        self.assertEqual(clean["calls"][-1], {})
+
+    def test_run_smoke_preserves_invalid_rows_as_redacted_failures(self):
+        unknown = {
+            "deployment": "unexpected", "api": "responses", "status": 200,
+            "shared": True, "host": True, "detail": "private content",
+        }
+        cases = (
+            ([], True), ([unknown], False), (["private content"], False),
+            ([unknown] * 9, False),
+        )
+        diag = {"marker_seen": True}
+        for extras, expected in cases:
+            with self.subTest(extras=len(extras), expected=expected):
+                raw = passing_smoke()
+                raw["calls"].extend(copy.deepcopy(extras))
+                with mock.patch.object(release, "run_exec", return_value=(raw, diag)):
+                    result = release.run_smoke(None, "unused", "unused")
+                self.assertEqual(release.smoke_passed(result), expected)
+                self.assertEqual(result["phase"], "complete")
+                self.assertEqual(result["exec"], diag)
+                self.assertEqual(result["calls"][:4], passing_smoke()["calls"])
+                self.assertLessEqual(len(result["calls"]), 8)
+                self.assertNotIn("unexpected", json.dumps(result))
+                self.assertNotIn("private content", json.dumps(result))
+        raw = passing_smoke()
+        raw["phase"] = "calls"
+        raw["calls"] = [raw["calls"][0], unknown, None]
+        with mock.patch.object(release, "run_exec", return_value=(raw, diag)):
+            result = release.run_smoke(None, "unused", "unused")
+        self.assertFalse(release.smoke_passed(result))
+        self.assertEqual(result["phase"], "calls")
+        self.assertEqual(result["calls"], [passing_smoke()["calls"][0], {}, {}])
+        self.assertEqual(result["exec"], diag)
 
     def run_program(self, models, deployments=release.DEPLOYMENTS):
         calls = []
