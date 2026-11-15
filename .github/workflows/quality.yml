@@ -230,7 +230,7 @@ jobs:
           "$VENV" -I scripts/tests/test_hosted_oidc_read.py
           python3 scripts/tests/test_hosted_oidc_contract.py
       - name: Run hosted gateway release offline controls
-        run: python3 -m unittest scripts.tests.test_hosted_gateway_release scripts.tests.test_dispatch_gated_workflow
+        run: python3 -m unittest scripts.tests.test_hosted_gateway_release scripts.tests.test_dispatch_gated_workflow scripts.tests.test_hosted_gateway_permissions
       - name: Run postprovision hard-gate tests
         run: |
           set -euo pipefail

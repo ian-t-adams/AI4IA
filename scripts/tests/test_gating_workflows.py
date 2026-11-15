@@ -822,7 +822,8 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
                 self.assertRegex(script, r"--federated-credential-provider\s+['\"]?github\b")
                 require({"id-token": "write"})
             if re.search(
-                r'(?m)^\s*"\$VENV" -I scripts/(?:hosted_oidc_read|hosted_gateway_release)\.py\s*$', script
+                r'(?m)^\s*(?:"\$VENV" -I scripts/(?:hosted_oidc_read|hosted_gateway_release)\.py'
+                r'|python -I scripts/hosted_gateway_permissions\.py)\s*$', script
             ):
                 require({"id-token": "write"})
             if re.search(r"\bgh\s+api\b", script):
@@ -858,11 +859,14 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
                 self.assert_permission_boundary(yaml.safe_load(path.read_text(encoding="utf-8")))
 
     def test_hosted_oidc_reader_is_a_specific_oidc_consumer(self) -> None:
-        for script in ("hosted_oidc_read.py", "hosted_gateway_release.py"):
-            command = f'"$VENV" -I scripts/{script}'
+        for command in (
+            '"$VENV" -I scripts/hosted_oidc_read.py',
+            '"$VENV" -I scripts/hosted_gateway_release.py',
+            'python -I scripts/hosted_gateway_permissions.py',
+        ):
             job = {"permissions": {"id-token": "write"}, "steps": [{"run": command}]}
             self.assert_permission_boundary({"permissions": {}, "jobs": {"read": job}})
-            for forged in (f"echo {command}", f'"$VENV" -I scripts/{script} --other',
+            for forged in (f"echo {command}", f"{command} --other",
                            '"$VENV" -I scripts/hosted_gateway_release_extra.py'):
                 job["steps"][0]["run"] = forged
                 with self.subTest(forged=forged), self.assertRaises(AssertionError):

@@ -2744,7 +2744,7 @@ reread leaves `active` null and adds `observed: false`.
 Dispatch the lane and the one-read workflow only through
 `python scripts/dispatch_gated_workflow.py --workflow hosted-gateway-release.yml
 --reviewed-sha <sha> --stage <stage>` (or `--workflow hosted-web-one-read.yml`).
-It refuses if either gate variable is already set or a run is still queued or in
+It refuses if any allowlisted gate variable is already set or a run is still queued or in
 progress, leaving others' gates untouched. It then sets its own gate, dispatches
 once, and binds to the exact new run ID: a `workflow_dispatch` event at the
 reviewed SHA that was not seen before. Several new runs fail closed. The wrapper
@@ -2760,6 +2760,36 @@ that failure and requires manual attention. Deleting the gate after a
 timeout, error or interrupt does not prove that the dispatched run stopped. The
 wrapper logs and reports the bound run ID so you can inspect it. It does not
 cancel runs or add retries or credentials.
+
+The separate `hosted-gateway-permissions-read.yml` workflow uses the same wrapper
+with no stage input and its own default-absent
+`AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED` gate. It reuses the existing production
+deployment identity and reviewed hosted OIDC/TLS transport, with no SDK install,
+new trust, local sign-in or credential file. Exactly four fixed
+`Microsoft.Authorization/permissions` GETs (`2022-04-01`, the default
+`--read-kind shared-permissions`) target the gateway
+resource group, shared ACR, DocEx caller VNet and DocEx model account listed in
+`scripts/hosted_gateway_permissions.py`. There are no scope/URL inputs, resource
+body reads, inference or writes. A paginated response is explicitly incomplete:
+no next link is followed. Denied, malformed or unavailable scopes stay unknown,
+not empty permission sets. Receipts contain only scope IDs, status, reported
+permission action patterns and response hashes. Reported permissions do not
+prove effective write access or override deny assignments, conditions, policy
+or linked-scope requirements. Dispatch only while the existing production
+owner is idle: GitHub concurrency serializes running jobs, but a queued read
+can replace another pending job in that group. The owned child has a bounded
+180-second execution window; termination and collection add bounded overhead.
+This check neither grants roles nor authorizes a subsequent deployment.
+
+Alternatively, `--read-kind web-state` selects exactly one fixed GET of
+`ca-web-slurmfactory` instead of the four permission reads. It emits only the
+existing response hash plus revision mode, latest/latest-ready names and
+explicitly present traffic rule names, weights and latest flags. Missing traffic
+fields stay missing; malformed state is a refusal. No environment values,
+images, secret fields or hostnames are emitted. This independently reconciles
+post-run traffic without running another release stage. It cannot establish
+revision activity, health or per-user entitlement state. The original
+`hosted-web-one-read.yml` three-field receipt contract is unchanged.
 
 The lane depends on these controls and limitations:
 
