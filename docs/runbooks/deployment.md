@@ -2510,8 +2510,9 @@ The approved design is web first, then the selector-OFF API, then a fresh
 selector-ON revision based on the serving selector-OFF revision. This order keeps
 the current-main web on the existing canonical API while preserving a named
 rollback at each stage. The image producer does not implement this order. The
-offline helper constructs C1/C2/C3 request bodies only; no apply consumer or
-traffic writer exists. Web C1 is a config-only Single-to-Multiple request that
+offline helper constructs C1/C2/C3 request bodies; its only apply consumer is the
+separately gated [hosted gateway release lane](#hosted-gateway-release-lane).
+Web C1 is a config-only Single-to-Multiple request that
 pins the exact serving R0 and contains no template. Its construction does not
 qualify an apply mechanism or authorize staging.
 
@@ -2640,9 +2641,8 @@ Do not substitute
 2.92.0's YAML update calls `list_secrets(show_values=True)`, and `secret set`
 also reads existing secret values before a full `create_or_update`. Neither is
 a safe single-secret PATCH. Retain the reviewed scoped ARM request/helper path
-and never print or persist secret values. The offline C1/C2/C3 helper has no
-apply consumer; these controls are not live-manifest readback or activation
-evidence. The `private-image`
+and never print or persist secret values. Offline helper output alone is not
+live-manifest readback or activation evidence. The `private-image`
 and `private-pair` manual dispatches are not successful push-triggered
 `foundry-assets` runs; its independent manual-dispatch path remains a separate
 writer and must stay separately controlled during a freeze.
@@ -2654,6 +2654,77 @@ re-reads and binds the live app snapshots, and creates a one-attempt execution
 receipt before its scoped ARM PATCH. Its request does not carry an ARM ETag
 precondition, so those checks and receipts are not an atomic compare-and-swap
 guarantee and do not establish C2/C3 manifest binding.
+
+### Hosted gateway release lane
+
+`hosted-gateway-release.yml` is the only apply consumer of the C1/C2/C3
+requests. It is default-off: each dispatch needs `admit=true`, an exact
+`reviewed_sha` equal to the dispatched `main` commit, the repository variable
+`AI4IA_GATEWAY_RELEASE_ENABLED=true`, and exactly one `stage`. Restore the
+variable to absent after the release. It runs in the `production` environment
+under the `deploy-production` concurrency group with hosted GitHub Actions OIDC
+(the existing deployment service principal) and plain HTTPS to ARM. It uses no
+Azure CLI and no local credential, and never reads, lists, or writes
+`configuration.secrets`. Run the bounded hosted OIDC read first on the same
+`main` commit.
+
+Run the stages in this order, stopping at the first failure: `c1-web`,
+`c2-web`, `c1-api` (only while the API is still in Single mode), `c2-api`, then
+`c3-api`. The stages behave as follows:
+
+- **C1** writes configuration only.
+- **C2** creates the exact released image with the selector off. After
+  readiness and health it promotes that revision to 100% in the same run, then
+  deactivates (never deletes) the previous revision.
+- **C3** builds a fresh selector-on revision from the serving C2 revision with
+  exactly the four `gpt-5.4-mini` opt-in deployments. It promotes the new
+  revision only after the smoke below passes. The C2 revision stays active as
+  the immediate rollback.
+
+The `production` secrets `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST` and
+`AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64` are passed only to `c3-api`.
+Both are size- and SHA-256-checked, and the sidecar is decompressed with a
+bound. The receipt records only their hashes. Payloads are built by the
+reviewed C1/C2/C3 helper, including the API catalog's C3 validation.
+
+The lane depends on these controls and limitations:
+
+- **Worker gate.** Before every create or promote, a metadata-only read of the
+  Durable Task Scheduler metrics for hub `ai4ia` must show that orchestrator
+  and activity active and pending items are all exactly 0. That observation
+  must be at most five minutes old. Empty, missing, null, or stale data refuses
+  the write; it never counts as zero. A zero result does not prove that timers,
+  schedules, or document recovery have drained.
+- **No compare-and-swap.** ARM Container Apps PATCH has no ETag precondition
+  here. The lane re-reads app and revision state immediately before each
+  single write and refuses on any drift. Serialization comes from the
+  production concurrency group. These controls are not atomic.
+- **Uncertain writes.** A transport error or 5xx makes the write outcome
+  uncertain. The lane never replays it and never rolls back automatically. It
+  records an observed reconciliation of revision names, weights, and active
+  flags, and stops for operator disposition.
+- **Rollback scope.** A candidate that fails readiness or the smoke is
+  deactivated without receiving traffic. If the post-promotion readback fails,
+  the lane returns traffic to the revision that was serving moments earlier and
+  is still active. Once C2 deactivates the pre-release R0, nothing reactivates
+  it automatically: its retired-video containment is unqualified. The
+  `rollback-api` stage moves traffic only to a named, active
+  revision that runs the released image with the shared gateway off.
+- **C3 smoke.** The smoke runs inside the not-yet-promoted revision's `api`
+  container through the documented Container Apps exec channel, using the
+  revision's own settings, user-assigned managed identity, manifest, and shared
+  gateway route. It makes one chat call and one stateless Responses call
+  (`store: false`) for each of the four deployments. All eight must return 200,
+  must have been routed through the shared gateway, and must have reached only
+  the manifest's base host. Because the canary has no end user, it disables
+  per-user quota and group policy for that process only.
+- **What the smoke proves.** The receipt keeps only statuses and booleans, never
+  prompts or completions. The lane does not change gateway-side capture. A
+  passing smoke covers only those four deployments and those two operations; it
+  is not wider application coverage.
+
+The lane never changes schedules, recovery or worker flags, roles, the network,
+or secrets. A 403 is a stop, never a reason to broaden a grant.
 
 ### Release freeze sequence
 

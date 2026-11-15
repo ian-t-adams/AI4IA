@@ -199,6 +199,8 @@ jobs:
           "$VENV" -I -c 'import azure.identity,azure.core,msal,requests; assert azure.identity.__version__=="1.26.0"; assert azure.core.__version__=="1.41.0"; assert msal.__version__=="1.39.0"; assert requests.__version__=="2.34.2"'
           "$VENV" -I scripts/tests/test_hosted_oidc_read.py
           python3 scripts/tests/test_hosted_oidc_contract.py
+      - name: Run hosted gateway release offline controls
+        run: python3 -m unittest scripts.tests.test_hosted_gateway_release
       - name: Run postprovision hard-gate tests
         run: |
           set -euo pipefail
