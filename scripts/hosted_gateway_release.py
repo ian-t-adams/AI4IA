@@ -126,8 +126,12 @@ def _safe(fn: Any) -> bool | None:
         return None
 
 
-def snapshot_facts(app: Any, rev: Any, resource_id: str) -> dict[str, Any]:
-    """Content-free booleans/enums about an R0 snapshot: no IDs, names, images or values."""
+def snapshot_facts(app: Any, rev: Any, resource_id: str, stale: Any = None) -> dict[str, Any]:
+    """Content-free booleans/enums about an R0 snapshot: no IDs, names, images or values.
+
+    ``stale`` is the latest revision read only when it differs from serving R0; facts
+    about it are None (unread) otherwise.
+    """
     p = lambda: app["properties"]
     c = lambda: p()["configuration"]
     r = lambda: rev["properties"]
@@ -135,12 +139,26 @@ def snapshot_facts(app: Any, rev: Any, resource_id: str) -> dict[str, Any]:
     k = lambda: r()["template"]["containers"]
     rev_id = lambda: resource_id + "/revisions/" + rev["name"]
     try:
-        comparison = cutover().compare_r0_templates(p()["template"], r()["template"])
+        comparison = cutover().compare_r0_templates(
+            p()["template"], (stale if stale is not None else rev)["properties"]["template"])
         projection_equal = comparison["template_equal"]
         canonical_equal = comparison["template_equal_canonical"]
     except Exception:  # noqa: BLE001
         projection_equal = canonical_equal = None
     mode = _safe(lambda: c()["activeRevisionsMode"] in ("Single", "Multiple"))
+    stale_facts: dict[str, Any] = {
+        "latest_is_r0": _safe(lambda: p()["latestRevisionName"] == rev["name"]),
+        "latest_lane_candidate": _safe(lambda: cutover().stale_candidate_name(
+            app["name"], p()["latestRevisionName"])),
+        "latest_inactive": None, "latest_untrafficked": None, "stale_diff_ok": None,
+    }
+    if stale is not None:
+        stale_facts.update(
+            latest_inactive=_safe(lambda: stale["properties"]["active"] is False),
+            latest_untrafficked=_safe(lambda: not traffic_references(app, stale["name"])),
+            stale_diff_ok=_safe(lambda: cutover().stale_template_diff_ok(
+                r()["template"], stale["properties"]["template"], stale["name"])),
+        )
     return {
         "app_id_exact": _safe(lambda: app["id"] == resource_id),
         "app_id_casefold": _safe(lambda: app["id"].casefold() == resource_id.casefold()),
@@ -161,10 +179,19 @@ def snapshot_facts(app: Any, rev: Any, resource_id: str) -> dict[str, Any]:
         "traffic_named": _safe(lambda: t()[0] == {"revisionName": rev["name"], "weight": 100}),
         "one_container": _safe(lambda: len(k()) == 1),
         "digest_pinned": _safe(lambda: re.fullmatch(r".+@sha256:[0-9a-f]{64}", k()[0]["image"])),
+        **stale_facts,
     }
 
 
+def traffic_references(app: dict, revision: str) -> bool:
+    """True if any traffic rule names ``revision`` or follows the latest revision."""
+    rules = app["properties"]["configuration"]["ingress"]["traffic"]
+    return any(rule.get("revisionName") == revision or rule.get("latestRevision") is True
+               for rule in rules)
+
+
 PAYLOAD_REASONS = (
+    ("stale latest", "r0-latest"),
     ("explicit Container App resource ID", "id"),
     ("resource name must identify", "id"),
     ("R0 must be healthy", "r0-state"),
@@ -190,12 +217,16 @@ def payload_reason(e: Exception) -> str:
     return "other"
 
 
-def build_payload(*args: Any, **kwargs: Any) -> dict:
+def build_payload(*args: Any, stale_rev: dict | None = None, **kwargs: Any) -> dict:
     """The reviewed cutover builder; its validation messages never reach receipts.
 
     A refusal carries only the builder's raise line and content-free snapshot facts.
+    ``stale_rev`` is the inactive lane candidate still named latest, if any.
     """
     try:
+        if stale_rev is not None:
+            kwargs.update(stale_latest=stale_rev["name"],
+                          stale_template=stale_rev["properties"]["template"])
         return cutover().build_payload(*args, **kwargs)
     except (ValueError, KeyError, TypeError) as e:
         line = None
@@ -209,10 +240,11 @@ def build_payload(*args: Any, **kwargs: Any) -> dict:
             "ValueError", "KeyError", "TypeError", "PacketError") else "other", "line": line,
             "reason": payload_reason(e)}
         if len(args) >= 2 and isinstance(kwargs.get("resource_id"), str):
-            detail["facts"] = snapshot_facts(args[0], args[1], kwargs["resource_id"])
+            detail["facts"] = snapshot_facts(args[0], args[1], kwargs["resource_id"], stale_rev)
             try:
                 detail["template_diff"] = cutover().compare_r0_templates(
-                    args[0]["properties"]["template"], args[1]["properties"]["template"],
+                    args[0]["properties"]["template"],
+                    (stale_rev if stale_rev is not None else args[1])["properties"]["template"],
                 )["template_diff"]
             except (ValueError, KeyError, TypeError):
                 detail["template_diff"] = {"entries": [], "truncated": True}
@@ -1189,16 +1221,48 @@ class Release:
     def step(self, name: str, **fields: Any) -> None:
         self.receipt["steps"].append({"step": name, "at": self.now().isoformat(), **fields})
 
-    def snapshot(self, service: str) -> tuple[dict, dict]:
-        app = self.arm.get(APPS[service], phase="read")
-        r0 = (app.get("properties") or {}).get("latestRevisionName")
-        if not isinstance(r0, str):
-            raise Refused("read")
-        return app, self.arm.get(f"{APPS[service]}/revisions/{r0}", phase="read")
+    def snapshot(self, service: str, stage: str = "C1") -> tuple[dict, dict, dict | None]:
+        """Read the app and R0 (+ a stale latest lane candidate for C2/C3, if any).
 
-    def record_template_comparison(self, app: dict, rev: dict) -> None:
+        C1 pins R0 = latestRevisionName. C2/C3 pin R0 = the single 100% named serving
+        rule; any other traffic shape falls back to latest so the builder refuses as
+        before. A different latest is read once and admitted only as an inactive,
+        untrafficked lane candidate whose latestReady is it or R0, else r0-latest.
+        """
+        app = self.arm.get(APPS[service], phase="read")
+        props = app.get("properties") or {}
+        latest = props.get("latestRevisionName")
+        if not isinstance(latest, str):
+            raise Refused("read")
+        r0 = latest
+        if stage in ("C2", "C3"):
+            rules = ((props.get("configuration") or {}).get("ingress") or {}).get("traffic")
+            if (isinstance(rules, list) and len(rules) == 1 and isinstance(rules[0], dict)
+                    and rules[0].get("weight") == 100 and rules[0].get("latestRevision") is not True
+                    and isinstance(rules[0].get("revisionName"), str) and rules[0]["revisionName"]):
+                r0 = rules[0]["revisionName"]
+        rev = self.arm.get(f"{APPS[service]}/revisions/{r0}", phase="read")
+        if latest == r0:
+            return app, rev, None
+        stale = self.arm.get(f"{APPS[service]}/revisions/{latest}", phase="read")
+        facts = {
+            "latest_lane_candidate": _safe(lambda: cutover().stale_candidate_name(app["name"], latest)),
+            "latest_inactive": _safe(lambda: stale["properties"]["active"] is False),
+            "latest_untrafficked": _safe(lambda: not traffic_references(app, latest)),
+            "latest_ready_ok": props.get("latestReadyRevisionName") in (latest, r0),
+        }
+        self.step("r0-serving-not-latest", r0=r0, latest=latest,
+                  latest_ready=props.get("latestReadyRevisionName"), facts=facts)
+        if not all(value is True for value in facts.values()):
+            raise Refused("payload", detail={
+                "error": "other", "line": None, "reason": "r0-latest",
+                "facts": snapshot_facts(app, rev, APPS[service], stale)})
+        self.receipt["stale_latest"] = latest
+        return app, rev, stale
+
+    def record_template_comparison(self, app: dict, rev: dict, stale: dict | None = None) -> None:
         comparison = cutover().compare_r0_templates(
-            app["properties"]["template"], rev["properties"]["template"],
+            app["properties"]["template"], (stale if stale is not None else rev)["properties"]["template"],
         )
         if comparison["compatible"] and comparison["template_diff"]["entries"]:
             self.step("r0-template-normalized", template_diff=comparison["template_diff"],
@@ -1231,7 +1295,7 @@ class Release:
         raise Refused("candidate-timeout")
 
     def c1(self, service: str) -> None:
-        app, rev = self.snapshot(service)
+        app, rev, _ = self.snapshot(service)
         payload = build_payload(app, rev, resource_id=APPS[service], stage="C1", service=service)
         self.record_template_comparison(app, rev)
         r0 = rev["name"]
@@ -1249,17 +1313,19 @@ class Release:
         sha, run = self.env["GITHUB_SHA"], self.env["GITHUB_RUN_ID"]
         suffix = candidate_suffix(stage.lower(), sha, run)
         app_id = APPS[service]
-        app, rev = self.snapshot(service)
+        app, rev, stale = self.snapshot(service, stage)
         r0 = rev["name"]
         candidate = app["name"] + "--" + suffix
         self.receipt.update(r0=r0, candidate=candidate)
         self.gate.require()
         self.step("dts-gate", observed=self.gate.observed.isoformat())
+        if stale is not None:
+            inputs["stale_rev"] = stale
         payload = build_payload(
             app, rev, resource_id=app_id, stage=stage, service=service, suffix=suffix,
             existing_revisions=revision_rows(self.arm, app_id, self.now()), **inputs,
         )
-        self.record_template_comparison(app, rev)
+        self.record_template_comparison(app, rev, stale)
         self.gate.require_fresh()
         self.guarded_patch(service, projection(app), payload, "create")
         try:
@@ -1407,7 +1473,7 @@ class Release:
             self.create_and_promote(service, "C2", api_image=IMAGES["api"] if service == "api" else "",
                                     web_image=IMAGES["web"] if service == "web" else "")
         elif stage == "c3-api":
-            _, rev = self.snapshot("api")
+            _, rev, _ = self.snapshot("api", "C3")
             containers = rev["properties"]["template"]["containers"]
             if len(containers) != 1 or containers[0].get("image") != IMAGES["api"]:
                 raise Refused("c3-baseline")
@@ -1443,6 +1509,34 @@ def reconcile(arm: Arm | None, stage: str | None) -> dict | None:
     }
 
 
+def lane_revisions(arm: Arm | None, receipt: dict) -> list[dict]:
+    """Account for every lane revision this run touched or found: names and booleans only.
+
+    The run's own candidate is re-read once (read-only) only if its create PATCH was
+    attempted; an admitted stale latest lane candidate is listed as retained.
+    """
+    stage = receipt.get("stage")
+    if arm is None or not stage:
+        return []
+    app_id = APPS["web" if stage.endswith("-web") else "api"]
+    created = any(s.get("step") == "create" for s in receipt.get("steps") or [])
+    rows: list[dict] = []
+    for name, role in ((receipt.get("candidate"), "candidate"), (receipt.get("stale_latest"), "stale-latest")):
+        if not isinstance(name, str):
+            continue
+        row: dict[str, Any] = {"name": name, "role": role,
+                               "created_by_run": role == "candidate" and created, "active": None}
+        if role == "stale-latest" or created:
+            try:
+                rev = arm.get(f"{app_id}/revisions/{name}", phase="inventory")
+                active = (rev.get("properties") or {}).get("active")
+                row["active"] = active if isinstance(active, bool) else None
+            except Exception:  # noqa: BLE001 - inventory is observation only
+                row["observed"] = False
+        rows.append(row)
+    return rows
+
+
 def execute(env: dict[str, str], *, token_source=acquire_arm_token, arm_class=Arm,
             now=lambda: datetime.now(UTC)) -> dict:
     receipt: dict[str, Any] = {"stage": None, "outcome": "refused", "phase": "admission",
@@ -1469,6 +1563,7 @@ def execute(env: dict[str, str], *, token_source=acquire_arm_token, arm_class=Ar
             receipt["detail"] = e.detail
     except Exception as e:  # noqa: BLE001 - receipt records only the exception type
         receipt.update(outcome="error", error=type(e).__name__)
+    receipt["lane_revisions"] = lane_revisions(arm, receipt)
     receipt["writes"] = arm.writes if arm is not None else 0
     return receipt
 

@@ -2707,6 +2707,48 @@ so a provider-default exception can pass compatibility while that fact is false.
 The shared projection, emitted C2/C3 templates, `guarded_patch` and same-shape
 app pre/post invariance comparisons remain strict and are not canonicalized.
 
+An unpromoted candidate can be left behind as an inactive, untrafficked revision
+that is still the app's latest, latest-ready and app-template revision. Revisions
+cannot be deleted, so C2 and C3 pin R0 to the revision named by the single
+100%-weight traffic rule rather than to the latest revision. Any other traffic
+shape falls back to the latest revision, which the builder then refuses as
+before. C1 keeps the strict latest-equals-R0 rule. When the latest revision differs
+from that R0, the lane reads it once. It accepts the latest only when all of
+these hold:
+
+- its name is this lane's own C2/C3 candidate form for the same app
+  (`<app>--c2|c3-<7 hex>-<1..8 digits>`);
+- it is inactive and not referenced by any traffic rule;
+- latest-ready is either it or R0.
+
+Otherwise the run refuses `r0-latest` with zero writes. The lane records a
+`r0-serving-not-latest` step with both names and the boolean checks. The builder
+then requires the app template to be compatible with the stale revision's own
+template. That template may differ from R0's only in `containers[0].image` for a
+`--c2-` candidate, or only in the three C3 environment entries for a `--c3-`
+candidate. The payload is still built from R0's revision template. Refusal facts
+add the content-free `latest_is_r0`, `latest_lane_candidate`, `latest_inactive`,
+`latest_untrafficked` and `stale_diff_ok` checks.
+
+Each release reuses the fixed apps, identities and secrets. Its only Azure
+artifact is at most one candidate revision; it creates no app, secret,
+APIM object or environment change outside the declared candidate template. The
+receipt's `lane_revisions` lists that candidate and any admitted stale latest,
+with `role`, `created_by_run` and the final `active` flag. That flag comes from
+a single read-only reread, taken only if the create PATCH was attempted.
+
+Dispatch the lane and the one-read workflow only through
+`python scripts/dispatch_gated_workflow.py --workflow hosted-gateway-release.yml
+--reviewed-sha <sha> --stage <stage>` (or `--workflow hosted-web-one-read.yml`).
+It refuses if either gate variable is already set or a run is still queued or in
+progress, leaving others' gates untouched. It then sets its own gate, dispatches
+once, and binds to the exact new run ID: a `workflow_dispatch` event at the
+reviewed SHA that was not seen before. Several new runs fail closed. The wrapper
+holds the gate until that run is terminal, because every job re-reads it. In
+`finally`, including on Ctrl+C or SIGTERM, it deletes its gate (retrying an
+interrupted delete). It then rereads the variables and verifies that every gate
+is absent, failing loudly if not. It never touches `AI4IA_DEPLOYMENT_ENABLED`.
+
 The lane depends on these controls and limitations:
 
 - **Worker gate.** Before every create or promote, a metadata-only read of the

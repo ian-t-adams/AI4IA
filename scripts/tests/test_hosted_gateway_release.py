@@ -10,6 +10,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -970,7 +971,7 @@ class CutoverIntegrationTests(unittest.TestCase):
     def test_real_builder_accepts_arm_casing_and_max_scale_but_not_other_drift(self):
         arm = FakeArm()
         runner = release.Release(arm, env(), {"steps": []})
-        app, rev = runner.snapshot("api")
+        app, rev, _ = runner.snapshot("api")
         app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
         app["id"] = app["id"].replace("/resourceGroups/", "/resourcegroups/").replace(
             "/containerApps/", "/containerapps/")
@@ -995,7 +996,7 @@ class CutoverIntegrationTests(unittest.TestCase):
     def test_real_builder_refusal_reports_only_line_and_snapshot_facts(self):
         arm = FakeArm()
         runner = release.Release(arm, env(), {"steps": []})
-        app, rev = runner.snapshot("api")
+        app, rev, _ = runner.snapshot("api")
         app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
         rev["properties"]["template"]["containers"][0]["image"] = "registry.example/ai4ia/api:latest"
         app["properties"]["template"] = rev["properties"]["template"]
@@ -1012,6 +1013,187 @@ class CutoverIntegrationTests(unittest.TestCase):
         for secret in ("slurmfactory", rev["name"], "subscriptions", "registry.example"):
             self.assertNotIn(secret, text)
         self.assertEqual(arm.writes, 0)
+
+
+class StaleLatestTests(unittest.TestCase):
+    """Live state after an unpromoted lane candidate: R0 serves 100%, latest is stale."""
+
+    STALE = APP + "--c2-2721cac-27742728"
+
+    def stale_arm(self, name=STALE, *, image=None, env_list=None, active=False, extra_rule=False,
+                  ready=None, mode="Multiple"):
+        arm = FakeArm()
+        arm.app["properties"]["configuration"]["activeRevisionsMode"] = mode
+        arm.revisions[name] = arm.revision(name, image or release.IMAGES["api"], env_list or [])
+        arm.revisions[name]["properties"]["active"] = active
+        arm.app["properties"]["latestRevisionName"] = name
+        arm.app["properties"]["latestReadyRevisionName"] = ready or name
+        arm.app["properties"]["template"] = copy.deepcopy(arm.revisions[name]["properties"]["template"])
+        if extra_rule:
+            arm.app["properties"]["configuration"]["ingress"]["traffic"].append(
+                {"revisionName": name, "weight": 0})
+        return arm
+
+    def execute(self, arm, stage="c2-api"):
+        now = datetime.now(UTC)
+        arm.gate_values = [metrics(ZERO, at=now - timedelta(minutes=1))]
+        return release.execute(env(AI4IA_RELEASE_STAGE=stage), token_source=lambda e, t: "tok",
+                               arm_class=lambda token: arm, now=lambda: now)
+
+    def assert_redacted(self, receipt):
+        text = json.dumps(receipt["detail"])
+        for secret in ("slurmfactory", "27742728", "2721cac", "subscriptions"):
+            self.assertNotIn(secret, text)
+
+    def test_old_strict_builder_refuses_live_state_and_new_snapshot_creates(self):
+        arm = self.stale_arm()
+        app = copy.deepcopy(arm.app)
+        with self.assertRaises(release.Refused) as caught:
+            release.build_payload(app, copy.deepcopy(arm.revisions[self.STALE]),
+                                  resource_id=release.APPS["api"], stage="C2", service="api",
+                                  suffix="c2-x", api_image=release.IMAGES["api"],
+                                  existing_revisions=release.revision_rows(arm, release.APPS["api"], NOW))
+        self.assertEqual(caught.exception.detail["reason"], "r0-state")
+
+        receipt = self.execute(arm)
+
+        self.assertEqual((receipt["outcome"], receipt["r0"]), ("complete", R0))
+        self.assertEqual(receipt["serving"], receipt["candidate"])
+        self.assertNotEqual(receipt["candidate"], self.STALE)
+        step = next(s for s in receipt["steps"] if s["step"] == "r0-serving-not-latest")
+        self.assertEqual((step["r0"], step["latest"], step["latest_ready"]), (R0, self.STALE, self.STALE))
+        self.assertTrue(all(value is True for value in step["facts"].values()))
+        self.assertIs(arm.revisions[self.STALE]["properties"]["active"], False)
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"],
+                         ["create", "promote", "deactivate-r0"])
+        built = arm.revisions[receipt["candidate"]]["properties"]["template"]["containers"][0]
+        self.assertEqual(built["image"], release.IMAGES["api"])
+
+    def test_latest_ready_may_still_be_r0(self):
+        receipt = self.execute(self.stale_arm(ready=R0))
+        self.assertEqual(receipt["outcome"], "complete")
+
+    def candidate_name(self, stage="c2"):
+        values = env()
+        return APP + "--" + release.candidate_suffix(stage, values["GITHUB_SHA"], values["GITHUB_RUN_ID"])
+
+    def assert_only_one_candidate(self, arm, before, receipt):
+        def keys(value):
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    yield k
+                    yield from keys(v)
+            elif isinstance(value, list):
+                for v in value:
+                    yield from keys(v)
+
+        app_id = release.APPS["api"]
+        for method, path, body, _phase in arm.requests:
+            self.assertTrue((method, path) == ("PATCH", app_id) or (
+                method == "POST" and re.fullmatch(re.escape(app_id) + r"/revisions/[^/]+/deactivate", path)),
+                (method, path))
+            self.assertNotIn("secrets", set(keys(body)))
+        creates = [body for _m, _p, body, phase in arm.requests if phase == "create"]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(set(arm.revisions) - before, {receipt["candidate"]})
+        created = copy.deepcopy(creates[0]["properties"]["template"])
+        self.assertEqual(created.pop("revisionSuffix"), receipt["candidate"].split("--", 1)[1])
+        r0 = copy.deepcopy(arm.revisions[R0]["properties"]["template"])
+        self.assertEqual(created["containers"][0].pop("image"), release.IMAGES["api"])
+        r0["containers"][0].pop("image")
+        self.assertEqual(created, r0)
+
+    def test_each_run_leaves_only_its_candidate_and_accounts_for_it(self):
+        for label, arm in {"stale": self.stale_arm(), "fresh": FakeArm()}.items():
+            before = set(arm.revisions)
+            with self.subTest(label):
+                receipt = self.execute(arm)
+                self.assertEqual(receipt["outcome"], "complete")
+                self.assert_only_one_candidate(arm, before, receipt)
+                expected = [{"name": receipt["candidate"], "role": "candidate",
+                             "created_by_run": True, "active": True}]
+                if label == "stale":
+                    expected.append({"name": self.STALE, "role": "stale-latest",
+                                     "created_by_run": False, "active": False})
+                self.assertEqual(receipt["lane_revisions"], expected)
+
+    def test_refused_candidate_is_inventoried_inactive_and_pre_create_refusal_lists_none(self):
+        arm = self.stale_arm()
+        before = set(arm.revisions)
+        arm.unready.add(self.candidate_name())
+        receipt = self.execute(arm)
+        self.assertEqual(receipt["outcome"], "refused")
+        self.assert_only_one_candidate(arm, before, receipt)
+        self.assertEqual(receipt["lane_revisions"][0], {
+            "name": self.candidate_name(), "role": "candidate", "created_by_run": True, "active": False})
+        self.assertEqual(receipt["lane_revisions"][1]["active"], False)
+
+        arm = self.stale_arm(active=True)
+        receipt = self.execute(arm)
+        self.assertEqual((receipt["detail"]["reason"], receipt["writes"], receipt["lane_revisions"]),
+                         ("r0-latest", 0, []))
+        self.assertFalse(any(c[2] == "inventory" for c in arm.calls))
+
+    def test_no_extra_read_when_latest_is_r0(self):
+        arm = FakeArm()
+        _, rev, stale = release.Release(arm, env(), {"steps": []}).snapshot("api", "C2")
+        self.assertIsNone(stale)
+        self.assertEqual(rev["name"], R0)
+        self.assertEqual([c[1] for c in arm.calls if "/revisions/" in c[1]],
+                         [release.APPS["api"] + "/revisions/" + R0])
+
+    def test_unqualified_latest_refuses_r0_latest_without_writes(self):
+        cases = {
+            "active": {"active": True},
+            "non-lane-name": {"name": APP + "--manual-1"},
+            "c1-name": {"name": APP + "--c1-2721cac-27742728"},
+            "other-app": {"name": "ca-web-slurmfactory--c2-2721cac-27742728"},
+            "ready-third": {"ready": APP + "--other"},
+        }
+        for label, kwargs in cases.items():
+            arm = self.stale_arm(**kwargs)
+            with self.subTest(label):
+                receipt = self.execute(arm)
+                self.assertEqual((receipt["outcome"], receipt["phase"], receipt["writes"]),
+                                 ("refused", "payload", 0))
+                self.assertEqual(receipt["detail"]["reason"], "r0-latest")
+                self.assertIs(receipt["detail"]["facts"]["latest_is_r0"], False)
+                self.assert_redacted(receipt)
+
+    def test_stale_in_traffic_or_extra_diff_refuses(self):
+        cases = {
+            "in-traffic": ({"extra_rule": True}, "r0-state"),
+            "extra-env": ({"env_list": [{"name": "EXTRA", "value": "1"}]}, "r0-latest"),
+            "c3-name-image-diff": ({"name": APP + "--c3-2721cac-27742728"}, "r0-latest"),
+        }
+        for label, (kwargs, reason) in cases.items():
+            arm = self.stale_arm(**kwargs)
+            with self.subTest(label):
+                receipt = self.execute(arm)
+                self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), (reason, 0))
+                self.assert_redacted(receipt)
+                if label != "in-traffic":
+                    self.assertIs(receipt["detail"]["facts"]["stale_diff_ok"], False)
+
+    def test_c1_keeps_latest_as_r0_and_refuses_stale(self):
+        arm = self.stale_arm(mode="Single")
+        receipt = self.execute(arm, stage="c1-api")
+        self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
+        self.assertFalse(any(s["step"] == "r0-serving-not-latest" for s in receipt["steps"]))
+
+    def test_c3_snapshot_admits_stale_c3_candidate_and_baselines_r0(self):
+        c3_env = [{"name": name, "value": "x"} for name in (
+            "AI4IA_SHARED_GATEWAY_ENABLED", "AI4IA_SHARED_GATEWAY_DEPLOYMENTS",
+            "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST")]
+        name = APP + "--c3-2721cac-27742728"
+        arm = self.stale_arm(name, image=OLD_IMAGE, env_list=c3_env)
+        receipt = {"steps": []}
+        _, rev, stale = release.Release(arm, env(), receipt).snapshot("api", "C3")
+        self.assertEqual((rev["name"], stale["name"]), (R0, name))
+        self.assertTrue(release.snapshot_facts(arm.app, rev, release.APPS["api"], stale)["stale_diff_ok"])
+        arm = self.stale_arm(name, image=OLD_IMAGE, env_list=c3_env + [{"name": "EXTRA", "value": "1"}])
+        _, rev, stale = release.Release(arm, env(), {"steps": []}).snapshot("api", "C3")
+        self.assertFalse(release.snapshot_facts(arm.app, rev, release.APPS["api"], stale)["stale_diff_ok"])
 
 
 class WebStageTests(ReleaseFlowBase):
