@@ -535,11 +535,6 @@ export function Sidebar({
               </div>
             ))
           )}
-          {!chatOnly ? (
-            <button type="button" className="sidebar-quiet-action" onClick={onOpenDeletionStatus}>
-              Deletion status
-            </button>
-          ) : null}
         </section>
         <div className="sidebar-footer" aria-label="Utilities and account" role="group">
           {!chatOnly ? (

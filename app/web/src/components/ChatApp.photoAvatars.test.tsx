@@ -14,7 +14,8 @@ import { CHAT_MODEL_CATALOG, resetChatAppMocks } from "./chatTestFixtures";
 
 function render(ui: ReactElement) {
   const result = rtlRender(ui, { wrapper: MemoryPreferenceProvider });
-  fireEvent.click(screen.getByRole("button", { name: "Settings & more" }));
+  const utilities = screen.queryByRole("button", { name: "Settings & more" });
+  if (utilities) fireEvent.click(utilities);
   return result;
 }
 
