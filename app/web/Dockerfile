@@ -23,9 +23,10 @@
 # never changes, so if that experiment is on, no PR is ever opened here.
 # Treat refreshing this digest as a manual audit step.
 #
-# Currently sha256:c610fcdf... = the multi-platform OCI image index for
-# node 22.23.2 (linux/amd64, arm64/v8, arm/v6, arm/v7, s390x), published
-# 2026-07-29 and pinned 2026-08-06.
+# Currently sha256:1314fb30... = the multi-platform OCI image index for
+# node 22.23.5 on Alpine 3.24 (musl 1.2.6-r3, zlib 1.3.2-r1), published
+# 2026-11-11. It replaced sha256:0a7108bf..., whose musl/zlib failed the
+# HIGH/CRITICAL production image scan.
 #
 # To refresh:
 #   docker buildx imagetools inspect node:22-alpine --format '{{json .Manifest.Digest}}'
@@ -46,7 +47,7 @@
 #   2. Copying from the `Manifests:` block that bare
 #      `docker buildx imagetools inspect node:22-alpine` prints underneath the
 #      index digest -- one entry per platform (linux/amd64 is currently
-#      sha256:76789712..., which is NOT what is pinned above).
+#      sha256:12f54caf..., which is NOT what is pinned above).
 #
 # Either mistake makes the image unbuildable on every other architecture, and
 # it fails confusingly: a local `azd deploy` from an arm64 Mac reports a
@@ -67,26 +68,31 @@
 # Node 26 requirement. .github/dependabot.yml ignores majors here for exactly
 # that reason.
 # ---------------------------------------------------------------------------
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS deps
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --prefer-offline --no-audit
 
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS builder
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS runner
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=8080
 ENV HOSTNAME=0.0.0.0
 
-RUN addgroup --system --gid 1001 nodejs \
+# The standalone server runs with `node server.js` and never uses a package
+# manager. The base image's global npm (still 10.9.9 in this digest) bundles
+# pacote, sigstore, ip-address, brace-expansion and picomatch versions that fail
+# the production HIGH/CRITICAL scan, so remove npm/npx rather than ignore them.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+  && addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
 
 COPY --from=builder /app/public ./public

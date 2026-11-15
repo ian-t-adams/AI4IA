@@ -1386,14 +1386,29 @@ jobs:
           API_IMAGE: ${{ steps.images.outputs.api_image }}
         run: |
           set -euo pipefail
+          # Scan BOTH images before failing so neither report is hidden behind the
+          # other's findings; any nonzero scan or missing report fails the step.
+          failed=0
           for pair in "web:$WEB_IMAGE" "api:$API_IMAGE"; do
             service="${pair%%:*}"
             image="${pair#*:}"
+            report="${RUNNER_TEMP}/ai4ia-image-evidence/${service}.vulnerabilities.json"
+            rm -f "$report"
+            status=0
             trivy image --image-src remote --scanners vuln \
               --severity HIGH,CRITICAL --exit-code 1 --timeout 10m \
-              --format json --output "${RUNNER_TEMP}/ai4ia-image-evidence/${service}.vulnerabilities.json" \
-              "$image"
+              --format json --output "$report" \
+              "$image" || status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "::error::${service} image vulnerability scan failed (exit ${status})"
+              failed=1
+            fi
+            if [ ! -s "$report" ]; then
+              echo "::error::${service} image vulnerability report was not produced"
+              failed=1
+            fi
           done
+          exit "$failed"
 
       - name: Generate production SPDX SBOMs
         if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
