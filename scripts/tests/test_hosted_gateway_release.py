@@ -425,6 +425,72 @@ class StageTests(ReleaseFlowBase):
         arm.get = unhealthy
         with self.assertRaisesRegex(release.Refused, "concurrent-change"):
             runner.run("c2-api")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "deactivate-unpromoted"])
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+
+    def test_final_dts_refusal_deactivates_unpromoted_candidate(self):
+        for stage, image in (("c2-api", OLD_IMAGE), ("c3-api", release.IMAGES["api"])):
+            arm = FakeArm(image=image)
+            runner, receipt = self.run_stage(arm, stage=stage)
+            with self.subTest(stage=stage):
+                with mock.patch.object(runner.gate, "require_fresh",
+                                       side_effect=[None, release.Refused("dts-gate")]), \
+                        mock.patch.object(release, "load_manifest", return_value=b"m"), \
+                        mock.patch.object(release, "load_sidecar", return_value=b"s"), \
+                        self.assertRaisesRegex(release.Refused, "dts-gate"):
+                    runner.run(stage)
+                self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"],
+                                 ["create", "deactivate-unpromoted"])
+                self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+                self.assertEqual(arm.app["properties"]["configuration"]["ingress"]["traffic"],
+                                 [{"revisionName": R0, "weight": 100}])
+
+    def test_final_state_read_refusal_deactivates_unpromoted_candidate(self):
+        arm = FakeArm()
+        runner, receipt = self.run_stage(arm)
+        original = arm.get
+        state = {"failed": False}
+
+        def get(path, *args, **kwargs):
+            if (kwargs.get("phase") == "reread" and path == release.APPS["api"]
+                    and receipt.get("candidate") in arm.revisions and not state["failed"]):
+                state["failed"] = True
+                raise release.Refused("reread", 404)
+            return original(path, *args, **kwargs)
+
+        arm.get = get
+        with self.assertRaisesRegex(release.Refused, "reread"):
+            runner.run("c2-api")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "deactivate-unpromoted"])
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+
+    def test_moved_serving_traffic_refuses_cleanup_and_reports_original_stop(self):
+        arm = FakeArm()
+        runner, receipt = self.run_stage(arm)
+        original = arm.get
+
+        def get(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if (kwargs.get("phase") == "reread" and path == release.APPS["api"]
+                    and receipt.get("candidate") in arm.revisions):
+                value["properties"]["configuration"]["ingress"]["traffic"] = [
+                    {"revisionName": receipt["candidate"], "weight": 100}]
+            return value
+
+        arm.get = get
+        with self.assertRaisesRegex(release.Refused, "concurrent-change"):
+            runner.run("c2-api")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create"])
+        self.assertEqual(receipt["steps"][-1]["step"], "cleanup-refused")
+        self.assertEqual(receipt["steps"][-1]["phase"], "deactivate-target")
+
+    def test_uncertain_final_read_is_not_cleaned_up(self):
+        arm = FakeArm()
+        runner, _receipt = self.run_stage(arm)
+        with mock.patch.object(runner.gate, "require_fresh",
+                               side_effect=[None, release.Uncertain("dts")]), \
+                self.assertRaises(release.Uncertain):
+            runner.run("c2-api")
         self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create"])
 
     def test_failed_promotion_readback_restores_still_active_previous(self):
@@ -712,6 +778,18 @@ class WebStageTests(ReleaseFlowBase):
             runner.run("c2-web")
         self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
         self.assertTrue(arm.revisions[R0]["properties"]["active"])
+
+    def test_final_dts_refusal_after_passing_probes_deactivates_candidate(self):
+        arm = FakeArm()
+        runner, receipt = self.run_stage(arm, stage="c2-web")
+        with mock.patch.object(runner.gate, "require_fresh",
+                               side_effect=[None, release.Refused("dts-gate")]), \
+                self.assertRaisesRegex(release.Refused, "dts-gate"):
+            runner.run("c2-web")
+        self.assertEqual([s["step"] for s in receipt["steps"]][-2:], ["web-probe-passed", "deactivate-unpromoted"])
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+        self.assertEqual(arm.app["properties"]["configuration"]["ingress"]["traffic"],
+                         [{"revisionName": R0, "weight": 100}])
 
     def test_failed_promotion_readback_restores_unchanged_healthy_web_r0(self):
         arm = FakeArm()
