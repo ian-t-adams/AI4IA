@@ -34,6 +34,7 @@ interface Destination {
 const SEARCH_THRESHOLD = 6;
 
 export function Sidebar({
+  chatOnly = false,
   mode = "expanded",
   sessions,
   activeId,
@@ -48,6 +49,9 @@ export function Sidebar({
   onNavigate,
   libraryAvailable = false,
   photoAvatarsAvailable = false,
+  decisionsAvailable = false,
+  decisionsAvailabilityError = false,
+  onRetryDecisions,
   onOpenDeletionStatus,
   onBeforeSignOut,
   onCollapse,
@@ -57,6 +61,7 @@ export function Sidebar({
   disabled = false,
   disabledReason,
 }: {
+  chatOnly?: boolean;
   mode?: SidebarMode;
   sessions: Session[];
   activeId: string | null;
@@ -74,6 +79,10 @@ export function Sidebar({
   libraryAvailable?: boolean;
   /** Present only while the server reports photo avatars enabled. */
   photoAvatarsAvailable?: boolean;
+  /** Present only while the authenticated Decision options offer a model. */
+  decisionsAvailable?: boolean;
+  decisionsAvailabilityError?: boolean;
+  onRetryDecisions?: () => void;
   onOpenDeletionStatus: () => void;
   onBeforeSignOut?: () => boolean | void;
   onCollapse?: () => void;
@@ -93,6 +102,16 @@ export function Sidebar({
   const headingId = useId();
   const describedBy = disabled && disabledReason ? lockHintId : undefined;
   const [query, setQuery] = useState("");
+  const [utilitiesOpen, setUtilitiesOpen] = useState(false);
+  const utilitiesId = useId();
+  const utilitiesButton = useRef<HTMLButtonElement>(null);
+  const onUtilitiesKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape" || !utilitiesOpen || event.defaultPrevented) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setUtilitiesOpen(false);
+    utilitiesButton.current?.focus();
+  };
 
   // Deleting asks on the row itself: one proportionate, keyboard-reachable
   // confirmation, never a native dialog (a browser can silently suppress
@@ -148,14 +167,20 @@ export function Sidebar({
     cancelDeletion(id);
   };
 
-  const destinations: Destination[] = [
+  const destinations: Destination[] = chatOnly ? [] : [
+    { view: "chat", label: "Chat", icon: "chat", lockable: false },
+    ...(decisionsAvailable
+      ? [{ view: "decisions" as const, label: "Decisions", icon: "sliders" as const, lockable: true }]
+      : []),
+    { view: "studio", label: "Studio", icon: "studio", lockable: true },
+  ];
+  const resources: Destination[] = chatOnly ? [] : [
     ...(libraryAvailable
       ? [{ view: "library" as const, label: "Document library", icon: "library" as const, lockable: true }]
       : []),
     ...(photoAvatarsAvailable
       ? [{ view: "avatars" as const, label: "Photo avatars", icon: "avatar" as const, lockable: false }]
       : []),
-    { view: "studio", label: "Agents & workflows", icon: "studio", lockable: true },
   ];
 
   const visible = useMemo(
@@ -173,6 +198,29 @@ export function Sidebar({
     if (disabled) return;
     onNewChat();
   };
+
+  const destinationButton = (destination: Destination) => (
+    <button
+      type="button"
+      className="sidebar-link"
+      aria-label={destination.view === "studio" ? "Studio: Agents & workflows" : undefined}
+      onClick={() => go(destination)}
+      aria-current={view === destination.view ? "page" : undefined}
+      aria-disabled={(disabled && destination.lockable) || undefined}
+      aria-describedby={destination.lockable ? describedBy : undefined}
+    >
+      <Icon name={destination.icon} />
+      <span>{destination.label}</span>
+    </button>
+  );
+  const availabilityNotice = decisionsAvailabilityError ? (
+    <div className="sidebar-availability" aria-live="polite">
+      <p>Decision availability could not be checked.</p>
+      <button type="button" className="sidebar-quiet-action" onClick={onRetryDecisions}>
+        Retry Decision availability
+      </button>
+    </div>
+  ) : null;
 
   if (mode === "collapsed") {
     return (
@@ -218,18 +266,6 @@ export function Sidebar({
                 <Icon name="plus" />
               </button>
             </li>
-            <li>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => onNavigate?.("chat")}
-                aria-current={view === "chat" ? "page" : undefined}
-                aria-label="Conversation"
-                title="Conversation"
-              >
-                <Icon name="chat" />
-              </button>
-            </li>
             {destinations.map((destination) => (
               <li key={destination.view}>
                 <button
@@ -239,7 +275,7 @@ export function Sidebar({
                   aria-current={view === destination.view ? "page" : undefined}
                   aria-disabled={(disabled && destination.lockable) || undefined}
                   aria-describedby={destination.lockable ? describedBy : undefined}
-                  aria-label={destination.label}
+                  aria-label={destination.view === "studio" ? "Studio: Agents & workflows" : destination.label}
                   title={destination.label}
                 >
                   <Icon name={destination.icon} />
@@ -247,8 +283,15 @@ export function Sidebar({
               </li>
             ))}
           </ul>
+          {decisionsAvailabilityError ? (
+            <button type="button" className="icon-btn" onClick={onRetryDecisions}
+              aria-label="Decision availability could not be checked. Retry Decision availability"
+              title="Retry Decision availability">
+              <Icon name="sliders" />
+            </button>
+          ) : null}
           <div className="sidebar-rail-spacer" />
-          <ul className="sidebar-rail-group" aria-label="Utilities and account">
+          {!chatOnly ? <ul className="sidebar-rail-group" aria-label="Utilities and account">
             <li>
               <WorkflowApprovalInboxEntry disabled={disabled} compact />
             </li>
@@ -256,42 +299,18 @@ export function Sidebar({
               <button
                 type="button"
                 className="icon-btn"
-                onClick={() => onNavigate?.("settings")}
-                aria-current={view === "settings" ? "page" : undefined}
-                aria-label="Settings"
-                title="Settings"
+                onClick={() => {
+                  setUtilitiesOpen(true);
+                  onExpand?.();
+                }}
+                aria-label="Settings & more"
+                title="Settings & more"
               >
                 <Icon name="settings" />
               </button>
             </li>
-            <li className="rail-optional">
-              <a
-                className="icon-btn"
-                href={DOCS_INDEX_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="Documentation (opens in new tab)"
-                title="Documentation"
-              >
-                <Icon name="docs" />
-              </a>
-            </li>
-            <li className="rail-optional">
-              <a
-                className="icon-btn"
-                href={STATUS_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="Status (opens in new tab)"
-                title="Deployment status"
-              >
-                <Icon name="status" />
-              </a>
-            </li>
-            <li>
-              <AdminLink disabled={disabled} disabledReasonId={describedBy} compact />
-            </li>
           </ul>
+          : null}
         </div>
       </nav>
     );
@@ -347,23 +366,18 @@ export function Sidebar({
           <Icon name="plus" size={18} />
           New chat
         </button>
-        <ul className="sidebar-nav" aria-label="Destinations">
-          {destinations.map((destination) => (
-            <li key={destination.view}>
-              <button
-                type="button"
-                className="sidebar-link"
-                onClick={() => go(destination)}
-                aria-current={view === destination.view ? "page" : undefined}
-                aria-disabled={(disabled && destination.lockable) || undefined}
-                aria-describedby={destination.lockable ? describedBy : undefined}
-              >
-                <Icon name={destination.icon} />
-                <span>{destination.label}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        {!chatOnly ? (
+          <>
+            <ul className="sidebar-nav" aria-label="Destinations">
+              {destinations.map((destination) => (
+                <li key={destination.view}>
+                  {destinationButton(destination)}
+                </li>
+              ))}
+            </ul>
+            {availabilityNotice}
+          </>
+        ) : null}
         <section className="sidebar-conversations" aria-labelledby={headingId}>
           <h2 className="sidebar-section-title" id={headingId}>
             Conversations
@@ -416,10 +430,11 @@ export function Sidebar({
                             onOpen={() => onSelect(session.id)}
                             current={session.id === activeId}
                             disabled={disabled}
+                            allowRename={!chatOnly}
                             disabledReasonId={lockHintId}
                             compact
                           />
-                          <button
+                          {!chatOnly ? <button
                             ref={(element) => {
                               if (element) deleteButtons.current.set(session.id, element);
                               else deleteButtons.current.delete(session.id);
@@ -436,7 +451,7 @@ export function Sidebar({
                             title={disabled || blocked ? undefined : "Delete"}
                           >
                             <Icon name="trash" size={16} />
-                          </button>
+                          </button> : null}
                         </div>
                         {asking ? (
                           <div
@@ -520,48 +535,82 @@ export function Sidebar({
               </div>
             ))
           )}
-          <button type="button" className="sidebar-quiet-action" onClick={onOpenDeletionStatus}>
-            Deletion status
-          </button>
         </section>
-      </div>
-      <div className="sidebar-footer" aria-label="Utilities and account" role="group">
-        <WorkflowApprovalInboxEntry disabled={disabled} />
-        <button
-          type="button"
-          className="sidebar-link"
-          onClick={() => onNavigate?.("settings")}
-          aria-current={view === "settings" ? "page" : undefined}
-        >
-          <Icon name="settings" />
-          <span>Settings</span>
-        </button>
-        <div className="sidebar-footer-row">
-          <a
-            className="sidebar-link"
-            href={DOCS_INDEX_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Documentation (opens in new tab)"
-            title="Browse the AI4IA documentation hub"
+        <div className="sidebar-footer" aria-label="Utilities and account" role="group">
+          {!chatOnly ? (
+            <>
+          <div className="sidebar-footer-row">
+            <button
+              ref={utilitiesButton}
+              type="button"
+              className="sidebar-link"
+              aria-expanded={utilitiesOpen}
+              aria-controls={utilitiesId}
+              onClick={() => setUtilitiesOpen((open) => !open)}
+              onKeyDown={onUtilitiesKeyDown}
+            >
+              <Icon name="settings" />
+              <span>Settings & more</span>
+              <Icon name="chevron-down" size={16} />
+            </button>
+            <WorkflowApprovalInboxEntry disabled={disabled} compact />
+          </div>
+          <div
+            id={utilitiesId}
+            hidden={!utilitiesOpen}
+            className="sidebar-utilities"
+            onKeyDown={onUtilitiesKeyDown}
           >
-            <Icon name="docs" />
-            <span>Docs</span>
-          </a>
-          <a
-            className="sidebar-link"
-            href={STATUS_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Status (opens in new tab)"
-            title="Live deployment health and service status"
-          >
-            <Icon name="status" />
-            <span>Status</span>
-          </a>
+            {resources.length > 0 ? (
+              <ul className="sidebar-nav" aria-label="Resources">
+                {resources.map((destination) => <li key={destination.view}>{destinationButton(destination)}</li>)}
+              </ul>
+            ) : null}
+            <button type="button" className="sidebar-link" onClick={() => onNavigate?.("settings")}
+              aria-current={view === "settings" ? "page" : undefined}>
+              <Icon name="settings" /><span>Settings</span>
+            </button>
+            <button type="button" className="sidebar-link" onClick={onOpenDeletionStatus}>
+              <Icon name="trash" /><span>Deletion status</span>
+            </button>
+            <a
+              className="sidebar-link"
+              href={DOCS_INDEX_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Documentation (opens in new tab)"
+              title="Browse the AI4IA documentation hub"
+            >
+              <Icon name="docs" />
+              <span>Docs</span>
+            </a>
+            <a
+              className="sidebar-link"
+              href={STATUS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Status (opens in new tab)"
+              title="Live deployment health and service status"
+            >
+              <Icon name="status" />
+              <span>Status</span>
+            </a>
+            <AdminLink disabled={disabled} disabledReasonId={describedBy} />
+            <UserMenu onBeforeSignOut={onBeforeSignOut} />
+          </div>
+            </>
+          ) : (
+            <>
+              <div className="sidebar-footer-row">
+                <a className="sidebar-link" href={DOCS_INDEX_URL} target="_blank" rel="noopener noreferrer">
+                  <Icon name="docs" />
+                  <span>Docs</span>
+                </a>
+              </div>
+              <UserMenu onBeforeSignOut={onBeforeSignOut} />
+            </>
+          )}
         </div>
-        <AdminLink disabled={disabled} disabledReasonId={describedBy} />
-        <UserMenu onBeforeSignOut={onBeforeSignOut} />
       </div>
     </nav>
   );

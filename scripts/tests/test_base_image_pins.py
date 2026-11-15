@@ -353,6 +353,20 @@ class BaseImagePinTests(unittest.TestCase):
             )
             self.assertGreater(len(reason), 80, f"{path}: record a real reason")
 
+    def test_web_runtime_stage_drops_the_unused_global_npm(self) -> None:
+        """The base image's bundled npm fails the production image scan."""
+
+        text = (ROOT / "app/web/Dockerfile").read_text(encoding="utf-8")
+        runner = text.split(" AS runner", 1)[1]
+        removal = re.search(r"^RUN rm -rf ([^\\\n]+)", runner, re.M)
+        self.assertIsNotNone(removal, "runner stage must remove the global npm")
+        removed = set(removal.group(1).split())
+        self.assertLessEqual(
+            {"/usr/local/lib/node_modules/npm", "/usr/local/bin/npm", "/usr/local/bin/npx"}, removed,
+        )
+        self.assertIn('CMD ["node", "server.js"]', runner)
+        self.assertNotRegex(runner.split(removal.group(0), 1)[1], r"(?m)^\s*(RUN|CMD|ENTRYPOINT)\b.*\bnp[mx]\b")
+
 
 if __name__ == "__main__":
     unittest.main()

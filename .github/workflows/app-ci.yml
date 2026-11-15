@@ -51,6 +51,9 @@ on:
       - "scripts/tests/test_uptime.py"
       - "scripts/_canary_contract.py"
       - "scripts/tests/test_behavioral_evaluations.py"
+      - "scripts/prepare-gateway-cutover.py"
+      - "scripts/_private_recovery_packets.py"
+      - "scripts/tests/test_gateway_cutover.py"
       - ".github/workflows/app-ci.yml"
 
 permissions:
@@ -159,6 +162,9 @@ jobs:
           ruff check --config app/api/pyproject.toml scripts/evaluations scripts/tests/test_behavioral_evaluations.py
           pyright --project scripts/evaluations
           python -m pytest -q scripts/tests/test_behavioral_evaluations.py
+      - name: Gateway cutover payload builder tests
+        working-directory: .
+        run: python -m unittest scripts.tests.test_gateway_cutover
       - name: Memory migration script tests
         working-directory: .
         run: pytest -q scripts/tests/test_memory_cosmos_migration.py

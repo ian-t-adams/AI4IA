@@ -40,6 +40,19 @@ def test_real_factory_instrumentation(case):
     assert exercise(case)["passed"] is True
 
 
+def test_local_parent_sampled_flags():
+    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+
+    dropped = NonRecordingSpan(SpanContext(
+        123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.DEFAULT),
+    ))
+    sampled = NonRecordingSpan(SpanContext(
+        123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    ))
+    assert dropped.get_span_context().trace_flags.sampled is False
+    assert sampled.get_span_context().trace_flags.sampled is True
+
+
 @pytest.mark.parametrize("variant", ["app", "control"])
 def test_framework_native_telemetry_stays_off(variant):
     """FastAPI 0.142's own request telemetry must not become a second family.
@@ -553,7 +566,7 @@ def _exercise(case: str) -> None:
                 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
                 from azure.monitor.opentelemetry.exporter._constants import _SAMPLE_RATE_KEY
                 dropped_parent = trace.set_span_in_context(NonRecordingSpan(SpanContext(
-                    123, 456, is_remote=False, trace_flags=TraceFlags.DEFAULT,
+                    123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.DEFAULT),
                 )), Context())
                 denied = actual_provider.sampler.should_sample(
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
@@ -565,7 +578,7 @@ def _exercise(case: str) -> None:
                         return True
                 from ai4ia_api.request_telemetry import _RequestSpan
                 source_parent = RecordedParent(SpanContext(
-                    123, 456, is_remote=False, trace_flags=TraceFlags.SAMPLED,
+                    123, 456, is_remote=False, trace_flags=TraceFlags(TraceFlags.SAMPLED),
                 ))
                 recorded = _RequestSpan(source_parent, frozenset(), SpanKind.SERVER)
                 inheritance_control = RateLimitedSampler(0)
@@ -579,8 +592,27 @@ def _exercise(case: str) -> None:
                     dropped_parent, 123, "chat", kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
                 source_parent.attributes = {}
-                assert inheritance_control.should_sample(
+                # b58 falls back to the zero root rate here; b59 inherits sampling.
+                # The facade must preserve the installed SDK's decision and evidence.
+                native = inheritance_control.should_sample(
+                    trace.set_span_in_context(source_parent, Context()), 123, "chat",
+                    kind=SpanKind.CLIENT, attributes={},
+                )
+                unbounded = inheritance_control.should_sample(
                     trace.set_span_in_context(recorded, Context()), 123, "chat",
+                    kind=SpanKind.CLIENT, attributes={},
+                )
+                assert unbounded.decision == native.decision
+                assert unbounded.attributes == native.attributes
+                assert unbounded.trace_state == native.trace_state
+                assert inheritance_control.should_sample(
+                    Context(), 123, "chat", kind=SpanKind.CLIENT, attributes={},
+                ).decision == Decision.DROP
+                remote = NonRecordingSpan(SpanContext(
+                    123, 456, is_remote=True, trace_flags=TraceFlags(TraceFlags.SAMPLED),
+                ))
+                assert inheritance_control.should_sample(
+                    trace.set_span_in_context(remote, Context()), 123, "chat",
                     kind=SpanKind.CLIENT, attributes={},
                 ).decision == Decision.DROP
         assert network == []

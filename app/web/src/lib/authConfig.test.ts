@@ -60,4 +60,22 @@ describe("getAuthConfig", () => {
       redirectUri: "https://app.example.test/auth",
     });
   });
+
+  it("uses a separately configured pilot SPA without requiring the production client ID", () => {
+    const pilotSpaClientId = "f0000000-0000-4000-8000-000000000001";
+    process.env.WEB_AUTH_PROVIDER = "entra";
+    process.env.ENTRA_CLIENT_ID = pilotSpaClientId;
+    process.env.ENTRA_TENANT_ID = "6907d2a4-685a-4aea-92ab-d930217467f1";
+    process.env.ENTRA_API_SCOPE =
+      "api://ec20035f-9539-4427-a6d2-b8f3bb2f9b5a/access_as_user";
+    process.env.ENTRA_REDIRECT_URI = "https://pilot.example.test/auth";
+
+    expect(getAuthConfig()).toEqual({
+      provider: "entra",
+      clientId: pilotSpaClientId,
+      tenantId: "6907d2a4-685a-4aea-92ab-d930217467f1",
+      apiScope: "api://ec20035f-9539-4427-a6d2-b8f3bb2f9b5a/access_as_user",
+      redirectUri: "https://pilot.example.test/auth",
+    });
+  });
 });

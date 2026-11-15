@@ -99,4 +99,21 @@ describe("SettingsPage", () => {
       expect(link).toHaveAccessibleName(/opens in a new tab/);
     }
   });
+
+  it("shows review capture as unavailable, without accepting consent", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const data = screen.getByRole("region", { name: "Data & privacy" });
+    const capture = within(data).getByRole("checkbox", {
+      name: "Allow additional prompt and reply capture for review (unavailable)",
+    });
+    expect(data).toHaveTextContent("Shared-gateway review capture is unavailable.");
+    expect(data).toHaveTextContent("AI4IA does not send additional copies");
+    expect(data).toHaveTextContent("telemetry are unchanged.");
+    expect(data).toHaveTextContent("Opt-in cannot be saved yet.");
+    expect(capture).toBeDisabled();
+    expect(capture).not.toBeChecked();
+    await user.click(capture);
+    expect(capture).not.toBeChecked();
+  });
 });

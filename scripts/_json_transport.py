@@ -55,6 +55,12 @@ class Transport:
 TRANSPORTS: tuple[Transport, ...] = (
     Transport("AI4IA_CLAUDE_BINDING_JSON", "claudeBindingJson"),
     Transport("AI4IA_GROUP_POLICY_JSON", "groupPolicyJson", max_bytes=65536),
+    Transport(
+        "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
+        "sharedGatewayActivationManifest",
+        secret=True,
+        max_bytes=65536,
+    ),
 )
 
 

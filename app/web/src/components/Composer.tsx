@@ -25,6 +25,7 @@ import {
   type LibraryDocument,
 } from "@/lib/library";
 import { SLASH_COMMANDS, type SlashCommand } from "@/lib/commands";
+import { classifyPilotInput } from "@/lib/chatPilotInput";
 import { Icon } from "./Icon";
 
 export interface UploadItem {
@@ -66,6 +67,7 @@ function detectCommand(value: string, caret: number): ActiveToken | null {
 type MenuMode = "mention" | "command";
 
 export function Composer({
+  textOnly = false,
   disabled,
   streaming,
   agents,
@@ -89,6 +91,7 @@ export function Composer({
   prefill,
   onDraftChange,
 }: {
+  textOnly?: boolean;
   disabled: boolean;
   streaming: boolean;
   agents: AgentSummary[];
@@ -245,8 +248,14 @@ export function Composer({
     [agents],
   );
 
-  const mention = useMemo(() => detectMention(text, caret), [text, caret]);
-  const command = useMemo(() => detectCommand(text, caret), [text, caret]);
+  const mention = useMemo(
+    () => textOnly ? null : detectMention(text, caret),
+    [text, textOnly, caret],
+  );
+  const command = useMemo(
+    () => textOnly ? null : detectCommand(text, caret),
+    [text, textOnly, caret],
+  );
 
   const agentOptions = useMemo(() => {
     if (!mention) return [];
@@ -376,6 +385,10 @@ export function Composer({
   const submit = () => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    if (textOnly && classifyPilotInput(trimmed).unsupported) {
+      onError?.("Agent mentions and slash commands are unavailable in text-only pilot mode.");
+      return;
+    }
     if (live && liveTarget) {
       // Keep the draft when the session can't take it (it just ended).
       if (!live.onSend(trimmed)) return;
@@ -428,13 +441,15 @@ export function Composer({
       ? `agent-option-${agentOptions[highlightedIndex]?.name}`
       : `command-option-${commandOptions[highlightedIndex]?.name}`;
 
-  const placeholder = liveTarget
+  const placeholder = textOnly
+    ? "Plain-text message"
+    : liveTarget
     ? live?.avatarName
       ? `Type to ${live.avatarName}. They answer out loud.`
       : "Type to the live voice. It answers out loud."
     : "Message AI4IA";
   const sendDisabled = liveTarget ? !text.trim() : disabled || !text.trim();
-  const attachBlocked = !capabilities || uploading || atDocLimit;
+  const attachBlocked = textOnly || !capabilities || uploading || atDocLimit;
   const voiceBlocked =
     voiceLive !== undefined &&
     (!voiceLive.supported ||
@@ -763,51 +778,54 @@ export function Composer({
             onKeyDown={onKeyDown}
           />
           <div className="composer-toolbar">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept={accept}
-              className="visually-hidden"
-              aria-hidden="true"
-              tabIndex={-1}
-              onChange={(e) => {
-                void onPickFiles(e.target.files);
-                // Reset so re-selecting the same file fires onChange again.
-                e.target.value = "";
-              }}
-            />
-            <button
-              type="button"
-              className="icon-btn composer-icon-button composer-attach-button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={attachBlocked}
-              aria-busy={uploading}
-              aria-label={
-                atDocLimit
-                  ? `Attachment limit reached (${maxDocuments})`
-                  : !capabilities
-                    ? capabilitiesError
-                      ? "Attachments unavailable"
-                      : "Loading attachment capabilities"
-                    : uploading
-                    ? "Uploading document"
-                    : "Attach files"
-              }
-              title={
-                atDocLimit
-                  ? `You can attach at most ${maxDocuments} files here`
-                  : !capabilities
-                    ? capabilitiesError ?? "Loading attachment capabilities"
-                    : uploading
-                    ? "Uploading…"
-                    : capabilities
-                      ? `Attach ${capabilities.modalities.join(", ")} files up to ${formatBytes(capabilities.maxBytes)}`
-                      : "Loading attachment capabilities"
-              }
-            >
-              <Icon name="attach" />
-            </button>
+            {!textOnly ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept={accept}
+                  className="visually-hidden"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  onChange={(e) => {
+                    void onPickFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  className="icon-btn composer-icon-button composer-attach-button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={attachBlocked}
+                  aria-busy={uploading}
+                  aria-label={
+                    atDocLimit
+                      ? `Attachment limit reached (${maxDocuments})`
+                      : !capabilities
+                        ? capabilitiesError
+                          ? "Attachments unavailable"
+                          : "Loading attachment capabilities"
+                        : uploading
+                          ? "Uploading document"
+                          : "Attach files"
+                  }
+                  title={
+                    atDocLimit
+                      ? `You can attach at most ${maxDocuments} files here`
+                      : !capabilities
+                        ? capabilitiesError ?? "Loading attachment capabilities"
+                        : uploading
+                          ? "Uploading…"
+                          : capabilities
+                            ? `Attach ${capabilities.modalities.join(", ")} files up to ${formatBytes(capabilities.maxBytes)}`
+                            : "Loading attachment capabilities"
+                  }
+                >
+                  <Icon name="attach" />
+                </button>
+              </>
+            ) : null}
             {voiceLive && (
               <button
                 type="button"
@@ -856,9 +874,13 @@ export function Composer({
               </button>
             )}
             <span id="composer-hint" className="composer-hint">
-              {liveTarget
+              {textOnly
+                ? "Plain-text chat only · attachments, agents, commands and voice are unavailable"
+                : liveTarget
                 ? "Enter to send to the live session · Shift+Enter for a new line"
-                : "Enter to send · Shift+Enter for a new line · / commands · @ agents"}
+                : textOnly
+                  ? "Enter to send · Shift+Enter for a new line"
+                  : "Enter to send · Shift+Enter for a new line · / commands · @ agents"}
             </span>
             {streaming && !liveTarget ? (
               <button

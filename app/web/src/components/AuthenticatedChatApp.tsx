@@ -33,6 +33,10 @@ const ChatApp = dynamic(
   },
 );
 
-export function AuthenticatedChatApp() {
-  return <ChatApp />;
+export function AuthenticatedChatApp({
+  chatPilotCompatibilityEnabled = false,
+}: {
+  chatPilotCompatibilityEnabled?: boolean;
+}) {
+  return <ChatApp chatPilotCompatibilityEnabled={chatPilotCompatibilityEnabled} />;
 }

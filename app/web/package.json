@@ -11,7 +11,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:decisions-browser": "node scripts/test-decisions-browser.mjs"
   },
   "dependencies": {
     "@azure/msal-browser": "^5.25.1",
