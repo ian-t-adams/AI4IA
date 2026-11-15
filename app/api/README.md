@@ -78,6 +78,24 @@ still remain. The final image copies that root-owned environment, not uv, build
 caches, source inputs, or a workstation virtual environment, and runs as UID
 `10001`. The build-only uv version must match `UV_VERSION` in `app-ci.yml`.
 
+The official digest-pinned Python 3.12 Alpine base replaces Debian slim to avoid
+unfixed HIGH/CRITICAL Debian findings. Pinned APK updates repair the base's
+krb5 findings and retain the complete package inventory; `libstdc++` supplies
+native wheel dependencies and `tzdata` preserves system TZif calendar rules.
+The dependency-only sync refuses
+source builds: every locked runtime dependency must have a supported wheel for
+the target platform. No glibc shim or alternative package vendor is used.
+The installed protobuf release supplies a supported pure-Python wheel on musl;
+CI exercises serialization as well as native gRPC and cryptography imports.
+
+PR image CI checks stdlib compression/SQLite/TLS, SDK imports, workflow calendars,
+non-root ownership, the default command with a non-default port, loopback-only
+health probes with networking disabled, and graceful SIGTERM. `exec` keeps
+Uvicorn as PID 1 while retaining `/bin/sh` for Container Apps exec. The final API
+image is scanned for all HIGH/CRITICAL findings, including unfixed findings,
+with no ignore file; its vulnerability JSON and complete SPDX SBOM are retained
+even when the scan fails. A base-only scan is not final-image acceptance.
+
 When changing dependencies, refresh the lock deliberately from public PyPI and
 commit it with `pyproject.toml`; see [the contributor guide](../../AGENTS.md#frozen-api-runtime-dependencies).
 Do not repair a failing build by dropping the freshness guard. The image build

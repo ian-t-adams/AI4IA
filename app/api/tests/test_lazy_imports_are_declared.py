@@ -127,7 +127,47 @@ def _assert_runtime_image() -> None:
         assert not os.access(sys.prefix, os.W_OK), "runtime user must not own the installed environment"
         importlib.import_module("uvloop")
         assert "colorama" not in installed, "Windows-only dependency leaked into Linux"
+        _assert_native_runtime()
     importlib.import_module("ai4ia_api.main")
+
+
+def _assert_native_runtime() -> None:
+    import bz2
+    import ctypes
+    import lzma
+    import sqlite3
+    import ssl
+    import subprocess
+    import zlib
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from google.protobuf.struct_pb2 import Struct
+
+    for module in (
+        "aiohttp._http_parser", "grpc._cython.cygrpc", "httptools",
+        "pydantic_core", "azure.cosmos.aio", "azure.identity.aio",
+        "durabletask.azuremanaged", "pypdf", "oauthlib",
+    ):
+        importlib.import_module(module)
+    sample = b"runtime platform smoke"
+    for codec in (bz2, lzma, zlib):
+        assert codec.decompress(codec.compress(sample)) == sample
+    with sqlite3.connect(":memory:") as connection:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+    assert ssl.create_default_context().cert_store_stats()["x509_ca"] > 0
+    assert ctypes.CDLL(None) is not None
+    cipher = AESGCM(AESGCM.generate_key(bit_length=128))
+    nonce = b"\0" * 12
+    assert cipher.decrypt(nonce, cipher.encrypt(nonce, sample, None), None) == sample
+    original = Struct()
+    original.update({"native": True, "values": [1, "two"]})
+    restored = Struct()
+    restored.ParseFromString(original.SerializeToString())
+    assert restored == original
+    subprocess.run(
+        ["sh", "-c", 'exec "$1" -c "import ssl, sqlite3"', "runtime-smoke", sys.executable],
+        check=True, timeout=10,
+    )
 
 
 if __name__ == "__main__":

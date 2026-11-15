@@ -19,6 +19,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 API = ROOT / "app" / "api"
 DOCKERFILE = API / "Dockerfile"
@@ -65,6 +67,7 @@ class ApiRuntimeDockerContractTests(unittest.TestCase):
                 command,
             )
         self.assertIn("--no-install-project", commands[1])
+        self.assertIn("--no-build", commands[1], "native dependencies require supported target wheels")
         self.assertIn("--no-editable", commands[2])
         instructions = _instructions()
         self.assertIn(["COPY", "pyproject.toml", "uv.lock", "README.md", "./"], instructions)
@@ -85,8 +88,11 @@ class ApiRuntimeDockerContractTests(unittest.TestCase):
             [["COPY", "--from=build", "/opt/venv", "/opt/venv"]],
         )
         self.assertIn(["ENV", "PATH=/opt/venv/bin:$PATH"], runtime)
-        self.assertIn(["RUN", "useradd", "--create-home", "--uid", "10001", "appuser"], runtime)
+        self.assertIn(["RUN", "adduser", "-D", "-u", "10001", "appuser"], runtime)
         self.assertIn(["USER", "appuser"], runtime)
+        self.assertIn([
+            "CMD", "[sh,", "-c,", "exec uvicorn ai4ia_api.main:app --host 0.0.0.0 --port ${PORT}]",
+        ], runtime)
         environment = {
             token.split("=", 1)[0]: token.split("=", 1)[1]
             for instruction in instructions if instruction[0] == "ENV"
@@ -106,6 +112,30 @@ class ApiRuntimeDockerContractTests(unittest.TestCase):
         self.assertIn('docker run --rm ai4ia-api:ci python -c "import ai4ia_api.main"', docker_ci)
         self.assertIn("docker run --rm --interactive ai4ia-api:ci python -", docker_ci)
         self.assertIn("< app/api/tests/test_lazy_imports_are_declared.py", docker_ci)
+
+    def test_api_final_image_scan_is_blocking_and_retains_inventory_on_failure(self) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/docker-build.yml").read_text(encoding="utf-8"),
+        )
+        steps = workflow["jobs"]["api"]["steps"]
+        scan = next(step for step in steps if step["name"].startswith("Scan final API image"))
+        options = scan["with"]
+        self.assertEqual(options["scan-type"], "image")
+        self.assertEqual(options["image-ref"], "${{ steps.api-image.outputs.image_id }}")
+        self.assertEqual(options["scanners"], "vuln")
+        self.assertEqual(options["severity"], "HIGH,CRITICAL")
+        self.assertEqual(options["exit-code"], "1")
+        self.assertFalse(scan.get("continue-on-error"))
+        self.assertFalse(scan.get("if"))
+        self.assertFalse({"ignore-unfixed", "trivyignores", "vex"} & options.keys())
+        sbom = next(step for step in steps if step["name"] == "Generate API SPDX SBOM")
+        self.assertEqual(sbom["with"]["image-ref"], options["image-ref"])
+        self.assertEqual(sbom["with"]["format"], "spdx-json")
+        retention = next(step for step in steps if step["name"].startswith("Retain API vulnerability"))
+        for step in (sbom, retention):
+            self.assertEqual(step["if"], "always() && steps.api-image.outcome == 'success'")
+        self.assertIn(options["output"], retention["with"]["path"])
+        self.assertIn(sbom["with"]["output"], retention["with"]["path"])
 
 
 class ApiRuntimeLockBehaviorTests(unittest.TestCase):
@@ -257,6 +287,18 @@ class ApiRuntimeLockBehaviorTests(unittest.TestCase):
         self.assertNotIn("uvloop", windows)
         self.assertIn("colorama", windows)
         self.assertNotIn("colorama", linux)
+        self.assertEqual(lock.read_bytes(), before)
+
+    def test_musl_selects_the_same_locked_runtime_versions_as_glibc(self) -> None:
+        lock = self.copy_api_fixture()
+        before = lock.read_bytes()
+        glibc = self.planned_dependencies(
+            "--python-platform", "x86_64-unknown-linux-gnu",
+        )
+        musl = self.planned_dependencies(
+            "--python-platform", "x86_64-unknown-linux-musl",
+        )
+        self.assertEqual(musl, glibc, "changing libc must not remove or downgrade dependencies")
         self.assertEqual(lock.read_bytes(), before)
 
 
