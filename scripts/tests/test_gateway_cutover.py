@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.tests._loader import load_script
 
@@ -20,6 +22,58 @@ RESOURCE = (
     "/resourceGroups/synthetic/providers/Microsoft.App/containerApps/api"
 )
 WEB_RESOURCE = RESOURCE.rsplit("/", 1)[0] + "/ca-web-test"
+API_CLIENT_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+
+def synthetic_c3_inputs(
+    *, credential="managed-identity", extra_auth_field=False, activation_ready=False,
+):
+    example_path = ROOT / "app" / "api" / "tests" / "shared_gateway_v21.example.json"
+    manifest = json.loads(example_path.read_bytes())
+    manifest["contractVersion"] = "2.2.0"
+    manifest["status"] = "resolved"
+    manifest["gateway"].pop("anthropicBaseUrl")
+    manifest["gateway"].pop("videoBaseUrl")
+    manifest["gateway"].update({
+        "baseUrl": "https://gateway.test/lane/v1",
+        "allowedHosts": ["gateway.test"],
+        "pathPrefix": "/lane/v1",
+    })
+    manifest["auth"].update({
+        "tenantId": "11111111-2222-4333-8444-555555555555",
+        "issuer": "https://login.microsoftonline.com/11111111-2222-4333-8444-555555555555/v2.0",
+        "audience": "api://gateway.test",
+        "scope": "api://gateway.test/.default",
+        "callerClientId": API_CLIENT_ID,
+        "credential": credential,
+    })
+    if extra_auth_field:
+        manifest["auth"]["clientSecret"] = "synthetic-secret"
+    for capability in manifest["capabilities"].values():
+        capability["models"] = {}
+    manifest_bytes = (
+        json.dumps(manifest, indent=2, ensure_ascii=True).replace("\n", "\r\n") + "\r\n"
+    ).encode("utf-8")
+    sidecar_bytes = json.dumps({
+        "activationReady": activation_ready,
+        "applicationChanged": False,
+        "modelRequests": 0,
+        "baseUrl": manifest["gateway"]["baseUrl"],
+        "callerClientId": API_CLIENT_ID,
+    }, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return manifest_bytes, sidecar_bytes
+
+
+def pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes):
+    return (
+        patch.object(
+            CUTOVER, "C3_CLASSIFIED_MANIFESTS",
+            {hashlib.sha256(manifest_bytes).hexdigest(): "nonconfidential-operational"},
+        ),
+        patch.object(
+            CUTOVER, "C3_SIDECAR_SHA256", hashlib.sha256(sidecar_bytes).hexdigest(),
+        ),
+    )
 
 
 def snapshot(mode="Single", service="api"):
@@ -28,7 +82,7 @@ def snapshot(mode="Single", service="api"):
     revision_name = app_name + "--r0"
     env = (
         [
-            {"name": "AZURE_CLIENT_ID", "value": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"},
+            {"name": "AZURE_CLIENT_ID", "value": API_CLIENT_ID},
             {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "false"},
             {"name": "VOICE_UNCHANGED", "secretRef": "voice"},
         ]
@@ -148,6 +202,41 @@ class CutoverTests(unittest.TestCase):
         ]
         self.assertEqual(merge_patch(app, payload), expected)
         self.assertEqual(app, original)
+
+    def test_c1_web_transitions_single_to_multiple_and_pins_latest_r0_without_template(self):
+        app, revision = snapshot("Single", service="web")
+        app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"latestRevision": True, "weight": 100},
+        ]
+        original = copy.deepcopy(app)
+        payload = self.build(app, revision, stage="C1", service="web")
+        self.assertNotIn("template", payload["properties"])
+        expected = copy.deepcopy(original)
+        expected["properties"]["configuration"]["activeRevisionsMode"] = "Multiple"
+        expected["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": "ca-web-test--r0", "weight": 100},
+        ]
+        self.assertEqual(merge_patch(app, payload), expected)
+        self.assertEqual(app, original)
+
+    def test_c1_web_rejects_wrong_mode_name_and_revision_traffic(self):
+        app, revision = snapshot("Multiple", service="web")
+        with self.assertRaisesRegex(ValueError, "C1 requires Single mode"):
+            self.build(app, revision, stage="C1", service="web")
+
+        app, revision = snapshot("Single", service="web")
+        app["name"] = "web-test"
+        app["id"] = WEB_RESOURCE.rsplit("/", 1)[0] + "/web-test"
+        revision["id"] = app["id"] + "/revisions/" + revision["name"]
+        with self.assertRaisesRegex(ValueError, "web resource name"):
+            self.build(app, revision, stage="C1", service="web")
+
+        app, revision = snapshot("Single", service="web")
+        app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": "ca-web-test--old", "weight": 100},
+        ]
+        with self.assertRaisesRegex(ValueError, "traffic must identify R0"):
+            self.build(app, revision, stage="C1", service="web")
 
     def test_c2_candidate_image_keeps_r0_at_100_and_changes_only_image_and_suffix(self):
         app, revision = snapshot("Multiple")
@@ -316,7 +405,7 @@ class CutoverTests(unittest.TestCase):
                 )
 
         app, revision = snapshot("Multiple", service="web")
-        with self.assertRaisesRegex(ValueError, "classified as nonconfidential"):
+        with self.assertRaisesRegex(ValueError, "web service supports only C1 and C2"):
             self.build(app, revision, stage="C3", service="web")
 
     def test_c2_rejects_stale_or_ambiguous_revision_and_image_inputs(self):
@@ -468,10 +557,174 @@ class CutoverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.build(app, revision, stage="C1")
 
-    def test_c3_is_blocked_without_manifest_classification(self):
+    def test_c3_uses_exact_classified_manifest_and_preserves_every_other_field(self):
         app, revision = snapshot("Multiple")
-        with self.assertRaisesRegex(ValueError, "classified as nonconfidential"):
-            self.build(app, revision, stage="C3")
+        for value in (app["properties"]["template"], revision["properties"]["template"]):
+            value["containers"][0]["env"].extend([
+                {
+                    "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
+                    "secretRef": "shared-gateway-activation-manifest",
+                },
+                {
+                    "name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS",
+                    "value": "example-chat-deployment",
+                },
+                {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "false"},
+            ])
+        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        original_app = copy.deepcopy(app)
+        original_template = copy.deepcopy(revision["properties"]["template"])
+        rows = revision_inventory(["api--r0", "api--old"])
+        with patches[0], patches[1]:
+            payload = self.build(
+                app, revision, stage="C3", suffix="gateway-on-1",
+                existing_revisions=rows, manifest_bytes=manifest_bytes,
+                classification_sidecar_bytes=sidecar_bytes,
+            )
+
+        self.assertEqual(app, original_app)
+        self.assertEqual(payload["properties"]["configuration"]["ingress"]["traffic"], [
+            {"revisionName": "api--r0", "weight": 100},
+        ])
+        candidate = payload["properties"]["template"]
+        expected = CUTOVER.writable_template_projection(original_template)
+        expected["revisionSuffix"] = "gateway-on-1"
+        env = expected["containers"][0]["env"]
+        enabled = next(item for item in env if item["name"] == "AI4IA_SHARED_GATEWAY_ENABLED")
+        enabled["value"] = "true"
+        manifest_env = next(
+            item for item in env
+            if item["name"] == "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST"
+        )
+        manifest_env.clear()
+        manifest_env.update({
+            "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
+            "value": manifest_bytes.decode("utf-8"),
+        })
+        self.assertEqual(candidate, expected)
+        self.assertEqual(
+            hashlib.sha256(manifest_env["value"].encode("utf-8")).digest(),
+            hashlib.sha256(manifest_bytes).digest(),
+        )
+        self.assertEqual(
+            next(item for item in candidate["containers"][0]["env"]
+                 if item["name"] == "AI4IA_CHAT_PILOT_ISOLATION_ENABLED")["value"],
+            "false",
+        )
+        self.assertNotIn("secrets", payload["properties"])
+        self.assertEqual(
+            next(item for item in candidate["containers"][0]["env"]
+                 if item["name"] == "VOICE_UNCHANGED"),
+            {"name": "VOICE_UNCHANGED", "secretRef": "voice"},
+        )
+
+    def test_c3_requires_the_exact_qualified_loader_blob(self):
+        loader_path = ROOT / "app" / "api" / "src" / "ai4ia_api" / "shared_gateway_contract.py"
+        self.assertEqual(
+            CUTOVER.git_blob_sha1(loader_path.read_bytes()),
+            "cd89beaffe81acb0dd344ddd8a81d1a0c78e890e",
+        )
+
+    def test_c3_rejects_hash_sidecar_activation_and_classification_mismatches(self):
+        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
+        with self.assertRaisesRegex(ValueError, "exact offline classification"):
+            CUTOVER.load_c3_contract(b"{", b"{", API_CLIENT_ID)
+
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        with patches[0], patches[1], self.assertRaisesRegex(ValueError, "sidecar digest"):
+            CUTOVER.load_c3_contract(manifest_bytes, b"{}", API_CLIENT_ID)
+
+        ready_manifest, ready_sidecar = synthetic_c3_inputs(activation_ready=True)
+        ready_patches = pin_synthetic_c3_inputs(ready_manifest, ready_sidecar)
+        with ready_patches[0], ready_patches[1], self.assertRaisesRegex(
+            ValueError, "non-activation state",
+        ):
+            CUTOVER.load_c3_contract(ready_manifest, ready_sidecar, API_CLIENT_ID)
+
+        classification_patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        with classification_patches[0], classification_patches[1], patch.object(
+            CUTOVER, "C3_CLASSIFIED_MANIFESTS", {},
+        ), self.assertRaisesRegex(ValueError, "exact offline classification"):
+            CUTOVER.load_c3_contract(manifest_bytes, sidecar_bytes, API_CLIENT_ID)
+
+    def test_c3_loader_rejects_identity_mismatch_extra_credentials_and_wrong_contract(self):
+        app, revision = snapshot("Multiple")
+        for value in (app["properties"]["template"], revision["properties"]["template"]):
+            value["containers"][0]["env"].extend([
+                {"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"},
+                {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "false"},
+            ])
+
+        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
+        app["properties"]["template"]["containers"][0]["env"][0]["value"] = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+        revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(
+            app["properties"]["template"]["containers"][0]["env"],
+        )
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        with patches[0], patches[1], self.assertRaisesRegex(
+            ValueError, "qualified shared gateway contract loader",
+        ):
+            self.build(
+                app, revision, stage="C3", suffix="gateway-on-1",
+                existing_revisions=revision_inventory(["api--r0"]),
+                manifest_bytes=manifest_bytes, classification_sidecar_bytes=sidecar_bytes,
+            )
+
+        for manifest, sidecar in (
+            synthetic_c3_inputs(credential="client-secret"),
+            synthetic_c3_inputs(extra_auth_field=True),
+        ):
+            bad_patches = pin_synthetic_c3_inputs(manifest, sidecar)
+            app, revision = snapshot("Multiple")
+            for value in (app["properties"]["template"], revision["properties"]["template"]):
+                value["containers"][0]["env"].extend([
+                    {"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"},
+                    {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "false"},
+                ])
+            with bad_patches[0], bad_patches[1], self.subTest(manifest=manifest), self.assertRaisesRegex(
+                ValueError, "qualified shared gateway contract loader",
+            ):
+                self.build(
+                    app, revision, stage="C3", suffix="gateway-on-1",
+                    existing_revisions=revision_inventory(["api--r0"]),
+                    manifest_bytes=manifest, classification_sidecar_bytes=sidecar,
+                )
+
+    def test_c3_requires_a_valid_opt_in_and_only_replaces_the_expected_manifest_ref(self):
+        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        for control in (
+            "unknown-deployment", "duplicate-deployment", "wrong-secret-ref",
+            "missing-manifest-ref", "selector-on", "pilot-on",
+        ):
+            app, revision = snapshot("Multiple")
+            env = app["properties"]["template"]["containers"][0]["env"]
+            revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(env)
+            if control != "missing-manifest-ref":
+                env.append({
+                    "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
+                    "secretRef": "shared-gateway-activation-manifest",
+                })
+            if control == "unknown-deployment":
+                env.append({"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "not-in-contract"})
+            else:
+                env.append({"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"})
+            if control == "duplicate-deployment":
+                env.append({"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"})
+            if control == "wrong-secret-ref":
+                env[-2]["secretRef"] = "unrelated-secret"
+            if control == "selector-on":
+                env[next(i for i, item in enumerate(env) if item["name"] == "AI4IA_SHARED_GATEWAY_ENABLED")]["value"] = "true"
+            if control == "pilot-on":
+                env.append({"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "true"})
+            revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(env)
+            with patches[0], patches[1], self.subTest(control=control), self.assertRaises(ValueError):
+                self.build(
+                    app, revision, stage="C3", suffix="gateway-on-1",
+                    existing_revisions=revision_inventory(["api--r0"]),
+                    manifest_bytes=manifest_bytes, classification_sidecar_bytes=sidecar_bytes,
+                )
 
     def test_c3_cli_refuses_before_reading_snapshots_or_writing_payload(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -485,7 +738,7 @@ class CutoverTests(unittest.TestCase):
             ]
             result = subprocess.run(command, capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("classified as nonconfidential", result.stderr)
+            self.assertIn("exact offline-classified manifest", result.stderr)
             self.assertNotIn("No such file", result.stderr)
             self.assertFalse(output.exists())
 
