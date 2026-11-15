@@ -716,6 +716,52 @@ class CutoverIntegrationTests(unittest.TestCase):
             if body is not None:
                 self.assertNotIn("secrets", (body["properties"].get("configuration") or {}))
 
+    def test_real_builder_accepts_arm_casing_and_max_scale_but_not_other_drift(self):
+        arm = FakeArm()
+        runner = release.Release(arm, env(), {"steps": []})
+        app, rev = runner.snapshot("api")
+        app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
+        app["id"] = app["id"].replace("/resourceGroups/", "/resourcegroups/").replace(
+            "/containerApps/", "/containerapps/")
+        rev["id"] = rev["id"].replace("/containerApps/", "/containerapps/")
+        rev["properties"]["runningState"] = "RunningAtMaxScale"
+        payload = release.build_payload(app, rev, resource_id=release.APPS["api"], stage="C1", service="api")
+        self.assertEqual(payload["properties"]["configuration"]["activeRevisionsMode"], "Multiple")
+        cases = {
+            "id": ("id", app["id"].replace("ca-api-private", "ca-api-other")),
+            "r0-state": ("runningState", "RunningAtMaxScaleX"),
+        }
+        for reason, (field, value) in cases.items():
+            a, r = json.loads(json.dumps(app)), json.loads(json.dumps(rev))
+            if field == "id":
+                a["id"] = value
+            else:
+                r["properties"][field] = value
+            with self.subTest(reason), self.assertRaises(release.Refused) as caught:
+                release.build_payload(a, r, resource_id=release.APPS["api"], stage="C1", service="api")
+            self.assertEqual(caught.exception.detail["reason"], reason)
+
+    def test_real_builder_refusal_reports_only_line_and_snapshot_facts(self):
+        arm = FakeArm()
+        runner = release.Release(arm, env(), {"steps": []})
+        app, rev = runner.snapshot("api")
+        app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
+        rev["properties"]["template"]["containers"][0]["image"] = "registry.example/ai4ia/api:latest"
+        app["properties"]["template"] = rev["properties"]["template"]
+        with self.assertRaises(release.Refused) as caught:
+            release.build_payload(app, rev, resource_id=release.APPS["api"], stage="C1", service="api")
+        detail = caught.exception.detail
+        self.assertEqual(caught.exception.phase, "payload")
+        self.assertEqual((detail["error"], detail["reason"]), ("ValueError", "image"))
+        builder = (release.ROOT / "scripts" / "prepare-gateway-cutover.py").read_text().splitlines()
+        self.assertIn("digest-pinned", builder[detail["line"] - 1])
+        self.assertIs(detail["facts"]["app_id_exact"], True)
+        self.assertIs(detail["facts"]["digest_pinned"], False)
+        text = json.dumps(detail)
+        for secret in ("slurmfactory", rev["name"], "subscriptions", "registry.example"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(arm.writes, 0)
+
 
 class WebStageTests(ReleaseFlowBase):
     """c2-web against the fake app state; the web app id is aliased to the fake."""
