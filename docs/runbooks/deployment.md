@@ -2693,8 +2693,10 @@ The lane depends on these controls and limitations:
   Durable Task Scheduler metrics for hub `ai4ia` must show that orchestrator
   and activity active and pending items are all exactly 0. That observation
   must be at most five minutes old. Empty, missing, null, or stale data refuses
-  the write; it never counts as zero. A zero result does not prove that timers,
-  schedules, or document recovery have drained.
+  the write; it never counts as zero. The newest reported timestamp must have
+  all four values; an older complete zero cannot hide a newer partial sample.
+  This gate also applies to traffic restoration and manual rollback. A zero
+  result does not prove that timers, schedules, or document recovery have drained.
 - **No compare-and-swap.** ARM Container Apps PATCH has no ETag precondition
   here. The lane re-reads app and revision state immediately before each
   single write and refuses on any drift. Serialization comes from the
@@ -2705,11 +2707,11 @@ The lane depends on these controls and limitations:
   flags, and stops for operator disposition.
 - **Rollback scope.** A candidate that fails readiness or the smoke is
   deactivated without receiving traffic. If the post-promotion readback fails,
-  the lane returns traffic to the revision that was serving moments earlier and
-  is still active. Once C2 deactivates the pre-release R0, nothing reactivates
-  it automatically: its retired-video containment is unqualified. The
-  `rollback-api` stage moves traffic only to a named, active
-  revision that runs the released image with the shared gateway off.
+  C2 stops and reconciles without restoring the pre-release R0, whose
+  retired-video containment is unqualified. C3 may restore the previous
+  revision only after it is rechecked as healthy, active, gateway-off, and on
+  the released image, and after the worker gate passes again. The
+  `rollback-api` stage applies those same checks to its named target.
 - **C3 smoke.** The smoke runs inside the not-yet-promoted revision's `api`
   container through the documented Container Apps exec channel, using the
   revision's own settings, user-assigned managed identity, manifest, and shared

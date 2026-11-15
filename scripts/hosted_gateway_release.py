@@ -358,13 +358,15 @@ class Arm:
             if status != 200:
                 raise Uncertain(phase, status)
             try:
-                state = json.loads(body).get("status") if body else "Succeeded"
+                state = json.loads(body).get("status")
             except (ValueError, AttributeError):
                 raise Uncertain(phase, status) from None
-            if state in (None, "Succeeded"):
+            if state == "Succeeded":
                 return
             if state in ("Failed", "Canceled"):
                 raise Uncertain(phase + "-failed", status)
+            if state not in ("Accepted", "Running", "InProgress"):
+                raise Uncertain(phase, status)
         raise Uncertain(phase + "-timeout")
 
 
@@ -423,10 +425,10 @@ class DtsGate:
 
 
 def latest_zero_observation(value: Any, now: datetime) -> datetime | None:
-    """Return the newest timestamp where all four metrics are present and exactly 0."""
+    """Require all four metrics to be zero at the newest reported timestamp."""
     try:
         metrics = value["value"]
-        series: dict[str, dict[str, Any]] = {}
+        series: dict[str, dict[datetime, Any]] = {}
         for metric in metrics:
             name = metric["name"]["value"]
             if name not in DTS_METRICS or name in series:
@@ -434,23 +436,26 @@ def latest_zero_observation(value: Any, now: datetime) -> datetime | None:
             ts = metric["timeseries"]
             if len(ts) != 1:
                 return None
-            series[name] = {p["timeStamp"]: p.get("maximum") for p in ts[0]["data"]}
+            points: dict[datetime, Any] = {}
+            for point in ts[0]["data"]:
+                stamp = datetime.fromisoformat(point["timeStamp"].replace("Z", "+00:00"))
+                if stamp.tzinfo is None or stamp in points:
+                    return None
+                points[stamp] = point.get("maximum")
+            series[name] = points
         if set(series) != set(DTS_METRICS):
             return None
-        stamps = [s for s in series[DTS_METRICS[0]] if all(
-            type(series[m].get(s)) in (int, float) for m in DTS_METRICS)]
+        stamps = {stamp for points in series.values() for stamp in points}
         if not stamps:
             return None
-        latest = max(stamps, key=lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")))
-        observed = datetime.fromisoformat(latest.replace("Z", "+00:00"))
-        if observed.tzinfo is None:
-            return None
+        observed = max(stamps)
     except (KeyError, TypeError, ValueError, IndexError, AttributeError):
         return None
     age = (now - observed).total_seconds()
     if age < -60 or age > GATE_MAX_AGE:
         return None
-    if any(series[m][latest] != 0 for m in DTS_METRICS):
+    if any(type(series[m].get(observed)) not in (int, float) or series[m][observed] != 0
+           for m in DTS_METRICS):
         return None
     return observed
 
@@ -501,6 +506,24 @@ def env_value(revision: dict, name: str) -> Any:
         if item.get("name", "").upper() == name:
             return item if set(item) != {"name", "value"} else item["value"]
     return None
+
+
+def gateway_off_release(revision: dict) -> bool:
+    containers = ((revision.get("properties") or {}).get("template") or {}).get("containers") or []
+    return (ready(revision) and len(containers) == 1 and containers[0].get("image") == IMAGES["api"]
+            and env_value(revision, "AI4IA_SHARED_GATEWAY_ENABLED") in (None, "false")
+            and env_value(revision, "AI4IA_SHARED_GATEWAY_DEPLOYMENTS") is None
+            and env_value(revision, "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST") is None)
+
+
+def template_matches(actual: Any, expected: Any) -> bool:
+    if not isinstance(actual, dict) or not isinstance(expected, dict):
+        return False
+    try:
+        project = cutover().writable_template_projection
+        return project(actual) == project(expected)
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 # --------------------------------------------------------------------------- exec smoke
@@ -866,8 +889,13 @@ class Release:
         self.gate.require_fresh()
         self.guarded_patch(service, projection(app), payload, "create")
         try:
-            self.wait_ready(service, candidate)
+            candidate_rev = self.wait_ready(service, candidate)
             after = self.arm.get(app_id, phase="readback")
+            desired_template = payload["properties"]["template"]
+            if (candidate_rev.get("name") != candidate
+                    or not template_matches((candidate_rev.get("properties") or {}).get("template"), desired_template)
+                    or not template_matches((after.get("properties") or {}).get("template"), desired_template)):
+                raise Refused("candidate-template")
             if not traffic_is(after, r0):
                 raise Refused("traffic-drift")
             self.step("candidate-ready", revision=candidate)
@@ -880,12 +908,15 @@ class Release:
         except Uncertain:
             raise
         except Refused:
-            self.deactivate(service, candidate, "deactivate-unpromoted")
+            self.deactivate(service, candidate, "deactivate-unpromoted", r0)
             raise
         self.gate.require_fresh()
         self.step("dts-gate", observed=self.gate.observed.isoformat())
         current = self.arm.get(app_id, phase="reread")
-        if not traffic_is(current, r0):
+        candidate_rev = self.arm.get(f"{app_id}/revisions/{candidate}", phase="reread")
+        if (projection(current) != projection(after) or not traffic_is(current, r0)
+                or not ready(candidate_rev) or candidate_rev.get("name") != candidate
+                or not template_matches((candidate_rev.get("properties") or {}).get("template"), desired_template)):
             raise Refused("concurrent-change")
         self.step("promote", write="PATCH", revision=candidate)
         self.arm.write("PATCH", app_id, {"location": current["location"], "properties": {
@@ -897,26 +928,47 @@ class Release:
             if not traffic_is(after, candidate) or not ready(rev_after):
                 raise Refused("promote-readback")
         except Refused:
-            # R0 served 100% moments ago and is still active: restoring it adds no exposure.
+            # Only the qualified gateway-off release can be restored automatically.
+            if stage != "C3":
+                raise Uncertain("promote-readback") from None
             restored = self.arm.get(app_id, phase="reconcile")
-            if not traffic_is(restored, r0):
-                self.step("restore-traffic", write="PATCH", revision=r0)
-                self.arm.write("PATCH", app_id, {"location": restored["location"], "properties": {
-                    "configuration": {"ingress": {"traffic": [{"revisionName": r0, "weight": 100}]}}}},
-                    phase="restore")
+            if traffic_is(restored, r0):
+                raise Refused("promote-readback") from None
+            if (not traffic_is(restored, candidate)
+                    or not gateway_off_release(self.arm.get(f"{app_id}/revisions/{r0}", phase="reconcile"))):
+                raise Uncertain("restore-target") from None
+            try:
+                self.gate.require_fresh()
+                same = projection(self.arm.get(app_id, phase="reread")) == projection(restored)
+                qualified = gateway_off_release(self.arm.get(f"{app_id}/revisions/{r0}", phase="reread"))
+            except Refused as e:
+                raise Uncertain("restore-gate", e.status) from None
+            if not same or not qualified:
+                raise Uncertain("restore-target") from None
+            self.step("restore-traffic", write="PATCH", revision=r0)
+            self.arm.write("PATCH", app_id, {"location": restored["location"], "properties": {
+                "configuration": {"ingress": {"traffic": [{"revisionName": r0, "weight": 100}]}}}},
+                phase="restore")
             if not traffic_is(self.arm.get(app_id, phase="readback"), r0):
                 raise Uncertain("restore-readback") from None
             raise
         self.step("promoted", revision=candidate)
         if stage == "C2":
             # Pre-release R0 is deactivated (never deleted) and never automatically restored.
-            self.deactivate(service, r0, "deactivate-r0")
+            self.deactivate(service, r0, "deactivate-r0", candidate)
         self.receipt["serving"] = candidate
 
-    def deactivate(self, service: str, revision: str, name: str) -> None:
+    def deactivate(self, service: str, revision: str, name: str, serving: str) -> None:
+        app_id = APPS[service]
+        app = self.arm.get(app_id, phase="reread")
+        rev = self.arm.get(f"{app_id}/revisions/{revision}", phase="reread")
+        if (revision == serving or not traffic_is(app, serving)
+                or (rev.get("properties") or {}).get("active") is not True
+                or projection(self.arm.get(app_id, phase="reread")) != projection(app)):
+            raise Refused("deactivate-target")
         self.step(name, write="POST", revision=revision)
-        self.arm.write("POST", f"{APPS[service]}/revisions/{revision}/deactivate", phase=name)
-        rev = self.arm.get(f"{APPS[service]}/revisions/{revision}", phase="readback")
+        self.arm.write("POST", f"{app_id}/revisions/{revision}/deactivate", phase=name)
+        rev = self.arm.get(f"{app_id}/revisions/{revision}", phase="readback")
         if (rev.get("properties") or {}).get("active") is not False:
             raise Refused(name + "-readback")
 
@@ -926,17 +978,18 @@ class Release:
         if not re.fullmatch(re.escape(app["name"]) + r"--[a-z0-9-]{1,40}", target):
             raise Refused("rollback-target")
         rev = self.arm.get(f"{app_id}/revisions/{target}", phase="read")
-        containers = ((rev.get("properties") or {}).get("template") or {}).get("containers") or []
-        if (not ready(rev) or len(containers) != 1 or containers[0].get("image") != IMAGES["api"]
-                or env_value(rev, "AI4IA_SHARED_GATEWAY_ENABLED") not in (None, "false")
-                or env_value(rev, "AI4IA_SHARED_GATEWAY_DEPLOYMENTS") is not None
-                or env_value(rev, "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST") is not None):
+        if not gateway_off_release(rev):
             # Only the released gateway-off image is a rollback target; a pre-release
             # revision could reactivate retired work and needs separate qualification.
             raise Refused("rollback-target")
         if traffic_is(app, target):
             self.step("rollback-noop", revision=target)
             return
+        self.gate.require()
+        self.gate.require_fresh()
+        if (projection(self.arm.get(app_id, phase="reread")) != projection(app)
+                or not gateway_off_release(self.arm.get(f"{app_id}/revisions/{target}", phase="reread"))):
+            raise Refused("rollback-target")
         self.step("rollback", write="PATCH", revision=target)
         self.arm.write("PATCH", app_id, {"location": app["location"], "properties": {
             "configuration": {"ingress": {"traffic": [{"revisionName": target, "weight": 100}]}}}},

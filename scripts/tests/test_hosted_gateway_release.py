@@ -240,6 +240,21 @@ class DtsGateTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertIsNone(release.latest_zero_observation(value, NOW))
 
+    def test_newer_partial_or_null_points_do_not_hide_behind_older_zero(self):
+        for newer in ({"maximum": 2}, {}, {"maximum": 0}):
+            value = metrics(ZERO, at=NOW - timedelta(minutes=2))
+            value["value"][0]["timeseries"][0]["data"].append({
+                "timeStamp": (NOW - timedelta(minutes=1)).isoformat(), **newer,
+            })
+            with self.subTest(newer=newer):
+                self.assertIsNone(release.latest_zero_observation(value, NOW))
+
+    def test_duplicate_metric_timestamp_is_not_accepted(self):
+        value = metrics(ZERO)
+        points = value["value"][0]["timeseries"][0]["data"]
+        points.append({**points[0], "maximum": 3})
+        self.assertIsNone(release.latest_zero_observation(value, NOW))
+
     def test_gate_refuses_after_bounded_reads(self):
         arm = FakeArm()
         arm.gate_values = [{"value": []}]
@@ -292,6 +307,20 @@ class ArmWriteTests(unittest.TestCase):
         arm, _ = self.arm((202, {"azure-asyncoperation": "https://evil.example/op"}, b""))
         with self.assertRaises(release.Uncertain):
             arm.write("PATCH", release.APPS["api"], {})
+
+    def test_async_missing_status_is_uncertain_not_success(self):
+        responses = iter([(202, {"azure-asyncoperation": "https://management.azure.com/op"}, b""),
+                          (200, {}, b"{}")])
+        calls = []
+
+        def http(method, url, **kwargs):
+            calls.append(method)
+            return next(responses)
+
+        arm = release.Arm("t", http=http, sleep=lambda _s: None, clock=lambda: 0)
+        with self.assertRaises(release.Uncertain):
+            arm.write("PATCH", release.APPS["api"], {})
+        self.assertEqual(calls, ["PATCH", "GET"])
 
 
 class StageTests(ReleaseFlowBase):
@@ -352,6 +381,39 @@ class StageTests(ReleaseFlowBase):
         self.assertEqual(arm.app["properties"]["configuration"]["ingress"]["traffic"],
                          [{"revisionName": R0, "weight": 100}])
 
+    def test_candidate_template_mismatch_is_not_promoted(self):
+        arm = FakeArm()
+        runner, receipt = self.run_stage(arm)
+        original = arm.get
+
+        def wrong_image(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if kwargs.get("phase") == "wait":
+                value["properties"]["template"]["containers"][0]["image"] = OLD_IMAGE
+            return value
+
+        arm.get = wrong_image
+        with self.assertRaisesRegex(release.Refused, "candidate-template"):
+            runner.run("c2-api")
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "deactivate-unpromoted"])
+
+    def test_candidate_that_becomes_unhealthy_before_promotion_is_not_promoted(self):
+        arm = FakeArm()
+        runner, receipt = self.run_stage(arm)
+        original = arm.get
+
+        def unhealthy(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if kwargs.get("phase") == "reread" and receipt.get("candidate", "~") in path:
+                value["properties"]["healthState"] = "Unhealthy"
+            return value
+
+        arm.get = unhealthy
+        with self.assertRaisesRegex(release.Refused, "concurrent-change"):
+            runner.run("c2-api")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create"])
+
     def test_failed_promotion_readback_restores_still_active_previous(self):
         arm = FakeArm(image=release.IMAGES["api"])
         runner, receipt = self.run_stage(arm, stage="c3-api")
@@ -374,6 +436,79 @@ class StageTests(ReleaseFlowBase):
         self.assertEqual(arm.app["properties"]["configuration"]["ingress"]["traffic"],
                          [{"revisionName": R0, "weight": 100}])
         self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "promote", "restore"])
+
+    def test_c2_failed_promotion_readback_does_not_restore_unqualified_r0(self):
+        arm = FakeArm()
+        runner, receipt = self.run_stage(arm)
+        original = arm.get
+
+        def unhealthy(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if kwargs.get("phase") == "readback" and receipt.get("candidate", "~") in path:
+                value["properties"]["healthState"] = "Unhealthy"
+            return value
+
+        arm.get = unhealthy
+        with self.assertRaisesRegex(release.Uncertain, "promote-readback"):
+            runner.run("c2-api")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "promote"])
+        self.assertTrue(arm.revisions[R0]["properties"]["active"])
+
+    def test_c3_refuses_to_restore_unhealthy_r1(self):
+        arm = FakeArm(image=release.IMAGES["api"])
+        runner, receipt = self.run_stage(arm, stage="c3-api")
+        original = arm.get
+
+        def unhealthy(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if kwargs.get("phase") == "readback" and receipt.get("candidate", "~") in path:
+                arm.revisions[R0]["properties"]["healthState"] = "Unhealthy"
+                value["properties"]["healthState"] = "Unhealthy"
+            return value
+
+        arm.get = unhealthy
+        with mock.patch.object(release, "load_manifest", return_value=b"m"), \
+                mock.patch.object(release, "load_sidecar", return_value=b"s"), \
+                self.assertRaisesRegex(release.Uncertain, "restore-target"):
+            runner.run("c3-api")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "promote"])
+
+    def test_c3_refuses_traffic_restore_if_worker_gate_becomes_unknown(self):
+        arm = FakeArm(image=release.IMAGES["api"])
+        runner, receipt = self.run_stage(arm, stage="c3-api")
+        original = arm.get
+        original_fresh = runner.gate.require_fresh
+        fresh_calls = 0
+
+        def gate_fresh():
+            nonlocal fresh_calls
+            fresh_calls += 1
+            if fresh_calls == 3:
+                raise release.Refused("dts-gate")
+            original_fresh()
+
+        def unhealthy(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if kwargs.get("phase") == "readback" and receipt.get("candidate", "~") in path:
+                value["properties"]["healthState"] = "Unhealthy"
+            return value
+
+        runner.gate.require_fresh = gate_fresh
+        arm.get = unhealthy
+        with mock.patch.object(release, "load_manifest", return_value=b"m"), \
+                mock.patch.object(release, "load_sidecar", return_value=b"s"), \
+                self.assertRaisesRegex(release.Uncertain, "restore-gate"):
+            runner.run("c3-api")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "promote"])
+
+    def test_deactivation_refuses_if_serving_traffic_drifted(self):
+        arm = FakeArm()
+        runner, _ = self.run_stage(arm)
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": R0, "weight": 100}]
+        with self.assertRaisesRegex(release.Refused, "deactivate-target"):
+            runner.deactivate("api", R0, "deactivate-r0", APP + "--candidate")
+        self.assertEqual(arm.writes, 0)
 
     def test_c3_smoke_failure_deactivates_r2_and_keeps_r1(self):
         arm = FakeArm(image=release.IMAGES["api"])
@@ -434,6 +569,16 @@ class RollbackTests(ReleaseFlowBase):
         runner.rollback(R0)
         self.assertEqual(receipt["serving"], R0)
         self.assertEqual(arm.writes, 1)
+
+    def test_rollback_refuses_unknown_worker_metrics(self):
+        arm = FakeArm(image=release.IMAGES["api"])
+        arm.gate_values = [{"value": []}]
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": APP + "--c3-r2", "weight": 100}]
+        runner, _ = self.run_stage(arm, stage="rollback-api")
+        with self.assertRaisesRegex(release.Refused, "dts-gate"):
+            runner.rollback(R0)
+        self.assertEqual(arm.writes, 0)
 
 
 class SmokeTests(unittest.TestCase):
