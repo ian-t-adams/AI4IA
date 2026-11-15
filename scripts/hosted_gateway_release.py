@@ -879,37 +879,49 @@ def ws_frame(payload: bytes, opcode: int = 0x2, mask: bytes | None = None) -> by
     return header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
 
 
-def _read_exact(sock, size: int, *, deadline: float, clock) -> bytes:
-    data = bytearray()
-    while len(data) < size:
-        remaining = deadline - clock()
-        if remaining <= 0:
-            raise Refused("smoke-timeout")
-        sock.settimeout(remaining)
-        try:
-            chunk = sock.recv(size - len(data))
-        except TimeoutError:
-            raise Refused("smoke-timeout") from None
-        except OSError:
-            raise Refused("smoke-transport") from None
-        if not chunk:
+class FrameReader:
+    """Read server frames, keeping partial bytes across a bounded wait's timeout."""
+
+    def __init__(self, sock, limit: int = 65536):
+        self.sock, self.limit, self.pending = sock, limit, bytearray()
+
+    def _frame(self) -> tuple[int, bytes] | None:
+        data = self.pending
+        if len(data) < 2:
+            return None
+        opcode, size, offset = data[0] & 0x0F, data[1] & 0x7F, 2
+        if data[1] & 0x80:
             raise Refused("smoke-transport")
-        data.extend(chunk)
-    return bytes(data)
+        if size in (126, 127):
+            width = 2 if size == 126 else 8
+            if len(data) < offset + width:
+                return None
+            size = int.from_bytes(data[offset:offset + width], "big")
+            offset += width
+        if size > self.limit:
+            raise Refused("smoke-transport")
+        if len(data) < offset + size:
+            return None
+        payload = bytes(data[offset:offset + size])
+        del data[:offset + size]
+        return opcode, payload
 
-
-def ws_read(sock, *, deadline: float, clock, limit: int = 65536) -> tuple[int, bytes]:
-    first, second = _read_exact(sock, 2, deadline=deadline, clock=clock)
-    opcode, size = first & 0x0F, second & 0x7F
-    if second & 0x80:
-        raise Refused("smoke-transport")
-    if size == 126:
-        size = int.from_bytes(_read_exact(sock, 2, deadline=deadline, clock=clock), "big")
-    elif size == 127:
-        size = int.from_bytes(_read_exact(sock, 8, deadline=deadline, clock=clock), "big")
-    if size > limit:
-        raise Refused("smoke-transport")
-    return opcode, _read_exact(sock, size, deadline=deadline, clock=clock)
+    def read(self, *, deadline: float, clock) -> tuple[int, bytes]:
+        while (frame := self._frame()) is None:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise Refused("smoke-timeout")
+            self.sock.settimeout(remaining)
+            try:
+                chunk = self.sock.recv(65536)
+            except TimeoutError:
+                raise Refused("smoke-timeout") from None
+            except OSError:
+                raise Refused("smoke-transport") from None
+            if not chunk:
+                raise Refused("smoke-transport")
+            self.pending.extend(chunk)
+        return frame
 
 
 def ws_handshake(sock, host: str, path: str, token: str, key: bytes | None = None) -> None:
@@ -941,53 +953,147 @@ def ws_handshake(sock, host: str, path: str, token: str, key: bytes | None = Non
         raise Refused("smoke-handshake", status)
 
 
+# Container Apps exec framing, as in the Azure CLI reference client: client frames are
+# masked TEXT frames; byte0 is the proxy channel (0 forward, 1 INFO, 2 ERROR) and, when
+# forwarding, byte1 is the cluster stream (0 stdin, 1 stdout, 2 stderr, 4 resize).
+TERMINAL_RESIZE = b"\x00\x04" + b'{"Width": 200, "Height": 50}'
+ATTACH_WAIT = 20.0
+STDIN_PACING = 0.02
+OPCODE_NAMES = {0x0: "continuation", 0x1: "text", 0x2: "binary", 0x8: "close", 0x9: "ping", 0xA: "pong"}
+LATENCY_BUCKETS = (1, 5, 20, 60, 240)
+
+
+def latency_bucket(seconds: float | None) -> str | None:
+    if seconds is None:
+        return None
+    for limit in LATENCY_BUCKETS:
+        if seconds < limit:
+            return f"lt{limit}s"
+    return f"ge{LATENCY_BUCKETS[-1]}s"
+
+
+def new_exec_diagnostics() -> dict:
+    """Content-free exec counters only; never payload text or per-frame lengths."""
+    return {
+        "resize_sent": False, "stdin_frames_sent": 0, "first_output_before_stdin": False,
+        "frames_by_opcode": {name: 0 for name in (*OPCODE_NAMES.values(), "other")},
+        "frames_by_channel": {name: 0 for name in (
+            "forward_stdout", "forward_stderr", "forward_other", "proxy_info", "proxy_error",
+            "other", "short")},
+        "stdout_bytes": 0, "stderr_bytes": 0, "close_code": None,
+        "first_output": None, "marker": None, "marker_seen": False,
+    }
+
+
 def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotonic,
-               cap: int = 65536, mark: str = SMOKE_MARK) -> Any:
-    """Send stdin lines, then parse only the program's marker line from stdout."""
+               cap: int = 65536, mark: str = SMOKE_MARK, diag: dict | None = None,
+               sleep=time.sleep, attach_wait: float = ATTACH_WAIT, pacing: float = STDIN_PACING) -> Any:
+    """Resize, await the console (bounded), send stdin, then parse only the marker line."""
+    diag = diag if diag is not None else new_exec_diagnostics()
     for line in lines:
-        sock.sendall(ws_frame(b"\x00\x00" + line))
+        try:
+            line.decode("ascii")
+        except UnicodeDecodeError:
+            raise Refused("smoke-transport") from None
+    reader = FrameReader(sock)
     output = bytearray()
-    while clock() < deadline:
-        opcode, payload = ws_read(sock, deadline=deadline, clock=clock)
+    start = clock()
+
+    def handle(opcode: int, payload: bytes) -> Any:
+        diag["frames_by_opcode"][OPCODE_NAMES.get(opcode, "other")] += 1
         if opcode == 0x8:
+            if len(payload) >= 2:
+                code = int.from_bytes(payload[:2], "big")
+                diag["close_code"] = code if 1000 <= code <= 4999 else None
             raise Refused("smoke-transport")
         if opcode == 0x9:
             sock.sendall(ws_frame(payload, 0xA))
-            continue
-        if opcode in (0x1, 0x2) and payload[:1] == b"\x02":
+            return None
+        if opcode not in (0x0, 0x1, 0x2):
+            return None
+        channels = diag["frames_by_channel"]
+        if len(payload) < 1:
+            channels["short"] += 1
+            return None
+        if payload[0] == 1:
+            channels["proxy_info"] += 1
+            return None
+        if payload[0] == 2:
+            channels["proxy_error"] += 1
             raise Refused("smoke-transport")
-        if opcode not in (0x0, 0x1, 0x2) or len(payload) < 2 or payload[0] != 0:
-            continue
-        if payload[1] in (1, 2):
-            output.extend(payload[2:])
-            if len(output) > cap:
-                raise Refused("smoke-output")
-            text = output.decode("utf-8", "replace")
-            index = text.find(mark)
-            if index >= 0:
-                rest = text[index + len(mark):]
-                end = min((i for i in (rest.find("\r"), rest.find("\n")) if i >= 0), default=-1)
-                if end >= 0:
-                    try:
-                        return json.loads(rest[:end])
-                    except ValueError:
-                        raise Refused("smoke-output") from None
+        if payload[0] != 0:
+            channels["other"] += 1
+            return None
+        if len(payload) < 2 or payload[1] not in (1, 2):
+            channels["short" if len(payload) < 2 else "forward_other"] += 1
+            raise Refused("smoke-transport")
+        stream = "stdout" if payload[1] == 1 else "stderr"
+        channels["forward_" + stream] += 1
+        diag[stream + "_bytes"] += len(payload) - 2
+        if diag["first_output"] is None:
+            diag["first_output"] = latency_bucket(clock() - start)
+        output.extend(payload[2:])
+        if len(output) > cap:
+            raise Refused("smoke-output")
+        text = output.decode("utf-8", "replace")
+        index = text.find(mark)
+        if index >= 0:
+            if not diag["marker_seen"]:
+                diag["marker_seen"] = True
+                diag["marker"] = latency_bucket(clock() - start)
+            rest = text[index + len(mark):]
+            end = min((i for i in (rest.find("\r"), rest.find("\n")) if i >= 0), default=-1)
+            if end >= 0:
+                try:
+                    return {"value": json.loads(rest[:end])}
+                except ValueError:
+                    raise Refused("smoke-output") from None
+        return None
+
+    sock.sendall(ws_frame(TERMINAL_RESIZE, 0x1))
+    diag["resize_sent"] = True
+    attach_deadline = min(start + attach_wait, deadline)
+    while diag["first_output"] is None and clock() < attach_deadline:
+        try:
+            opcode, payload = reader.read(deadline=attach_deadline, clock=clock)
+        except Refused as e:
+            if e.phase != "smoke-timeout":
+                raise
+            break
+        if handle(opcode, payload) is not None:
+            raise Refused("smoke-output")  # a marker before our program was sent is not ours
+    diag["first_output_before_stdin"] = diag["first_output"] is not None
+    for index, line in enumerate(lines):
+        if index:
+            sleep(pacing)
+        sock.sendall(ws_frame(b"\x00\x00" + line, 0x1))
+        diag["stdin_frames_sent"] += 1
+    while clock() < deadline:
+        opcode, payload = reader.read(deadline=deadline, clock=clock)
+        found = handle(opcode, payload)
+        if found is not None:
+            return found["value"]
     raise Refused("smoke-timeout")
 
 
-def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic) -> dict:
-    return sanitize_smoke(run_exec(arm, app_id, revision, "api", shell_lines(SMOKE_PROGRAM),
-                                   SMOKE_MARK, 240, connect=connect, clock=clock))
+def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic,
+              sleep=time.sleep) -> dict:
+    result, diag = run_exec(arm, app_id, revision, "api", shell_lines(SMOKE_PROGRAM),
+                            SMOKE_MARK, 240, connect=connect, clock=clock, sleep=sleep)
+    return {**sanitize_smoke(result), "exec": diag}
 
 
-def run_web_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic) -> dict:
+def run_web_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic,
+                  sleep=time.sleep) -> dict:
     lines = shell_lines(WEB_PROBE_PROGRAM, runner=NODE_RUNNER)
-    return sanitize_web_probe(run_exec(arm, app_id, revision, "web", lines, WEB_PROBE_MARK, 60,
-                                       connect=connect, clock=clock))
+    result, diag = run_exec(arm, app_id, revision, "web", lines, WEB_PROBE_MARK, 60,
+                            connect=connect, clock=clock, sleep=sleep)
+    return {**sanitize_web_probe(result), "exec": diag}
 
 
 def run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[bytes],
-             mark: str, seconds: float, *, connect=None, clock=time.monotonic) -> Any:
+             mark: str, seconds: float, *, connect=None, clock=time.monotonic,
+             sleep=time.sleep) -> tuple[Any, dict]:
     replicas = arm.list(f"{app_id}/revisions/{revision}/replicas", phase="smoke-replicas")
     names = [r.get("name") for r in replicas if isinstance(r, dict)
              and str((r.get("properties") or {}).get("runningState", "")).startswith("Running")]
@@ -1026,7 +1132,15 @@ def run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[b
     try:
         sock.settimeout(30)
         ws_handshake(sock, host, path, token)
-        return exec_smoke(sock, lines, deadline=clock() + seconds, clock=clock, mark=mark)
+        diag = new_exec_diagnostics()
+        try:
+            result = exec_smoke(sock, lines, deadline=clock() + seconds, clock=clock, mark=mark,
+                                diag=diag, sleep=sleep)
+        except Refused as e:
+            if e.detail is None:
+                e.detail = {"exec": diag}
+            raise
+        return result, diag
     finally:
         try:
             sock.close()
