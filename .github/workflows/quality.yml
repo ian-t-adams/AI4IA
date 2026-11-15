@@ -187,6 +187,20 @@ jobs:
           python3 -m pip install --user --quiet \
             "PyYAML==${PYYAML_VERSION}" "jmespath==${JMESPATH_VERSION}" \
             "aiohttp==${AIOHTTP_VERSION}"
+      - name: Run hosted OIDC reader offline controls
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/hosted-read-test-venv"
+          VENV="$RUNNER_TEMP/hosted-read-test-venv/bin/python"
+          "$VENV" -I -c 'import runpy,sys; sys.path.insert(0, "."); runpy.run_module("scripts.hosted_oidc_requirements", run_name="__main__")' > "$RUNNER_TEMP/hosted-read-test-requirements.txt"
+          "$VENV" -m pip --isolated install --quiet --no-input --disable-pip-version-check \
+            --index-url https://pypi.org/simple --no-deps --require-hashes --only-binary=:all: \
+            -r "$RUNNER_TEMP/hosted-read-test-requirements.txt"
+          "$VENV" -I -c 'import azure.identity,azure.core,msal,requests; assert azure.identity.__version__=="1.26.0"; assert azure.core.__version__=="1.41.0"; assert msal.__version__=="1.39.0"; assert requests.__version__=="2.34.2"'
+          "$VENV" -I scripts/tests/test_hosted_oidc_read.py
+          python3 scripts/tests/test_hosted_oidc_contract.py
+      - name: Run hosted gateway release offline controls
+        run: python3 -m unittest scripts.tests.test_hosted_gateway_release scripts.tests.test_dispatch_gated_workflow
       - name: Run postprovision hard-gate tests
         run: |
           set -euo pipefail

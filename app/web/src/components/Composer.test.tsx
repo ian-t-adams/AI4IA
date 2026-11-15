@@ -30,6 +30,7 @@ type ComposerProps = Parameters<typeof Composer>[0];
 function setup(overrides: Partial<ComposerProps> = {}) {
   const onSend = vi.fn();
   const onStop = vi.fn();
+  const onError = vi.fn();
   const props: ComposerProps = {
     disabled: false,
     streaming: false,
@@ -48,6 +49,7 @@ function setup(overrides: Partial<ComposerProps> = {}) {
     },
     onSend,
     onStop,
+    onError,
     onUpload: vi.fn(),
     onRemoveDocument: vi.fn(),
     ...overrides,
@@ -61,6 +63,7 @@ function setup(overrides: Partial<ComposerProps> = {}) {
     user,
     onSend,
     onStop,
+    onError,
     textarea,
     rerender: (next: Partial<ComposerProps>) =>
       rendered.rerender(<Composer {...props} {...next} />),
@@ -132,6 +135,131 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend).toHaveBeenCalledWith("hello world");
     expect(textarea.value).toBe("");
+  });
+
+  it.each([
+    "/tmp/log.txt",
+    "/",
+    "@",
+    "@42",
+    "@café",
+    "@agenté hello",
+  ])(
+    "allows ordinary text-only pilot input %s",
+    async (text) => {
+      const { user, onSend, textarea } = setup({ textOnly: true });
+      await user.type(textarea, text);
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(onSend).toHaveBeenCalledExactlyOnceWith(text);
+      expect(textarea).toHaveValue("");
+    },
+  );
+
+  it.each([
+    "/help",
+    "/foo bar",
+    "@agent hello",
+    "@agent/hello",
+    "@agent-",
+    "@agent.",
+    "@a-bé",
+  ])(
+    "keeps recognized text-only pilot commands and mentions in the draft: %s",
+    async (text) => {
+      const { user, onSend, onError, textarea } = setup({ textOnly: true });
+      await user.type(textarea, text);
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(onSend).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        "Agent mentions and slash commands are unavailable in text-only pilot mode.",
+      );
+      expect(textarea).toHaveValue(text);
+    },
+  );
+
+  describe.each([true, false])("Python whitespace (textOnly=%s)", (textOnly) => {
+    it.each([
+      "\u0085/help",
+      "\u001c/help",
+      "\u001d/help",
+      "\u001e/help",
+      "\u001f/help",
+      "\u0085@agent hello",
+      "\u001c@agent hello",
+      "\u001d@agent hello",
+      "\u001e@agent hello",
+      "\u001f@agent hello",
+      "@agent\u0085/help",
+      "@agent\u001c/help",
+      "@agent\u001d/help",
+      "@agent\u001e/help",
+      "@agent\u001f/help",
+      "@agent\uFEFF/help",
+      "\uFEFF/help",
+    ])("preserves pilot drafts or ordinary trimmed submission: %j", async (content) => {
+      const { user, onSend, onError, textarea } = setup({ textOnly });
+      const draft = `  ${content}  `;
+      fireEvent.change(textarea, { target: { value: draft } });
+      await user.click(screen.getByRole("button", { name: "Send" }));
+
+      if (textOnly) {
+        expect(onSend).not.toHaveBeenCalled();
+        expect(onError).toHaveBeenCalledExactlyOnceWith(
+          "Agent mentions and slash commands are unavailable in text-only pilot mode.",
+        );
+        expect(textarea).toHaveValue(draft);
+      } else {
+        expect(onSend).toHaveBeenCalledExactlyOnceWith(content.trim());
+        expect(onError).not.toHaveBeenCalled();
+        expect(textarea).toHaveValue("");
+      }
+    });
+
+    it.each(["\u0085", "\u001c", "\u001d", "\u001e", "\u001f", "\uFEFF"])(
+      "still submits path-like text after existing Composer trimming: %j",
+      async (whitespace) => {
+        const { user, onSend, onError, textarea } = setup({ textOnly });
+        const draft = `  ${whitespace}/tmp/log.txt  `;
+        fireEvent.change(textarea, { target: { value: draft } });
+        await user.click(screen.getByRole("button", { name: "Send" }));
+        expect(onSend).toHaveBeenCalledExactlyOnceWith(draft.trim());
+        expect(onError).not.toHaveBeenCalled();
+        expect(textarea).toHaveValue("");
+      },
+    );
+  });
+
+  describe.each([true, false])("API Unicode version (textOnly=%s)", (textOnly) => {
+    it.each([
+      ["@agent\u{2ebf0} hello", true],
+      ["@agent\u1c89 hello", true],
+      ["@agent\u0301 hello", true],
+      ["@agent\u{31350} hello", false],
+      ["@agent\u{20000} hello", false],
+      ["@agent\u0661 hello", false],
+      ["@café", false],
+      ["@agenté hello", false],
+    ] as const)(
+      "preserves pilot drafts only at Python word boundaries: %j",
+      async (content, agentMention) => {
+        const { user, onSend, onError, textarea } = setup({ textOnly });
+        const draft = `  ${content}  `;
+        fireEvent.change(textarea, { target: { value: draft } });
+        await user.click(screen.getByRole("button", { name: "Send" }));
+
+        if (textOnly && agentMention) {
+          expect(onSend).not.toHaveBeenCalled();
+          expect(onError).toHaveBeenCalledExactlyOnceWith(
+            "Agent mentions and slash commands are unavailable in text-only pilot mode.",
+          );
+          expect(textarea).toHaveValue(draft);
+        } else {
+          expect(onSend).toHaveBeenCalledExactlyOnceWith(draft.trim());
+          expect(onError).not.toHaveBeenCalled();
+          expect(textarea).toHaveValue("");
+        }
+      },
+    );
   });
 
   it("prepends an image command without discarding an existing draft", async () => {

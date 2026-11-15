@@ -53,6 +53,20 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    Blob (HTTPS, catalog host only, pinned public IP, no redirects, size/PNG
    checks), and the link is never stored, logged or returned
    (`photo_avatars/preview.py`).
+   The shared-gateway v2 selector is API-only and default-off. Enabling it
+   requires a resolved v2 manifest validated before provisioning and at API
+   startup, including exact operation/deployment/alias/SKU allowlists and a
+   caller client ID matching `AZURE_CLIENT_ID`. Only the ordinary chat router's stateless
+   chat-completions and Responses final dispatches may select it; Responses
+   require `store=false` and no stateful fields. The factory base URL remains
+   unchanged; no automatic fallback or app retry is permitted, and the gateway
+   owns retries. Stateful/background, realtime/Voice Live, Agent Service,
+   CU/Search, specialist and other endpoints stay on their current paths.
+   Activation still requires the resolved owner manifest, synthetic hub proof,
+   reviewed canary plan and operator approval. Review capture and user
+   attribution remain unavailable; never reuse memory/tool consent, invent
+   headers or add a speculative sink. See the configuration reference's
+   shared-gateway canary boundary before changing it.
 2. **Catalog-driven models.** Do not hardcode deployment names or model lists.
    `infra/models.json` is the source of truth; generated runtime catalog data must
    match it. `runtimeEnabled` is a strict optional Boolean, default true: false
@@ -437,7 +451,7 @@ are separate gates described below; base-index drift remains read-only.
 ### Base image pins
 
 `app/web/Dockerfile` and `app/api/Dockerfile` pin their bases as
-`FROM node:22-alpine@sha256:...` / `FROM python:3.12-slim@sha256:...` — the tag for
+`FROM node:22-alpine@sha256:...` / `FROM python:3.12-alpine@sha256:...` — the tag for
 humans and Dependabot, the digest for enforcement. Without the digest, a PR build
 and a later `azd deploy` can resolve the same tag to different images with no diff
 anywhere. The MAJOR(.MINOR) must track the CI version deliberately;
@@ -643,6 +657,22 @@ mutable tag, unsigned JSON approval, registry-list heuristic or a rebuild.
 Same-run bundle selection avoids accepting an older signature for identical image
 bytes; it is not a readback of every registry referrer.
 
+The distinct `operation=private-image` producer is default-off behind
+`AI4IA_API_IMAGE_PRODUCER_ENABLED`; it requires a manual main dispatch, exact
+`GITHUB_SHA` source input, private API phase and `provision=false`, and may run
+while `AI4IA_DEPLOYMENT_ENABLED=false`. It builds/scans/attests only the API and
+never provisions, deploys or shifts traffic. It still uses the existing deploy
+job's Azure/registry identity; do not describe it as a new registry-only role or
+as a compatible API+web release. The separate `operation=private-pair` producer
+uses `AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED` to build/scan/attest web and API from
+the exact same main source; its receipt is not a deployment or runtime
+compatibility proof, and no paired staging/rollback path is implied. The
+candidate-phase `operation=image` remains separately gated. A complete release
+freeze must disable all three release variables, drain already admitted runs,
+and separately hold `foundry-assets` manual dispatch;
+the ordinary deployment flag does not control that workflow's manual path.
+See the release runbook's private image and freeze sections.
+
 The 30-day production evidence artifact contains SPDX documents, Sigstore
 bundles, CLI verification results and the small sealed image manifest, not runtime
 prompts, secrets or environment dumps. Partial evidence is retained on failure,
@@ -702,6 +732,31 @@ Only a fully checked new-VNet Create may use omitted DHCP as the documented
 Azure-provided DNS default. Keep explicit malformed/custom DNS and existing-VNet
 changes refused; retain exact subnet/delegation checks and value-free comparison
 evidence. Omitted DNS is not an observed zero-server list.
+Shared-gateway B/C peerings and the caller DNS link are separately owned by
+c2's `ai4ia-connectivity.bicep`, not `infra/modules/api-private-network.bicep`.
+Preserve that ownership: AI4IA preflight is read-only for this connectivity and
+must never duplicate, replace, delete, or use complete-mode cleanup on c2-owned
+resources. Missing or ambiguous peering/DNS evidence blocks readiness; it does
+not authorize repair.
+`scripts/prepare-gateway-cutover.py` is offline only. Its API/web C2 revision rows
+must be sourced from `preview-api-private.py::private_revision_rows`, which uses
+the scoped `check-api-private-network.py::revision_continuation` contract. The
+constructor checks row shape, age and name collisions but cannot prove
+pagination completeness or provenance; do not treat its output as authority to
+send a PATCH.
+Any future apply path must re-read through the existing collector and bind that
+result with the live app/revision snapshot immediately before dispatch.
+C3 is offline-only for the separately classified manifest digest; schema
+validation alone is not classification. It starts from C2's R1-OFF baseline,
+adds the selector, a hash-bound reviewed `--deployments` list and the manifest
+literal, and must pass the API shared-gateway validators; never hardcode the
+deployment list.
+Snapshots and payloads may contain sensitive environment values: never log,
+commit, or place them in chat or the shared repository. The CLI rejects files
+inside the repository, but that does not establish restricted ACLs or secure
+deletion; use private ephemeral storage. A future apply path needs restricted
+ephemeral handling, exact template-semantics preservation, and an explicit
+redacted receipt, not metadata-only proof.
 The foundation retains the two corporate-governance NSGs at their exact
 `vnet-<workload>-<environment>-api-private-<api|cosmos>-nsg-<location>` names
 and subnet associations. Both declare `securityRules: []`: default rules only,

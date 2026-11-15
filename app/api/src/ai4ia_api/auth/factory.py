@@ -4,7 +4,7 @@ from __future__ import annotations
 from ..config import AuthProviderKind, Settings
 from .base import AuthProvider
 from .dev import DevAuthProvider
-from .entra import EntraAuthProvider
+from .entra import EntraAuthProvider, EntraPilotAdmission
 
 
 def build_auth_provider(settings: Settings) -> AuthProvider:
@@ -21,9 +21,26 @@ def build_auth_provider(settings: Settings) -> AuthProvider:
     if settings.auth_provider == AuthProviderKind.entra:
         if not settings.entra_audience:
             raise RuntimeError("Entra auth requires AI4IA_ENTRA_AUDIENCE.")
+        pilot_admission = None
+        if settings.chat_pilot_isolation_enabled:
+            if (
+                not settings.entra_tenant_id
+                or not settings.chat_pilot_allowed_oid
+                or not settings.chat_pilot_allowed_azp
+            ):
+                raise RuntimeError(
+                    "Chat-pilot Entra admission requires "
+                    "AI4IA_CHAT_PILOT_ALLOWED_OID and AI4IA_CHAT_PILOT_ALLOWED_AZP."
+                )
+            pilot_admission = EntraPilotAdmission(
+                tenant_id=settings.entra_tenant_id,
+                oid=settings.chat_pilot_allowed_oid,
+                azp=settings.chat_pilot_allowed_azp,
+            )
         return EntraAuthProvider(
             audience=settings.entra_audience,
             allowed_tenants=settings.allowed_tenants,
+            pilot_admission=pilot_admission,
         )
 
     raise RuntimeError(f"Unsupported auth provider: {settings.auth_provider}")

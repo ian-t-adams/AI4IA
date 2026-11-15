@@ -142,16 +142,23 @@ def identity(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def release_images(values: Sequence[str], environment: str, *, private_api: bool = False) -> dict[str, str]:
+def release_images(
+    values: Sequence[str], environment: str, *,
+    private_api: bool = False, private_api_web: bool = False,
+) -> dict[str, str]:
     try:
         images = parse_expected_images(values)
     except ImageInputError as exc:
         raise ProvenanceError("invalid image arguments") from exc
+    require(not (private_api and private_api_web), "private image scopes are mutually exclusive")
+    expected_services = (
+        {"api"} if private_api else {"api", "web"} if private_api_web else set(SERVICES)
+    )
     require(
-        len(values) == (1 if private_api else len(SERVICES))
-        and set(images) == ({"api"} if private_api else set(SERVICES))
+        len(values) == len(expected_services)
+        and set(images) == expected_services
         and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,60}", environment)),
-        "exactly one image per release service and a valid environment are required",
+        "exactly one image per admitted release service and a valid environment are required",
     )
     registries = set()
     for service, reference in images.items():
@@ -173,18 +180,50 @@ def release_images(values: Sequence[str], environment: str, *, private_api: bool
 
 def subjects(args: argparse.Namespace, env: Mapping[str, str]) -> dict:
     private_api = getattr(args, "private_api", False)
-    if private_api:
-        require(env.get("AI4IA_RELEASE_KIND") == "image"
-                and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-                and env.get("AI4IA_API_NETWORK_PHASE") == "candidate",
-                "API-only image preparation requires its explicit candidate operation")
+    private_api_web = getattr(args, "private_api_web", False)
+    require(not (private_api and private_api_web), "private image scopes are mutually exclusive")
+    if private_api_web:
+        source = env.get("AI4IA_RELEASE_SOURCE_SHA", "")
+        require(
+            env.get("AI4IA_RELEASE_KIND") == "private-pair"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("AI4IA_API_NETWORK_PHASE") == "private"
+            and env.get("AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED") == "true"
+            and env.get("AI4IA_RELEASE_PROVISION") == "false"
+            and bool(re.fullmatch(r"[0-9a-f]{40}", source))
+            and source == env.get("GITHUB_SHA"),
+            "API/web image production requires its exact-source private-pair operation",
+        )
+    elif private_api:
+        kind = env.get("AI4IA_RELEASE_KIND")
+        candidate_image = (
+            kind == "image"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("AI4IA_API_NETWORK_PHASE") == "candidate"
+        )
+        private_image = (
+            kind == "private-image"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("AI4IA_API_NETWORK_PHASE") == "private"
+            and env.get("AI4IA_API_IMAGE_PRODUCER_ENABLED") == "true"
+            and env.get("AI4IA_RELEASE_PROVISION") == "false"
+            and bool(re.fullmatch(r"[0-9a-f]{40}", env.get("AI4IA_RELEASE_SOURCE_SHA", "")))
+            and env.get("AI4IA_RELEASE_SOURCE_SHA") == env.get("GITHUB_SHA")
+        )
+        require(candidate_image or private_image,
+                "API-only image preparation requires its exact candidate or private-image operation")
     result = {
         "schemaVersion": 1,
         "identity": identity(env),
-        "images": release_images(args.expect_image, env.get("AZURE_ENV_NAME", ""), private_api=private_api),
+        "images": release_images(
+            args.expect_image, env.get("AZURE_ENV_NAME", ""),
+            private_api=private_api, private_api_web=private_api_web,
+        ),
     }
     if private_api:
         result["privateApiImage"] = True
+    if private_api_web:
+        result["privateApiWebImages"] = True
     return result
 
 
@@ -569,7 +608,10 @@ def execute(args: argparse.Namespace, env: Mapping[str, str]) -> None:
         github_output(env, outputs)
         return
     manifest = bound_subjects(args, env)
-    services = ("api",) if manifest.get("privateApiImage") is True else SERVICES
+    private_api = manifest.get("privateApiImage") is True
+    private_api_web = manifest.get("privateApiWebImages") is True
+    require(not (private_api and private_api_web), "private image scopes are mutually exclusive")
+    services = ("api",) if private_api else ("web", "api") if private_api_web else SERVICES
     if args.command == "authorize":
         data = read_bytes(directory / "verified-images.json", MAX_METADATA_BYTES)
         require(bool(HEX256.fullmatch(args.proof_sha256 or ""))
@@ -611,7 +653,7 @@ def execute(args: argparse.Namespace, env: Mapping[str, str]) -> None:
     proof = encode({**manifest, "status": "verified", "files": file_hashes(directory, services)})
     require(len(proof) <= MAX_METADATA_BYTES, "verification proof exceeds bounds")
     write_new(directory / "verified-images.json", proof)
-    if manifest.get("privateApiImage") is True:
+    if private_api:
         receipt = {
             "schemaVersion": 1, "operation": "private-api-image",
             "repository": manifest["identity"]["repository"],
@@ -622,6 +664,20 @@ def execute(args: argparse.Namespace, env: Mapping[str, str]) -> None:
         }
         write_new(directory / "private-api-image.json", encode(receipt))
         github_output(env, {"private_api_receipt": encode(receipt).decode().strip()})
+    elif private_api_web:
+        receipt = {
+            "schemaVersion": 1, "operation": "private-api-web-images",
+            "repository": manifest["identity"]["repository"],
+            "sourceCommit": manifest["identity"]["sourceCommit"],
+            "runId": env["GITHUB_RUN_ID"], "runAttempt": env["GITHUB_RUN_ATTEMPT"],
+            "images": manifest["images"],
+            "sbomCanonicalSha256": {
+                service: hashlib.sha256(encode(documents[service])).hexdigest()
+                for service in services
+            },
+        }
+        write_new(directory / "private-api-web-images.json", encode(receipt))
+        github_output(env, {"private_api_web_receipt": encode(receipt).decode().strip()})
     require(bool(env.get("GITHUB_STEP_SUMMARY")), "missing GitHub step summary file")
     with Path(env["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
         stream.write(
@@ -644,6 +700,7 @@ def main() -> int:
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--proof-sha256")
     parser.add_argument("--private-api", action="store_true")
+    parser.add_argument("--private-api-web", action="store_true")
     args = parser.parse_args()
     try:
         execute(args, os.environ)

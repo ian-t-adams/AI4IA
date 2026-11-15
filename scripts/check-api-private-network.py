@@ -172,6 +172,24 @@ def legacy_revision_inventory(
     return {"rows": rows, "proof": proof}
 
 
+REGISTRY_ONLY_OPERATIONS = ("private-image", "private-pair")
+PEERING_REFUSAL = "Peered private VNet is admitted only for an authorized registry-only image operation."
+
+
+def valid_peering(peering: object, vnet: str) -> bool:
+    if not isinstance(peering, dict):
+        return False
+    peering_id, remote = peering.get("id"), peering.get("remoteVirtualNetwork")
+    remote_id = remote.get("id") if isinstance(remote, dict) else None
+    prefix = (vnet + "/virtualNetworkPeerings/").casefold()
+    return (isinstance(peering_id, str) and peering_id.casefold().startswith(prefix)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", peering_id[len(prefix):]) is not None
+            and isinstance(remote_id, str)
+            and re.fullmatch(r"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]{1,90}/providers/"
+                             r"Microsoft\.Network/virtualNetworks/[^/]{2,64}", remote_id, re.IGNORECASE) is not None
+            and remote_id.casefold() != vnet.casefold())
+
+
 def prove_ready(origin: str) -> bool:
     spec = importlib.util.spec_from_file_location("private_readiness", ROOT / "scripts" / "post-deploy-verify.py")
     assert spec and spec.loader
@@ -222,10 +240,16 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
                      "[].{id:id,prefixes:addressSpace.addressPrefixes,peerings:virtualNetworkPeerings}"])
     require(isinstance(networks, list) and len(networks) <= 128, "VNet address inventory is incomplete or oversized.")
     space = ipaddress.IPv4Network(env["AI4IA_API_PRIVATE_VNET_PREFIX"])
+    peered = False
     for network in networks:
         if network["id"].casefold() == expected_vnet.casefold():
-            require(network["prefixes"] == [str(space)] and network["peerings"] == [],
+            require(network["prefixes"] == [str(space)],
                     "Existing private VNet differs from the reviewed standalone address plan.")
+            peerings = network["peerings"]
+            require(isinstance(peerings, list) and len(peerings) <= 8
+                    and all(valid_peering(peering, expected_vnet) for peering in peerings),
+                    "Existing private VNet peering inventory is invalid.")
+            peered = bool(peerings)
         else:
             require(all(not space.overlaps(ipaddress.ip_network(prefix)) for prefix in network["prefixes"]),
                     "Private API address plan overlaps an observed subscription VNet.")
@@ -280,6 +304,7 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
         require(env.get("AI4IA_DEPLOY_VERIFY_CANARY") == "false",
                 "Initial private cutover requires nonbillable acceptance, not a model canary.")
     if candidate is None:
+        require(not peered, PEERING_REFUSAL)
         require(selected == "candidate", "Stage and verify the private candidate before activation/cutover.")
         return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": PLACEHOLDER,
                 "AI4IA_PRIVATE_MIGRATION_PENDING": "true", "AI4IA_PRIVATE_EXECUTION_BLOCKERS": "[]",
@@ -371,6 +396,13 @@ def admission(env, read=cli, ready=prove_ready, *, preview=False):
     again = read(app_read)
     require(again == candidate, "Candidate changed during admission; stop without mutation.")
     completed = selected == "private" and not staged and not blockers and web_values["API_BASE_URL"] == origin
+    if peered:
+        require(preview, PEERING_REFUSAL)
+        try:
+            operation = deployment_operation(env, pending=not completed, blocked=bool(blockers))
+        except ValueError as exc:
+            raise AdmissionError(PEERING_REFUSAL) from exc
+        require(operation in REGISTRY_ONLY_OPERATIONS, PEERING_REFUSAL)
     return {"AZURE_API_APP_NAME": target, "AI4IA_API_PRIVATE_INITIAL_IMAGE": image,
             "AI4IA_PRIVATE_MIGRATION_PENDING": "false" if completed else "true",
             "AI4IA_PRIVATE_EXECUTION_BLOCKERS": json.dumps(blockers, separators=(",", ":")),

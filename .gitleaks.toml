@@ -111,3 +111,14 @@ paths = [
   '''app/api/tests/test_photo_avatar_preview\.py''',
   '''app/api/tests/test_photo_avatar_api\.py''',
 ]
+
+# 8) Entra application ID used as an audience in offline authentication tests.
+#    An application ID is an identifier, not a credential. Scope the historical
+#    exception to the exact commit, test path and assignment.
+[[allowlists]]
+description = "Entra application ID in historical authentication test (identifier, not a credential)."
+condition = "AND"
+regexTarget = "line"
+commits = ["4d39e2d88e860ba252506e854e93597bf62b11e3"]
+paths = ['''^app/api/tests/test_auth_entra\.py$''']
+regexes = ['''REGISTERED_API_APP_ID\s*=\s*"ec20035f-9539-4427-a6d2-b8f3bb2f9b5a"''']

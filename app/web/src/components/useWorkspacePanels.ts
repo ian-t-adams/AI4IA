@@ -62,7 +62,7 @@ function currentHash(): string {
   return typeof window === "undefined" ? "" : window.location.hash;
 }
 
-export function useWorkspacePanels() {
+export function useWorkspacePanels({ chatOnly = false }: { chatOnly?: boolean } = {}) {
   const phone = useMediaQuery(PHONE_QUERY);
   const compact = useMediaQuery(COMPACT_QUERY);
   const inspectorStartsClosed = useMediaQuery(INSPECTOR_DEFAULT_CLOSED_QUERY);
@@ -75,7 +75,7 @@ export function useWorkspacePanels() {
   // The hash names the page; read it after hydration and follow back/forward.
   useEffect(() => {
     const sync = () => {
-      const next = viewFromHash(currentHash());
+      const next = chatOnly ? "chat" : viewFromHash(currentHash());
       if (next !== currentView.current && !allowWorkspaceNavigation()) {
         const { pathname, search } = window.location;
         window.history.replaceState(null, "", `${pathname}${search}${hashForView(currentView.current)}`);
@@ -91,9 +91,17 @@ export function useWorkspacePanels() {
       window.removeEventListener("hashchange", sync);
       window.removeEventListener("popstate", sync);
     };
-  }, []);
+  }, [chatOnly]);
 
   const navigate = useCallback((next: WorkspaceView) => {
+    if (chatOnly) {
+      if (next === "chat") {
+        currentView.current = "chat";
+        setView("chat");
+        setDrawer(null);
+      }
+      return;
+    }
     if (next !== currentView.current && !allowWorkspaceNavigation()) return;
     currentView.current = next;
     setView(next);
@@ -101,7 +109,7 @@ export function useWorkspacePanels() {
     if (viewFromHash(currentHash()) === next) return;
     const { pathname, search } = window.location;
     window.history.pushState(null, "", `${pathname}${search}${hashForView(next)}`);
-  }, []);
+  }, [chatOnly]);
 
   // Close a drawer when its breakpoint stops applying. Listening to the media
   // query directly avoids a synchronous setState inside a React effect.

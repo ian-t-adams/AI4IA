@@ -2457,6 +2457,417 @@ predicate, different producer or changed original inventory refuses. Ordinary
 three-service production verification remains same-run and complete. Keep the
 image receipt and both preview/execution artifacts with the operator's review.
 
+### Private-phase API image producer
+
+The separate `operation=private-image` lane is default-off behind
+`AI4IA_API_IMAGE_PRODUCER_ENABLED`. It requires an explicit `workflow_dispatch`
+from `main`, `AI4IA_API_NETWORK_PHASE=private`, no pending or blocked migration,
+`provision=false`, and an `image_source_sha` identical to the workflow's
+`GITHUB_SHA`. It remains independently admissible while
+`AI4IA_DEPLOYMENT_ENABLED=false`; the candidate-phase `operation=image` gate and
+its restrictions are unchanged.
+
+This lane builds only the API artifact in the existing ACR, scans the exact
+registry digest for HIGH/CRITICAL vulnerabilities, and uses the existing
+`deploy.yml@main` identity/source checks for signed SLSA provenance and SPDX.
+It writes a producer receipt only after the signed proof and generated SPDX
+fingerprint match. It has no application deploy or traffic-shift step, but it
+still executes in the existing deploy job with that job's Azure/registry
+identity; it does not establish a registry-only Azure role. It is not a compatible release by itself when the serving web may still call
+removed API routes.
+
+The separate `operation=private-pair` lane has its own default-off
+`AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED` gate. It uses the same manual-main,
+exact-source, private-phase and no-provision admission, and builds only web and
+API from the same commit. Both exact digests receive a fresh HIGH/CRITICAL scan,
+SPDX inventory and current-run signed SLSA/SPDX verification. The resulting
+receipt and retained evidence are not consumed by a deployment path and prove
+neither runtime compatibility nor readiness. The lane changes no revisions,
+configuration or traffic; it still uses the existing deploy job's Azure/registry
+identity. A separate reviewed web/API staging, readback and rollback procedure
+is still required before either artifact can be promoted.
+
+### Hosted OIDC read qualification
+
+The default-off `hosted-web-one-read.yml` workflow admits one exact web-app ARM
+GET, not a deployment. The reader accepts the runner-selected HTTPS endpoint
+only under a single DNS label of `actions.githubusercontent.com`, following
+[GitHub's OIDC communication requirements](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#communication-requirements-for-github-hosted-runners).
+It rejects userinfo, other ports, fragments, control characters, redirects and
+caller-supplied audiences. The issuer, audience, subject, repository, ref, source
+SHA, environment, event and token-time checks remain independent and exact.
+
+Assertion failures use fixed `phase` values: `assertion-url`,
+`assertion-runtime-token`, `assertion-transport`, `assertion-response` and
+`assertion-claims`. The receipt shape remains `phase`, `status`, `sha256`; it
+contains no endpoint path, token, claim values or exception text. A failed read
+is not an RBAC diagnosis unless it reached that layer, and a successful read
+does not establish deployment, DTS or gateway-runtime permissions.
+
+### Required paired rollout order (not an apply path)
+
+The approved design is web first, then the selector-OFF API, then a fresh
+selector-ON revision based on the serving selector-OFF revision. This order keeps
+the current-main web on the existing canonical API while preserving a named
+rollback at each stage. The image producer does not implement this order. The
+offline helper constructs C1/C2/C3 request bodies; its only apply consumer is the
+separately gated [hosted gateway release lane](#hosted-gateway-release-lane).
+Web C1 is a config-only Single-to-Multiple request that
+pins the exact serving R0 and contains no template. Its construction does not
+qualify an apply mechanism or authorize staging.
+
+For both API and web snapshots, the offline constructor compares writable
+template intent through the existing `activation_template_projection`: it
+normalizes only `revisionSuffix` and the schema-declared read-only
+`resources.ephemeralStorage` in containers/init containers. It emits the C2
+template with those fields omitted and preserves/rejects every other difference,
+including environment values and secret references. This handles the observed
+healthy R0 GET shape; offline tests do not establish that Azure accepts this
+PATCH body or prove any live service behavior.
+
+1. Construct the current-main web C1 request from the exact healthy, latest and
+   ready Single-mode R0. It changes only `activeRevisionsMode` to Multiple and
+   pins that named R0 at 100%; it does not change the template, canonical API
+   URL, ingress or auth. No reviewed web apply/readback path is included here.
+   Any later web-image C2 staging must preserve the canonical API URL and use a
+   separately approved promotion, bounded app-origin smoke and retained R0
+   rollback. Do not add a preview hostname, revision label or auth bypass.
+2. Build the selector-OFF API candidate as a new C2 revision from the exact
+   existing API image/template snapshot. C2 keeps the named R0 at 100% in
+   Multiple mode and changes only the digest-pinned API image and unique suffix.
+   Zero canonical traffic does **not** isolate startup/background work. The
+   coordinator's ~04:20 UTC read-only production observation showed
+   `AI4IA_DURABLE_WORKFLOWS_ENABLED=true`,
+   `AI4IA_PRIVATE_RECOVERY_CANDIDATE=false`, and document
+   understanding/compute enabled; candidate `main.py` starts
+   `DurableWorkflowService` and runs document `recover_interrupted()` under
+   those settings. Mixed old/new worker code may therefore act on production
+   state before promotion. Preserve the current flags; do not flip the recovery
+   flag as a shortcut. Before any
+   candidate startup or exec, require a separately reviewed background-worker
+   and mixed-version safety gate covering those stateful side effects. Until
+   that gate exists, stop; no zero-traffic or loopback test is authorized.
+   The source replay found mixed-version behavior changes even though the
+   persistence and automation record/store files are byte-identical: the newer
+   retired-tool check reached by `automation_service.advance` terminally fences
+   affected runs as `context_revoked`, and a schedule tick can persist `paused`
+   or record delayed occurrences over 300 seconds as `missed`. Turning scheduling
+   off is therefore not a harmless drain. Source/schema parity does not prove
+   worker compatibility or authorize a scheduling change.
+   Likewise, task-hub active/pending counts and connected-worker counts do not
+   prove quiescence: they omit sleeping schedules, pending approvals, future
+   timers, and document ingestion. Zero HTTP traffic or an idle metadata snapshot
+   is not a safe candidate-start condition. A reviewed gate must account for
+   these paths; none is established here. Use metadata-only evidence and do not
+   read orchestration content to establish worker readiness.
+   Once separately cleared, qualification must use the approved native
+   exec/loopback path; do not expose a revision label or shift traffic before
+   independent approval. Then promote the named selector-OFF revision to 100%,
+   capture its readback, and run the bounded app-origin smoke.
+3. Only after R1-OFF is the fresh, healthy latest/ready serving revision at
+   100%, capture a new app and revision snapshot plus rows from the bounded
+   private revision reader. Any future C3 must use that R1-OFF snapshot as its
+   baseline: keep R1 at 100%, add a new suffix, enable only the reviewed gateway
+   selector, preserve pilot isolation as disabled, and retain the exact R1 image.
+   Never construct C3 from a zero-traffic R1 while old R0 is serving, or change
+   the same-image invariant. The offline C3 constructor is limited to the exact
+   classified contract bytes with SHA-256
+   `94c2edf581b40a2677f3f90fad76eb2fc957478e5969c5007132d35040e72cb5` and
+   handoff sidecar bytes with SHA-256
+   `f73a55378dbe418e92ca4ea3d0bc8e30ef6ae09778f3aebddc3525e5b571ecc4`.
+   It verifies both raw-byte hashes before parsing, requires the pinned sidecar
+   to report `activationReady=false`, unchanged application and zero model
+   requests, and validates the manifest with the qualified
+   `shared_gateway_contract.py` Git blob
+   `cd89beaffe81acb0dd344ddd8a81d1a0c78e890e`; the exact checked bytes run in
+   an isolated module, not a cached import or a second disk read. That strict
+   2.2 loader binds the
+   manifest caller to the API's literal `AZURE_CLIENT_ID`, requires the fixed
+   `managed-identity` credential, and rejects extra schema fields. The
+   constructor accepts only C2's unchanged R1-OFF output as its baseline: the
+   gateway selector absent or literal `false`, pilot isolation absent or literal
+   `false`, and no `AI4IA_SHARED_GATEWAY_DEPLOYMENTS`, manifest variable or
+   `shared-gateway-activation-manifest` reference (names are compared
+   case-insensitively, and `AI4IA_MODEL_CATALOG_PATH` is refused). It produces one
+   R2 request that sets the selector to literal `true` and appends exactly two
+   literals: the deployment opt-in list and the byte-identical manifest JSON. Every
+   other field and secret reference is preserved, and the request carries no
+   `configuration.secrets`, so it neither creates nor reads a Container App secret.
+   The opt-in list comes only from `--deployments` (exact ASCII bytes,
+   comma-separated names, no whitespace or trailing newline) bound to a separately
+   reviewed `--deployments-sha256`; the helper has no built-in model list. The
+   resulting literal environment is then checked by the API's own
+   `Settings.validate_shared_gateway` and `validate_shared_gateway_catalog`, with
+   process environment and `.env` sources disabled and the hash-checked loader
+   module bound for that call, so each opted-in deployment must be an eligible
+   packaged-catalog chat/Responses deployment that resolves in the manifest. The
+   packaged catalog is not hash-pinned: run the helper from the same source commit
+   as the R1-OFF image. Whether Azure accepts the ~24.5 KB literal and preserves
+   existing secrets for a PATCH without `configuration.secrets` is unverified.
+   The offline input is classified only for this exact digest; do not commit,
+   print or persist the manifest, sidecar, snapshots or generated payload in the
+   shared repository. The `activationReady=false` sidecar is explicitly not
+   readiness or activation evidence. A local qualification resolved all 71
+   manifest model rows and rejected 213 wrong alternatives; it is not a
+   substitute for a fresh app-bound snapshot or a CI/live service proof.
+   A fresh R1-OFF environment-name and secret-name readback must still confirm
+   this baseline before any C3 request is reviewed; do not infer or perform an
+   intermediate settings or secret write.
+4. C3 construction does not authorize staging, activation, traffic change or
+   model requests. Worker-transition/quiescence, deployed-SDK, exact fresh
+   snapshot, readiness, route-operation and streaming gates remain separate.
+   Only after each is independently reviewed may a distinct approval authorize
+   an API traffic shift. Keep R1-OFF as the immediate API rollback and retain
+   the original API R0 and web R0 for full paired rollback. On any failed
+   smoke, restore only the explicitly named prior serving revision and verify
+   readback; never infer or replay an uncertain PATCH.
+
+`prepare-gateway-cutover.py` writes request JSON only. App/revision snapshots and
+the resulting payload may contain sensitive literal environment values; the C3
+payload also carries the classified manifest as a literal. Never dump them to
+logs or chat, commit them, or persist them in the shared repository. The CLI
+rejects input/output paths inside the repository, but does not establish
+filesystem ACLs or secure deletion; operators must use restricted ephemeral
+storage and remove it safely. Its timestamp and revision rows are
+caller-supplied, and its merge-patch model proves neither pagination
+completeness, ARM conditionality, nor atomic traffic behavior. A future apply
+path must use restricted ephemeral handling, preserve exact template semantics,
+rerun the scoped collector, re-read exact app/revision state and the pinned
+manifest binding immediately before a single write, emit only an explicit
+redacted receipt, and verify the serving revision. Metadata-only proof is
+insufficient.
+Do not substitute
+`az containerapp update --yaml` or `az containerapp secret set`: Azure CLI
+2.92.0's YAML update calls `list_secrets(show_values=True)`, and `secret set`
+also reads existing secret values before a full `create_or_update`. Neither is
+a safe single-secret PATCH. Retain the reviewed scoped ARM request/helper path
+and never print or persist secret values. Offline helper output alone is not
+live-manifest readback or activation evidence. The `private-image`
+and `private-pair` manual dispatches are not successful push-triggered
+`foundry-assets` runs; its independent manual-dispatch path remains a separate
+writer and must stay separately controlled during a freeze.
+
+The existing `preview-api-private.py::activation_patch_command` is a different
+private-recovery path, not a consumer of these C1/C2 gateway requests. It
+recollects revisions through `private_revision_rows` before prepare/apply,
+re-reads and binds the live app snapshots, and creates a one-attempt execution
+receipt before its scoped ARM PATCH. Its request does not carry an ARM ETag
+precondition, so those checks and receipts are not an atomic compare-and-swap
+guarantee and do not establish C2/C3 manifest binding.
+
+### Hosted gateway release lane
+
+`hosted-gateway-release.yml` is the only apply consumer of the C1/C2/C3
+requests. It is default-off: each dispatch needs `admit=true`, an exact
+`reviewed_sha` equal to the dispatched `main` commit, the repository variable
+`AI4IA_GATEWAY_RELEASE_ENABLED=true`, and exactly one `stage`. Restore the
+variable to absent after the release. It runs in the `production` environment
+under the `deploy-production` concurrency group with hosted GitHub Actions OIDC
+(the existing deployment service principal) and plain HTTPS to ARM. It uses no
+Azure CLI and no local credential, and never reads, lists, or writes
+`configuration.secrets`. Run the bounded hosted OIDC read first on the same
+`main` commit.
+
+Run the stages in this order, stopping at the first failure: `c1-web`,
+`c2-web`, `c1-api` (only while the API is still in Single mode), `c2-api`, then
+`c3-api`. The stages behave as follows:
+
+- **C1** writes configuration only.
+- **C2** creates the exact released image with the selector off. After
+  readiness and health it promotes that revision to 100% in the same run, then
+  deactivates (never deletes) the previous revision. For `c2-web`, the web
+  probes below must pass before promotion, and the previous revision is
+  deactivated only after the serving-traffic readback passes.
+- **C3** builds a fresh selector-on revision from the serving C2 revision with
+  exactly the four `gpt-5.4-mini` opt-in deployments. It promotes the new
+  revision only after the smoke below passes. The C2 revision stays active as
+  the immediate rollback.
+
+The `production` secrets `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST` and
+`AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64` are passed only to `c3-api`.
+Both are size- and SHA-256-checked, and the sidecar is decompressed with a
+bound. The receipt records only their hashes. Payloads are built by the
+reviewed C1/C2/C3 helper, including the API catalog's C3 validation.
+
+The R0 app/revision guard and candidate/restore `template_matches` checks share
+one comparison-only compatibility rule. They tolerate absent/null/empty dictionary
+entries while retaining list positions. Only at `scale.cooldownPeriod` and
+`scale.pollingInterval`, null or absent versus an exact integer default (300 and
+30 seconds, respectively) is `provider_default`; equal integral int/float pairs
+are `numeric_repr`. Strings, booleans, non-default null pairs and differences
+at other paths receive no such exception.
+Receipts include a content-free `template_diff` (at most 32 entries, depth 16,
+with `truncated`), using only schema-allowlisted path keys and numeric indices;
+unknown keys render as `?`. Each entry records only a path and difference kind.
+Type, missing and provider-representation entries also include allowlisted
+`left_type`/`right_type` labels, never values.
+Compatible differences record an `r0-template-normalized` step even on success;
+`template_equal_canonical` continues to describe empties-only canonicalization,
+so a provider-default exception can pass compatibility while that fact is false.
+The shared projection, emitted C2/C3 templates, `guarded_patch` and same-shape
+app pre/post invariance comparisons remain strict and are not canonicalized.
+
+An unpromoted candidate can be left behind as an inactive, untrafficked revision
+that is still the app's latest, latest-ready and app-template revision. Revisions
+cannot be deleted, so C2 and C3 pin R0 to the revision named by the single
+100%-weight traffic rule rather than to the latest revision. Any other traffic
+shape falls back to the latest revision, which the builder then refuses as
+before. C1 keeps the strict latest-equals-R0 rule. When the latest revision differs
+from that R0, the lane reads it once. It accepts the latest only when all of
+these hold:
+
+- its name is this lane's own C2/C3 candidate form for the same app
+  (`<app>--c2|c3-<7 hex>-<1..8 digits>`);
+- it is inactive and not referenced by any traffic rule;
+- latest-ready is either it or R0.
+
+Otherwise the run refuses `r0-latest` with zero writes. The lane records a
+`r0-serving-not-latest` step with both names and the boolean checks. The builder
+then requires the app template to be compatible with the stale revision's own
+template. That template may differ from R0's only in `containers[0].image` for a
+`--c2-` candidate, or only in the three C3 environment entries for a `--c3-`
+candidate. The payload is still built from R0's revision template. Refusal facts
+add the content-free `latest_is_r0`, `latest_lane_candidate`, `latest_inactive`,
+`latest_untrafficked` and `stale_diff_ok` checks.
+
+Each release reuses the fixed apps, identities and secrets. Its only Azure
+artifact is at most one candidate revision; it creates no app, secret,
+APIM object or environment change outside the declared candidate template. The
+receipt's `lane_revisions` lists that candidate and any admitted stale latest,
+with `role`, `creation_attempted` and the final `active` flag. That flag comes from
+a single read-only reread, taken only if the create PATCH was attempted.
+`creation_attempted` is recorded before the ARM response, so it does not prove
+the revision exists (for example after a 403 or an uncertain write). Only a
+successful reread, shown by a boolean `active`, confirms existence. A failed
+reread leaves `active` null and adds `observed: false`.
+
+Dispatch the lane and the one-read workflow only through
+`python scripts/dispatch_gated_workflow.py --workflow hosted-gateway-release.yml
+--reviewed-sha <sha> --stage <stage>` (or `--workflow hosted-web-one-read.yml`).
+It refuses if either gate variable is already set or a run is still queued or in
+progress, leaving others' gates untouched. It then sets its own gate, dispatches
+once, and binds to the exact new run ID: a `workflow_dispatch` event at the
+reviewed SHA that was not seen before. Several new runs fail closed. The wrapper
+holds the gate until that run is terminal, because every job re-reads it. In
+`finally`, including on Ctrl+C or SIGTERM, it deletes its gate (retrying an
+interrupted delete). It then rereads the variables and verifies that every gate
+is absent, failing loudly if not. It never touches `AI4IA_DEPLOYMENT_ENABLED`.
+Every `gh` call has a bounded timeout (`--gh-timeout`, default 60 seconds, at
+most 300). A timeout or OS error becomes a fixed refusal and triggers bounded
+cleanup. Calls and cleanup can overrun the bind/run deadlines; failed cleanup
+can leave the gate set. If the reread cannot verify absence, the wrapper reports
+that failure and requires manual attention. Deleting the gate after a
+timeout, error or interrupt does not prove that the dispatched run stopped. The
+wrapper logs and reports the bound run ID so you can inspect it. It does not
+cancel runs or add retries or credentials.
+
+The lane depends on these controls and limitations:
+
+- **Worker gate.** Before every create or promote, a metadata-only read of the
+  Durable Task Scheduler metrics for hub `ai4ia` must show that orchestrator
+  and activity active and pending items are all exactly 0. That observation
+  must be at most five minutes old. Empty, missing, null, or stale data refuses
+  the write; it never counts as zero. The newest reported timestamp must have
+  all four values; an older complete zero cannot hide a newer partial sample.
+  This gate also applies to traffic restoration and manual rollback. A zero
+  result does not prove that timers, schedules, or document recovery have drained.
+- **No compare-and-swap.** ARM Container Apps PATCH has no ETag precondition
+  here. The lane re-reads app and revision state immediately before each
+  single write and refuses on any drift. Serialization comes from the
+  production concurrency group. These controls are not atomic.
+- **Uncertain writes.** A transport error or 5xx makes the write outcome
+  uncertain. The lane never replays it and never rolls back automatically. It
+  records an observed reconciliation of revision names, weights, and active
+  flags, and stops for operator disposition.
+- **Rollback scope.** A candidate that fails readiness, the web probes, the
+  smoke, or the final pre-promotion worker gate or state reread is deactivated
+  without receiving traffic, provided the fresh-state guard still sees the
+  previous revision serving; otherwise the receipt records `cleanup-refused`
+  and the candidate is left for reconciliation. If the post-promotion
+  readback fails, `c2-api` stops and reconciles without restoring the
+  pre-release API R0, whose retired-video containment is unqualified.
+  `c2-web` may move traffic back to its previous revision only if it is still
+  active, healthy, and template-unchanged, and after the worker gate passes
+  again. C3 may restore the previous
+  revision only after it is rechecked as healthy, active, gateway-off, and on
+  the released image, and after the worker gate passes again. The
+  `rollback-api` stage applies those same checks to its named target.
+- **Web probes.** Inside the not-yet-promoted web revision's `web` container,
+  through the same exec channel, the lane makes exactly two content-free GETs:
+  that revision's own `/build-id` (the `{buildId}` body must equal the
+  `webBuildId` of the `app/web` sources that built the pinned image), and its
+  configured `API_BASE_URL` `/health/ready` (must be 200 with
+  `{"status":"ok","stage":"session_store"}`). Each has a 10-second timeout and
+  a 4 KiB body cap, follows no redirects, and sends no cookies or credentials.
+  Chat-pilot UI mode refuses. The receipt keeps only statuses, the build ID,
+  a hash of the API host, and a boolean. These probes prove the web server
+  responds and can reach a ready API; they do not prove authenticated chat.
+- **Exec transport.** Both the web probes and the C3 smoke follow the Azure CLI
+  reference client's exec framing. The lane sends one masked TEXT terminal
+  resize (`\x00\x04` + `{"Width": 200, "Height": 50}`) after the upgrade, then
+  waits up to 20 seconds (inside the 60/240-second deadline) for the first
+  console output. It sends ASCII stdin as TEXT `\x00\x00` frames with 20 ms
+  between lines, whether or not output arrived. Proxy INFO frames are counted;
+  proxy ERROR, close, or an unexpected forwarded stream refuses
+  `smoke-transport`, and a marker before stdin refuses `smoke-output`. Every
+  probe/smoke result, and the `detail` of every `smoke-*` refusal, carries an
+  `exec` block of counts only: frames by opcode and channel, stdout/stderr byte
+  totals, the numeric close code, first-output and marker latency buckets,
+  `marker_seen`, `resize_sent`, `stdin_frames_sent` and
+  `first_output_before_stdin`. It never includes payload text.
+- **C3 smoke.** The smoke runs inside the not-yet-promoted revision's `api`
+  container through the documented Container Apps exec channel, using the
+  revision's own settings, user-assigned managed identity, manifest, and shared
+  gateway route. It makes one chat call and one stateless Responses call
+  (`store: false`) for each of the four deployments. All eight must return 200,
+  must have been routed through the shared gateway, and must have reached only
+  the manifest's base host. Because the canary has no end user, it disables
+  per-user quota and group policy for that process only.
+- **What the smoke proves.** The receipt keeps only statuses and booleans, never
+  prompts or completions. The lane does not change gateway-side capture. A
+  passing smoke covers only those four deployments and those two operations; it
+  is not wider application coverage.
+
+The lane never changes schedules, recovery or worker flags, roles, the network,
+or secrets. A 403 is a stop, never a reason to broaden a grant.
+
+### Release freeze sequence
+
+This is an operator procedure, not an automated control. No freeze is active
+because of this documentation or the producer code. Before declaring a freeze:
+
+1. Record the exact `main` SHA, the current values of
+   `AI4IA_DEPLOYMENT_ENABLED`, `AI4IA_API_IMAGE_PRODUCER_ENABLED`, and
+   `AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED`, and all queued/running `deploy` and
+   `foundry-assets` workflow runs. Set all three variables to literal `false`;
+   either private producer can otherwise start while general deployment is
+   disabled.
+2. Do not assume changing variables stops a job already admitted. Wait for every
+   active release, provision, image push, and downstream workflow to finish and
+   retain its run/artifact receipt. Do not cancel an in-flight `azd provision`;
+   a cancellation can leave an active ARM deployment. Prevent new merges/pushes,
+   manual deploy/image dispatches, re-runs, and retry attempts while frozen.
+3. For the frozen merge/push, verify the exact `deploy.yml` run reports
+   `deployment_enabled=false` and the `deploy` job is `skipped`. Then inspect the
+   exact `foundry-assets.yml` `workflow_run` consumer and confirm it skipped
+   reconciliation because that exact deploy job was skipped. Check separately
+   for already queued/running or manually dispatched Foundry-assets runs.
+4. The `foundry-assets` manual-dispatch path is independent of the deploy-job
+   flag. A flag-only freeze therefore is not complete: keep that dispatch
+   unavailable by an independently reviewed repository-level operator hold and
+   verify no such run is active. The workflow currently has no shared
+   `AI4IA_DEPLOYMENT_ENABLED` gate for manual dispatch.
+5. Resume only after the release owner authorizes it, all freeze receipts are
+   reconciled, and the exact prior values are reviewed. Restore recorded values
+   deliberately; do not infer them from current defaults or automatically
+   enable either producer.
+
+The deployment flag protects the ordinary job, not runs that have already
+passed admission. A false value also does not disable the independent
+`foundry-assets` manual dispatch. The status checks above are evidence for a
+particular freeze window, not a distributed lock or protection against a
+concurrent repository setting change.
+
 ### Topology and protected state
 
 ACA's default Azure network reaches internet endpoints only; the environment
@@ -2469,12 +2880,25 @@ customer-data migration or new Cosmos grant.
 
 | Scope | Permitted recovery delta |
 | --- | --- |
-| New API network | One standalone RFC1918 VNet, /26 delegated API subnet, separate /27 PE subnet; no peering, custom DNS, NAT, firewall, VM or inbound ACA PE |
+| New API network | One standalone RFC1918 VNet, /26 delegated API subnet and separate /27 PE subnet; the AI4IA recovery module does not manage gateway peering or DNS, NAT, firewall, VM or inbound ACA PE |
 | New API environment/app | External Consumption environment; same API UAMI, configuration/secret references and signed ACR image. Candidate 0.5 vCPU / 1 GiB, min1/max1; active min1/max3 |
 | Cosmos | Existing account stays Entra-only and public-network Disabled; one approved `Sql` PE, `privatelink.documents.azure.com` zone, VNet link and zone group |
 | Existing web/proxy/APIM | Same environment, public domains, authentication and gateway path. Preserve actual web/proxy serving image digests during infrastructure reconciliation |
 | Final traffic selection | Only web `API_BASE_URL` and direct voice `API_PUBLIC_URL` move together to the new API FQDN; no alert resource is reconciled by the scoped migration |
 | Retained legacy API | Explicitly drain/deactivate only at the separately approved activation boundary; no deletion, resource replacement or parallel worker processing |
+
+### Shared-gateway connectivity ownership
+
+The shared-gateway B/C peerings and caller DNS link are separately owned by
+`c2/ai4ia-connectivity.bicep`, under its `ai4ia-production-gateway` child. They
+are not resources of `infra/modules/api-private-network.bicep`. The AI4IA
+recovery module and release preflight must preserve this boundary: do not
+duplicate, replace, delete, or reconcile those resources, and never run
+complete-mode cleanup against the c2-owned connectivity scope. Before a staged
+gateway route is considered reachable, use read-only evidence to verify the
+existing peerings are `Connected` and the caller DNS link targets the intended
+private environment. Missing or ambiguous evidence blocks readiness; it is not
+authorization for AI4IA to create or repair shared connectivity.
 
 The October 24 proposed source environment is
 `cae-ai4ia-slurmfactory-api-private`, app `ca-api-private-slurmfactory`,
@@ -2556,7 +2980,14 @@ a retained inert placeholder is never functional acceptance.
 CLI writes no cloud state; the explicit `--azd-env` preprovision hook stores only
 validated nonsecret target/image values in local azd state. It refuses incomplete
 inventory, unapproved/mismatched PE/DNS, different identity/account, unsettled
-images, active/terminating legacy workers or public DNS. It bounds reads to
+images, active/terminating legacy workers or public DNS. The private VNet must
+keep exactly its reviewed prefix. It must also have no peerings unless the
+release-mode `deployment_operation` validation selects an authorized
+registry-only `private-image` or `private-pair` operation for a completed,
+unblocked cutover; those peerings must be well-formed and point to another VNet.
+Provisioning, deployment, `--azd-env` hooks and every other operation still
+refuse a peered VNet. This tolerance is read-only and does not validate gateway
+peering health. It bounds reads to
 64 calls, a 120-second admission budget and 45 seconds/512 KiB per CLI result;
 each call's timeout also respects the remaining overall deadline. Legacy
 inventory uses the raw `2024-10-02-preview` revisions endpoint with `pageSize=20`,

@@ -23,6 +23,7 @@ export function ChatHeader({
   inspectorOpen,
   onOpenInspector,
   inspectorButtonRef,
+  showSettings = true,
 }: {
   /** Null for a conversation that has not been created yet. */
   title: string | null;
@@ -40,6 +41,7 @@ export function ChatHeader({
   inspectorOpen: boolean;
   onOpenInspector: () => void;
   inspectorButtonRef?: RefObject<HTMLElement | null>;
+  showSettings?: boolean;
 }) {
   return (
     <header className="chat-header">
@@ -72,11 +74,13 @@ export function ChatHeader({
               </span>
             ) : null}
           </>
+        ) : title !== null ? (
+          <strong>{title}</strong>
         ) : (
           <strong>New conversation</strong>
         )}
       </div>
-      {modelLabel ? (
+      {showSettings && modelLabel ? (
         <button
           type="button"
           className="model-chip"
@@ -98,7 +102,7 @@ export function ChatHeader({
       >
         {toolsOff ? "Chat tools off" : ""}{toolsOff && streaming ? " · " : ""}{streaming ? "Generating…" : ""}
       </div>
-      {!inspectorOpen ? (
+      {showSettings && !inspectorOpen ? (
         <button
           ref={(element) => {
             if (element && inspectorButtonRef) inspectorButtonRef.current = element;

@@ -156,6 +156,33 @@ param realtimeGaEnabled bool = false
 @description('Stage only the isolated one-attempt v1 routes/key on the existing APIM. Default OFF; does not select bounded runtime traffic or activate quotas.')
 param gatewayAttemptsV1Staged bool = false
 
+@description('Select the AI4IA stateless shared-gateway route only with a resolved v2 manifest and after separate canary approval. Default OFF.')
+param sharedGatewayEnabled bool = false
+
+@description('Comma-separated exact catalog deployment names opted into the shared gateway outside the pilot. Empty keeps every deployment on the legacy proxy; non-empty requires sharedGatewayEnabled.')
+param sharedGatewayDeployments string = ''
+
+@description('API Container App revision mode. Single (default) preserves current behavior; Multiple is only for a reviewed, pipeline-frozen staged traffic cutover.')
+@allowed([
+  'Single'
+  'Multiple'
+])
+param apiActiveRevisionsMode string = 'Single'
+
+@description('Exact API revision pinned at 100% traffic in Multiple mode; required with Multiple and empty with Single. Never emits latestRevision.')
+param apiTrafficRevisionName string = ''
+
+@description('Enable the default-off text-only chat-pilot UI compatibility path. This does not select or verify the API target.')
+param chatPilotUiEnabled bool = false
+
+@description('Exact API hostname allowed for the pilot web proxy; required when the pilot UI is enabled.')
+param chatPilotApiAllowedHost string = ''
+
+@secure()
+@description('Private, resolved AI4IA activation manifest carried as UTF-8 base64; schema-only or empty values cannot enable the route.')
+@maxLength(87384)
+param sharedGatewayActivationManifestBase64 string = ''
+
 @allowed([
   'preview'
   'ga'
@@ -419,6 +446,9 @@ var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'sou
 // secret proxy projection is decoded inline at the gateway module instead.
 var claudeBindingJson = empty(claudeBindingJsonBase64) ? '' : base64ToString(claudeBindingJsonBase64)
 var groupPolicyJson = empty(groupPolicyJsonBase64) ? '' : base64ToString(groupPolicyJsonBase64)
+var sharedGatewayActivationManifest = empty(sharedGatewayActivationManifestBase64)
+  ? ''
+  : base64ToString(sharedGatewayActivationManifestBase64)
 var claudeBinding = claudeExternalEnabled ? json(claudeBindingJson) : {}
 
 // Naming tokens come from models.json `naming` (the single source of truth also read by
@@ -910,6 +940,11 @@ module api 'modules/api.bicep' = {
     modelGatewayApiKey: gateway.outputs.proxyIngressKey
     modelGatewayApiKeyHeader: 'S7P-KEY'
     gatewayAttemptsV1Staged: gatewayAttemptsV1Staged
+    sharedGatewayEnabled: sharedGatewayEnabled
+    sharedGatewayDeployments: sharedGatewayDeployments
+    sharedGatewayActivationManifest: sharedGatewayActivationManifest
+    activeRevisionsMode: apiActiveRevisionsMode
+    trafficRevisionName: apiTrafficRevisionName
     // Realtime stays on the FastAPI relay -> APIM path because the proxy does
     // not support WebSockets. The separately scoped subscription key cannot call
     // the normal APIM model API, so compatible traffic cannot bypass the proxy.
@@ -1068,6 +1103,8 @@ module web 'modules/web.bicep' = {
     webIdentityResourceId: webIdentity.resourceId
     acrLoginServer: platform.outputs.acrLoginServer
     apiBaseUrl: servingApiUrl
+    chatPilotUiEnabled: chatPilotUiEnabled
+    chatPilotApiAllowedHost: chatPilotApiAllowedHost
     appEnvironment: appEnvironment
     // Dev user only matters while the api runs the dev auth provider.
     devUser: appEnvironment == 'prod' ? '' : webDevUser
