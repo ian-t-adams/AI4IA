@@ -3,13 +3,14 @@
 One dispatch applies one stage to production through scoped ARM requests:
 
   c1-web / c1-api   Single -> Multiple mode, traffic pinned to the serving R0.
-  c2-web / c2-api   new digest-pinned image revision at 0%, healthy, promote, deactivate R0.
+  c2-web / c2-api   new digest-pinned image revision at 0%, healthy, (web: content-free
+                    /build-id and configured-API /health/ready probes), promote, deactivate R0.
   c3-api            R2 = R1-OFF + shared gateway selector/opt-in/manifest at 0%,
                     in-revision smoke, promote; R1 stays active as the rollback.
   rollback-api      move traffic back to a named, active, gateway-off bc58 revision.
 
 Never sends configuration.secrets, never deletes, never replays an uncertain
-write, and never reactivates a pre-release revision automatically.
+write, and never moves traffic back to a pre-release API revision automatically.
 """
 
 from __future__ import annotations
@@ -83,6 +84,9 @@ SUBJECT = f"repo:{REPOSITORY}:environment:production"
 MAX_BODY = 4 * 1024 * 1024
 STAGES = ("c1-web", "c1-api", "c2-web", "c2-api", "c3-api", "rollback-api")
 SMOKE_MARK = "AI4IA_SMOKE" + "_RESULT="
+WEB_PROBE_MARK = "AI4IA_WEB" + "_PROBE_RESULT="
+# webBuildId() (app/web/build-id.mjs) of the exact bc58f551 app/web tree that built IMAGES["web"].
+WEB_BUILD_ID = "3cb6c94fb22f05fe9b5a"
 
 
 class Refused(Exception):
@@ -666,13 +670,101 @@ def sanitize_smoke(result: Any) -> dict:
     }
 
 
-def shell_lines(program: str, width: int = 900) -> list[bytes]:
+# Content-free web candidate probes: the candidate's own /build-id and its configured
+# API's /health/ready. One request each, no redirects/cookies/auth/user content.
+# Neither proves authenticated chat.
+WEB_PROBE_PROGRAM = r'''
+const crypto = require("node:crypto");
+const MARK = "AI4IA_WEB" + "_PROBE_RESULT=";
+const out = {phase: "build", build: null, build_status: null, api: null,
+             ready_status: null, ready: false};
+async function get(url) {
+  const r = await fetch(url, {redirect: "manual", signal: AbortSignal.timeout(10000),
+                              headers: {accept: "application/json"}});
+  const chunks = [];
+  let size = 0;
+  if (r.body) {
+    const reader = r.body.getReader();
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > 4096) { await reader.cancel(); throw new Error("size"); }
+      chunks.push(value);
+    }
+  }
+  return [r.status, Buffer.concat(chunks).toString("utf8")];
+}
+(async () => {
+  try {
+    const port = /^[0-9]{1,5}$/.test(process.env.PORT || "") ? process.env.PORT : "8080";
+    const [s, b] = await get("http://127.0.0.1:" + port + "/build-id");
+    out.build_status = s;
+    if (s === 200) {
+      const j = JSON.parse(b);
+      if (j && Object.keys(j).length === 1 && typeof j.buildId === "string"
+          && /^[0-9a-f]{20}$/.test(j.buildId)) out.build = j.buildId;
+    }
+    out.phase = "config";
+    const pilot = (process.env.CHAT_PILOT_UI_ENABLED || "").trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(pilot)) return;
+    const u = new URL(process.env.API_BASE_URL || "");
+    if (!["https:", "http:"].includes(u.protocol) || u.username || u.password
+        || !["", "/"].includes(u.pathname) || u.search || u.hash) return;
+    out.api = crypto.createHash("sha256").update(u.hostname).digest("hex");
+    out.phase = "ready";
+    const [rs, rb] = await get(u.origin + "/health/ready");
+    out.ready_status = rs;
+    if (rs === 200) {
+      const j = JSON.parse(rb);
+      out.ready = !!j && Object.keys(j).length === 2 && j.status === "ok"
+        && j.stage === "session_store";
+    }
+    out.phase = "complete";
+  } catch (e) {
+  } finally {
+    process.stdout.write("\n" + MARK + JSON.stringify(out) + "\n");
+  }
+})();
+'''
+
+
+def web_probe_passed(result: Any) -> bool:
+    return (isinstance(result, dict) and result.get("phase") == "complete"
+            and result.get("build_status") == 200 and result.get("build") == WEB_BUILD_ID
+            and result.get("ready_status") == 200 and result.get("ready") is True
+            and isinstance(result.get("api"), str))
+
+
+def sanitize_web_probe(result: Any) -> dict:
+    """Keep only allowlisted, content-free fields for receipts."""
+    result = result if isinstance(result, dict) else {}
+
+    def status(value):
+        return value if type(value) is int and 100 <= value <= 599 else None
+
+    build, api, phase = result.get("build"), result.get("api"), result.get("phase")
+    return {
+        "phase": phase if phase in ("build", "config", "ready", "complete") else None,
+        "build": build if isinstance(build, str) and re.fullmatch(r"[0-9a-f]{20}", build) else None,
+        "build_status": status(result.get("build_status")),
+        "api": api if isinstance(api, str) and re.fullmatch(r"[0-9a-f]{64}", api) else None,
+        "ready_status": status(result.get("ready_status")),
+        "ready": result.get("ready") is True,
+    }
+
+
+PYTHON_RUNNER = '/opt/venv/bin/python -I -c "$(printf %s "$S" | base64 -d)"; exit'
+NODE_RUNNER = '/usr/local/bin/node -e "$(printf %s "$S" | base64 -d)"; exit'
+
+
+def shell_lines(program: str, width: int = 900, runner: str = PYTHON_RUNNER) -> list[bytes]:
     """Feed a base64 program through a TTY's line discipline in short lines."""
     encoded = base64.b64encode(program.encode("utf-8")).decode("ascii")
     chunks = [encoded[i:i + width] for i in range(0, len(encoded), width)]
     lines = ["stty -echo 2>/dev/null; S=''"]
     lines += [f"S=\"$S{chunk}\"" for chunk in chunks]
-    lines.append('/opt/venv/bin/python -I -c "$(printf %s "$S" | base64 -d)"; exit')
+    lines.append(runner)
     return [(line + "\n").encode("ascii") for line in lines]
 
 
@@ -698,7 +790,7 @@ def _read_exact(sock, size: int, *, deadline: float, clock) -> bytes:
         sock.settimeout(remaining)
         try:
             chunk = sock.recv(size - len(data))
-        except socket.timeout:
+        except TimeoutError:
             raise Refused("smoke-timeout") from None
         except OSError:
             raise Refused("smoke-transport") from None
@@ -752,7 +844,7 @@ def ws_handshake(sock, host: str, path: str, token: str, key: bytes | None = Non
 
 
 def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotonic,
-               cap: int = 65536) -> Any:
+               cap: int = 65536, mark: str = SMOKE_MARK) -> Any:
     """Send stdin lines, then parse only the program's marker line from stdout."""
     for line in lines:
         sock.sendall(ws_frame(b"\x00\x00" + line))
@@ -773,9 +865,9 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
             if len(output) > cap:
                 raise Refused("smoke-output")
             text = output.decode("utf-8", "replace")
-            index = text.find(SMOKE_MARK)
+            index = text.find(mark)
             if index >= 0:
-                rest = text[index + len(SMOKE_MARK):]
+                rest = text[index + len(mark):]
                 end = min((i for i in (rest.find("\r"), rest.find("\n")) if i >= 0), default=-1)
                 if end >= 0:
                     try:
@@ -786,6 +878,18 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
 
 
 def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic) -> dict:
+    return sanitize_smoke(run_exec(arm, app_id, revision, "api", shell_lines(SMOKE_PROGRAM),
+                                   SMOKE_MARK, 240, connect=connect, clock=clock))
+
+
+def run_web_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic) -> dict:
+    lines = shell_lines(WEB_PROBE_PROGRAM, runner=NODE_RUNNER)
+    return sanitize_web_probe(run_exec(arm, app_id, revision, "web", lines, WEB_PROBE_MARK, 60,
+                                       connect=connect, clock=clock))
+
+
+def run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[bytes],
+             mark: str, seconds: float, *, connect=None, clock=time.monotonic) -> Any:
     replicas = arm.list(f"{app_id}/revisions/{revision}/replicas", phase="smoke-replicas")
     names = [r.get("name") for r in replicas if isinstance(r, dict)
              and str((r.get("properties") or {}).get("runningState", "")).startswith("Running")]
@@ -794,7 +898,7 @@ def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.mon
     replica = min(names)
     detail = arm.get(f"{app_id}/revisions/{revision}/replicas/{replica}", phase="smoke-replicas")
     containers = [c for c in (detail.get("properties") or {}).get("containers") or []
-                  if c.get("name") == "api"]
+                  if c.get("name") == container]
     if len(containers) != 1:
         raise Refused("smoke-replicas")
     endpoint = urlsplit(str(containers[0].get("logStreamEndpoint", "")))
@@ -814,7 +918,7 @@ def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.mon
         raise Refused("smoke-token", token_status) from None
     app_name = app_id.rsplit("/", 1)[-1]
     path = (f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-ai4ia-slurmfactory/containerApps/"
-            f"{app_name}/revisions/{quote(revision)}/replicas/{quote(replica)}/containers/api/exec"
+            f"{app_name}/revisions/{quote(revision)}/replicas/{quote(replica)}/containers/{container}/exec"
             f"?command={quote_plus('/bin/sh')}")
     if connect is None:
         def connect(h):
@@ -824,13 +928,12 @@ def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.mon
     try:
         sock.settimeout(30)
         ws_handshake(sock, host, path, token)
-        result = exec_smoke(sock, shell_lines(SMOKE_PROGRAM), deadline=clock() + 240, clock=clock)
+        return exec_smoke(sock, lines, deadline=clock() + seconds, clock=clock, mark=mark)
     finally:
         try:
             sock.close()
         except OSError:
             pass
-    return sanitize_smoke(result)
 
 
 # --------------------------------------------------------------------------- stages
@@ -838,8 +941,9 @@ def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.mon
 
 class Release:
     def __init__(self, arm: Arm, env: dict[str, str], receipt: dict, gate: DtsGate | None = None,
-                 now=lambda: datetime.now(UTC), smoke=run_smoke):
+                 now=lambda: datetime.now(UTC), smoke=run_smoke, web_probe=run_web_probe):
         self.arm, self.env, self.receipt, self.now, self.smoke = arm, env, receipt, now, smoke
+        self.web_probe = web_probe
         self.gate = gate or DtsGate(arm, now=now)
 
     def step(self, name: str, **fields: Any) -> None:
@@ -921,6 +1025,12 @@ class Release:
                 if not smoke_passed(result):
                     raise Refused("smoke")
                 self.step("smoke-passed", calls=len(result["calls"]))
+            if service == "web":
+                probe = self.web_probe(self.arm, app_id, candidate)
+                self.receipt["web_probe"] = probe
+                if not web_probe_passed(probe):
+                    raise Refused("web-probe")
+                self.step("web-probe-passed", build=probe["build"])
         except Uncertain:
             raise
         except Exception:  # Cleanup is guarded; the original failure is re-raised.
@@ -944,19 +1054,29 @@ class Release:
             if not traffic_is(after, candidate) or not ready(rev_after):
                 raise Refused("promote-readback")
         except Refused:
-            # Only the qualified gateway-off release can be restored automatically.
-            if stage != "C3":
+            # Only a qualified target is restored automatically: the gateway-off release
+            # for C3, or the unchanged healthy web R0 before any API rollout. Pre-release
+            # API R0 could reactivate retired work and is never restored blindly.
+            if stage == "C3":
+                qualify = gateway_off_release
+            elif service == "web":
+                r0_template = (rev.get("properties") or {}).get("template")
+
+                def qualify(target: dict) -> bool:
+                    return ready(target) and template_matches(
+                        (target.get("properties") or {}).get("template"), r0_template)
+            else:
                 raise Uncertain("promote-readback") from None
             restored = self.arm.get(app_id, phase="reconcile")
             if traffic_is(restored, r0):
                 raise Refused("promote-readback") from None
             if (not traffic_is(restored, candidate)
-                    or not gateway_off_release(self.arm.get(f"{app_id}/revisions/{r0}", phase="reconcile"))):
+                    or not qualify(self.arm.get(f"{app_id}/revisions/{r0}", phase="reconcile"))):
                 raise Uncertain("restore-target") from None
             try:
                 self.gate.require_fresh()
                 same = projection(self.arm.get(app_id, phase="reread")) == projection(restored)
-                qualified = gateway_off_release(self.arm.get(f"{app_id}/revisions/{r0}", phase="reread"))
+                qualified = qualify(self.arm.get(f"{app_id}/revisions/{r0}", phase="reread"))
             except Refused as e:
                 raise Uncertain("restore-gate", e.status) from None
             if not same or not qualified:

@@ -2675,7 +2675,9 @@ Run the stages in this order, stopping at the first failure: `c1-web`,
 - **C1** writes configuration only.
 - **C2** creates the exact released image with the selector off. After
   readiness and health it promotes that revision to 100% in the same run, then
-  deactivates (never deletes) the previous revision.
+  deactivates (never deletes) the previous revision. For `c2-web`, the web
+  probes below must pass before promotion, and the previous revision is
+  deactivated only after the serving-traffic readback passes.
 - **C3** builds a fresh selector-on revision from the serving C2 revision with
   exactly the four `gpt-5.4-mini` opt-in deployments. It promotes the new
   revision only after the smoke below passes. The C2 revision stays active as
@@ -2705,13 +2707,26 @@ The lane depends on these controls and limitations:
   uncertain. The lane never replays it and never rolls back automatically. It
   records an observed reconciliation of revision names, weights, and active
   flags, and stops for operator disposition.
-- **Rollback scope.** A candidate that fails readiness or the smoke is
-  deactivated without receiving traffic. If the post-promotion readback fails,
-  C2 stops and reconciles without restoring the pre-release R0, whose
-  retired-video containment is unqualified. C3 may restore the previous
+- **Rollback scope.** A candidate that fails readiness, the web probes, or the
+  smoke is deactivated without receiving traffic. If the post-promotion
+  readback fails, `c2-api` stops and reconciles without restoring the
+  pre-release API R0, whose retired-video containment is unqualified.
+  `c2-web` may move traffic back to its previous revision only if it is still
+  active, healthy, and template-unchanged, and after the worker gate passes
+  again. C3 may restore the previous
   revision only after it is rechecked as healthy, active, gateway-off, and on
   the released image, and after the worker gate passes again. The
   `rollback-api` stage applies those same checks to its named target.
+- **Web probes.** Inside the not-yet-promoted web revision's `web` container,
+  through the same exec channel, the lane makes exactly two content-free GETs:
+  that revision's own `/build-id` (the `{buildId}` body must equal the
+  `webBuildId` of the `app/web` sources that built the pinned image), and its
+  configured `API_BASE_URL` `/health/ready` (must be 200 with
+  `{"status":"ok","stage":"session_store"}`). Each has a 10-second timeout and
+  a 4 KiB body cap, follows no redirects, and sends no cookies or credentials.
+  Chat-pilot UI mode refuses. The receipt keeps only statuses, the build ID,
+  a hash of the API host, and a boolean. These probes prove the web server
+  responds and can reach a ready API; they do not prove authenticated chat.
 - **C3 smoke.** The smoke runs inside the not-yet-promoted revision's `api`
   container through the documented Container Apps exec channel, using the
   revision's own settings, user-assigned managed identity, manifest, and shared

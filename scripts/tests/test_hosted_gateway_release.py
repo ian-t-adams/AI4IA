@@ -6,8 +6,13 @@ import base64
 import copy
 import gzip
 import hashlib
+import http.server
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -160,6 +165,11 @@ def passing_smoke(*_args):
         for d in release.DEPLOYMENTS for api in ("chat", "responses")]}
 
 
+def passing_web_probe(*_args):
+    return {"phase": "complete", "build": release.WEB_BUILD_ID, "build_status": 200,
+            "api": "d" * 64, "ready_status": 200, "ready": True}
+
+
 class ReleaseFlowBase(unittest.TestCase):
     def setUp(self):
         patches = [
@@ -171,11 +181,12 @@ class ReleaseFlowBase(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def run_stage(self, arm, stage="c2-api", smoke=passing_smoke, **extra):
+    def run_stage(self, arm, stage="c2-api", smoke=passing_smoke, web_probe=passing_web_probe, **extra):
         receipt = {"steps": []}
         values = env(AI4IA_RELEASE_STAGE=stage, **extra)
         gate = release.DtsGate(arm, now=lambda: NOW, attempts=2, wait=1)
-        runner = release.Release(arm, values, receipt, gate=gate, now=lambda: NOW, smoke=smoke)
+        runner = release.Release(arm, values, receipt, gate=gate, now=lambda: NOW, smoke=smoke,
+                                 web_probe=web_probe)
         return runner, receipt
 
 
@@ -638,6 +649,192 @@ class CutoverIntegrationTests(unittest.TestCase):
         for _, _, body, _ in arm.requests:
             if body is not None:
                 self.assertNotIn("secrets", (body["properties"].get("configuration") or {}))
+
+
+class WebStageTests(ReleaseFlowBase):
+    """c2-web against the fake app state; the web app id is aliased to the fake."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.dict(release.APPS, {"web": release.APPS["api"]})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def unhealthy_after_promote(self, arm, receipt):
+        original = arm.get
+
+        def get(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if kwargs.get("phase") == "readback" and receipt.get("candidate", "~") in path:
+                value["properties"]["healthState"] = "Unhealthy"
+            return value
+
+        arm.get = get
+        return original
+
+    def test_probes_pass_before_promotion_and_r0_deactivation(self):
+        arm = FakeArm()
+        seen = []
+
+        def probe(_arm, app_id, revision):
+            seen.append((revision, [c[2] for c in arm.calls if c[0] != "GET"]))
+            return passing_web_probe()
+
+        runner, receipt = self.run_stage(arm, stage="c2-web", web_probe=probe)
+        runner.run("c2-web")
+        self.assertEqual(seen, [(receipt["candidate"], ["create"])])
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "promote", "deactivate-r0"])
+        self.assertEqual(receipt["web_probe"]["build"], release.WEB_BUILD_ID)
+        self.assertFalse(arm.revisions[R0]["properties"]["active"])
+
+    def test_probe_failure_keeps_r0_serving_and_deactivates_candidate(self):
+        for field, value in (("build", "0" * 20), ("ready", False), ("ready_status", 401),
+                             ("build_status", 302), ("phase", "ready")):
+            arm = FakeArm()
+            result = {**passing_web_probe(), field: value}
+            runner, _receipt = self.run_stage(arm, stage="c2-web", web_probe=lambda *_a, r=result: r)
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(release.Refused, "web-probe"):
+                    runner.run("c2-web")
+                self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "deactivate-unpromoted"])
+                self.assertTrue(arm.revisions[R0]["properties"]["active"])
+                self.assertEqual(arm.app["properties"]["configuration"]["ingress"]["traffic"],
+                                 [{"revisionName": R0, "weight": 100}])
+
+    def test_probe_transport_failure_deactivates_candidate(self):
+        arm = FakeArm()
+
+        def broken(*_args):
+            raise release.Refused("smoke-transport")
+
+        runner, receipt = self.run_stage(arm, stage="c2-web", web_probe=broken)
+        with self.assertRaisesRegex(release.Refused, "smoke-transport"):
+            runner.run("c2-web")
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+        self.assertTrue(arm.revisions[R0]["properties"]["active"])
+
+    def test_failed_promotion_readback_restores_unchanged_healthy_web_r0(self):
+        arm = FakeArm()
+        runner, receipt = self.run_stage(arm, stage="c2-web")
+        self.unhealthy_after_promote(arm, receipt)
+        with self.assertRaisesRegex(release.Refused, "promote-readback"):
+            runner.run("c2-web")
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "promote", "restore"])
+        self.assertEqual(arm.app["properties"]["configuration"]["ingress"]["traffic"],
+                         [{"revisionName": R0, "weight": 100}])
+        self.assertTrue(arm.revisions[R0]["properties"]["active"])
+
+    def test_web_r0_changed_or_unhealthy_is_not_restored(self):
+        for change in ("image", "health"):
+            arm = FakeArm()
+            runner, receipt = self.run_stage(arm, stage="c2-web")
+            original = self.unhealthy_after_promote(arm, receipt)
+            wrapped = arm.get
+
+            def get(path, *args, _c=change, wrapped=wrapped, **kwargs):
+                value = wrapped(path, *args, **kwargs)
+                if kwargs.get("phase") == "reconcile" and path.endswith("/revisions/" + R0):
+                    if _c == "image":
+                        value["properties"]["template"]["containers"][0]["image"] = release.IMAGES["web"]
+                    else:
+                        value["properties"]["healthState"] = "Unhealthy"
+                return value
+
+            arm.get = get
+            with self.subTest(change=change), self.assertRaisesRegex(release.Uncertain, "restore-target"):
+                runner.run("c2-web")
+            self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "promote"])
+            del original
+
+
+class WebProbeTests(unittest.TestCase):
+    def test_sanitize_keeps_only_allowlisted_fields(self):
+        dirty = {**passing_web_probe(), "phase": "token=abc", "build": "<html>", "api": "x",
+                 "ready_status": "200", "body": "secret"}
+        clean = release.sanitize_web_probe(dirty)
+        self.assertEqual(set(clean), {"phase", "build", "build_status", "api", "ready_status", "ready"})
+        self.assertEqual((clean["phase"], clean["build"], clean["api"], clean["ready_status"]),
+                         (None, None, None, None))
+        self.assertTrue(release.web_probe_passed(release.sanitize_web_probe(passing_web_probe())))
+        self.assertFalse(release.web_probe_passed(clean))
+
+    def test_build_id_matches_web_sources(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node unavailable")
+        module = (ROOT / "app" / "web" / "build-id.mjs").as_uri()
+        out = subprocess.run(
+            [node, "--input-type=module", "-e",
+             (f"import {{webBuildId}} from {json.dumps(module)};"
+              f"console.log(webBuildId({json.dumps(str(ROOT / 'app' / 'web'))}))")],
+            capture_output=True, text=True, timeout=60, check=True)
+        if out.stdout.strip() != release.WEB_BUILD_ID:
+            # app/web changed after the pinned image; the probe constant must follow the image.
+            self.skipTest("app/web differs from the pinned web image sources")
+
+    def run_program(self, routes, extra_env=None):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node unavailable")
+        calls = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                calls.append((self.server.server_port, self.path, self.headers.get("Cookie")))
+                status, body = routes.get((self.server.server_port, self.path), (404, b"{}"))
+                self.send_response(status)
+                if status in (301, 302):
+                    self.send_header("Location", "http://127.0.0.1:1/x")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        servers = [http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) for _ in range(2)]
+        for server in servers:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        web, api = (s.server_port for s in servers)
+        routes = {(web if k[0] == "web" else api, k[1]): v for k, v in routes.items()}
+        try:
+            values = {**os.environ, "PORT": str(web), "API_BASE_URL": f"http://127.0.0.1:{api}",
+                      **(extra_env or {})}
+            out = subprocess.run([node, "-e", release.WEB_PROBE_PROGRAM], env=values,
+                                 capture_output=True, text=True, timeout=60, check=False)
+        finally:
+            for server in servers:
+                server.shutdown()
+        line = [l for l in out.stdout.splitlines() if l.startswith(release.WEB_PROBE_MARK)]
+        self.assertEqual(len(line), 1)
+        return json.loads(line[0][len(release.WEB_PROBE_MARK):]), calls
+
+    def test_node_program_one_request_each_and_exact_contracts(self):
+        build = json.dumps({"buildId": release.WEB_BUILD_ID}).encode()
+        ready = json.dumps({"status": "ok", "stage": "session_store"}).encode()
+        result, calls = self.run_program({("web", "/build-id"): (200, build),
+                                          ("api", "/health/ready"): (200, ready)})
+        self.assertTrue(release.web_probe_passed(result))
+        self.assertEqual(result["api"], hashlib.sha256(b"127.0.0.1").hexdigest())
+        self.assertEqual([c[1:] for c in calls], [("/build-id", None), ("/health/ready", None)])
+
+    def test_node_program_refuses_redirect_unready_oversize_and_pilot(self):
+        build = json.dumps({"buildId": release.WEB_BUILD_ID}).encode()
+        ready = json.dumps({"status": "ok", "stage": "session_store"}).encode()
+        cases = {
+            "redirect": ({("web", "/build-id"): (200, build), ("api", "/health/ready"): (302, b"")}, None),
+            "unready": ({("web", "/build-id"): (200, build),
+                         ("api", "/health/ready"): (503, b'{"status":"unavailable","stage":"session_store"}')}, None),
+            "unauthorized": ({("web", "/build-id"): (200, build), ("api", "/health/ready"): (401, b"{}")}, None),
+            "oversize": ({("web", "/build-id"): (200, build), ("api", "/health/ready"): (200, b" " * 5000)}, None),
+            "pilot": ({("web", "/build-id"): (200, build), ("api", "/health/ready"): (200, ready)},
+                      {"CHAT_PILOT_UI_ENABLED": "true"}),
+        }
+        for name, (routes, extra) in cases.items():
+            with self.subTest(name=name):
+                result, calls = self.run_program(routes, extra)
+                self.assertFalse(release.web_probe_passed(result))
+                self.assertLessEqual(len(calls), 2)
+                self.assertNotIn("/x", [c[1] for c in calls])
 
 
 class SmokeTests(unittest.TestCase):
