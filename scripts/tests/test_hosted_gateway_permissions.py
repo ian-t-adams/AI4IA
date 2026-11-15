@@ -24,7 +24,7 @@ BODY = {"value": [{"actions": ["Microsoft.App/*"], "notActions": []}]}
 
 
 class PermissionReadTests(unittest.TestCase):
-    def execute(self, responses):
+    def execute(self, responses, *, kind="shared-permissions"):
         calls = []
 
         def http(method, url, **kwargs):
@@ -36,7 +36,8 @@ class PermissionReadTests(unittest.TestCase):
             return status, {}, json.dumps(body).encode()
 
         with mock.patch.object(READ.TRANSPORT, "acquire_arm_token", return_value="synthetic-token"):
-            receipt = READ.execute(ENV, http=http, now=lambda: 12345)
+            receipt = READ.execute({**ENV, "AI4IA_GATEWAY_READ_KIND": kind},
+                                   http=http, now=lambda: 12345)
         return receipt, calls
 
     def test_only_four_exact_permission_gets_and_projected_metadata(self):
@@ -87,6 +88,7 @@ class PermissionReadTests(unittest.TestCase):
             {READ.GATE: ""}, {"AI4IA_GATEWAY_PERMISSIONS_READ_ADMIT": "false"},
             {"GITHUB_REF": "refs/heads/feature"}, {"AZURE_CLIENT_ID": "different"},
             {"AZURE_TENANT_ID": "different"}, {"AI4IA_REVIEWED_SHA": "d" * 40},
+            {"AI4IA_GATEWAY_READ_KIND": "arbitrary"},
             {"HTTPS_PROXY": "synthetic"}, {"SSLKEYLOGFILE": "synthetic"},
         ]
         for change in changes:
@@ -106,6 +108,41 @@ class PermissionReadTests(unittest.TestCase):
         self.assertEqual(receipt["phase"], "credential")
         self.assertEqual(receipt["status"], 403)
 
+    def test_web_state_is_one_fixed_get_and_content_free(self):
+        r0, candidate = "ca-web-slurmfactory--r0", "ca-web-slurmfactory--c2-deadbee-123"
+        app = {
+            "id": READ.TRANSPORT.APPS["web"], "name": "ca-web-slurmfactory",
+            "type": "Microsoft.App/containerApps",
+            "properties": {
+                "latestRevisionName": candidate, "latestReadyRevisionName": candidate,
+                "template": {"containers": [{"env": [{"value": "synthetic-private-env"}]}]},
+                "configuration": {
+                    "activeRevisionsMode": "Multiple",
+                    "secrets": [{"value": "synthetic-private-secret"}],
+                    "ingress": {"fqdn": "synthetic-private-host", "traffic": [
+                        {"revisionName": r0, "weight": 100, "latestRevision": False},
+                        {"revisionName": candidate},
+                    ]},
+                },
+            },
+        }
+        receipt, calls = self.execute([(200, app)], kind="web-state")
+        self.assertEqual(receipt["phase"], "complete")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ("GET", READ.TRANSPORT.Arm.url(READ.TRANSPORT.APPS["web"])))
+        state = receipt["scopes"][0]["state"]
+        self.assertEqual(state, {"mode": "Multiple", "latest": candidate, "latest_ready": candidate,
+                                "traffic": [{"revisionName": r0, "weight": 100,
+                                             "latestRevision": False}, {"revisionName": candidate}]})
+        self.assertNotIn("synthetic-private", json.dumps(receipt))
+        self.assertNotIn("active", state)
+        for field, value in (("weight", True), ("weight", 101),
+                             ("latestRevision", "false"), ("revisionName", "different-app--r0")):
+            malformed = json.loads(json.dumps(app))
+            malformed["properties"]["configuration"]["ingress"]["traffic"][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(READ.TRANSPORT.Refused):
+                READ.web_state(json.dumps(malformed).encode())
+
     def test_wrapper_owns_new_gate_and_other_dispatches_refuse_while_held(self):
         gh = FakeGh(polls=1)
         self.assertTrue(run(gh, "hosted-gateway-permissions-read.yml", SHA)["gate_absent"])
@@ -115,6 +152,16 @@ class PermissionReadTests(unittest.TestCase):
         with self.assertRaises(WRAPPER.DispatchError):
             run(gh)
         self.assertFalse(any(c[:2] == ["workflow", "run"] for c in gh.calls))
+        gh = FakeGh(polls=1)
+        run(gh, "hosted-gateway-permissions-read.yml", SHA, read_kind="web-state")
+        self.assertTrue(any("read_kind=web-state" in c for c in gh.calls))
+        for workflow, kind in (("hosted-web-one-read.yml", "web-state"),
+                               ("hosted-gateway-release.yml", "web-state"),
+                               ("hosted-gateway-permissions-read.yml", "arbitrary")):
+            gh = FakeGh()
+            with self.subTest(workflow=workflow, kind=kind), self.assertRaises(WRAPPER.DispatchError):
+                run(gh, workflow, SHA, read_kind=kind)
+            self.assertEqual(gh.calls, [])
 
 
 if __name__ == "__main__":

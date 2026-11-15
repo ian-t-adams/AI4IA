@@ -1,16 +1,23 @@
-name: hosted gateway permissions read
+name: hosted gateway inspection
 
 on:
   workflow_dispatch:
     inputs:
       admit:
-        description: "Admit the four fixed permission-metadata reads"
+        description: "Admit only the selected fixed metadata read"
         type: boolean
         default: false
       reviewed_sha:
         description: "Exact reviewed main commit"
         type: string
         required: true
+      read_kind:
+        description: "Four permission GETs OR one fixed web-state GET"
+        type: choice
+        default: shared-permissions
+        options:
+          - shared-permissions
+          - web-state
 
 permissions: {}
 
@@ -27,6 +34,7 @@ jobs:
       CLIENT: ${{ vars.AZURE_CLIENT_ID }}
       TENANT: ${{ vars.AZURE_TENANT_ID }}
       SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      READ_KIND: ${{ inputs.read_kind }}
     steps:
       - id: gate
         shell: bash
@@ -46,6 +54,10 @@ jobs:
             || [ "$TENANT" != 6907d2a4-685a-4aea-92ab-d930217467f1 ] \
             || [ "$SUBSCRIPTION" != e852113b-6cb5-441c-ac68-26cff884e479 ]; then
             echo "::error::Hosted permission read admission refused."
+            exit 1
+          fi
+          if [ "$READ_KIND" != shared-permissions ] && [ "$READ_KIND" != web-state ]; then
+            echo "::error::Hosted inspection kind refused."
             exit 1
           fi
           echo "admitted=true" >> "$GITHUB_OUTPUT"
@@ -69,6 +81,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AI4IA_GATEWAY_READ_KIND: ${{ inputs.read_kind }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,7 +90,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Read only the four fixed permission scopes
+      - name: Read only the selected fixed metadata
         shell: bash
         run: |
           set -euo pipefail

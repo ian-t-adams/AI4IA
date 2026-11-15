@@ -1,6 +1,7 @@
-"""Four fixed permission-metadata GETs with the existing production OIDC identity.
+"""Fixed permission metadata or web state with the existing production OIDC identity.
 
-No resource bodies, role assignments, model traffic, pagination, retries or writes.
+Select four permission GETs OR one content-free web state projection. No resource
+bodies are emitted; no role assignments, model traffic, pagination, retries or writes.
 Permission lists describe reported actions, not successful writes or effective access
 in the presence of conditions, deny assignments, policy or linked-scope requirements.
 """
@@ -12,6 +13,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -26,6 +28,7 @@ TRANSPORT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TRANSPORT)
 OIDC = TRANSPORT._oidc()
 GATE = "AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED"
+READ_KINDS = ("shared-permissions", "web-state")
 GATEWAY_RG = (
     f"/subscriptions/{TRANSPORT.SUBSCRIPTION}"
     "/resourceGroups/rg-planetexpress-gateway-eastus2"
@@ -59,7 +62,8 @@ def validate_environment(env: dict[str, str]) -> None:
     sha = env.get("GITHUB_SHA", "")
     if (any(env.get(k) != v for k, v in expected.items())
             or not re.fullmatch(r"[0-9a-f]{40}", sha)
-            or env.get("AI4IA_REVIEWED_SHA") != sha):
+            or env.get("AI4IA_REVIEWED_SHA") != sha
+            or env.get("AI4IA_GATEWAY_READ_KIND", "shared-permissions") not in READ_KINDS):
         raise TRANSPORT.Refused("admission")
     denied = {
         "http_proxy", "https_proxy", "all_proxy", "no_proxy", "requests_ca_bundle",
@@ -97,11 +101,61 @@ def permissions(body: bytes) -> list[dict[str, list[str]]]:
     return result
 
 
+def web_state(body: bytes) -> dict:
+    try:
+        app = json.loads(body)
+        if (app["id"].lower() != TRANSPORT.APPS["web"].lower()
+                or app["name"] != "ca-web-slurmfactory"
+                or app["type"].lower() != "microsoft.app/containerapps"):
+            raise ValueError()
+        properties = app["properties"]
+        config = properties["configuration"]
+        mode = config["activeRevisionsMode"]
+        if mode not in ("Single", "Multiple"):
+            raise ValueError()
+
+        def revision(value):
+            if (not isinstance(value, str)
+                    or not re.fullmatch(r"ca-web-slurmfactory--[a-z0-9-]{1,80}", value)):
+                raise ValueError()
+            return value
+
+        latest = revision(properties["latestRevisionName"])
+        ready = revision(properties["latestReadyRevisionName"])
+        rules = config["ingress"]["traffic"]
+        if not isinstance(rules, list) or not 1 <= len(rules) <= 32:
+            raise ValueError()
+        traffic = []
+        for rule in rules:
+            if not isinstance(rule, dict) or not rule:
+                raise ValueError()
+            projected = {}
+            if "revisionName" in rule:
+                projected["revisionName"] = revision(rule["revisionName"])
+            if "weight" in rule:
+                if type(rule["weight"]) is not int or not 0 <= rule["weight"] <= 100:
+                    raise ValueError()
+                projected["weight"] = rule["weight"]
+            if "latestRevision" in rule:
+                if type(rule["latestRevision"]) is not bool:
+                    raise ValueError()
+                projected["latestRevision"] = rule["latestRevision"]
+            if not projected:
+                raise ValueError()
+            traffic.append(projected)
+        return {"mode": mode, "latest": latest, "latest_ready": ready, "traffic": traffic}
+    except (ValueError, UnicodeError, KeyError, TypeError, AttributeError):
+        raise TRANSPORT.Refused("web-state-response") from None
+
+
 def execute(env: dict[str, str], *, http=TRANSPORT.http_request, now=time.time) -> dict:
     validate_environment(env)
+    kind = env.get("AI4IA_GATEWAY_READ_KIND", "shared-permissions")
+    is_web = kind == "web-state"
     timestamp = now()
     receipt = {
         "phase": "credential",
+        "read_kind": kind,
         "timestamp": datetime.fromtimestamp(timestamp, UTC).isoformat(),
         "reviewed_sha": env["GITHUB_SHA"],
         "tenant": TRANSPORT.TENANT,
@@ -114,23 +168,27 @@ def execute(env: dict[str, str], *, http=TRANSPORT.http_request, now=time.time) 
     except TRANSPORT.Refused as error:
         receipt.update(phase=error.phase, status=error.status)
         return receipt
-    for name, scope in SCOPES:
+    targets = (("web-app", TRANSPORT.APPS["web"]),) if is_web else SCOPES
+    field = "state" if is_web else "permissions"
+    for name, scope in targets:
         row = {"name": name, "scope": scope, "status": None,
-               "observed": False, "permissions": None}
+               "observed": False, field: None}
         receipt["scopes"].append(row)
         try:
             status, _, body = http(
                 "GET",
-                TRANSPORT.Arm.url(scope + "/providers/Microsoft.Authorization/permissions",
-                                  api="2022-04-01"),
+                TRANSPORT.Arm.url(
+                    scope if is_web else scope + "/providers/Microsoft.Authorization/permissions",
+                    api=TRANSPORT.APP_API if is_web else "2022-04-01",
+                ),
                 hosts={TRANSPORT.ARM_HOST},
                 headers={"Authorization": "Bearer " + token},
-                limit=MAX_BODY, timeout=10, phase="permissions",
+                limit=1024 * 1024 if is_web else MAX_BODY, timeout=10, phase=field,
             )
             row["status"] = status
             if status != 200:
-                raise TRANSPORT.Refused("permissions", status)
-            row["permissions"] = permissions(body)
+                raise TRANSPORT.Refused(field, status)
+            row[field] = web_state(body) if is_web else permissions(body)
             row.update(observed=True, sha256=hashlib.sha256(body).hexdigest())
         except TRANSPORT.Refused as error:
             row["phase"] = error.phase
@@ -162,7 +220,7 @@ def main() -> int:
                     raise TRANSPORT.Refused("carrier")
     except TRANSPORT.Refused as error:
         answer = {"phase": error.phase, "status": error.status}
-    except (OSError, HTTPException, ValueError, RuntimeError):
+    except (OSError, HTTPException, ValueError, RuntimeError, subprocess.SubprocessError):
         answer = {"phase": "carrier"}
     print(json.dumps(answer, separators=(",", ":")))
     return 0 if answer.get("phase") == "complete" else 1

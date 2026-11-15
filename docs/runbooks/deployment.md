@@ -2766,7 +2766,8 @@ with no stage input and its own default-absent
 `AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED` gate. It reuses the existing production
 deployment identity and reviewed hosted OIDC/TLS transport, with no SDK install,
 new trust, local sign-in or credential file. Exactly four fixed
-`Microsoft.Authorization/permissions` GETs (`2022-04-01`) target the gateway
+`Microsoft.Authorization/permissions` GETs (`2022-04-01`, the default
+`--read-kind shared-permissions`) target the gateway
 resource group, shared ACR, DocEx caller VNet and DocEx model account listed in
 `scripts/hosted_gateway_permissions.py`. There are no scope/URL inputs, resource
 body reads, inference or writes. A paginated response is explicitly incomplete:
@@ -2779,6 +2780,16 @@ owner is idle: GitHub concurrency serializes running jobs, but a queued read
 can replace another pending job in that group. The owned child has a bounded
 180-second execution window; termination and collection add bounded overhead.
 This check neither grants roles nor authorizes a subsequent deployment.
+
+Alternatively, `--read-kind web-state` selects exactly one fixed GET of
+`ca-web-slurmfactory` instead of the four permission reads. It emits only the
+existing response hash plus revision mode, latest/latest-ready names and
+explicitly present traffic rule names, weights and latest flags. Missing traffic
+fields stay missing; malformed state is a refusal. No environment values,
+images, secret fields or hostnames are emitted. This independently reconciles
+post-run traffic without running another release stage. It cannot establish
+revision activity, health or per-user entitlement state. The original
+`hosted-web-one-read.yml` three-field receipt contract is unchanged.
 
 The lane depends on these controls and limitations:
 
