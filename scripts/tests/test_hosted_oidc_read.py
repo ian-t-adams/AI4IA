@@ -90,7 +90,10 @@ class FakeNetwork:
 
     def request(self, session, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
-        if method == "GET" and url.startswith("https://pipelines.actions.githubusercontent.com/"):
+        if method == "GET" and url.startswith((
+            "https://pipelines.actions.githubusercontent.com/",
+            "https://pipelinesghubeus2.actions.githubusercontent.com/",
+        )):
             return response(self.oidc_status, {"value": self.assertion})
         if method == "POST" and url == reader.TOKEN_URL:
             return response(self.token_status, {"access_token": "synthetic-access-secret",
@@ -135,6 +138,39 @@ class HostedReadTests(unittest.TestCase):
             self.assertEqual(options["timeout"], (5, 5))
             self.assertEqual(options["headers"]["Accept-Encoding"], "identity")
 
+    def test_runner_selected_actions_host_preserves_exact_assertion_binding(self):
+        self.env["ACTIONS_ID_TOKEN_REQUEST_URL"] = (
+            "https://pipelinesghubeus2.actions.githubusercontent.com/token?request=synthetic"
+        )
+        self.assertEqual(self.run_read()["phase"], "complete")
+        self.assertEqual([x[0] for x in self.fake.calls], ["GET", "POST", "GET"])
+        self.assertEqual(
+            self.fake.calls[0][1],
+            self.env["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=api%3A%2F%2FAzureADTokenExchange",
+        )
+        self.fake.calls.clear()
+        self.fake.assertion = assertion(sub="repo:attacker/repo:environment:production")
+        self.assertEqual(self.run_read()["phase"], "assertion-claims")
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_oidc_host_boundary_refuses_deceptive_and_malformed_origins(self):
+        for url in [
+            "https://actions.githubusercontent.com/token",
+            "https://pipelines.actions.githubusercontent.com.attacker.invalid/token",
+            "https://pipelines-actions.githubusercontent.com/token",
+            "https://a.b.actions.githubusercontent.com/token",
+            "https://-bad.actions.githubusercontent.com/token",
+            "https://bad-.actions.githubusercontent.com/token",
+            "https://bad_name.actions.githubusercontent.com/token",
+            "https://pipelinesghubeus2.actions.githubusercontent.com:444/token",
+            "https://user@pipelinesghubeus2.actions.githubusercontent.com/token",
+            "https://pipelinesghubeus2.actions.githubusercontent.com/token#fragment",
+            "https://pipe\nlines.actions.githubusercontent.com/token",
+        ]:
+            with self.subTest(url=url), self.assertRaises(reader.Refused):
+                reader.oidc_url(url)
+        self.assertEqual(self.fake.calls, [])
+
     def test_admission_refuses_without_constructing_credential(self):
         for key, value in [("AI4IA_HOSTED_WEB_READ_ENABLED", "false"),
                            ("AI4IA_HOSTED_WEB_READ_ADMIT", "false"),
@@ -163,17 +199,28 @@ class HostedReadTests(unittest.TestCase):
                     "https://pipelines.actions.githubusercontent.com/x?audience=bad"]:
             with self.subTest(url=url):
                 self.env["ACTIONS_ID_TOKEN_REQUEST_URL"] = url
-                self.assertEqual(self.run_read()["phase"], "assertion")
+                self.assertEqual(self.run_read()["phase"], "assertion-url")
                 self.assertEqual(self.fake.calls, [])
         self.env = fixture_env()
         self.fake.assertion = assertion(sub="repo:attacker/repo:environment:production")
-        self.assertEqual(self.run_read()["phase"], "assertion")
+        self.assertEqual(self.run_read()["phase"], "assertion-claims")
         self.assertEqual(len(self.fake.calls), 1)
 
     def test_assertion_redirect_refused_without_replay(self):
         self.fake.oidc_status = 302
-        self.assertEqual(self.run_read(), reader.result("assertion", 302))
+        self.assertEqual(self.run_read(), reader.result("assertion-response", 302))
         self.assertEqual(len(self.fake.calls), 1)
+
+    def test_assertion_refusals_distinguish_missing_token_from_transport(self):
+        del self.env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+        self.assertEqual(self.run_read(), reader.result("assertion-runtime-token"))
+        self.assertEqual(self.fake.calls, [])
+        self.env = fixture_env()
+        with mock.patch.object(
+            requests.Session, "request", side_effect=requests.Timeout("synthetic-private-runtime-url")
+        ):
+            self.assertEqual(self.run_read(), reader.result("assertion-transport"))
+        self.assertEqual(self.fake.calls, [])
 
     def test_credential_failure_and_redirect_are_not_retried(self):
         for status in (401, 403, 302):
@@ -232,7 +279,7 @@ class HostedReadTests(unittest.TestCase):
             with self.subTest(claim=claim):
                 self.fake.calls.clear()
                 self.fake.assertion = assertion(**{claim: value})
-                self.assertEqual(self.run_read()["phase"], "assertion")
+                self.assertEqual(self.run_read()["phase"], "assertion-claims")
                 self.assertEqual(len(self.fake.calls), 1)
 
     def test_transport_refuses_second_token_send(self):

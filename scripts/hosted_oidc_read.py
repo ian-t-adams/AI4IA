@@ -29,7 +29,11 @@ TOKEN_URL = f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
 AUDIENCE = "api://AzureADTokenExchange"
 SUBJECT = f"repo:{REPOSITORY}:environment:production"
 MAX_BODY = 1024 * 1024
-PHASES = {"admission", "environment", "assertion", "credential", "arm", "response", "timeout", "carrier"}
+PHASES = {
+    "admission", "environment", "assertion", "assertion-url", "assertion-runtime-token",
+    "assertion-transport", "assertion-response", "assertion-claims",
+    "credential", "arm", "response", "timeout", "carrier",
+}
 
 
 class Refused(Exception):
@@ -70,26 +74,32 @@ def validate_environment(env):
 
 
 def oidc_url(value):
-    if not isinstance(value, str) or len(value) > 4096:
-        raise Refused("assertion")
+    if (not isinstance(value, str) or len(value) > 4096
+            or any(ord(char) <= 32 or ord(char) == 127 for char in value)):
+        raise Refused("assertion-url")
     try:
         p = urlsplit(value)
-        if (p.scheme != "https" or p.hostname != "pipelines.actions.githubusercontent.com"
+        # GitHub documents *.actions.githubusercontent.com for OIDC retrieval.
+        if (p.scheme != "https"
+                or not re.fullmatch(
+                    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.actions\.githubusercontent\.com",
+                    p.hostname or "",
+                )
                 or p.port not in (None, 443) or p.username or p.password or p.fragment
                 or not p.path.startswith("/") or "\\" in value):
-            raise Refused("assertion")
+            raise Refused("assertion-url")
         query = parse_qsl(p.query, keep_blank_values=True, strict_parsing=True)
         if any(k.lower() == "audience" for k, _ in query):
-            raise Refused("assertion")
+            raise Refused("assertion-url")
         query.append(("audience", AUDIENCE))
         return urlunsplit((p.scheme, p.netloc, p.path, urlencode(query), ""))
     except ValueError:
-        raise Refused("assertion") from None
+        raise Refused("assertion-url") from None
 
 
 def check_assertion(value, sha, now):
     if not isinstance(value, str) or len(value) > 32768:
-        raise Refused("assertion")
+        raise Refused("assertion-claims")
     try:
         parts = value.split(".")
         if len(parts) != 3 or not all(parts):
@@ -113,7 +123,7 @@ def check_assertion(value, sha, now):
         if type(claims.get("nbf")) is not int or claims["nbf"] > now:
             raise ValueError()
     except (ValueError, TypeError, UnicodeError, binascii.Error):
-        raise Refused("assertion") from None
+        raise Refused("assertion-claims") from None
     return value
 
 
@@ -263,19 +273,19 @@ def execute(env, credential_class=None, transport_class=None):
             url = oidc_url(env.get("ACTIONS_ID_TOKEN_REQUEST_URL"))
             runtime_token = env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
             if not runtime_token or len(runtime_token) > 16384:
-                raise Refused("assertion")
+                raise Refused("assertion-runtime-token")
             with new_session() as session:
                 with session.get(url, headers={"Authorization": "Bearer " + runtime_token,
                                                "Accept-Encoding": "identity"},
                                  timeout=(5, 5), allow_redirects=False, stream=True, verify=True) as response:
-                    status, body = _bounded(response, 65536, "assertion")
+                    status, body = _bounded(response, 65536, "assertion-response")
                     if status != 200:
-                        raise Refused("assertion", status)
+                        raise Refused("assertion-response", status)
             try:
                 payload = json.loads(body)
                 value = payload["value"]
             except (ValueError, TypeError, KeyError):
-                raise Refused("assertion", status) from None
+                raise Refused("assertion-response", status) from None
             value = check_assertion(value, env["GITHUB_SHA"], int(time.time()))
             asserted.append(value)
             return value
@@ -283,7 +293,7 @@ def execute(env, credential_class=None, transport_class=None):
             assertion_failure.update(phase=e.phase, status=e.status)
             raise
         except Exception:
-            assertion_failure.update(phase="assertion", status=None)
+            assertion_failure.update(phase="assertion-transport", status=None)
             raise
 
     try:
