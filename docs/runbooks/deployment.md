@@ -2524,6 +2524,19 @@ PATCH body or prove any live service behavior.
    candidate startup or exec, require a separately reviewed background-worker
    and mixed-version safety gate covering those stateful side effects. Until
    that gate exists, stop; no zero-traffic or loopback test is authorized.
+   The source replay found mixed-version behavior changes even though the
+   persistence and automation record/store files are byte-identical: the newer
+   retired-tool check reached by `automation_service.advance` terminally fences
+   affected runs as `context_revoked`, and a schedule tick can persist `paused`
+   or record delayed occurrences over 300 seconds as `missed`. Turning scheduling
+   off is therefore not a harmless drain. Source/schema parity does not prove
+   worker compatibility or authorize a scheduling change.
+   Likewise, task-hub active/pending counts and connected-worker counts do not
+   prove quiescence: they omit sleeping schedules, pending approvals, future
+   timers, and document ingestion. Zero HTTP traffic or an idle metadata snapshot
+   is not a safe candidate-start condition. A reviewed gate must account for
+   these paths; none is established here. Use metadata-only evidence and do not
+   read orchestration content to establish worker readiness.
    Once separately cleared, qualification must use the approved native
    exec/loopback path; do not expose a revision label or shift traffic before
    independent approval. Then promote the named selector-OFF revision to 100%,
