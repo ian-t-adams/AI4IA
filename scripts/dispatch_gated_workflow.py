@@ -39,6 +39,7 @@ REPOSITORY = "ian-t-adams/AI4IA"
 WORKFLOWS = {
     "hosted-gateway-release.yml": "AI4IA_GATEWAY_RELEASE_ENABLED",
     "hosted-web-one-read.yml": "AI4IA_HOSTED_WEB_READ_ENABLED",
+    "hosted-gateway-permissions-read.yml": "AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED",
 }
 STAGES = ("c1-web", "c2-web", "c1-api", "c2-api", "c3-api", "rollback-api")
 REVISION = re.compile(r"[a-z0-9][a-z0-9-]{0,62}--[a-z0-9-]{1,80}")

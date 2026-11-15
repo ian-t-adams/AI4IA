@@ -1,0 +1,87 @@
+name: hosted gateway permissions read
+
+on:
+  workflow_dispatch:
+    inputs:
+      admit:
+        description: "Admit the four fixed permission-metadata reads"
+        type: boolean
+        default: false
+      reviewed_sha:
+        description: "Exact reviewed main commit"
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      admitted: ${{ steps.gate.outputs.admitted }}
+    env:
+      ENABLED: ${{ vars.AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED }}
+      ADMIT: ${{ inputs.admit }}
+      REVIEWED: ${{ inputs.reviewed_sha }}
+      CLIENT: ${{ vars.AZURE_CLIENT_ID }}
+      TENANT: ${{ vars.AZURE_TENANT_ID }}
+      SUBSCRIPTION: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${ADMIT}" = "false" ]; then
+            echo "admitted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$ADMIT" != true ] || [ "$ENABLED" != true ] \
+            || [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] \
+            || [ "$GITHUB_REF" != refs/heads/main ] \
+            || [ "$GITHUB_REPOSITORY" != ian-t-adams/AI4IA ] \
+            || ! [[ "$REVIEWED" =~ ^[0-9a-f]{40}$ ]] \
+            || [ "$REVIEWED" != "$GITHUB_SHA" ] \
+            || [ "$CLIENT" != ac8d62b9-904f-4c84-9444-c41512acf74f ] \
+            || [ "$TENANT" != 6907d2a4-685a-4aea-92ab-d930217467f1 ] \
+            || [ "$SUBSCRIPTION" != e852113b-6cb5-441c-ac68-26cff884e479 ]; then
+            echo "::error::Hosted permission read admission refused."
+            exit 1
+          fi
+          echo "admitted=true" >> "$GITHUB_OUTPUT"
+
+  read:
+    needs: admission
+    if: needs.admission.outputs.admitted == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED: ${{ vars.AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED }}
+      AI4IA_GATEWAY_PERMISSIONS_READ_ADMIT: ${{ inputs.admit }}
+      AI4IA_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Read only the four fixed permission scopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$AI4IA_REVIEWED_SHA"
+          git diff --exit-code --quiet
+          git diff --cached --exit-code --quiet
+          python -I scripts/hosted_gateway_permissions.py
