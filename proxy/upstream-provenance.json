@@ -12,7 +12,7 @@
     "CompanionApp"
   ],
   "counts": {
-    "ai4ia-added": 8,
+    "ai4ia-added": 9,
     "ai4ia-excluded": 95,
     "ai4ia-patched": 24,
     "upstream-equivalent": 290
@@ -96,7 +96,7 @@
     },
     {
       "path": "SimpleL7Proxy/DTO/RequestDataDtoV1.cs",
-      "reason": "Refuse bounded request persistence and reject recovered attempt metadata or versioned paths even when all attempt fields are absent."
+      "reason": "Refuse bounded request persistence and reject recovered attempt metadata or versioned paths even when all attempt fields are absent; reject persistence and recovery of deployment-scoped Decision requests."
     },
     {
       "path": "SimpleL7Proxy/Events/ProxyEvent.cs",
@@ -111,8 +111,12 @@
       "reason": "Configure Application Insights 3.x sampling and register AI4IA's OpenTelemetry duplicate-telemetry filter."
     },
     {
+      "path": "SimpleL7Proxy/Proxy/DecisionRequest.cs",
+      "reason": "Reduce deployment-scoped Decision requests to synchronous, nonpersistent, unrequeued work; sanitize terminal errors and retain only bounded 429 Retry-After guidance."
+    },
+    {
       "path": "SimpleL7Proxy/Proxy/NoReplayAttempt.cs",
-      "reason": "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, mandatory versioned route and non-stripping scoped-host membership, pre-send claim, unsupported-shape and upstream caller-control refusal, and nonredirecting HTTP/1.1 transport."
+      "reason": "AI4IA authenticated one-attempt binding, exact byte/model/path HMAC, mandatory versioned route and non-stripping scoped-host membership, pre-send claim, unsupported-shape and upstream caller-control refusal, and nonredirecting HTTP/1.1 transport; share the independent Decision persistence refusal without granting an attempts-v1 capability."
     },
     {
       "path": "SimpleL7Proxy/Proxy/ProxyData.cs",
@@ -124,7 +128,7 @@
     },
     {
       "path": "SimpleL7Proxy/Proxy/ProxyWorker.cs",
-      "reason": "Fence bounded sends, host fallback, requeue and recovery, including the iterator's all-open-circuit requeue; retain one-use HTTP clients through streaming; construct portable diagnostic URIs from the same destination builder as the transport."
+      "reason": "Fence bounded sends, host fallback, requeue and recovery, including the iterator's all-open-circuit requeue; retain one-use HTTP clients through streaming; construct portable diagnostic URIs from the same destination builder as the transport; refuse all-open-circuit Decision work promptly, allow at most one backend attempt and preserve sanitized final errors."
     },
     {
       "path": "SimpleL7Proxy/Proxy/RequeueDelayWorker.cs",
@@ -2249,7 +2253,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/DTO/RequestDataDtoV1.cs": {
-      "localCanonicalSha256": "5960d40e4a408ecca13677d4a701ac8ddaf84a24c27f2a8de29d7baa8a3c6759",
+      "localCanonicalSha256": "3ff5e099ad98a390ee3e37ee9e02e32a28d71262b7df67d4d15802fe8a889155",
       "upstreamRawSha256": "c9c777398365216dcb87f92b650787e9dd8fcf475bb813e6c191f21d1101d10a",
       "upstreamCanonicalSha256": "c9c777398365216dcb87f92b650787e9dd8fcf475bb813e6c191f21d1101d10a",
       "disposition": "ai4ia-patched"
@@ -2446,6 +2450,10 @@
       "upstreamCanonicalSha256": "a33135b566febbade1c189de9d9f045623bd15e61f541527ac505dd83b5f19cf",
       "disposition": "upstream-equivalent"
     },
+    "SimpleL7Proxy/Proxy/DecisionRequest.cs": {
+      "localCanonicalSha256": "a0146f45d7c495f99a4c782690fde49182948dea05681d007a5f750fff187261",
+      "disposition": "ai4ia-added"
+    },
     "SimpleL7Proxy/Proxy/HttpListenerResponseWrapper.cs": {
       "localCanonicalSha256": "f0ea781a21a3fc7ce9e811ab5973c3f8c2d2f734388ad81777a602c42b305e13",
       "upstreamRawSha256": "f0ea781a21a3fc7ce9e811ab5973c3f8c2d2f734388ad81777a602c42b305e13",
@@ -2465,7 +2473,7 @@
       "disposition": "upstream-equivalent"
     },
     "SimpleL7Proxy/Proxy/NoReplayAttempt.cs": {
-      "localCanonicalSha256": "862dc2dfd670bac919365614beeebc2dbedf025b43d535206c05c7db7d39255e",
+      "localCanonicalSha256": "abdd43586eb9d1668aa7d9783dc09deff7c551d4fe169c8ce93105f4b35cc5dd",
       "disposition": "ai4ia-added"
     },
     "SimpleL7Proxy/Proxy/ObjectLifecycle.md": {
@@ -2493,7 +2501,7 @@
       "disposition": "ai4ia-patched"
     },
     "SimpleL7Proxy/Proxy/ProxyWorker.cs": {
-      "localCanonicalSha256": "83e94b4564171c1ecdfd53838a5da9e20c1c4bd70d20f864ae8c7e259210cc6d",
+      "localCanonicalSha256": "99ea94781fd2e4dac30520afe1b17533306d45d97fb8e9bc8e3d1f1fbe85d962",
       "upstreamRawSha256": "31574654659d567d1962fa2876b1f0afe3712c77c68752fff7cad7950c602de8",
       "upstreamCanonicalSha256": "31574654659d567d1962fa2876b1f0afe3712c77c68752fff7cad7950c602de8",
       "disposition": "ai4ia-patched"

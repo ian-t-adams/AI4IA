@@ -88,6 +88,7 @@ public sealed class NoReplayAttempt
 
     public static void RefusePersistence(RequestData request)
     {
+        DecisionRequest.RefusePersistence(request);
         if (request.NoReplay is not null || IsVersionedPath(request.Path) ||
             request.Headers.AllKeys.Any(k => k is not null && IsInternalHeader(k)))
             throw Refused("Gateway attempt cannot be persisted or requeued.");

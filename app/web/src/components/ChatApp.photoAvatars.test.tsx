@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,9 @@ import { MemoryPreferenceProvider } from "./MemoryPreferenceProvider";
 import { CHAT_MODEL_CATALOG, resetChatAppMocks } from "./chatTestFixtures";
 
 function render(ui: ReactElement) {
-  return rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+  const result = rtlRender(ui, { wrapper: MemoryPreferenceProvider });
+  fireEvent.click(screen.getByRole("button", { name: "Settings & more" }));
+  return result;
 }
 
 const mocks = vi.hoisted(() => ({
@@ -183,6 +185,7 @@ function json(body: unknown, status = 200): Response {
 function serve(config: PhotoAvatarConfig | Error, avatars: PhotoAvatar[] = []) {
   mocks.apiFetch.mockImplementation(async (input: RequestInfo | URL) => {
     const path = String(input);
+    if (path === "/api/decisions/options") return json({ models: [] });
     if (path === "/api/photo-avatars/config") {
       if (config instanceof Error) throw config;
       return json(config);
@@ -246,6 +249,7 @@ describe("photo avatars in the workspace", () => {
     expect(screen.queryByRole("region", { name: "Photo avatars" })).toBeNull();
     expect(mocks.apiFetch.mock.calls.map(([input]) => String(input))).toEqual([
       "/api/photo-avatars/config",
+      "/api/decisions/options",
     ]);
   });
 
@@ -477,4 +481,3 @@ describe("gallery-to-voice integration", () => {
     expect(screen.queryByRole("complementary", { name: "Conversation inspector" })).toBeNull();
   });
 });
-

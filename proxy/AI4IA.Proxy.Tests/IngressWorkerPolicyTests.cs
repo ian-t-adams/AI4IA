@@ -137,7 +137,7 @@ public sealed class IngressWorkerPolicyTests
         Assert.AreEqual(guarded ? 0 : 1, backend.Requests.Count);
     }
 
-    private sealed class Gateway : IAsyncDisposable
+    internal sealed class Gateway : IAsyncDisposable
     {
         private readonly CancellationTokenSource _stop = new();
         private readonly HttpClient _caller = new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false })
@@ -155,7 +155,8 @@ public sealed class IngressWorkerPolicyTests
         internal ConfigChangeNotifier Notifier { get; private set; } = null!;
 
         internal static async Task<Gateway> Start(
-            WireServer backend, bool authoredPolicy, bool bounded = false, Func<ICircuitBreaker>? circuit = null)
+            WireServer backend, bool authoredPolicy, bool bounded = false, Func<ICircuitBreaker>? circuit = null,
+            WireServer[]? additionalBackends = null)
         {
             var gateway = new Gateway();
             var options = gateway._options = new ProxyConfig
@@ -178,9 +179,14 @@ public sealed class IngressWorkerPolicyTests
             string routing = bounded
                 ? $"path={NoReplayAttempt.RoutePrefix};stripprefix=false;retryafter=false;api-key={NoReplayWorkerTests.Key}"
                 : $"retryafter=false;api-key={NoReplayWorkerTests.LegacyKey}";
-            var config = new HostConfig($"host={backend.Url};mode=apim;api-key-header=Ocp-Apim-Subscription-Key;{routing}");
-            NoReplayWorkerTests.SetCircuit(config, circuit?.Invoke());
-            var hosts = new List<BaseHostHealth> { new NoReplayWorkerTests.FixtureHost(config) };
+            var hosts = new List<BaseHostHealth>();
+            foreach (var target in new[] { backend }.Concat(additionalBackends ?? []))
+            {
+                Assert.IsTrue(new Uri(target.Url).IsLoopback, "synthetic backends must stay on loopback");
+                var config = new HostConfig($"host={target.Url};mode=apim;api-key-header=Ocp-Apim-Subscription-Key;{routing}");
+                NoReplayWorkerTests.SetCircuit(config, circuit?.Invoke());
+                hosts.Add(new NoReplayWorkerTests.FixtureHost(config));
+            }
             var backends = new NoReplayWorkerTests.Backends(hosts);
             var wrapped = Options.Create(options);
             gateway.Queue = new SpyQueue(new ConcurrentPriQueue<RequestData>(wrapped, NullLogger<ConcurrentPriQueue<RequestData>>.Instance));
@@ -282,6 +288,20 @@ public sealed class IngressWorkerPolicyTests
             foreach (var (name, value) in headers)
                 request.Headers.TryAddWithoutValidation(name, value);
             return _caller.SendAsync(request);
+        }
+
+        internal async Task<TcpClient> ConnectPost(string path, byte[] body)
+        {
+            var uri = new Uri(_url);
+            Assert.IsTrue(uri.IsLoopback);
+            var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(IPAddress.Loopback, uri.Port);
+            var headers = Encoding.ASCII.GetBytes(
+                $"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{uri.Port}\r\nS7P-KEY: {IngressKey}\r\n" +
+                $"Content-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+            await client.GetStream().WriteAsync(headers);
+            await client.GetStream().WriteAsync(body);
+            return client;
         }
 
         public async ValueTask DisposeAsync()
