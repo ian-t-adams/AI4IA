@@ -216,6 +216,51 @@ def compare_r0_templates(left: dict[str, Any], right: dict[str, Any]) -> dict[st
     }
 
 
+STALE_C3_ENV = frozenset({C3_SELECTOR, C3_DEPLOYMENTS, C3_MANIFEST})
+
+
+def stale_candidate_name(app_name: str, name: object) -> bool:
+    """Only the release lane's own C2/C3 candidate names (candidate_suffix form)."""
+    return isinstance(name, str) and re.fullmatch(
+        re.escape(app_name) + r"--c[23]-[0-9a-f]{7}-[0-9]{1,8}", name) is not None
+
+
+def stale_template_diff_ok(
+    r0_template: dict[str, Any], stale_template: dict[str, Any], stale_name: str,
+) -> bool:
+    """A stale lane candidate may differ from R0 only in what its own stage changes.
+
+    ``--c2-`` names: containers[0].image. ``--c3-`` names: the three C3 env entries.
+    Everything else must be compatible under compare_r0_templates.
+    """
+    left = writable_template_projection(r0_template)
+    right = writable_template_projection(stale_template)
+    left_containers, right_containers = left.get("containers"), right.get("containers")
+    if (not isinstance(left_containers, list) or not isinstance(right_containers, list)
+            or len(left_containers) != 1 or len(right_containers) != 1
+            or not isinstance(left_containers[0], dict) or not isinstance(right_containers[0], dict)):
+        return False
+    stage = re.search(r"--(c[23])-[0-9a-f]{7}-[0-9]{1,8}$", stale_name)
+    if stage is None:
+        return False
+    if stage[1] == "c2":
+        if "image" not in left_containers[0] or "image" not in right_containers[0]:
+            return False
+        right_containers[0]["image"] = left_containers[0]["image"]
+    else:
+        for container in (left_containers[0], right_containers[0]):
+            env = container.get("env")
+            if env is None:
+                continue
+            if not isinstance(env, list) or any(
+                    not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                    for item in env):
+                return False
+            container["env"] = [
+                item for item in env if item["name"].upper() not in STALE_C3_ENV]
+    return bool(compare_r0_templates(left, right)["compatible"])
+
+
 def git_blob_sha1(content: bytes) -> str:
     header = f"blob {len(content)}\0".encode("ascii")
     return hashlib.sha1(header + content).hexdigest()
@@ -382,10 +427,21 @@ def build_payload(
     classification_sidecar_bytes: bytes | None = None,
     deployments_bytes: bytes | None = None,
     deployments_sha256: str | None = None,
+    stale_latest: str | None = None,
+    stale_template: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Require a quiescent R0 snapshot, then pin it in the same request."""
+    """Require a quiescent R0 snapshot, then pin it in the same request.
+
+    ``stale_latest`` (C2/C3 only) names an inactive, untrafficked lane candidate left
+    as latestRevisionName by an earlier unpromoted run; ``stale_template`` is its
+    revision template. The default None keeps the strict latest == R0 rule.
+    """
     if stage not in ("C1", "C2", "C3"):
         raise ValueError("stage must be C1, C2 or C3")
+    if (stale_latest is None) != (stale_template is None):
+        raise ValueError("stale latest requires both its name and its revision template")
+    if stale_latest is not None and stage not in ("C2", "C3"):
+        raise ValueError("stale latest is accepted only for C2/C3")
     if (
         service not in ("api", "web")
         or service == "web" and stage == "C3"
@@ -416,19 +472,39 @@ def build_payload(
     config = props["configuration"]
     rev = revision["properties"]
     r0 = revision["name"]
+    if stale_latest is None:
+        def latest_ok() -> bool:
+            return (props.get("latestRevisionName") == r0
+                    and props.get("latestReadyRevisionName") == r0)
+
+        def app_template_ok() -> bool:
+            return compare_r0_templates(props["template"], rev["template"])["compatible"]
+    else:
+        def latest_ok() -> bool:
+            return True
+
+        def app_template_ok() -> bool:
+            return compare_r0_templates(props["template"], stale_template)["compatible"]
     # ARM may return provider/segment casing that differs from the explicit ID.
     if (
         not isinstance(revision.get("id"), str)
         or revision["id"].casefold() != (resource_id + "/revisions/" + r0).casefold()
         or props.get("provisioningState") != "Succeeded"
-        or props.get("latestRevisionName") != r0
-        or props.get("latestReadyRevisionName") != r0
+        or not latest_ok()
         or rev.get("active") is not True
         or rev.get("healthState") != "Healthy"
         or rev.get("runningState") not in ("Running", "RunningAtMaxScale")
-        or not compare_r0_templates(props["template"], rev["template"])["compatible"]
+        or not app_template_ok()
     ):
         raise ValueError("R0 must be healthy, active, latest/ready, with an identical writable template")
+    if stale_latest is not None and (
+        not stale_candidate_name(app["name"], stale_latest)
+        or stale_latest == r0
+        or props.get("latestRevisionName") != stale_latest
+        or props.get("latestReadyRevisionName") not in (r0, stale_latest)
+        or not stale_template_diff_ok(rev["template"], stale_template, stale_latest)
+    ):
+        raise ValueError("stale latest must be this lane's inactive stage-only revision")
     mode = "Single" if stage == "C1" else "Multiple"
     if config.get("activeRevisionsMode") != mode:
         raise ValueError(f"{stage} requires {mode} mode")

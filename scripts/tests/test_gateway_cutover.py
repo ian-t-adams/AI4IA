@@ -226,7 +226,7 @@ class CutoverTests(unittest.TestCase):
 
     def build_c3(
         self, app, revision, *, inputs=None, deployments=C3_DEPLOYMENTS, digest=None,
-        category="chat", sku="GlobalStandard",
+        category="chat", sku="GlobalStandard", **extra,
     ):
         manifest_bytes, sidecar_bytes = inputs or synthetic_c3_inputs()
         patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
@@ -238,6 +238,7 @@ class CutoverTests(unittest.TestCase):
                 manifest_bytes=manifest_bytes, classification_sidecar_bytes=sidecar_bytes,
                 deployments_bytes=deployments,
                 deployments_sha256=digest or hashlib.sha256(deployments).hexdigest(),
+                **extra,
             )
 
     def test_c1_single_request_preserves_everything_except_mode_and_traffic(self):
@@ -942,6 +943,115 @@ class CutoverTests(unittest.TestCase):
 
             self.assertFalse(blocked_input.exists())
             self.assertFalse(blocked_output.exists())
+
+
+class StaleLatestBuilderTests(unittest.TestCase):
+    """latest == an inactive, stage-only lane candidate; the payload still derives from R0."""
+
+    C2_IMAGE = "example.azurecr.io/ai4ia/api-test@sha256:" + "b" * 64
+    build = CutoverTests.build
+
+    def stale(self, app, revision, name, mutate):
+        template = copy.deepcopy(revision["properties"]["template"])
+        template["revisionSuffix"] = name.split("--", 1)[1]
+        mutate(template["containers"][0])
+        app["properties"]["latestRevisionName"] = name
+        app["properties"]["latestReadyRevisionName"] = name
+        app["properties"]["template"] = copy.deepcopy(template)
+        return template
+
+    def c2(self, app, revision, **kwargs):
+        return CUTOVER.build_payload(
+            app, revision, resource_id=app["id"], stage="C2", suffix="c2-bbbbbbb-1",
+            api_image=self.C2_IMAGE,
+            existing_revisions=revision_inventory(["api--r0", "api--c2-aaaaaaa-27742728"]),
+            **kwargs,
+        )
+
+    def test_c2_stale_image_only_candidate_builds_the_r0_payload(self):
+        app, revision = snapshot("Multiple")
+        expected = self.c2(copy.deepcopy(app), copy.deepcopy(revision))
+        name = "api--c2-aaaaaaa-27742728"
+        template = self.stale(app, revision, name,
+                              lambda c: c.update(image=self.C2_IMAGE.replace("b" * 64, "c" * 64)))
+        with self.assertRaisesRegex(ValueError, "R0 must be healthy"):
+            self.c2(copy.deepcopy(app), copy.deepcopy(revision))
+        self.assertEqual(self.c2(app, revision, stale_latest=name, stale_template=template), expected)
+        app["properties"]["latestReadyRevisionName"] = "api--r0"
+        self.assertEqual(self.c2(app, revision, stale_latest=name, stale_template=template), expected)
+
+    def test_c2_stale_refusals(self):
+        def image(c):
+            c["image"] = self.C2_IMAGE
+
+        def extra(c):
+            c["image"] = self.C2_IMAGE
+            c["env"].append({"name": "EXTRA", "value": "1"})
+
+        def cpu(c):
+            c["resources"]["cpu"] = 2
+
+        cases = {
+            "non-lane-name": ("api--manual-1", image, None, "stale latest"),
+            "c1-name": ("api--c1-aaaaaaa-27742728", image, None, "stale latest"),
+            "long-run-id": ("api--c2-aaaaaaa-123456789", image, None, "stale latest"),
+            "ready-third": ("api--c2-aaaaaaa-27742728", image, "api--old", "stale latest"),
+            "extra-env": ("api--c2-aaaaaaa-27742728", extra, None, "stale latest"),
+            "other-field": ("api--c2-aaaaaaa-27742728", cpu, None, "stale latest"),
+            "c3-name-image": ("api--c3-aaaaaaa-27742728", image, None, "stale latest"),
+        }
+        for label, (name, mutate, ready, message) in cases.items():
+            app, revision = snapshot("Multiple")
+            template = self.stale(app, revision, name, mutate)
+            if ready:
+                app["properties"]["latestReadyRevisionName"] = ready
+            with self.subTest(label), self.assertRaisesRegex(ValueError, message):
+                self.c2(app, revision, stale_latest=name, stale_template=template)
+
+    def test_stale_requires_both_inputs_c2_c3_only_and_compatible_app_template(self):
+        app, revision = snapshot("Multiple")
+        name = "api--c2-aaaaaaa-27742728"
+        template = self.stale(app, revision, name, lambda c: c.update(image=self.C2_IMAGE))
+        for kwargs in ({"stale_latest": name}, {"stale_template": template}):
+            with self.subTest(kwargs=sorted(kwargs)), self.assertRaisesRegex(ValueError, "both"):
+                self.c2(copy.deepcopy(app), copy.deepcopy(revision), **kwargs)
+        single = copy.deepcopy(app)
+        single["properties"]["configuration"]["activeRevisionsMode"] = "Single"
+        with self.assertRaisesRegex(ValueError, "only for C2/C3"):
+            CUTOVER.build_payload(single, revision, resource_id=app["id"], stage="C1",
+                                  stale_latest=name, stale_template=template)
+        app["properties"]["template"]["containers"][0]["env"].append({"name": "DRIFT", "value": "1"})
+        with self.assertRaisesRegex(ValueError, "R0 must be healthy"):
+            self.c2(app, revision, stale_latest=name, stale_template=template)
+        app, revision = snapshot("Multiple")
+        with self.assertRaisesRegex(ValueError, "stale latest"):
+            self.c2(app, revision, stale_latest="api--r0",
+                    stale_template=copy.deepcopy(revision["properties"]["template"]))
+
+    def test_c3_stale_three_env_candidate_builds_the_r0_payload_and_refuses_more(self):
+        build_c3 = CutoverTests.build_c3
+        app, revision = c3_snapshot()
+        expected = build_c3(self, copy.deepcopy(app), copy.deepcopy(revision))
+        name = "api--c3-aaaaaaa-27742728"
+
+        def on(c):
+            for item in c["env"]:
+                if item["name"] == "AI4IA_SHARED_GATEWAY_ENABLED":
+                    item["value"] = "true"
+            c["env"] += [{"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "x"},
+                         {"name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST", "value": "{}"}]
+
+        template = self.stale(app, revision, name, on)
+        self.assertEqual(build_c3(self, app, revision, stale_latest=name, stale_template=template),
+                         expected)
+        for label, extra in {
+            "image": lambda c: c.update(image=self.C2_IMAGE),
+            "env": lambda c: c["env"].append({"name": "EXTRA", "value": "1"}),
+        }.items():
+            app, revision = c3_snapshot()
+            template = self.stale(app, revision, name, lambda c, e=extra: (on(c), e(c)))
+            with self.subTest(label), self.assertRaisesRegex(ValueError, "stale latest"):
+                build_c3(self, app, revision, stale_latest=name, stale_template=template)
 
 
 if __name__ == "__main__":
