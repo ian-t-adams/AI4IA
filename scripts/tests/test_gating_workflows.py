@@ -766,6 +766,8 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
             if re.search(r"\bazd\s+auth\s+login\b", script):
                 self.assertRegex(script, r"--federated-credential-provider\s+['\"]?github\b")
                 require({"id-token": "write"})
+            if re.search(r'(?m)^\s*"\$VENV" -I scripts/hosted_oidc_read\.py\s*$', script):
+                require({"id-token": "write"})
             if re.search(r"\bgh\s+api\b", script):
                 self.assertIn("/actions/runs/", script, "Review the new GitHub REST consumer.")
                 self.assertNotRegex(
@@ -797,6 +799,14 @@ class WorkflowPermissionBoundaryTests(unittest.TestCase):
         for path in paths:
             with self.subTest(workflow=path.name):
                 self.assert_permission_boundary(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+    def test_hosted_oidc_reader_is_a_specific_oidc_consumer(self) -> None:
+        command = '"$VENV" -I scripts/hosted_oidc_read.py'
+        job = {"permissions": {"id-token": "write"}, "steps": [{"run": command}]}
+        self.assert_permission_boundary({"permissions": {}, "jobs": {"read": job}})
+        job["steps"][0]["run"] = 'echo "$VENV" -I scripts/hosted_oidc_read.py'
+        with self.assertRaises(AssertionError):
+            self.assert_permission_boundary({"permissions": {}, "jobs": {"read": job}})
 
     def test_workflow_writes_are_rejected_even_when_jobs_override_them(self) -> None:
         document = {
