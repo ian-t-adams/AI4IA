@@ -2848,15 +2848,19 @@ The lane depends on these controls and limitations:
 - **C3 smoke.** The smoke runs inside the not-yet-promoted revision's `api`
   container through the documented Container Apps exec channel, using the
   revision's own settings, user-assigned managed identity, manifest, and shared
-  gateway route. It makes one chat call and one stateless Responses call
-  (`store: false`) for each of the four deployments. All eight must return 200,
+  gateway route. Before any model call it requires the four canary deployments'
+  catalog APIs and SKU sets to match the pinned map. It makes exactly one call
+  using each deployment's pinned catalog API (all four are `chat`). All four must return 200,
   must have been routed through the shared gateway, and must have reached only
   the manifest's base host. Because the canary has no end user, it disables
   per-user quota and group policy for that process only.
 - **What the smoke proves.** The receipt keeps only statuses and booleans, never
   prompts or completions. The lane does not change gateway-side capture. A
-  passing smoke covers only those four deployments and those two operations; it
-  is not wider application coverage.
+  passing smoke qualifies shared-gateway chat routing for those four minis only.
+  It does **not** qualify Responses routing, full-app behavior, or end-user policy
+  enforcement. Responses qualification is separate and deferred to a stage that
+  activates a Responses-configured model; the catalog API is a dispatch selection,
+  not a claim about all provider-supported operations.
 
 The lane never changes schedules, recovery or worker flags, roles, the network,
 or secrets. A 403 is a stop, never a reason to broaden a grant.
