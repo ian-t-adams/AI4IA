@@ -1313,12 +1313,17 @@ Four rules follow:
 
 ### Add a model
 
-The Studio Decision playground uses the non-conversational `decision` category
+The Decision playground uses the non-conversational `decision` category
 and provider protocol. Its bounded native `state` / named `questions` request
 travels through the existing proxy deployment path to APIM's catalog-owned
 `/providers/microsoft/v1/systemone` on the services endpoint. Keep the exact POST
 allowlist, selected deployment body, Cognitive Services MI audience, no automatic
-API/APIM retry or proxy requeue hint, and byte-clean native response. It is not
+API/APIM retry or proxy requeue hint, and byte-clean native success response.
+The proxy allows at most one backend attempt, refuses persistence/recovery and
+returns promptly when all matching circuits are open. Terminal errors are fixed
+safe bodies; only bounded 429 Retry-After guidance survives. This is not an
+attempts-v1 capability or a guarantee that cancellation undoes accepted work.
+It is not
 Chat Completions or Copilot's `decide` schema. `decisions.py` validates noul,
 choice and zero-based score evidence; usage is native input/output counts and
 DataZone price is unknown. State, instructions and answers remain transient.

@@ -21,6 +21,13 @@ const emptyQuestion = (id: number): Draft => ({
 const namePattern = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
+function nextOptionLabel(options: Draft["options"]): string {
+  const labels = new Set(options.map((option) => option.label));
+  let suffix = options.length + 1;
+  while (labels.has(`option_${suffix}`)) suffix++;
+  return `option_${suffix}`;
+}
+
 function questionFromDraft(draft: Draft): DecisionQuestion {
   const { name, type, instructions, options, yes, no } = draft;
   if (!namePattern.test(name)) throw new Error("Names must start with a letter and use up to 64 letters, numbers, dots, hyphens or underscores.");
@@ -28,6 +35,10 @@ function questionFromDraft(draft: Draft): DecisionQuestion {
   if (type === "noul") {
     if (!!yes.trim() !== !!no.trim()) throw new Error(`Define both yes and no criteria for ${name}, or leave both empty.`);
     return { name, type, instructions, ...(yes.trim() ? { criteria: { true: yes, false: no } } : {}) };
+  }
+  const maxOptions = type === "choice" ? 12 : 10;
+  if (options.length < 2 || options.length > maxOptions) {
+    throw new Error(`Use 2 to ${maxOptions} ${type === "choice" ? "options" : "levels"} in ${name}.`);
   }
   if (options.some((o) => !o.description.trim())) throw new Error(`Describe every ${type === "choice" ? "option" : "level"} in ${name}.`);
   if (type === "score") {
@@ -164,10 +175,10 @@ export function DecisionPlayground() {
           <legend>Question {index + 1}</legend>
           <div className={styles.row}>
             <label>Name<input className="field-control" value={q.name} maxLength={64} required onChange={(e) => editQuestion(q.id, { name: e.target.value })} /></label>
-            <label>Answer type<select className="field-control" value={q.type} onChange={(e) => editQuestion(q.id, {
-              type: e.target.value === "choice" ? "choice" : e.target.value === "score" ? "score" : "noul",
-              options: q.options.slice(0, 10),
-            })}><option value="noul">Yes/no</option><option value="choice">Choice</option><option value="score">Score</option></select></label>
+            <label>Answer type<select className="field-control" value={q.type} onChange={(e) => {
+              setError("");
+              editQuestion(q.id, { type: e.target.value === "choice" ? "choice" : e.target.value === "score" ? "score" : "noul" });
+            }}><option value="noul">Yes/no</option><option value="choice">Choice</option><option value="score">Score</option></select></label>
             <button className="btn" type="button" disabled={questions.length === 1} aria-label={`Remove question ${index + 1}`}
               onClick={() => { setQuestions((current) => current.filter((item) => item.id !== q.id)); setResult(null); }}>Remove</button>
           </div>
@@ -181,6 +192,9 @@ export function DecisionPlayground() {
             </div>
           </details> : <>
             <p className={styles.note}>{q.type === "choice" ? "Define 2 to 12 distinct options." : "Order 2 to 10 levels from lowest to highest. Scores are fractional and zero-based."}</p>
+            {q.type === "score" && q.options.length > 10 && <p role="status" className={styles.note}>
+              Remove {q.options.length - 10} {q.options.length === 11 ? "level" : "levels"} before running, or switch back to Choice to keep all options.
+            </p>}
             {q.options.map((option, optionIndex) => <div className={styles.row} key={optionIndex}>
               {q.type === "choice" ? <label>Option {optionIndex + 1} name<input className="field-control" value={option.label} maxLength={64} required
                 onChange={(e) => editQuestion(q.id, { options: q.options.map((o, i) => i === optionIndex ? { ...o, label: e.target.value } : o) })} /></label> : <span>Level {optionIndex}</span>}
@@ -188,10 +202,10 @@ export function DecisionPlayground() {
                 <input className="field-control" value={option.description} maxLength={512} required
                   onChange={(e) => editQuestion(q.id, { options: q.options.map((o, i) => i === optionIndex ? { ...o, description: e.target.value } : o) })} /></label>
               <button className="btn" type="button" disabled={q.options.length === 2} aria-label={`Remove ${q.type === "choice" ? "option" : "level"} ${optionIndex + 1} from question ${index + 1}`}
-                onClick={() => editQuestion(q.id, { options: q.options.filter((_, i) => i !== optionIndex) })}>Remove</button>
+                onClick={() => { setError(""); editQuestion(q.id, { options: q.options.filter((_, i) => i !== optionIndex) }); }}>Remove</button>
             </div>)}
             <button className="btn" type="button" disabled={q.options.length >= (q.type === "choice" ? 12 : 10)}
-              onClick={() => editQuestion(q.id, { options: [...q.options, { label: `option_${q.options.length + 1}`, description: "" }] })}>
+              onClick={() => editQuestion(q.id, { options: [...q.options, { label: nextOptionLabel(q.options), description: "" }] })}>
               Add {q.type === "choice" ? "option" : "level"}
             </button>
           </>}

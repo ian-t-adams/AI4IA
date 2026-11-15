@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import socket
 
 import httpx
 import pytest
@@ -73,7 +74,11 @@ def rig():
 
 def test_native_round_trip_and_unknown_cost(rig):
     client, native, meter = rig
-    response = client.post("/api/decisions/run", json=BODY, headers=HEADERS)
+    options = client.get("/api/decisions/options", headers=HEADERS)
+    assert options.status_code == 200 and options.headers["cache-control"] == "no-store"
+    assert not native.calls and not meter.calls
+    selected = next(model for model in options.json()["models"] if model["id"] == MODEL)
+    response = client.post("/api/decisions/run", json={**BODY, "model": selected["id"]}, headers=HEADERS)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["answers"] == NATIVE["answers"]
@@ -99,6 +104,57 @@ def test_native_round_trip_and_unknown_cost(rig):
     assert row["usage"].total == 130 and row["provider_completed"]
     assert row["target"].provider == "microsoft_decision"
     assert "demo" not in repr(row)
+
+
+@pytest.mark.parametrize("input_format,input_value", [("text", "Synthetic report"), ("json", '{"synthetic":true}')])
+def test_offline_browser_fixture_exercises_real_routes_and_native_adapter(monkeypatch, input_format, input_value):
+    from tests.decision_preview import build_preview
+
+    # Even a developer's enabled/cloud-configured environment cannot opt this
+    # explicit test fixture into network services or a different auth mode.
+    monkeypatch.setenv("MODEL_GATEWAY_URL", "https://not-a-fixture.invalid")
+    monkeypatch.setenv("AUTH_PROVIDER", "entra")
+    monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "not-a-fixture")
+    with TestClient(build_preview()) as client:
+        options = client.get("/api/decisions/options", headers=HEADERS)
+        assert options.status_code == 200
+        assert MODEL in [model["id"] for model in options.json()["models"]]
+        assert not client.app.state.preview_native_calls
+        request = {**BODY, "inputFormat": input_format, "input": input_value}
+        response = client.post("/api/decisions/run", json=request, headers=HEADERS)
+        assert response.status_code == 200, response.text
+        assert response.json()["answers"] == {
+            "repeat": {"type": "noul", "noul": .75},
+            "team": {"type": "choice", "choice": "design", "confidence": .5,
+                     "probabilities": {"design": 1.0, "engineering": 0.0}},
+            "severity": {"type": "score", "score": 0.0, "confidence": .5,
+                         "probabilities": {"0": 1.0, "1": 0.0, "2": 0.0}},
+        }
+        calls = client.app.state.preview_native_calls
+        assert len(calls) == 1
+        assert calls[0]["state"] == (json.loads(input_value) if input_format == "json" else input_value)
+        failure = client.post("/api/decisions/run", json={
+            **BODY, "inputFormat": "text", "input": "fixture:upstream-error",
+        }, headers=HEADERS)
+        assert failure.status_code == 502 and "no automatic retry" in failure.json()["detail"]
+        assert len(calls) == 2
+        assert "Synthetic provider failure" not in failure.text
+
+
+def test_offline_preview_network_guard_allows_loopback_and_refuses_external_connect():
+    from tests.decision_preview import offline_network
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        with offline_network(), socket.socket() as client:
+            client.settimeout(1)
+            client.connect(listener.getsockname())
+            peer, _ = listener.accept()
+            peer.close()
+            for connect in (client.connect, client.connect_ex):
+                with pytest.raises(OSError, match="refuses non-loopback"):
+                    connect(("192.0.2.1", 443))
 
 
 @pytest.mark.parametrize("change", [
