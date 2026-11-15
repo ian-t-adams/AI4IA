@@ -2487,6 +2487,23 @@ configuration or traffic; it still uses the existing deploy job's Azure/registry
 identity. A separate reviewed web/API staging, readback and rollback procedure
 is still required before either artifact can be promoted.
 
+### Hosted OIDC read qualification
+
+The default-off `hosted-web-one-read.yml` workflow admits one exact web-app ARM
+GET, not a deployment. The reader accepts the runner-selected HTTPS endpoint
+only under a single DNS label of `actions.githubusercontent.com`, following
+[GitHub's OIDC communication requirements](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#communication-requirements-for-github-hosted-runners).
+It rejects userinfo, other ports, fragments, control characters, redirects and
+caller-supplied audiences. The issuer, audience, subject, repository, ref, source
+SHA, environment, event and token-time checks remain independent and exact.
+
+Assertion failures use fixed `phase` values: `assertion-url`,
+`assertion-runtime-token`, `assertion-transport`, `assertion-response` and
+`assertion-claims`. The receipt shape remains `phase`, `status`, `sha256`; it
+contains no endpoint path, token, claim values or exception text. A failed read
+is not an RBAC diagnosis unless it reached that layer, and a successful read
+does not establish deployment, DTS or gateway-runtime permissions.
+
 ### Required paired rollout order (not an apply path)
 
 The approved design is web first, then the selector-OFF API, then a fresh
