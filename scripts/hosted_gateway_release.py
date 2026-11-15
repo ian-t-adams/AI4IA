@@ -893,7 +893,8 @@ def shell_lines(program: str, width: int = 900, runner: str = PYTHON_RUNNER) -> 
     encoded = base64.b64encode(program.encode("utf-8")).decode("ascii")
     chunks = [encoded[i:i + width] for i in range(0, len(encoded), width)]
     lines = ["stty -echo 2>/dev/null; S=''"]
-    lines += [f"S=\"$S{chunk}\"" for chunk in chunks]
+    # Braced: an unbraced $S would absorb the chunk's leading [A-Za-z0-9_] into the name.
+    lines += [f"S=\"${{S}}{chunk}\"" for chunk in chunks]
     lines.append(runner)
     return [(line + "\n").encode("ascii") for line in lines]
 

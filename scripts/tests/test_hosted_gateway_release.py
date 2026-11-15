@@ -1,4 +1,4 @@
-"""Fake-only tests for the hosted gateway release lane. No network, no Azure."""
+"""Fake-only tests for the hosted gateway release lane. No external network, no Azure."""
 
 from __future__ import annotations
 
@@ -1431,8 +1431,63 @@ class SmokeTests(unittest.TestCase):
     def test_shell_lines_stay_below_tty_line_limit(self):
         lines = release.shell_lines(release.SMOKE_PROGRAM)
         self.assertTrue(all(len(line) < 1024 for line in lines))
-        payload = "".join(line.decode()[len('S="$S'):-2] for line in lines[1:-1])
+        payload = "".join(line.decode()[len('S="${S}'):-2] for line in lines[1:-1])
         self.assertEqual(base64.b64decode(payload).decode(), release.SMOKE_PROGRAM)
+
+    def test_shell_lines_reassemble_under_posix_expansion(self):
+        for program, runner in ((release.SMOKE_PROGRAM, release.PYTHON_RUNNER),
+                                (release.WEB_PROBE_PROGRAM, release.NODE_RUNNER)):
+            lines = release.shell_lines(program, runner=runner)
+            self.assertEqual(posix_assembled_program(lines), program)
+
+    def test_unbraced_assignment_loses_the_program_under_posix_expansion(self):
+        lines = [line.replace(b'S="${S}', b'S="$S')
+                 for line in release.shell_lines(release.WEB_PROBE_PROGRAM, runner=release.NODE_RUNNER)]
+        self.assertNotEqual(posix_assembled_program(lines), release.WEB_PROBE_PROGRAM)
+
+    @unittest.skipUnless(shutil.which("sh") and shutil.which("base64") and shutil.which("sha256sum"),
+                         "needs a POSIX sh with base64/sha256sum")
+    def test_shell_lines_reassemble_in_a_real_shell(self):
+        for program, runner in ((release.SMOKE_PROGRAM, release.PYTHON_RUNNER),
+                                (release.WEB_PROBE_PROGRAM, release.NODE_RUNNER)):
+            lines = release.shell_lines(program, runner=runner)
+            check = b'printf %s "$S" | base64 -d | sha256sum\n'
+            out = subprocess.run([shutil.which("sh"), "-s"], input=b"".join(lines[:-1]) + check,
+                                 capture_output=True, timeout=30, check=True).stdout.decode()
+            self.assertEqual(out.split()[0], hashlib.sha256(program.encode()).hexdigest())
+
+    @unittest.skipUnless(shutil.which("sh") and shutil.which("base64") and shutil.which("node"),
+                         "needs a POSIX sh with base64 and node")
+    def test_web_probe_runs_from_real_shell_against_fake_endpoints(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                bodies = {"/build-id": {"buildId": release.WEB_BUILD_ID},
+                          "/health/ready": {"status": "ok", "stage": "session_store"}}
+                body = json.dumps(bodies.get(self.path, {})).encode()
+                self.send_response(200 if self.path in bodies else 404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        node = shutil.which("node").replace("\\", "/")
+        runner = release.NODE_RUNNER.replace("/usr/local/bin/node", f'"{node}"')
+        lines = release.shell_lines(release.WEB_PROBE_PROGRAM, runner=runner)
+        env = {**os.environ, "PORT": str(port), "API_BASE_URL": f"http://127.0.0.1:{port}",
+               "CHAT_PILOT_UI_ENABLED": ""}
+        out = subprocess.run([shutil.which("sh"), "-s"], input=b"".join(lines), env=env,
+                             capture_output=True, timeout=60, check=True).stdout.decode()
+        marked = [line for line in out.splitlines() if line.startswith(release.WEB_PROBE_MARK)]
+        self.assertEqual(len(marked), 1)
+        self.assertTrue(release.web_probe_passed(json.loads(marked[0][len(release.WEB_PROBE_MARK):])))
 
     def test_smoke_program_compiles(self):
         compile(release.SMOKE_PROGRAM, "<smoke>", "exec")
@@ -1594,12 +1649,42 @@ def client_frames(data: bytes) -> list[tuple[int, bytes]]:
     return frames
 
 
+_POSIX_PARAM = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_ASSIGN_S = re.compile(r'S="([^"`\\]*)"')
+
+
+def posix_assembled_program(lines: list[bytes]) -> str | None:
+    """Replay the lane's S-assignment lines with POSIX parameter expansion.
+
+    An unbraced ``$NAME`` takes the longest identifier, so ``$SAbc`` reads the unset
+    variable ``SAbc`` (empty), exactly as sh does. Returns the decoded program or None.
+    """
+    shell: dict[str, str] = {}
+    for raw in lines:
+        for statement in raw.decode("ascii").strip().split(";"):
+            statement = statement.strip()
+            if statement == "S=''":
+                shell["S"] = ""
+            elif match := _ASSIGN_S.fullmatch(statement):
+                shell["S"] = _POSIX_PARAM.sub(lambda m: shell.get(m.group(1) or m.group(2), ""), match.group(1))
+    try:
+        return base64.b64decode(shell.get("S", ""), validate=True).decode("utf-8")
+    except ValueError:
+        return None
+
+
+EXPECTED_PROGRAMS = {release.WEB_PROBE_MARK: release.WEB_PROBE_PROGRAM, release.SMOKE_MARK: release.SMOKE_PROGRAM}
+
+
 class ReferenceExecServer:
     """Fake Container Apps exec proxy with the reference client's contract.
 
     It answers the WebSocket upgrade, ignores BINARY frames, ignores stdin until a
     TEXT terminal resize attaches the console, then shows a prompt. When the runner
-    line arrives it prints the marker result. Unread output never arrives on its own.
+    line arrives it replays the stdin under POSIX expansion and prints the marker
+    result only if that reassembles the lane's real program; otherwise, like the
+    live console, the runner runs an empty program and the shell exits quietly with
+    a clean close. Unread output never arrives on its own.
     """
 
     def __init__(self, mark: str, result: dict, *, attach_output: bool = True):
@@ -1618,6 +1703,9 @@ class ReferenceExecServer:
 
     def emit(self, payload: bytes, opcode=0x2):
         self.outgoing.extend(server_frame(payload, opcode))
+
+    def lines(self) -> list[bytes]:
+        return [line + b"\n" for line in bytes(self.stdin).split(b"\n") if line]
 
     def sendall(self, data):
         if not self.handshaken:
@@ -1640,6 +1728,12 @@ class ReferenceExecServer:
             elif payload[:2] == b"\x00\x00" and self.attached:
                 self.stdin.extend(payload[2:])
                 if payload.rstrip().endswith(b"exit"):
+                    expected = EXPECTED_PROGRAMS.get(self.mark)
+                    if expected is None:
+                        return
+                    if posix_assembled_program(self.lines()) != expected:
+                        self.emit(b"\x03\xe8", 0x8)
+                        return
                     body = json.dumps(self.result).encode()
                     self.emit(b"\x00\x02PRIVATE_STDERR_SENTINEL\n")
                     self.emit(b"\x00\x01\n" + self.mark.encode() + body + b"\n")
@@ -1712,6 +1806,21 @@ class ReferenceExecTests(unittest.TestCase):
         text = json.dumps(result)
         for sentinel in SENTINELS:
             self.assertNotIn(sentinel, text)
+
+    def test_unbraced_stdin_reproduces_live_quiet_close_without_marker(self):
+        braced = release.shell_lines
+
+        def unbraced(program, width=900, runner=release.PYTHON_RUNNER):
+            return [line.replace(b'S="${S}', b'S="$S') for line in braced(program, width, runner)]
+
+        server = ReferenceExecServer(release.WEB_PROBE_MARK, passing_web_probe())
+        with mock.patch.object(release, "shell_lines", unbraced), self.assertRaises(release.Refused) as caught:
+            self.probe(server)
+        diag = caught.exception.detail["exec"]
+        self.assertEqual((caught.exception.phase, diag["marker_seen"], diag["close_code"],
+                          diag["resize_sent"], diag["stdin_frames_sent"], diag["first_output_before_stdin"]),
+                         ("smoke-transport", False, 1000, True, 6, True))
+        self.assertNotIn(release.WEB_PROBE_MARK.encode(), bytes(server.outgoing))
 
     def test_quiet_console_still_receives_stdin_after_bounded_wait(self):
         server = ReferenceExecServer(release.WEB_PROBE_MARK, passing_web_probe(), attach_output=False)
