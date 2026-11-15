@@ -2566,25 +2566,35 @@ PATCH body or prove any live service behavior.
    2.2 loader binds the
    manifest caller to the API's literal `AZURE_CLIENT_ID`, requires the fixed
    `managed-identity` credential, and rejects extra schema fields. The
-   constructor replaces only the exact existing manifest `secretRef` with the
-   byte-identical JSON literal, leaves all Container App secrets and other
-   secret references untouched, keeps the exact R1 image and 100% R1 traffic,
-   enables only the gateway selector, and preserves disabled pilot isolation.
+   constructor accepts only C2's unchanged R1-OFF output as its baseline: the
+   gateway selector absent or literal `false`, pilot isolation absent or literal
+   `false`, and no `AI4IA_SHARED_GATEWAY_DEPLOYMENTS`, manifest variable or
+   `shared-gateway-activation-manifest` reference (names are compared
+   case-insensitively, and `AI4IA_MODEL_CATALOG_PATH` is refused). It produces one
+   R2 request that sets the selector to literal `true` and appends exactly two
+   literals: the deployment opt-in list and the byte-identical manifest JSON. Every
+   other field and secret reference is preserved, and the request carries no
+   `configuration.secrets`, so it neither creates nor reads a Container App secret.
+   The opt-in list comes only from `--deployments` (exact ASCII bytes,
+   comma-separated names, no whitespace or trailing newline) bound to a separately
+   reviewed `--deployments-sha256`; the helper has no built-in model list. The
+   resulting literal environment is then checked by the API's own
+   `Settings.validate_shared_gateway` and `validate_shared_gateway_catalog`, with
+   process environment and `.env` sources disabled and the hash-checked loader
+   module bound for that call, so each opted-in deployment must be an eligible
+   packaged-catalog chat/Responses deployment that resolves in the manifest. The
+   packaged catalog is not hash-pinned: run the helper from the same source commit
+   as the R1-OFF image. Whether Azure accepts the ~24.5 KB literal and preserves
+   existing secrets for a PATCH without `configuration.secrets` is unverified.
    The offline input is classified only for this exact digest; do not commit,
    print or persist the manifest, sidecar, snapshots or generated payload in the
    shared repository. The `activationReady=false` sidecar is explicitly not
    readiness or activation evidence. A local qualification resolved all 71
    manifest model rows and rejected 213 wrong alternatives; it is not a
    substitute for a fresh app-bound snapshot or a CI/live service proof.
-   The constructor additionally requires an existing manifest `secretRef`,
-   literal false selector and nonempty resolved deployment list in R1. C2 changes
-   only image and suffix and does not create these inputs; the coordinator reports
-   that the baseline has no manifest secret, while a fresh R1 is not available
-   here to verify the selector and deployment list. Therefore this is a hypothetical
-   fail-closed constructor,
-   not an executable transition from that baseline. A separately reviewed
-   source and operator contract is needed before addressing absent inputs; do
-   not infer or perform an intermediate settings or secret write.
+   A fresh R1-OFF environment-name and secret-name readback must still confirm
+   this baseline before any C3 request is reviewed; do not infer or perform an
+   intermediate settings or secret write.
 4. C3 construction does not authorize staging, activation, traffic change or
    model requests. Worker-transition/quiescence, deployed-SDK, exact fresh
    snapshot, readiness, route-operation and streaming gates remain separate.
