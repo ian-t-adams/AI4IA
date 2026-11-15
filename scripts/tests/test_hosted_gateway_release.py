@@ -1111,10 +1111,10 @@ class StaleLatestTests(unittest.TestCase):
                 self.assertEqual(receipt["outcome"], "complete")
                 self.assert_only_one_candidate(arm, before, receipt)
                 expected = [{"name": receipt["candidate"], "role": "candidate",
-                             "created_by_run": True, "active": True}]
+                             "creation_attempted": True, "active": True}]
                 if label == "stale":
                     expected.append({"name": self.STALE, "role": "stale-latest",
-                                     "created_by_run": False, "active": False})
+                                     "creation_attempted": False, "active": False})
                 self.assertEqual(receipt["lane_revisions"], expected)
 
     def test_refused_candidate_is_inventoried_inactive_and_pre_create_refusal_lists_none(self):
@@ -1125,7 +1125,7 @@ class StaleLatestTests(unittest.TestCase):
         self.assertEqual(receipt["outcome"], "refused")
         self.assert_only_one_candidate(arm, before, receipt)
         self.assertEqual(receipt["lane_revisions"][0], {
-            "name": self.candidate_name(), "role": "candidate", "created_by_run": True, "active": False})
+            "name": self.candidate_name(), "role": "candidate", "creation_attempted": True, "active": False})
         self.assertEqual(receipt["lane_revisions"][1]["active"], False)
 
         arm = self.stale_arm(active=True)
@@ -1133,6 +1133,18 @@ class StaleLatestTests(unittest.TestCase):
         self.assertEqual((receipt["detail"]["reason"], receipt["writes"], receipt["lane_revisions"]),
                          ("r0-latest", 0, []))
         self.assertFalse(any(c[2] == "inventory" for c in arm.calls))
+
+    def test_create_403_is_attempted_not_confirmed(self):
+        arm = self.stale_arm()
+        before = set(arm.revisions)
+        arm.fail["create"] = release.Refused("create", 403)
+        receipt = self.execute(arm)
+        self.assertEqual(receipt["outcome"], "refused")
+        self.assertEqual(set(arm.revisions), before)
+        row = receipt["lane_revisions"][0]
+        self.assertEqual(row, {"name": self.candidate_name(), "role": "candidate",
+                               "creation_attempted": True, "active": None, "observed": False})
+        self.assertNotIn("created_by_run", json.dumps(receipt))
 
     def test_no_extra_read_when_latest_is_r0(self):
         arm = FakeArm()

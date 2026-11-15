@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.tests._loader import load_script
 
@@ -19,13 +21,15 @@ class FakeGh:
     """Repository variables plus one workflow's runs; the dispatched run completes after N views."""
 
     def __init__(self, *, polls=3, variables=None, runs=None, new_runs=1, head=SHA,
-                 fail=(), sticky_gate=False, interrupt=()):
+                 fail=(), sticky_gate=False, interrupt=(), timeouts=None):
         self.variables = dict(variables or {})
         self.runs = list(runs or [{"databaseId": 1, "headSha": SHA, "event": "workflow_dispatch",
                                    "status": "completed", "createdAt": "x"}])
         self.polls, self.new_runs, self.head = polls, new_runs, head
         self.fail, self.sticky_gate, self.interrupt = set(fail), sticky_gate, set(interrupt)
         self.calls, self.gate_during_views, self.views = [], [], 0
+        # key -> number of "timed out" failures, injected only once our gate has been set.
+        self.timeouts = dict(timeouts or {})
 
     def __call__(self, args):
         args = list(args)
@@ -33,6 +37,10 @@ class FakeGh:
         key = " ".join(args[:2])
         if key in self.fail:
             raise WRAPPER.DispatchError(key)
+        gate_was_set = any(c[:2] == ["variable", "set"] for c in self.calls[:-1])
+        if gate_was_set and self.timeouts.get(key, 0) > 0:
+            self.timeouts[key] -= 1
+            raise WRAPPER.DispatchError(f"gh {key} timed out")
         if key in self.interrupt:
             self.interrupt.discard(key)
             raise KeyboardInterrupt(key)
@@ -124,6 +132,42 @@ class DispatchWrapperTests(unittest.TestCase):
             self.assertIn(["variable", "set", GATE, "-R", WRAPPER.REPOSITORY, "--body", "true"], gh.calls)
             self.assertEqual(gh.variables, {})
             self.assertEqual(gh.calls[-1][:2], ["variable", "list"])
+
+    def test_default_gh_bounds_every_call_and_maps_timeout_and_os_errors(self):
+        with mock.patch.object(WRAPPER.shutil, "which", return_value="gh"):
+            with (mock.patch.object(WRAPPER.subprocess, "run",
+                                    side_effect=subprocess.TimeoutExpired("gh", 7)) as runner,
+                  self.assertRaisesRegex(WRAPPER.DispatchError, r"^gh run view timed out$")):
+                WRAPPER.default_gh(["run", "view", "1"], timeout=7)
+            self.assertEqual(runner.call_args.kwargs["timeout"], 7)
+            with (mock.patch.object(WRAPPER.subprocess, "run", side_effect=OSError("secret-path")),
+                  self.assertRaisesRegex(WRAPPER.DispatchError, r"^gh variable delete could not be started$")):
+                WRAPPER.default_gh(["variable", "delete", GATE])
+            ok = subprocess.CompletedProcess(["gh"], 0, stdout="[]", stderr="")
+            with mock.patch.object(WRAPPER.subprocess, "run", return_value=ok) as runner:
+                WRAPPER.default_gh(["variable", "list"])
+            self.assertEqual(runner.call_args.kwargs["timeout"], WRAPPER.GH_TIMEOUT_SECONDS)
+
+    def test_timeout_while_holding_releases_gate_and_reports_bound_run(self):
+        messages = []
+        gh = FakeGh(polls=10, timeouts={"run view": 1})
+        clock = [0.0]
+        with self.assertRaisesRegex(WRAPPER.DispatchError, "timed out") as caught:
+            WRAPPER.dispatch(WORKFLOW, SHA, "c2-web", gh=gh, sleep=lambda s: None,
+                             clock=lambda: clock[0], log=messages.append)
+        self.assertEqual(caught.exception.run_id, 43735149163)
+        self.assertTrue(any("43735149163" in m and "does not stop" in m for m in messages))
+        self.assertEqual(gh.variables, {})
+        self.assertEqual(gh.calls[-1][:2], ["variable", "list"])
+
+    def test_cleanup_timeouts_retry_bounded_then_verify_or_fail_unverified(self):
+        gh = FakeGh(polls=1, timeouts={"variable delete": 1, "variable list": 1})
+        self.assertTrue(run(gh)["gate_absent"])
+        self.assertEqual(gh.variables, {})
+        gh = FakeGh(polls=1, timeouts={"variable list": 10})
+        with self.assertRaisesRegex(WRAPPER.DispatchError, "could not verify"):
+            run(gh)
+        self.assertEqual(sum(c[:2] == ["variable", "delete"] for c in gh.calls), 3)
 
     def test_gate_still_present_after_delete_fails_loudly(self):
         gh = FakeGh(sticky_gate=True)

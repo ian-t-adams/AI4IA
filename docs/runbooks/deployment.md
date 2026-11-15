@@ -2734,8 +2734,12 @@ Each release reuses the fixed apps, identities and secrets. Its only Azure
 artifact is at most one candidate revision; it creates no app, secret,
 APIM object or environment change outside the declared candidate template. The
 receipt's `lane_revisions` lists that candidate and any admitted stale latest,
-with `role`, `created_by_run` and the final `active` flag. That flag comes from
+with `role`, `creation_attempted` and the final `active` flag. That flag comes from
 a single read-only reread, taken only if the create PATCH was attempted.
+`creation_attempted` is recorded before the ARM response, so it does not prove
+the revision exists (for example after a 403 or an uncertain write). Only a
+successful reread, shown by a boolean `active`, confirms existence. A failed
+reread leaves `active` null and adds `observed: false`.
 
 Dispatch the lane and the one-read workflow only through
 `python scripts/dispatch_gated_workflow.py --workflow hosted-gateway-release.yml
@@ -2748,6 +2752,13 @@ holds the gate until that run is terminal, because every job re-reads it. In
 `finally`, including on Ctrl+C or SIGTERM, it deletes its gate (retrying an
 interrupted delete). It then rereads the variables and verifies that every gate
 is absent, failing loudly if not. It never touches `AI4IA_DEPLOYMENT_ENABLED`.
+Every `gh` call has a bounded timeout (`--gh-timeout`, default 60 seconds, at
+most 300). A timeout or OS error becomes a fixed refusal, and the cleanup still
+runs, so a hung call cannot hold the gate. If the reread cannot verify the gates,
+the wrapper says so and asks for manual deletion. Deleting the gate after a
+timeout, error or interrupt does not prove that the dispatched run stopped. The
+wrapper logs and reports the bound run ID so you can inspect it. It does not
+cancel runs or add retries or credentials.
 
 The lane depends on these controls and limitations:
 

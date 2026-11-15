@@ -12,6 +12,12 @@ This wrapper:
 4. in ``finally`` deletes the gate and verifies it is ABSENT before returning, failing loudly
    if it is not.
 
+Every ``gh`` call is bounded (``GH_TIMEOUT_SECONDS``); a timeout or OS error maps to a fixed
+``DispatchError``, so a hung call cannot hold the gate past the bind/run deadlines. Deleting the
+gate after a timeout, error or interrupt does NOT prove the dispatched run stopped: the bound run
+ID is logged and reported so the operator can inspect it. There are no added retries beyond the
+bounded cleanup, no auto-cancel and no new credentials.
+
 It never touches AI4IA_DEPLOYMENT_ENABLED or any other variable, secret or setting. Uses the
 caller's existing ``gh`` login; no tokens are read or printed.
 """
@@ -37,20 +43,30 @@ STAGES = ("c1-web", "c2-web", "c1-api", "c2-api", "c3-api", "rollback-api")
 REVISION = re.compile(r"[a-z0-9][a-z0-9-]{0,62}--[a-z0-9-]{1,80}")
 
 
+GH_TIMEOUT_SECONDS = 60.0
+
+
 class DispatchError(RuntimeError):
-    pass
+    run_id: int | None = None
 
 
 Gh = Callable[[Sequence[str]], str]
 
 
-def default_gh(args: Sequence[str]) -> str:
+def default_gh(args: Sequence[str], *, timeout: float = GH_TIMEOUT_SECONDS) -> str:
     executable = shutil.which("gh")
     if executable is None:
         raise DispatchError("gh CLI is not installed")
-    result = subprocess.run([executable, *args], capture_output=True, text=True, check=False)
+    command = f"gh {args[0]} {args[1] if len(args) > 1 else ''}".strip()
+    try:
+        result = subprocess.run([executable, *args], capture_output=True, text=True, check=False,
+                                timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise DispatchError(f"{command} timed out") from None
+    except OSError:
+        raise DispatchError(f"{command} could not be started") from None
     if result.returncode != 0:
-        raise DispatchError(f"gh {args[0]} {args[1] if len(args) > 1 else ''} failed".strip())
+        raise DispatchError(f"{command} failed")
     return result.stdout
 
 
@@ -85,6 +101,7 @@ def present_gates(gh: Gh, repo: str) -> set[str]:
 def release_gate(gh: Gh, repo: str, gate: str, log: Callable[[str], None]) -> None:
     """Delete our gate (retrying, even across interrupts) and verify EVERY gate is absent by reread."""
     interrupted: BaseException | None = None
+    verified = False
     for _attempt in range(3):
         try:
             gh(["variable", "delete", gate, "-R", repo])
@@ -94,9 +111,12 @@ def release_gate(gh: Gh, repo: str, gate: str, log: Callable[[str], None]) -> No
             interrupted = interrupted or error
         try:
             remaining = present_gates(gh, repo)
+        except DispatchError:
+            continue  # unverified (e.g. timed out); retry the bounded delete + reread.
         except BaseException as error:  # noqa: BLE001
             interrupted = interrupted or error
             continue
+        verified = True
         if not remaining:
             log("all gate variables verified ABSENT")
             if interrupted is not None:
@@ -104,6 +124,8 @@ def release_gate(gh: Gh, repo: str, gate: str, log: Callable[[str], None]) -> No
             return
         if gate not in remaining:
             raise DispatchError(f"gate(s) {sorted(remaining)} are set by another holder; clear manually")
+    if not verified:
+        raise DispatchError(f"could not verify {gate} is absent (gh failed); check and delete it manually now")
     raise DispatchError(f"{gate} is STILL SET after the run; delete it manually now")
 
 
@@ -130,42 +152,57 @@ def dispatch(workflow: str, reviewed_sha: str, stage: str | None = None,
     seen = {run["databaseId"] for run in existing}
     result: dict = {"workflow": workflow, "run_id": None, "status": None, "conclusion": None}
     try:
-        gh(["variable", "set", gate, "-R", repo, "--body", "true"])
-        log(f"{gate} set for one dispatch")
-        gh(["workflow", "run", workflow, "-R", repo, "--ref", "main", *fields])
-        deadline = clock() + bind_seconds
-        while True:
-            new = [run for run in runs(gh, repo, workflow)
-                   if run["databaseId"] not in seen and run.get("event") == "workflow_dispatch"]
-            if len(new) > 1:
-                raise DispatchError("more than one new run appeared; refusing to guess which to hold")
-            if new:
-                if new[0].get("headSha") != reviewed_sha:
-                    raise DispatchError("the new run is not at the reviewed SHA")
-                run_id = new[0]["databaseId"]
-                break
-            if clock() >= deadline:
-                raise DispatchError("no new run appeared within the bind window")
-            sleep(5)
-        result["run_id"] = run_id
-        log(f"bound to run {run_id}")
-        deadline = clock() + timeout_seconds
-        while True:
-            view = json.loads(gh(["run", "view", str(run_id), "-R", repo,
-                                  "--json", "databaseId,status,conclusion,headSha"]))
-            if view.get("databaseId") != run_id or view.get("headSha") != reviewed_sha:
-                raise DispatchError("run view did not return the bound run")
-            result["status"] = view.get("status")
-            if view.get("status") == "completed":
-                result["conclusion"] = view.get("conclusion")
-                break
-            if clock() >= deadline:
-                raise DispatchError("bound run did not complete before the timeout")
-            sleep(poll_seconds)
+        _hold_gate_for_one_run(gh, repo, workflow, gate, fields, reviewed_sha, seen, result,
+                               sleep, clock, bind_seconds, timeout_seconds, poll_seconds, log)
+    except BaseException as error:
+        if result["run_id"] is not None:
+            log(f"stopped holding bound run {result['run_id']}; gate deletion does not stop it - "
+                "inspect that run")
+            if isinstance(error, DispatchError):
+                error.run_id = result["run_id"]
+        raise
     finally:
         release_gate(gh, repo, gate, log)
         result["gate_absent"] = True
     return result
+
+
+def _hold_gate_for_one_run(gh: Gh, repo: str, workflow: str, gate: str, fields: list[str],
+                           reviewed_sha: str, seen: set, result: dict, sleep, clock,
+                           bind_seconds: float, timeout_seconds: float, poll_seconds: float,
+                           log: Callable[[str], None]) -> None:
+    gh(["variable", "set", gate, "-R", repo, "--body", "true"])
+    log(f"{gate} set for one dispatch")
+    gh(["workflow", "run", workflow, "-R", repo, "--ref", "main", *fields])
+    deadline = clock() + bind_seconds
+    while True:
+        new = [run for run in runs(gh, repo, workflow)
+               if run["databaseId"] not in seen and run.get("event") == "workflow_dispatch"]
+        if len(new) > 1:
+            raise DispatchError("more than one new run appeared; refusing to guess which to hold")
+        if new:
+            if new[0].get("headSha") != reviewed_sha:
+                raise DispatchError("the new run is not at the reviewed SHA")
+            run_id = new[0]["databaseId"]
+            break
+        if clock() >= deadline:
+            raise DispatchError("no new run appeared within the bind window")
+        sleep(5)
+    result["run_id"] = run_id
+    log(f"bound to run {run_id}")
+    deadline = clock() + timeout_seconds
+    while True:
+        view = json.loads(gh(["run", "view", str(run_id), "-R", repo,
+                              "--json", "databaseId,status,conclusion,headSha"]))
+        if view.get("databaseId") != run_id or view.get("headSha") != reviewed_sha:
+            raise DispatchError("run view did not return the bound run")
+        result["status"] = view.get("status")
+        if view.get("status") == "completed":
+            result["conclusion"] = view.get("conclusion")
+            break
+        if clock() >= deadline:
+            raise DispatchError("bound run did not complete before the timeout")
+        sleep(poll_seconds)
 
 
 def _sigterm(_signum, _frame):
@@ -180,13 +217,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rollback-revision")
     parser.add_argument("--repo", default=REPOSITORY)
     parser.add_argument("--timeout", type=float, default=3600)
+    parser.add_argument("--gh-timeout", type=float, default=GH_TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
+    if not 0 < args.gh_timeout <= 300:
+        parser.error("--gh-timeout must be in (0, 300] seconds")
     signal.signal(signal.SIGTERM, _sigterm)
     try:
         result = dispatch(args.workflow, args.reviewed_sha, args.stage, args.rollback_revision,
-                          repo=args.repo, timeout_seconds=args.timeout)
+                          repo=args.repo, timeout_seconds=args.timeout,
+                          gh=lambda gh_args: default_gh(gh_args, timeout=args.gh_timeout))
     except DispatchError as error:
-        print(f"refused: {error}", file=sys.stderr)
+        bound = f" (bound run {error.run_id} may still be running)" if error.run_id else ""
+        print(f"refused: {error}{bound}", file=sys.stderr)
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0 if result["conclusion"] == "success" else 2

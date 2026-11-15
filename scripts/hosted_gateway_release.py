@@ -1514,6 +1514,10 @@ def lane_revisions(arm: Arm | None, receipt: dict) -> list[dict]:
 
     The run's own candidate is re-read once (read-only) only if its create PATCH was
     attempted; an admitted stale latest lane candidate is listed as retained.
+    ``creation_attempted`` means only that the create step was recorded (before any ARM
+    response); it is not evidence the revision exists. Existence is shown only by a
+    successful reread (``active`` is a bool); otherwise ``active`` is None and, if the
+    reread failed, ``observed`` is False.
     """
     stage = receipt.get("stage")
     if arm is None or not stage:
@@ -1525,7 +1529,7 @@ def lane_revisions(arm: Arm | None, receipt: dict) -> list[dict]:
         if not isinstance(name, str):
             continue
         row: dict[str, Any] = {"name": name, "role": role,
-                               "created_by_run": role == "candidate" and created, "active": None}
+                               "creation_attempted": role == "candidate" and created, "active": None}
         if role == "stale-latest" or created:
             try:
                 rev = arm.get(f"{app_id}/revisions/{name}", phase="inventory")
