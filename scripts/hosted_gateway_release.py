@@ -502,10 +502,17 @@ def env_value(revision: dict, name: str) -> Any:
     containers = ((revision.get("properties") or {}).get("template") or {}).get("containers") or []
     if len(containers) != 1:
         return ...
-    for item in containers[0].get("env") or []:
-        if item.get("name", "").upper() == name:
-            return item if set(item) != {"name", "value"} else item["value"]
-    return None
+    items = containers[0].get("env") or []
+    if not isinstance(items, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in items):
+        return ...
+    matches = [item for item in items if item["name"].upper() == name]
+    if not matches:
+        return None
+    if (len(matches) != 1 or set(matches[0]) != {"name", "value"}
+            or not isinstance(matches[0]["value"], str)):
+        return ...
+    return matches[0]["value"]
 
 
 def gateway_off_release(revision: dict) -> bool:

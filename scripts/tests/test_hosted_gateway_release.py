@@ -576,6 +576,21 @@ class RollbackTests(ReleaseFlowBase):
         with self.assertRaisesRegex(release.Refused, "rollback-target"):
             runner.rollback(R0)
 
+    def test_rollback_rejects_ambiguous_gateway_flags(self):
+        cases = [
+            [{"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "false"},
+             {"name": "ai4ia_shared_gateway_enabled", "value": "true"}],
+            [{"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": None}],
+            [{"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "secretRef": "unknown"}],
+            [{"name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST", "value": None}],
+        ]
+        for entries in cases:
+            arm = FakeArm(image=release.IMAGES["api"], extra_env=entries)
+            runner, _ = self.run_stage(arm, stage="rollback-api")
+            with self.subTest(entries=entries), self.assertRaisesRegex(release.Refused, "rollback-target"):
+                runner.rollback(R0)
+            self.assertEqual(arm.writes, 0)
+
     def test_rollback_moves_traffic_to_r1(self):
         arm = FakeArm(image=release.IMAGES["api"])
         r2 = APP + "--c3-r2"
