@@ -205,13 +205,19 @@ def _url_parts(url: str, hosts: set[str]) -> tuple[str, str]:
     return p.hostname, (p.path or "/") + ("?" + p.query if p.query else "")
 
 
+def tls_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def http_request(method: str, url: str, *, hosts: set[str], headers: dict[str, str] | None = None,
                  body: bytes | None = None, limit: int = MAX_BODY, timeout: float = 30,
                  phase: str = "arm") -> tuple[int, dict[str, str], bytes]:
     """Direct TLS request: no proxy, no redirect, identity encoding, bounded body."""
     host, target = _url_parts(url, hosts)
     conn = http.client.HTTPSConnection(host, 443, timeout=timeout,
-                                       context=ssl.create_default_context())
+                                       context=tls_context())
     try:
         conn.request(method, target, body=body,
                      headers={**(headers or {}), "Accept-Encoding": "identity"})
@@ -923,7 +929,7 @@ def run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[b
     if connect is None:
         def connect(h):
             raw = socket.create_connection((h, 443), timeout=30)
-            return ssl.create_default_context().wrap_socket(raw, server_hostname=h)
+            return tls_context().wrap_socket(raw, server_hostname=h)
     sock = connect(host)
     try:
         sock.settimeout(30)
