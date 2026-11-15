@@ -10,8 +10,9 @@ Inspector makes those choices visible; the API enforces them.
 1. Open your environment's web app and sign in with Microsoft Entra ID.
    Local development may instead use a configured development identity.
 2. Start a conversation with **New chat**, or reopen one from the sidebar. The
-   sidebar groups conversations by how recently they changed and offers a search
-   field once the list is long. Its panel button collapses it to a slim rail.
+   sidebar puts **Chat**, **Decisions** (when available), and **Studio** first,
+   followed by conversations grouped by recency. A search field appears once the
+   list is long. Its panel button collapses it to a slim rail.
 3. Open the Conversation Inspector with the settings button in the conversation
    header, or select the model name there to go straight to its controls.
    **Setup** controls the model, instructions, agent, tools, and voice;
@@ -19,12 +20,22 @@ Inspector makes those choices visible; the API enforces them.
    consumption.
 4. Describe the outcome you need and attach or select only the relevant sources.
 
-**Document library**, **Photo avatars**, **Agents & workflows** and **Settings**
-open as pages in the same workspace. The browser's back button returns to the
+**Settings & more** at the foot of the sidebar holds **Document library**,
+**Photo avatars**, **Settings**, deletion status, documentation, deployment status,
+and account/admin actions when offered. **Workflow approvals** stays beside it,
+including its pending-count badge. On the collapsed rail, **Settings & more**
+expands the sidebar with those actions open. **Usage** remains in the Conversation
+Inspector, not a second sidebar destination.
+
+**Studio** opens **Agents & workflows**. It, **Decisions**, the resource pages and
+**Settings** open in the same workspace. The browser's back button returns to the
 conversation, and a live voice session keeps running in a small player while a
 page is open. **Settings** holds appearance and accessibility options, deletion
 status, and links to help. On a phone, the menu button opens the sidebar and the
-inspector opens over the conversation.
+inspector opens over the conversation. The whole sidebar scrolls on short screens
+or with enlarged text, so history and utilities stay reachable. **Escape** inside
+the expanded utilities closes just that section and returns focus to
+**Settings & more**; another Escape closes a phone drawer.
 
 Features vary by deployment. A hidden control can mean the operator disabled the
 capability or the selected model cannot use it; it is not a permission you can
@@ -170,15 +181,22 @@ read-only, non-recursive, and compatible with that execution path.
 
 ### Decision playground
 
-Open **Agents & workflows**, then **Decisions** to try Microsoft Decision 1
-(Preview). This is a separate typed-decision capability, not a chat model,
+Open **Decisions** in the sidebar (or the navigation menu on a phone) to try
+Microsoft Decision 1 (Preview). This is a separate typed-decision capability, not a chat model,
 agent, workflow or explanation generator.
+
+If availability cannot be checked, the sidebar says so and offers **Retry Decision
+availability**, rather than treating a failed read as a disabled feature. The
+`#/decisions` link also opens the playground's own availability and reload states.
 
 Enter text, or choose **JSON (parsed)** to evaluate a JSON value. Add uniquely
 named questions and their instructions. **Yes/no** returns the probability that
 the condition holds; its optional criteria define both yes and no. **Choice**
 uses named options with descriptions. **Score** uses ordered labels, lowest
 first: a three-level scale is 0 through 2, and its result can be fractional.
+Changing answer type retains your options. If a Choice has more than ten
+options, Score asks you to remove the excess before running; switch back to
+Choice to keep them all.
 **Load synthetic example** fills an editable demo without making a model call.
 
 Availability loading waits at most 20 seconds, including sign-in token
@@ -190,7 +208,9 @@ availability does not send a model call or discard your question/input drafts.
 Only **Run decision** sends a call. Editing and duplicate submissions are blocked
 while it runs; **Cancel run** stops waiting and cancels the outbound request where
 possible, but already accepted work may still be billed. There is no automatic
-retry. A rate-limit error shows a bounded provider retry delay when supplied,
+retry. Cancellation unlocks the form even if sign-in, fetch or a response-body
+read is still pending; late completion cannot replace a later explicit run.
+A rate-limit error shows a bounded provider retry delay when supplied,
 but only another explicit Run can retry. Errors never become an empty successful result. Changing a field clears
 the previous result. Leaving the tab discards its transient input and results.
 
@@ -216,6 +236,45 @@ rejects duplicate keys, nonfinite numbers, null input, more than 16 nested level
 or 4,096 values. Availability and execution both honor catalog enablement,
 authenticated model policy and processing residency. A US-only deployment is
 unavailable under EU-only policy; it is never silently rerouted.
+
+#### Try Decisions locally without a model call
+
+From the repository root, with Node 22 and Python 3.12, restore the normal
+development dependencies, build the web app, and install the optional browser
+runner outside the repository:
+
+```powershell
+uv sync --project app\api --frozen --extra dev
+npm ci --prefix app\web
+npm run build --prefix app\web
+npm install --prefix "$env:TEMP\ai4ia-decision-browser" --no-save playwright@1.64.1
+$env:AI4IA_PLAYWRIGHT_MODULE = "$env:TEMP\ai4ia-decision-browser\node_modules\playwright"
+node "$env:AI4IA_PLAYWRIGHT_MODULE\cli.js" install chromium
+npm run test:decisions-browser --prefix app\web
+```
+
+The runner starts and stops its own loopback-only Next.js and FastAPI servers.
+It checks `#/decisions`, real options loading, text and parsed-JSON runs with all
+three answer types, a visible upstream failure and explicit recovery. It also
+intercepts options responses to check unavailable/error/reload states. The
+cancel check stalls one browser POST without sending it, verifies that Cancel
+unlocks the form, then checks a real explicit run and ignores the stale completion.
+The browser, same-origin proxy, API validation, catalog admission, native Decision
+adapter and in-memory usage are real; only the native model HTTP transport is a
+deterministic fixture. No Azure credentials, cloud access or billing are involved.
+The fixture ignores workstation API configuration and refuses non-loopback
+connections. It is under API `tests`, never a production feature flag or route.
+
+For hands-on testing, run the same command with `-- --interactive`. After the
+checks pass, an offline browser and Playwright Inspector remain open: use
+**Load synthetic example**, edit questions and **Run decision**. Enter the exact
+text `fixture:upstream-error` in Text mode for a visible failure, then replace it
+and run again. Click **Resume** in the Inspector to finish. If using installed Edge,
+set `$env:AI4IA_BROWSER_CHANNEL = "msedge"` instead of installing Chromium.
+`AI4IA_TEST_PYTHON` can point to another prepared API virtual environment.
+These synthetic answers prove integration, not model quality or a live deployment.
+A live test still needs separately approved authenticated access, an eligible
+Microsoft-Decision-1 deployment and authorization for a potentially billable Run.
 
 ### Reviewed shared agents and workflows
 

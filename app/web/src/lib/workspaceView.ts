@@ -1,15 +1,16 @@
 // Which workspace surface is on screen. The conversation is the default; the
 // destinations (document library, photo avatars, the agents & workflows studio,
-// settings) are pages in the same shell, addressed by the URL hash so the
+// Decisions, settings) are pages in the same shell, addressed by the URL hash so the
 // browser's back/forward buttons and deep links work without a route change
 // that would unmount the conversation (and any live voice session) behind them.
 
-export type WorkspaceView = "chat" | "library" | "avatars" | "studio" | "settings";
+export type WorkspaceView = "chat" | "library" | "avatars" | "studio" | "decisions" | "settings";
 
 const VIEW_SLUGS: Record<Exclude<WorkspaceView, "chat">, string> = {
   library: "library",
   avatars: "avatars",
   studio: "studio",
+  decisions: "decisions",
   settings: "settings",
 };
 
@@ -30,5 +31,6 @@ export const VIEW_TITLES: Record<WorkspaceView, string> = {
   library: "Document library",
   avatars: "Photo avatars",
   studio: "Agents & workflows",
+  decisions: "Decisions",
   settings: "Settings",
 };
