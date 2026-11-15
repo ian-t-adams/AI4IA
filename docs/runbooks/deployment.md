@@ -2777,7 +2777,14 @@ a retained inert placeholder is never functional acceptance.
 CLI writes no cloud state; the explicit `--azd-env` preprovision hook stores only
 validated nonsecret target/image values in local azd state. It refuses incomplete
 inventory, unapproved/mismatched PE/DNS, different identity/account, unsettled
-images, active/terminating legacy workers or public DNS. It bounds reads to
+images, active/terminating legacy workers or public DNS. The private VNet must
+keep exactly its reviewed prefix. It must also have no peerings unless the
+release-mode `deployment_operation` validation selects an authorized
+registry-only `private-image` or `private-pair` operation for a completed,
+unblocked cutover; those peerings must be well-formed and point to another VNet.
+Provisioning, deployment, `--azd-env` hooks and every other operation still
+refuse a peered VNet. This tolerance is read-only and does not validate gateway
+peering health. It bounds reads to
 64 calls, a 120-second admission budget and 45 seconds/512 KiB per CLI result;
 each call's timeout also respects the remaining overall deadline. Legacy
 inventory uses the raw `2024-10-02-preview` revisions endpoint with `pageSize=20`,
