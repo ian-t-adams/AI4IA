@@ -23,6 +23,30 @@ C3_CLASSIFIED_MANIFESTS = {
 }
 C3_SIDECAR_SHA256 = "f73a55378dbe418e92ca4ea3d0bc8e30ef6ae09778f3aebddc3525e5b571ecc4"
 C3_QUALIFIED_LOADER_SHA256 = "cd89beaffe81acb0dd344ddd8a81d1a0c78e890e"
+C3_MANIFEST_SECRET = "shared-gateway-activation-manifest"
+C3_SELECTOR = "AI4IA_SHARED_GATEWAY_ENABLED"
+C3_DEPLOYMENTS = "AI4IA_SHARED_GATEWAY_DEPLOYMENTS"
+C3_MANIFEST = "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST"
+# Literal R2 env entries passed to the API's own Settings validators; anything
+# else is never read by validate_shared_gateway/validate_shared_gateway_catalog.
+C3_RUNTIME_FIELDS = {
+    "AI4IA_ENV": "env",
+    "AI4IA_AUTH_PROVIDER": "auth_provider",
+    "AI4IA_CHAT_PILOT_ISOLATION_ENABLED": "chat_pilot_isolation_enabled",
+    C3_SELECTOR: "shared_gateway_enabled",
+    "AI4IA_SHARED_GATEWAY_CLAUDE_MESSAGES_ENABLED": "shared_gateway_claude_messages_enabled",
+    "AI4IA_SHARED_GATEWAY_VIDEO_JOBS_ENABLED": "shared_gateway_video_jobs_enabled",
+    C3_MANIFEST: "shared_gateway_activation_manifest",
+    C3_DEPLOYMENTS: "shared_gateway_deployments",
+    "AZURE_CLIENT_ID": "AZURE_CLIENT_ID",
+    "AI4IA_DATA_RESIDENCY": "data_residency",
+    "AI4IA_CLAUDE_ENABLED": "claude_enabled",
+    "AI4IA_CLAUDE_EXTERNAL_ENABLED": "claude_external_enabled",
+    "AI4IA_CLAUDE_GATEWAY_ENABLED": "claude_gateway_enabled",
+}
+# The container's catalog path cannot be checked against local bytes.
+C3_FORBIDDEN_ENV = frozenset({"AI4IA_MODEL_CATALOG_PATH"})
+C3_DEPLOYMENT_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -88,6 +112,15 @@ def load_c3_contract(
     manifest_bytes: bytes, sidecar_bytes: bytes, api_identity_client_id: str,
 ) -> tuple[str, Any]:
     """Validate the one offline-classified manifest before parsing or embedding it."""
+    raw_manifest, manifest, _ = _load_c3_contract(
+        manifest_bytes, sidecar_bytes, api_identity_client_id,
+    )
+    return raw_manifest, manifest
+
+
+def _load_c3_contract(
+    manifest_bytes: bytes, sidecar_bytes: bytes, api_identity_client_id: str,
+) -> tuple[str, Any, ModuleType]:
     manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
     if C3_CLASSIFIED_MANIFESTS.get(manifest_digest) != "nonconfidential-operational":
         raise ValueError("C3 manifest does not match the exact offline classification")
@@ -140,7 +173,85 @@ def load_c3_contract(
         or sidecar.get("baseUrl") != manifest.base_url
     ):
         raise ValueError("C3 manifest or sidecar binding is not qualified for offline construction")
-    return raw_manifest, manifest
+    return raw_manifest, manifest, module
+
+
+def load_c3_deployments(deployments_bytes: bytes, expected_sha256: str) -> str:
+    """Return the separately reviewed opt-in list only when its exact bytes match."""
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or "") is None:
+        raise ValueError("C3 deployment opt-in digest must be 64 lowercase hex characters")
+    if hashlib.sha256(deployments_bytes).hexdigest() != expected_sha256:
+        raise ValueError("C3 deployment opt-in bytes do not match the reviewed digest")
+    try:
+        value = deployments_bytes.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("C3 deployment opt-in list must be ASCII") from exc
+    if (
+        len(value) > 4096
+        or re.fullmatch(rf"{C3_DEPLOYMENT_NAME}(?:,{C3_DEPLOYMENT_NAME})*", value) is None
+    ):
+        raise ValueError(
+            "C3 deployment opt-in list must be comma-separated deployment names "
+            "without whitespace or a trailing newline"
+        )
+    names = value.split(",")
+    if len({name.casefold() for name in names}) != len(names):
+        raise ValueError("C3 deployment opt-in list is ambiguous")
+    return value
+
+
+def validate_c3_runtime(env: list[dict[str, Any]], contract_module: ModuleType) -> None:
+    """Run the API's own startup gateway validators against the literal R2 env.
+
+    The digest-checked loader module is bound as ``ai4ia_api.shared_gateway_contract``
+    for the duration, so the validators never import a cached or re-read loader.
+    """
+    kwargs: dict[str, str] = {}
+    for item in env:
+        key = item["name"].upper()
+        if key in C3_FORBIDDEN_ENV:
+            raise ValueError(f"C3 cannot validate a revision that sets {key}")
+        if key not in C3_RUNTIME_FIELDS:
+            continue
+        if (
+            item["name"] != key or set(item) != {"name", "value"}
+            or not isinstance(item["value"], str)
+        ):
+            raise ValueError(f"C3 runtime validation requires {key} as an exact literal")
+        kwargs[C3_RUNTIME_FIELDS[key]] = item["value"]
+
+    source = str(ROOT / "app" / "api" / "src")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    contract_name = "ai4ia_api.shared_gateway_contract"
+    missing = object()
+    previous = sys.modules.get(contract_name, missing)
+    sys.modules[contract_name] = contract_module
+    try:
+        from ai4ia_api import catalog as runtime_catalog
+        from ai4ia_api.config import Settings
+
+        class C3Settings(Settings):
+            @classmethod
+            def settings_customise_sources(cls, settings_cls, init_settings, **_sources):
+                return (init_settings,)
+
+        runtime_catalog.load_catalog.cache_clear()
+        try:
+            settings = C3Settings(**kwargs)
+            settings.validate_shared_gateway()
+            settings.validate_shared_gateway_catalog()
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise ValueError(
+                "C3 revision is rejected by the API shared gateway startup validators"
+            ) from exc
+        finally:
+            runtime_catalog.load_catalog.cache_clear()
+    finally:
+        if previous is missing:
+            sys.modules.pop(contract_name, None)
+        else:
+            sys.modules[contract_name] = previous
 
 
 def build_payload(
@@ -156,6 +267,8 @@ def build_payload(
     existing_revisions: dict[str, Any] | None = None,
     manifest_bytes: bytes | None = None,
     classification_sidecar_bytes: bytes | None = None,
+    deployments_bytes: bytes | None = None,
+    deployments_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Require a quiescent R0 snapshot, then pin it in the same request."""
     if stage not in ("C1", "C2", "C3"):
@@ -168,6 +281,7 @@ def build_payload(
         raise ValueError("web service supports only C1 and C2 staging")
     if stage != "C3" and (
         manifest_bytes is not None or classification_sidecar_bytes is not None
+        or deployments_bytes is not None or deployments_sha256 is not None
     ):
         raise ValueError("manifest inputs are accepted only for C3")
     if (
@@ -252,8 +366,12 @@ def build_payload(
         if (
             api_image or web_image or existing_revisions is None
             or manifest_bytes is None or classification_sidecar_bytes is None
+            or deployments_bytes is None or deployments_sha256 is None
         ):
-            raise ValueError("C3 requires only its exact manifest, sidecar, suffix and revision rows")
+            raise ValueError(
+                "C3 requires only its exact manifest, sidecar, reviewed deployment list, "
+                "suffix and revision rows"
+            )
         validate_revision_rows(existing_revisions, app["name"], r0, suffix)
         env = template["containers"][0].get("env", [])
         if not isinstance(env, list) or any(
@@ -262,7 +380,7 @@ def build_payload(
         ):
             raise ValueError("C3 environment is malformed")
         names = [item["name"] for item in env]
-        if len(set(names)) != len(names):
+        if len({name.upper() for name in names}) != len(names):
             raise ValueError("duplicate environment variable")
         by_name = {item["name"]: item for item in env}
         identity = by_name.get("AZURE_CLIENT_ID")
@@ -271,49 +389,33 @@ def build_payload(
             or not isinstance(identity["value"], str)
         ):
             raise ValueError("C3 requires one literal API managed identity client ID")
-        shared_enabled = by_name.get("AI4IA_SHARED_GATEWAY_ENABLED")
-        if (
-            shared_enabled is None or set(shared_enabled) != {"name", "value"}
-            or shared_enabled["value"] != "false"
-        ):
-            raise ValueError("C3 requires the selector to be a literal false value")
+        # R1-OFF is C2's unchanged output: selector absent or literal false, and no
+        # opt-in list or manifest reference yet.
+        require_disabled(C3_SELECTOR)
         pilot = by_name.get("AI4IA_CHAT_PILOT_ISOLATION_ENABLED")
         if pilot is not None and (
             set(pilot) != {"name", "value"} or pilot["value"] != "false"
         ):
             raise ValueError("C3 requires chat pilot isolation to remain disabled")
-        deployment_opt_in = by_name.get("AI4IA_SHARED_GATEWAY_DEPLOYMENTS")
-        if (
-            deployment_opt_in is None
-            or set(deployment_opt_in) != {"name", "value"}
-            or not isinstance(deployment_opt_in["value"], str)
-        ):
-            raise ValueError("C3 requires an explicit literal deployment opt-in list")
-        deployments = tuple(
-            item.strip() for item in deployment_opt_in["value"].split(",")
-        )
-        if (
-            not deployments or any(not item for item in deployments)
-            or len(set(deployments)) != len(deployments)
-        ):
-            raise ValueError("C3 deployment opt-in list is empty or ambiguous")
-        raw_manifest, manifest = load_c3_contract(
+        if any(
+            name.upper() in (C3_DEPLOYMENTS, C3_MANIFEST) for name in names
+        ) or any(item.get("secretRef") == C3_MANIFEST_SECRET for item in env):
+            raise ValueError(
+                "C3 requires the R1-OFF baseline without a deployment opt-in list "
+                "or manifest reference"
+            )
+        deployments = load_c3_deployments(deployments_bytes, deployments_sha256)
+        raw_manifest, _, contract_module = _load_c3_contract(
             manifest_bytes, classification_sidecar_bytes, identity["value"],
         )
-        if manifest.unresolved_opt_ins(deployments):
-            raise ValueError("C3 deployment opt-in list is not resolved by the manifest")
-        shared_enabled["value"] = "true"
-        manifest_env = by_name.get("AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST")
-        if (
-            manifest_env is None or set(manifest_env) != {"name", "secretRef"}
-            or manifest_env["secretRef"] != "shared-gateway-activation-manifest"
-        ):
-            raise ValueError("C3 requires the exact existing manifest secret reference")
-        manifest_index = names.index("AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST")
-        env[manifest_index] = {
-            "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
-            "value": raw_manifest,
-        }
+        selector = {"name": C3_SELECTOR, "value": "true"}
+        if C3_SELECTOR in by_name:
+            env[names.index(C3_SELECTOR)] = selector
+        else:
+            env.append(selector)
+        env.append({"name": C3_DEPLOYMENTS, "value": deployments})
+        env.append({"name": C3_MANIFEST, "value": raw_manifest})
+        validate_c3_runtime(env, contract_module)
         template["containers"][0]["env"] = env
         payload["properties"]["template"] = template
         return payload
@@ -377,6 +479,14 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--classification-sidecar", type=Path)
     parser.add_argument(
+        "--deployments", type=Path,
+        help="C3 only: exact reviewed AI4IA_SHARED_GATEWAY_DEPLOYMENTS value bytes",
+    )
+    parser.add_argument(
+        "--deployments-sha256",
+        help="C3 only: separately reviewed SHA-256 of the --deployments bytes",
+    )
+    parser.add_argument(
         "--existing-revisions", type=Path,
         help="JSON rows from private_revision_rows; this offline helper cannot prove pagination completeness",
     )
@@ -387,14 +497,19 @@ def main() -> int:
             args.manifest is None or args.classification_sidecar is None
         ):
             raise ValueError(C3_BLOCKER)
+        if args.stage == "C3" and (
+            args.deployments is None or args.deployments_sha256 is None
+        ):
+            raise ValueError("C3 requires the reviewed deployment list and its digest")
         if args.stage != "C3" and (
             args.manifest is not None or args.classification_sidecar is not None
+            or args.deployments is not None or args.deployments_sha256 is not None
         ):
             raise ValueError("manifest inputs are accepted only for C3")
         private_paths = [
             path for path in (
                 args.app, args.revision, args.existing_revisions,
-                args.manifest, args.classification_sidecar, args.output,
+                args.manifest, args.classification_sidecar, args.deployments, args.output,
             )
             if path is not None
         ]
@@ -420,6 +535,8 @@ def main() -> int:
                 args.classification_sidecar.read_bytes()
                 if args.classification_sidecar else None
             ),
+            deployments_bytes=args.deployments.read_bytes() if args.deployments else None,
+            deployments_sha256=args.deployments_sha256,
         )
         with args.output.open("x", encoding="utf-8") as output:
             json.dump(payload, output, indent=2)

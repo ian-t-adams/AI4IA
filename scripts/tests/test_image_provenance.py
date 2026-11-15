@@ -270,6 +270,9 @@ if tool == "trivy":
         if os.environ.get("FAKE_FAILURE") == "vulnerability:" + service:
             fail("sensitive-stub-diagnostic")
         Path(args[args.index("--output") + 1]).write_text('{"Results":[]}', encoding="utf-8")
+        if os.environ.get("FAKE_FAILURE") == "findings:" + service:
+            # Real Trivy writes the full report and only then exits with --exit-code.
+            raise SystemExit(1)
         raise SystemExit(0)
     if args[:6] != ["image", "--image-src", "remote", "--format", "spdx-json", "--list-all-pkgs"]:
         fail("scanner must read registry bytes as SPDX")
@@ -801,6 +804,26 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("private_api_web_receipt", outputs)
         self.assertIsNone(proof)
+
+    def test_private_pair_scans_both_images_before_failing_on_either(self):
+        for failure in ("findings:web", "vulnerability:web", "findings:api", "vulnerability:api"):
+            with self.subTest(failure=failure):
+                result, calls, outputs, proof = self.flow(
+                    private_api=True, private_api_kind="private-pair",
+                    overrides={"FAKE_FAILURE": failure},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                scans = [call["args"][-1] for call in calls
+                         if call["tool"] == "trivy" and "--scanners" in call["args"]]
+                self.assertEqual(scans, [IMAGES["web"], IMAGES["api"]])
+                self.assertFalse([call for call in calls if call["tool"] == "trivy"
+                                  and "spdx-json" in call["args"]])
+                service = failure.split(":")[1]
+                self.assertIn(f"{service} image vulnerability scan failed", result.stdout)
+                if failure.startswith("vulnerability:"):
+                    self.assertIn(f"{service} image vulnerability report was not produced", result.stdout)
+                self.assertNotIn("private_api_web_receipt", outputs)
+                self.assertIsNone(proof)
 
     def test_each_subject_and_predicate_mismatch_denies_before_any_deploy(self):
         for kind in ("provenance", "sbom"):

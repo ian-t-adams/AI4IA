@@ -362,9 +362,10 @@ row shape, duplicate/candidate names, and a timezone-aware caller-supplied
 timestamp within its 120-second window. It cannot authenticate that the rows
 came from the collector or prove pagination completeness or freshness. It does
 not accept a caller-authored `complete=true` claim or follow `nextLink` values.
-C3 construction is explicitly refused until the exact production manifest is
-independently classified as nonconfidential; schema validation alone is not
-classification, and no production manifest was read. No C1/C2/C3 apply consumer
+C3 accepts only the separately classified manifest digest and C2's R1-OFF
+baseline; it adds the selector, a hash-bound reviewed `--deployments` list and the
+manifest literal, then runs the API shared-gateway validators. Schema validation
+alone is not classification. No C1/C2/C3 apply consumer
 exists, so helper output is not sent to Azure. Any future approved apply path
 must re-read with the existing collector, independently bind any approved
 manifest contract, and rebind the exact app/revision snapshot immediately before

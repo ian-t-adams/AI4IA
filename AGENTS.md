@@ -746,10 +746,11 @@ pagination completeness or provenance; do not treat its output as authority to
 send a PATCH.
 Any future apply path must re-read through the existing collector and bind that
 result with the live app/revision snapshot immediately before dispatch.
-The C3 literal-manifest path remains blocked until an authorized owner classifies
-the exact production manifest as nonconfidential; schema validation alone is not
-classification. The 2.2.0 loader fixes `auth.credential` to `managed-identity`
-and rejects unknown keys, but no production manifest has been read or classified.
+C3 is offline-only for the separately classified manifest digest; schema
+validation alone is not classification. It starts from C2's R1-OFF baseline,
+adds the selector, a hash-bound reviewed `--deployments` list and the manifest
+literal, and must pass the API shared-gateway validators; never hardcode the
+deployment list.
 Snapshots and payloads may contain sensitive environment values: never log,
 commit, or place them in chat or the shared repository. The CLI rejects files
 inside the repository, but that does not establish restricted ACLs or secure
