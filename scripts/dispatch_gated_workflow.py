@@ -13,7 +13,8 @@ This wrapper:
    if it is not.
 
 Every ``gh`` call is bounded (``GH_TIMEOUT_SECONDS``); a timeout or OS error maps to a fixed
-``DispatchError``, so a hung call cannot hold the gate past the bind/run deadlines. Deleting the
+``DispatchError``. Calls and cleanup can overrun the bind/run deadlines, and failed cleanup
+can leave the gate set; absence is claimed only after a successful reread. Deleting the
 gate after a timeout, error or interrupt does NOT prove the dispatched run stopped: the bound run
 ID is logged and reported so the operator can inspect it. There are no added retries beyond the
 bounded cleanup, no auto-cancel and no new credentials.
