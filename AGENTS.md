@@ -451,7 +451,7 @@ are separate gates described below; base-index drift remains read-only.
 ### Base image pins
 
 `app/web/Dockerfile` and `app/api/Dockerfile` pin their bases as
-`FROM node:22-alpine@sha256:...` / `FROM python:3.12-slim@sha256:...` — the tag for
+`FROM node:22-alpine@sha256:...` / `FROM python:3.12-alpine@sha256:...` — the tag for
 humans and Dependabot, the digest for enforcement. Without the digest, a PR build
 and a later `azd deploy` can resolve the same tag to different images with no diff
 anywhere. The MAJOR(.MINOR) must track the CI version deliberately;

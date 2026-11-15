@@ -3,7 +3,7 @@
 # the package by scripts/gen-model-catalog.py before build.
 #
 # ---------------------------------------------------------------------------
-# Base image is pinned to an immutable DIGEST, not just the moving `3.12-slim`
+# Base image is pinned to an immutable DIGEST, not just the moving `3.12-alpine`
 # tag (audit finding P1-7). A tag is a mutable pointer: docker-build.yml
 # resolves it when the PR runs and `azd deploy` resolves it again later, so the
 # image CI proved and the image production runs can be different builds of
@@ -18,17 +18,17 @@
 # Do NOT assume the digest keeps itself fresh. dependabot-core suppresses a
 # digest-only refresh of an UNCHANGED comparable tag behind the server-side
 # `docker_digest_only_update_suppression` experiment, whose state is not
-# observable from this repo -- and `3.12-slim` is a floating tag whose NAME
+# observable from this repo -- and `3.12-alpine` is a floating tag whose NAME
 # never changes, so if that experiment is on, no PR is ever opened here.
 # Treat refreshing this digest as a manual audit step.
 #
-# Reviewed 2026-09-09: sha256:78387bc3... is the Python 3.12-slim OCI index
-# observed by scripts/check-base-image-drift.py at 23:16:00Z. Raw-body SHA-256
-# and the registry header agree; eight runnable platforms include linux/amd64,
-# arm64/v8, 386, arm/v5, arm/v7, ppc64le, riscv64 and s390x.
+# Reviewed 2026-11-15: sha256:c5ba3dee... is the official Python 3.12.16 /
+# Alpine 3.24 OCI index. Raw-body SHA-256 and the registry header agree.
+# Debian slim's unfixed HIGH findings require a distro change, not an exclusion.
+# APK updates below remain inventoried; the final-image scan is authoritative.
 #
 # To refresh:
-#   docker buildx imagetools inspect python:3.12-slim --format '{{json .Manifest.Digest}}'
+#   docker buildx imagetools inspect python:3.12-alpine --format '{{json .Manifest.Digest}}'
 #
 # That prints the MANIFEST LIST (OCI image index) digest, which is the only
 # correct value here -- verified: for this tag it returns exactly the digest
@@ -62,7 +62,14 @@
 # Production warning reports prompted the review, but the audit did not
 # establish that Python 3.14 caused those warnings.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS base
+FROM python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS base
+
+# Preserve native C++ wheel dependencies and the system TZif workflow contract.
+# Upgrade the base's fixable krb5-libs findings without deleting its APK inventory.
+RUN apk add --no-cache \
+    krb5-libs=1.22.3-r0 \
+    libstdc++=15.2.0-r5 \
+    tzdata=2026f-r0
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -88,7 +95,7 @@ RUN python -m pip install "uv==${UV_VERSION}"
 # a missing lock also fails COPY. Neither path may regenerate the committed lock.
 COPY pyproject.toml uv.lock README.md ./
 RUN uv lock --check --offline \
-    && uv sync --frozen --no-dev --no-default-groups --no-install-project
+    && uv sync --frozen --no-dev --no-default-groups --no-install-project --no-build
 
 COPY src ./src
 RUN uv sync --frozen --no-dev --no-default-groups --no-editable
@@ -103,7 +110,7 @@ COPY --from=build /opt/venv /opt/venv
 EXPOSE 8080
 
 # Non-root runtime.
-RUN useradd --create-home --uid 10001 appuser
+RUN adduser -D -u 10001 appuser
 USER appuser
 
-CMD ["sh", "-c", "uvicorn ai4ia_api.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "exec uvicorn ai4ia_api.main:app --host 0.0.0.0 --port ${PORT}"]
