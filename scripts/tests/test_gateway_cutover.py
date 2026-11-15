@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,10 @@ from scripts.tests._loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
 CUTOVER = load_script("gateway_cutover", ROOT / "scripts" / "prepare-gateway-cutover.py")
+if str(ROOT / "app" / "api" / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "app" / "api" / "src"))
+from ai4ia_api import catalog as runtime_catalog  # noqa: E402
+
 RESOURCE = (
     "/subscriptions/00000000-0000-0000-0000-000000000001"
     "/resourceGroups/synthetic/providers/Microsoft.App/containerApps/api"
@@ -75,6 +80,37 @@ def pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes):
             CUTOVER, "C3_SIDECAR_SHA256", hashlib.sha256(sidecar_bytes).hexdigest(),
         ),
     )
+
+
+C3_DEPLOYMENTS = b"example-chat-deployment"
+
+
+def synthetic_runtime_catalog(directory, *, category="chat", sku="GlobalStandard"):
+    """Packaged-catalog stand-in so C3 exercises the API's real catalog validator."""
+    path = Path(directory) / "model_catalog.json"
+    path.write_text(json.dumps({"models": [{
+        "id": "example-chat-model", "displayName": "Example chat", "category": category,
+        "format": "OpenAI", "options": [{
+            "region": "eastus2", "sku": sku, "deploymentName": "example-chat-deployment",
+        }],
+    }]}), encoding="utf-8")
+    return patch.object(runtime_catalog, "_PACKAGED", path)
+
+
+def c3_snapshot(*, selector=True, extra_env=()):
+    """C2's unchanged R1-OFF output: no opt-in list and no manifest reference."""
+    app, revision = snapshot("Multiple")
+    env = app["properties"]["template"]["containers"][0]["env"]
+    if not selector:
+        env[:] = [item for item in env if item["name"] != "AI4IA_SHARED_GATEWAY_ENABLED"]
+    env.extend([
+        {"name": "AI4IA_ENV", "value": "prod"},
+        {"name": "AI4IA_AUTH_PROVIDER", "value": "entra"},
+        {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "false"},
+        *copy.deepcopy(list(extra_env)),
+    ])
+    revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(env)
+    return app, revision
 
 
 def snapshot(mode="Single", service="api"):
@@ -187,6 +223,22 @@ def revision_inventory(names, *, observed_at=None, active_name="api--r0"):
 class CutoverTests(unittest.TestCase):
     def build(self, app, revision, **kwargs):
         return CUTOVER.build_payload(app, revision, resource_id=app["id"], **kwargs)
+
+    def build_c3(
+        self, app, revision, *, inputs=None, deployments=C3_DEPLOYMENTS, digest=None,
+        category="chat", sku="GlobalStandard",
+    ):
+        manifest_bytes, sidecar_bytes = inputs or synthetic_c3_inputs()
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        with tempfile.TemporaryDirectory() as directory, patches[0], patches[1], \
+                synthetic_runtime_catalog(directory, category=category, sku=sku):
+            return self.build(
+                app, revision, stage="C3", suffix="gateway-on-1",
+                existing_revisions=revision_inventory(["api--r0", "api--old"]),
+                manifest_bytes=manifest_bytes, classification_sidecar_bytes=sidecar_bytes,
+                deployments_bytes=deployments,
+                deployments_sha256=digest or hashlib.sha256(deployments).hexdigest(),
+            )
 
     def test_c1_single_request_preserves_everything_except_mode_and_traffic(self):
         app, revision = snapshot()
@@ -558,67 +610,169 @@ class CutoverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.build(app, revision, stage="C1")
 
-    def test_c3_uses_exact_classified_manifest_and_preserves_every_other_field(self):
-        app, revision = snapshot("Multiple")
-        for value in (app["properties"]["template"], revision["properties"]["template"]):
-            value["containers"][0]["env"].extend([
-                {
-                    "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
-                    "secretRef": "shared-gateway-activation-manifest",
-                },
-                {
-                    "name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS",
-                    "value": "example-chat-deployment",
-                },
-                {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "false"},
-            ])
+    def test_c3_adds_exactly_three_literals_to_r1_off_and_preserves_every_other_field(self):
         manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
-        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
-        original_app = copy.deepcopy(app)
-        original_template = copy.deepcopy(revision["properties"]["template"])
-        rows = revision_inventory(["api--r0", "api--old"])
-        with patches[0], patches[1]:
-            payload = self.build(
-                app, revision, stage="C3", suffix="gateway-on-1",
-                existing_revisions=rows, manifest_bytes=manifest_bytes,
-                classification_sidecar_bytes=sidecar_bytes,
+        for selector in (True, False):
+            app, revision = c3_snapshot(selector=selector)
+            original_app = copy.deepcopy(app)
+            original_template = copy.deepcopy(revision["properties"]["template"])
+            payload = self.build_c3(app, revision, inputs=(manifest_bytes, sidecar_bytes))
+
+            self.assertEqual(app, original_app)
+            self.assertEqual(set(payload["properties"]), {"configuration", "template"})
+            self.assertEqual(payload["properties"]["configuration"], {
+                "activeRevisionsMode": "Multiple",
+                "ingress": {"traffic": [{"revisionName": "api--r0", "weight": 100}]},
+            })
+            expected = CUTOVER.writable_template_projection(original_template)
+            expected["revisionSuffix"] = "gateway-on-1"
+            env = expected["containers"][0]["env"]
+            enabled = {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "true"}
+            if selector:
+                env[next(
+                    i for i, item in enumerate(env)
+                    if item["name"] == "AI4IA_SHARED_GATEWAY_ENABLED"
+                )] = enabled
+            else:
+                env.append(enabled)
+            env.append({
+                "name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS",
+                "value": C3_DEPLOYMENTS.decode("ascii"),
+            })
+            env.append({
+                "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
+                "value": manifest_bytes.decode("utf-8"),
+            })
+            candidate = payload["properties"]["template"]
+            with self.subTest(selector=selector):
+                self.assertEqual(candidate, expected)
+                self.assertEqual(
+                    candidate["containers"][0]["env"][-1]["value"].encode("utf-8"),
+                    manifest_bytes,
+                )
+                self.assertIn(
+                    {"name": "VOICE_UNCHANGED", "secretRef": "voice"},
+                    candidate["containers"][0]["env"],
+                )
+                self.assertFalse(any(
+                    item.get("secretRef") == "shared-gateway-activation-manifest"
+                    for item in candidate["containers"][0]["env"]
+                ))
+
+    def test_c3_refuses_anything_but_the_r1_off_baseline(self):
+        controls = {
+            "selector-on": c3_snapshot(),
+            "selector-secret": c3_snapshot(selector=False, extra_env=[
+                {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "secretRef": "selector"},
+            ]),
+            "selector-case-variant": c3_snapshot(selector=False, extra_env=[
+                {"name": "ai4ia_shared_gateway_enabled", "value": "false"},
+            ]),
+            "deployments-present": c3_snapshot(extra_env=[
+                {"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"},
+            ]),
+            "deployments-case-variant": c3_snapshot(extra_env=[
+                {"name": "ai4ia_shared_gateway_deployments", "value": "example-chat-deployment"},
+            ]),
+            "manifest-secret-ref": c3_snapshot(extra_env=[{
+                "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
+                "secretRef": "shared-gateway-activation-manifest",
+            }]),
+            "manifest-secret-other-name": c3_snapshot(extra_env=[
+                {"name": "UNRELATED", "secretRef": "shared-gateway-activation-manifest"},
+            ]),
+            "duplicate-case-insensitive": c3_snapshot(extra_env=[
+                {"name": "azure_client_id", "value": API_CLIENT_ID},
+            ]),
+            "catalog-path": c3_snapshot(extra_env=[
+                {"name": "AI4IA_MODEL_CATALOG_PATH", "value": "/tmp/catalog.json"},
+            ]),
+            "runtime-field-secret": c3_snapshot(extra_env=[
+                {"name": "AI4IA_DATA_RESIDENCY", "secretRef": "residency"},
+            ]),
+        }
+        for template in (
+            controls["selector-on"][0]["properties"]["template"],
+            controls["selector-on"][1]["properties"]["template"],
+        ):
+            template["containers"][0]["env"][1]["value"] = "true"
+        pilot = c3_snapshot()
+        for template in (pilot[0]["properties"]["template"], pilot[1]["properties"]["template"]):
+            template["containers"][0]["env"][-1]["value"] = "true"
+        controls["pilot-on"] = pilot
+        local = c3_snapshot()
+        for template in (local[0]["properties"]["template"], local[1]["properties"]["template"]):
+            template["containers"][0]["env"][3]["value"] = "local"
+        controls["local-environment"] = local
+        for control, (app, revision) in controls.items():
+            with self.subTest(control=control), self.assertRaises(ValueError):
+                self.build_c3(app, revision)
+
+    def test_c3_reuses_runtime_catalog_and_manifest_validation(self):
+        for control, kwargs in {
+            "not-in-manifest": {"deployments": b"example-chat-deployment,unlisted"},
+            "not-conversational": {"category": "image"},
+            "sku-not-in-manifest": {"sku": "DataZoneStandard"},
+        }.items():
+            app, revision = c3_snapshot()
+            with self.subTest(control=control), self.assertRaisesRegex(
+                ValueError, "startup validators",
+            ):
+                self.build_c3(app, revision, **kwargs)
+
+    def test_c3_requires_the_exact_reviewed_deployment_bytes(self):
+        controls = {
+            "digest-mismatch": {"digest": "0" * 64},
+            "digest-uppercase": {
+                "digest": hashlib.sha256(C3_DEPLOYMENTS).hexdigest().upper(),
+            },
+            "trailing-newline": {"deployments": C3_DEPLOYMENTS + b"\n"},
+            "whitespace": {"deployments": b"example-chat-deployment, other"},
+            "empty-item": {"deployments": b"example-chat-deployment,"},
+            "duplicate": {"deployments": b"example-chat-deployment,Example-Chat-Deployment"},
+            "non-ascii": {"deployments": "example-chat-deplöyment".encode("utf-8")},
+            "too-long": {"deployments": b",".join([b"a" * 60] * 70)},
+        }
+        for control, kwargs in controls.items():
+            app, revision = c3_snapshot()
+            with self.subTest(control=control), self.assertRaisesRegex(
+                ValueError, "deployment opt-in",
+            ):
+                self.build_c3(app, revision, **kwargs)
+        app, revision = c3_snapshot()
+        with self.assertRaisesRegex(ValueError, "manifest inputs are accepted only for C3"):
+            self.build(
+                app, revision, stage="C1", deployments_bytes=C3_DEPLOYMENTS,
+                deployments_sha256=hashlib.sha256(C3_DEPLOYMENTS).hexdigest(),
             )
 
-        self.assertEqual(app, original_app)
-        self.assertEqual(payload["properties"]["configuration"]["ingress"]["traffic"], [
-            {"revisionName": "api--r0", "weight": 100},
-        ])
-        candidate = payload["properties"]["template"]
-        expected = CUTOVER.writable_template_projection(original_template)
-        expected["revisionSuffix"] = "gateway-on-1"
-        env = expected["containers"][0]["env"]
-        enabled = next(item for item in env if item["name"] == "AI4IA_SHARED_GATEWAY_ENABLED")
-        enabled["value"] = "true"
-        manifest_env = next(
-            item for item in env
-            if item["name"] == "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST"
-        )
-        manifest_env.clear()
-        manifest_env.update({
-            "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
-            "value": manifest_bytes.decode("utf-8"),
-        })
-        self.assertEqual(candidate, expected)
+    def test_c3_runtime_validation_ignores_process_environment(self):
+        app, revision = c3_snapshot()
+        with patch.dict(os.environ, {
+            "AI4IA_SHARED_GATEWAY_DEPLOYMENTS": "unlisted",
+            "AI4IA_MODEL_CATALOG_PATH": str(ROOT / "missing-catalog.json"),
+            "AI4IA_CHAT_PILOT_ISOLATION_ENABLED": "true",
+        }):
+            payload = self.build_c3(app, revision)
         self.assertEqual(
-            hashlib.sha256(manifest_env["value"].encode("utf-8")).digest(),
-            hashlib.sha256(manifest_bytes).digest(),
+            payload["properties"]["template"]["containers"][0]["env"][-2]["value"],
+            C3_DEPLOYMENTS.decode("ascii"),
         )
-        self.assertEqual(
-            next(item for item in candidate["containers"][0]["env"]
-                 if item["name"] == "AI4IA_CHAT_PILOT_ISOLATION_ENABLED")["value"],
-            "false",
+
+    def test_c3_runtime_validation_uses_checked_loader_and_restores_cached_module(self):
+        fake = types.ModuleType("ai4ia_api.shared_gateway_contract")
+        fake.load_shared_gateway_manifest = lambda *args, **kwargs: self.fail(
+            "cached, unqualified loader was invoked by runtime validation",
         )
-        self.assertNotIn("secrets", payload["properties"])
-        self.assertEqual(
-            next(item for item in candidate["containers"][0]["env"]
-                 if item["name"] == "VOICE_UNCHANGED"),
-            {"name": "VOICE_UNCHANGED", "secretRef": "voice"},
-        )
+        app, revision = c3_snapshot()
+        with patch.dict(sys.modules, {"ai4ia_api.shared_gateway_contract": fake}):
+            self.build_c3(app, revision)
+            self.assertIs(sys.modules["ai4ia_api.shared_gateway_contract"], fake)
+        with patch.dict(sys.modules):
+            sys.modules.pop("ai4ia_api.shared_gateway_contract", None)
+            app, revision = c3_snapshot()
+            self.build_c3(app, revision)
+            self.assertNotIn("ai4ia_api.shared_gateway_contract", sys.modules)
 
     def test_c3_requires_the_exact_qualified_loader_blob(self):
         loader_path = ROOT / "app" / "api" / "src" / "ai4ia_api" / "shared_gateway_contract.py"
@@ -695,83 +849,21 @@ class CutoverTests(unittest.TestCase):
             CUTOVER.load_c3_contract(manifest_bytes, sidecar_bytes, API_CLIENT_ID)
 
     def test_c3_loader_rejects_identity_mismatch_extra_credentials_and_wrong_contract(self):
-        app, revision = snapshot("Multiple")
-        for value in (app["properties"]["template"], revision["properties"]["template"]):
-            value["containers"][0]["env"].extend([
-                {"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"},
-                {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "false"},
-            ])
+        app, revision = c3_snapshot()
+        for template in (app["properties"]["template"], revision["properties"]["template"]):
+            template["containers"][0]["env"][0]["value"] = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+        with self.assertRaisesRegex(ValueError, "qualified shared gateway contract loader"):
+            self.build_c3(app, revision)
 
-        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
-        app["properties"]["template"]["containers"][0]["env"][0]["value"] = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
-        revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(
-            app["properties"]["template"]["containers"][0]["env"],
-        )
-        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
-        with patches[0], patches[1], self.assertRaisesRegex(
-            ValueError, "qualified shared gateway contract loader",
-        ):
-            self.build(
-                app, revision, stage="C3", suffix="gateway-on-1",
-                existing_revisions=revision_inventory(["api--r0"]),
-                manifest_bytes=manifest_bytes, classification_sidecar_bytes=sidecar_bytes,
-            )
-
-        for manifest, sidecar in (
+        for inputs in (
             synthetic_c3_inputs(credential="client-secret"),
             synthetic_c3_inputs(extra_auth_field=True),
         ):
-            bad_patches = pin_synthetic_c3_inputs(manifest, sidecar)
-            app, revision = snapshot("Multiple")
-            for value in (app["properties"]["template"], revision["properties"]["template"]):
-                value["containers"][0]["env"].extend([
-                    {"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"},
-                    {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "false"},
-                ])
-            with bad_patches[0], bad_patches[1], self.subTest(manifest=manifest), self.assertRaisesRegex(
+            app, revision = c3_snapshot()
+            with self.subTest(inputs=inputs), self.assertRaisesRegex(
                 ValueError, "qualified shared gateway contract loader",
             ):
-                self.build(
-                    app, revision, stage="C3", suffix="gateway-on-1",
-                    existing_revisions=revision_inventory(["api--r0"]),
-                    manifest_bytes=manifest, classification_sidecar_bytes=sidecar,
-                )
-
-    def test_c3_requires_a_valid_opt_in_and_only_replaces_the_expected_manifest_ref(self):
-        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
-        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
-        for control in (
-            "unknown-deployment", "duplicate-deployment", "wrong-secret-ref",
-            "missing-manifest-ref", "selector-on", "pilot-on",
-        ):
-            app, revision = snapshot("Multiple")
-            env = app["properties"]["template"]["containers"][0]["env"]
-            revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(env)
-            if control != "missing-manifest-ref":
-                env.append({
-                    "name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST",
-                    "secretRef": "shared-gateway-activation-manifest",
-                })
-            if control == "unknown-deployment":
-                env.append({"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "not-in-contract"})
-            else:
-                env.append({"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"})
-            if control == "duplicate-deployment":
-                env.append({"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": "example-chat-deployment"})
-            if control == "wrong-secret-ref":
-                env[-2]["secretRef"] = "unrelated-secret"
-            if control == "selector-on":
-                env[next(i for i, item in enumerate(env) if item["name"] == "AI4IA_SHARED_GATEWAY_ENABLED")]["value"] = "true"
-            if control == "pilot-on":
-                env.append({"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "true"})
-            revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(env)
-            with patches[0], patches[1], self.subTest(control=control), self.assertRaises(ValueError):
-                self.build(
-                    app, revision, stage="C3", suffix="gateway-on-1",
-                    existing_revisions=revision_inventory(["api--r0"]),
-                    manifest_bytes=manifest_bytes, classification_sidecar_bytes=sidecar_bytes,
-                )
-
+                self.build_c3(app, revision, inputs=inputs)
     def test_c3_cli_refuses_before_reading_snapshots_or_writing_payload(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "blocked.json"
@@ -786,6 +878,14 @@ class CutoverTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("exact offline-classified manifest", result.stderr)
             self.assertNotIn("No such file", result.stderr)
+            self.assertFalse(output.exists())
+
+            missing_list = subprocess.run(command + [
+                "--manifest", str(Path(directory) / "manifest.json"),
+                "--classification-sidecar", str(Path(directory) / "sidecar.json"),
+            ], capture_output=True, text=True, check=False)
+            self.assertEqual(missing_list.returncode, 1)
+            self.assertIn("reviewed deployment list and its digest", missing_list.stderr)
             self.assertFalse(output.exists())
 
     def test_cli_writes_reviewable_patch_without_overwriting_existing_output(self):

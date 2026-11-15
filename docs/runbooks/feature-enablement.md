@@ -884,13 +884,15 @@ R0 at 100%, preserves configuration and exact writable template intent, and
 changes only the web image and new revision suffix. There is no web C2 apply or
 promotion consumer.
 
-The C3 literal-manifest path remains blocked. The strict 2.2.0 loader fixes
-`auth.credential` to `managed-identity` and rejects unknown fields, but that
-schema does not establish that the exact production manifest values are
-nonconfidential. No production manifest was read or classified, so this helper
-does not construct or emit C3. Reconsider only after an authorized owner
-independently classifies the exact manifest as nonconfidential and approves its
-serialized hash; do not infer classification from schema validation.
+C3 constructs the literal-manifest R2 offline only for the separately classified
+manifest digest documented in the deployment runbook; schema validation alone is
+not classification. Its baseline is C2's R1-OFF output (gateway selector absent
+or literal `false`, no deployment list or manifest reference). It sets the
+selector to `true` and appends the reviewed `--deployments` list (bound to
+`--deployments-sha256`) and the manifest literal, preserves every other field and
+secret reference, omits `configuration.secrets`, and must pass the API's own
+shared-gateway startup and catalog validators. Run it from the same source commit
+as the R1-OFF image because the packaged catalog is not hash-pinned.
 
 There is **no C1/C2/C3 apply consumer**. Do not submit generated payloads with
 ad hoc `az rest` commands or any other writer. A future apply path must bind
@@ -904,8 +906,9 @@ ACLs or secure deletion; operators must supply a restricted ephemeral directory
 and remove it safely. Do not substitute `az containerapp update --yaml` or
 `az containerapp secret set`, both of which retrieve existing secret values.
 
-Offline tests prove C1/C2 request content and RFC 7396 merge semantics, and
-verify that C3 is refused while manifest classification is unresolved. They
+Offline tests prove C1/C2/C3 request content and RFC 7396 merge semantics, and
+verify that C3 refuses non-R1-OFF baselines, unreviewed deployment bytes and
+catalog/manifest mismatches. They
 **do not prove Azure's internal atomic transition or runtime zero-traffic
 behavior**. C1/C2 remain execution-gated on review of the actual payload,
 service behavior and Ian's authorization. Verify post-C3 R1 latest/ready,
