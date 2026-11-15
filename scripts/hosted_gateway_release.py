@@ -1037,19 +1037,29 @@ class Release:
                 if not web_probe_passed(probe):
                     raise Refused("web-probe")
                 self.step("web-probe-passed", build=probe["build"])
+            # Final admission and state checks still precede any promotion attempt, so a
+            # refusal here leaves R0 serving and the candidate must not stay active.
+            self.gate.require_fresh()
+            self.step("dts-gate", observed=self.gate.observed.isoformat())
+            current = self.arm.get(app_id, phase="reread")
+            candidate_rev = self.arm.get(f"{app_id}/revisions/{candidate}", phase="reread")
+            if (projection(current) != projection(after) or not traffic_is(current, r0)
+                    or not ready(candidate_rev) or candidate_rev.get("name") != candidate
+                    or not template_matches((candidate_rev.get("properties") or {}).get("template"),
+                                            desired_template)):
+                raise Refused("concurrent-change")
         except Uncertain:
             raise
         except Exception:  # Cleanup is guarded; the original failure is re-raised.
-            self.deactivate(service, candidate, "deactivate-unpromoted", r0)
+            try:
+                self.deactivate(service, candidate, "deactivate-unpromoted", r0)
+            except Uncertain:
+                raise
+            except Refused as cleanup:
+                # The fresh-state guard declined (e.g. serving traffic moved); report the
+                # original stop and leave the candidate for operator reconciliation.
+                self.step("cleanup-refused", phase=cleanup.phase, revision=candidate)
             raise
-        self.gate.require_fresh()
-        self.step("dts-gate", observed=self.gate.observed.isoformat())
-        current = self.arm.get(app_id, phase="reread")
-        candidate_rev = self.arm.get(f"{app_id}/revisions/{candidate}", phase="reread")
-        if (projection(current) != projection(after) or not traffic_is(current, r0)
-                or not ready(candidate_rev) or candidate_rev.get("name") != candidate
-                or not template_matches((candidate_rev.get("properties") or {}).get("template"), desired_template)):
-            raise Refused("concurrent-change")
         self.step("promote", write="PATCH", revision=candidate)
         self.arm.write("PATCH", app_id, {"location": current["location"], "properties": {
             "configuration": {"ingress": {"traffic": [{"revisionName": candidate, "weight": 100}]}}}},

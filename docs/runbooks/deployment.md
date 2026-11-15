@@ -2707,8 +2707,11 @@ The lane depends on these controls and limitations:
   uncertain. The lane never replays it and never rolls back automatically. It
   records an observed reconciliation of revision names, weights, and active
   flags, and stops for operator disposition.
-- **Rollback scope.** A candidate that fails readiness, the web probes, or the
-  smoke is deactivated without receiving traffic. If the post-promotion
+- **Rollback scope.** A candidate that fails readiness, the web probes, the
+  smoke, or the final pre-promotion worker gate or state reread is deactivated
+  without receiving traffic, provided the fresh-state guard still sees the
+  previous revision serving; otherwise the receipt records `cleanup-refused`
+  and the candidate is left for reconciliation. If the post-promotion
   readback fails, `c2-api` stops and reconciles without restoring the
   pre-release API R0, whose retired-video containment is unqualified.
   `c2-web` may move traffic back to its previous revision only if it is still
