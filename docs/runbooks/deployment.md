@@ -2748,6 +2748,19 @@ The lane depends on these controls and limitations:
   Chat-pilot UI mode refuses. The receipt keeps only statuses, the build ID,
   a hash of the API host, and a boolean. These probes prove the web server
   responds and can reach a ready API; they do not prove authenticated chat.
+- **Exec transport.** Both the web probes and the C3 smoke follow the Azure CLI
+  reference client's exec framing. The lane sends one masked TEXT terminal
+  resize (`\x00\x04` + `{"Width": 200, "Height": 50}`) after the upgrade, then
+  waits up to 20 seconds (inside the 60/240-second deadline) for the first
+  console output. It sends ASCII stdin as TEXT `\x00\x00` frames with 20 ms
+  between lines, whether or not output arrived. Proxy INFO frames are counted;
+  proxy ERROR, close, or an unexpected forwarded stream refuses
+  `smoke-transport`, and a marker before stdin refuses `smoke-output`. Every
+  probe/smoke result, and the `detail` of every `smoke-*` refusal, carries an
+  `exec` block of counts only: frames by opcode and channel, stdout/stderr byte
+  totals, the numeric close code, first-output and marker latency buckets,
+  `marker_seen`, `resize_sent`, `stdin_frames_sent` and
+  `first_output_before_stdin`. It never includes payload text.
 - **C3 smoke.** The smoke runs inside the not-yet-promoted revision's `api`
   container through the documented Container Apps exec channel, using the
   revision's own settings, user-assigned managed identity, manifest, and shared
