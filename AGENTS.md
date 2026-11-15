@@ -663,9 +663,13 @@ The distinct `operation=private-image` producer is default-off behind
 while `AI4IA_DEPLOYMENT_ENABLED=false`. It builds/scans/attests only the API and
 never provisions, deploys or shifts traffic. It still uses the existing deploy
 job's Azure/registry identity; do not describe it as a new registry-only role or
-as a compatible API+web release. The candidate-phase `operation=image` remains
-separately gated. A complete release freeze must disable both variables, drain
-already admitted runs, and separately hold `foundry-assets` manual dispatch;
+as a compatible API+web release. The separate `operation=private-pair` producer
+uses `AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED` to build/scan/attest web and API from
+the exact same main source; its receipt is not a deployment or runtime
+compatibility proof, and no paired staging/rollback path is implied. The
+candidate-phase `operation=image` remains separately gated. A complete release
+freeze must disable all three release variables, drain already admitted runs,
+and separately hold `foundry-assets` manual dispatch;
 the ordinary deployment flag does not control that workflow's manual path.
 See the release runbook's private image and freeze sections.
 
@@ -728,6 +732,19 @@ Only a fully checked new-VNet Create may use omitted DHCP as the documented
 Azure-provided DNS default. Keep explicit malformed/custom DNS and existing-VNet
 changes refused; retain exact subnet/delegation checks and value-free comparison
 evidence. Omitted DNS is not an observed zero-server list.
+Shared-gateway B/C peerings and the caller DNS link are separately owned by
+c2's `ai4ia-connectivity.bicep`, not `infra/modules/api-private-network.bicep`.
+Preserve that ownership: AI4IA preflight is read-only for this connectivity and
+must never duplicate, replace, delete, or use complete-mode cleanup on c2-owned
+resources. Missing or ambiguous peering/DNS evidence blocks readiness; it does
+not authorize repair.
+`scripts/prepare-gateway-cutover.py` is offline only. Its C2/C3 revision rows
+must be sourced from `preview-api-private.py::private_revision_rows`, which uses
+the scoped `check-api-private-network.py::revision_continuation` contract. The
+constructor checks row shape and name collisions but cannot prove pagination
+completeness or freshness; do not treat its output as authority to send a PATCH.
+Any future apply path must re-read through the existing collector and bind that
+result with the live app/revision snapshot immediately before dispatch.
 The foundation retains the two corporate-governance NSGs at their exact
 `vnet-<workload>-<environment>-api-private-<api|cosmos>-nsg-<location>` names
 and subnet associations. Both declare `securityRules: []`: default rules only,

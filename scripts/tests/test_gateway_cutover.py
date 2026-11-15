@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scripts.tests._loader import load_script
@@ -80,14 +80,18 @@ def manifest():
     return _lane_manifest("resolved")
 
 
-def revision_inventory(names, *, complete=True, pages=1, observed_at=None):
-    observed_at = observed_at or datetime.now(UTC).isoformat()
+def revision_inventory(names, *, observed_at=None, active_name="api--r0"):
     return {
-        "complete": complete,
-        "names": names,
-        "observedAt": observed_at,
-        "pages": pages,
-        "source": "Microsoft.App/containerApps/revisions",
+        "observedAt": observed_at or datetime.now(UTC).isoformat(),
+        "rows": [
+            {
+                "active": name == active_name,
+                "health": "Healthy",
+                "name": name,
+                "state": "Succeeded",
+            }
+            for name in names
+        ],
     }
 
 
@@ -119,6 +123,7 @@ class CutoverTests(unittest.TestCase):
         payload = self.build(
             app, revision, stage="C3", suffix="gw22s1",
             deployments=deployment, manifest=json.dumps(value),
+            existing_revisions=revision_inventory(["api--r0", "api--legacy"]),
         )
         merged = merge_patch(app, payload)
         self.assertEqual(merged["properties"]["configuration"], original["properties"]["configuration"])
@@ -138,6 +143,50 @@ class CutoverTests(unittest.TestCase):
         candidate["containers"][0]["env"] = old["containers"][0]["env"]
         self.assertEqual(candidate, old)
         self.assertEqual(app, original)
+
+    def test_c3_baseline_must_be_the_fresh_r1_off_serving_revision(self):
+        app, revision = snapshot("Multiple")
+        revision["name"] = "api--r1"
+        revision["id"] = RESOURCE + "/revisions/api--r1"
+        app["properties"]["latestRevisionName"] = "api--r1"
+        app["properties"]["latestReadyRevisionName"] = "api--r1"
+        app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": "api--r1", "weight": 100},
+        ]
+        value = manifest()
+        deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
+        rows = revision_inventory(["api--r0", "api--r1"], active_name="api--r1")
+
+        payload = self.build(
+            app, revision, stage="C3", suffix="gw22s1",
+            deployments=deployment, manifest=json.dumps(value), existing_revisions=rows,
+        )
+
+        self.assertEqual(
+            payload["properties"]["configuration"]["ingress"]["traffic"],
+            [{"revisionName": "api--r1", "weight": 100}],
+        )
+        candidate = payload["properties"]["template"]
+        self.assertEqual(
+            candidate["containers"][0]["image"],
+            revision["properties"]["template"]["containers"][0]["image"],
+        )
+        self.assertEqual(candidate["revisionSuffix"], "gw22s1")
+        old_revision_serving = copy.deepcopy(app)
+        old_revision_serving["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": "api--r0", "weight": 100},
+        ]
+        with self.assertRaisesRegex(ValueError, "traffic must identify R0"):
+            self.build(
+                old_revision_serving, revision, stage="C3", suffix="gw22s2",
+                deployments=deployment, manifest=json.dumps(value), existing_revisions=rows,
+            )
+        inactive_r1 = revision_inventory(["api--r0", "api--r1"])
+        with self.assertRaisesRegex(ValueError, "revision rows"):
+            self.build(
+                app, revision, stage="C3", suffix="gw22s2",
+                deployments=deployment, manifest=json.dumps(value), existing_revisions=inactive_r1,
+            )
 
     def test_c2_candidate_image_keeps_r0_at_100_and_changes_only_image_and_suffix(self):
         app, revision = snapshot("Multiple")
@@ -192,14 +241,10 @@ class CutoverTests(unittest.TestCase):
             ("candidate-exists", {"revisions": ["api--r0", "api--image-1"]}),
             ("malformed-inventory", {"revisions": ["api--r0", "not-a-revision"]}),
             ("too-many-revisions", {"revisions": ["api--r0", *[f"api--old{i}" for i in range(640)]]}),
-            ("unproven-complete", {"inventory": {"complete": False}}),
-            ("stale-inventory", {"inventory": {"observedAt": "2000-01-01T00:00:00+00:00"}}),
-            ("missing-page-evidence", {"inventory": {"pages": 0}}),
         ]
         for label, change in controls:
             changed_app, changed_revision = copy.deepcopy((app, revision))
             revisions = revision_inventory(change.get("revisions", ["api--r0"]))
-            revisions.update(change.get("inventory", {}))
             image = change.get("image", candidate_image)
             suffix = change.get("suffix", "image-1")
             if "app_change" in change:
@@ -241,8 +286,14 @@ class CutoverTests(unittest.TestCase):
                 manifest=json.dumps(manifest()), api_image=image,
                 existing_revisions=revision_inventory(["api--r0"]),
             )
+        deployment = next(iter(manifest()["models"].values()))["targets"][0]["deployment"]
+        with self.assertRaisesRegex(ValueError, "revision rows"):
+            self.build(
+                app, revision, stage="C3", suffix="gw22s1",
+                deployments=deployment, manifest=json.dumps(manifest()),
+            )
 
-    def test_c2_allows_absent_selector_flags_only_with_complete_fresh_inventory(self):
+    def test_c2_allows_absent_selector_flags_with_private_reader_rows(self):
         app, revision = snapshot("Multiple")
         for item in ("AI4IA_SHARED_GATEWAY_ENABLED",):
             app["properties"]["template"]["containers"][0]["env"] = [
@@ -255,9 +306,55 @@ class CutoverTests(unittest.TestCase):
         image = revision["properties"]["template"]["containers"][0]["image"].rsplit("@", 1)[0] + "@sha256:" + "b" * 64
         payload = self.build(
             app, revision, stage="C2", suffix="image-2", api_image=image,
-            existing_revisions=revision_inventory(["api--r0"], pages=1),
+            existing_revisions=revision_inventory(["api--r0"]),
         )
         self.assertEqual(payload["properties"]["template"]["containers"][0]["image"], image)
+
+    def test_c2_c3_reject_hand_authored_completeness_claims_and_malformed_rows(self):
+        app, revision = snapshot("Multiple")
+        value = manifest()
+        deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
+        forged = {
+            "complete": True,
+            "names": ["api--r0"],
+            "observedAt": "2099-01-01T00:00:00+00:00",
+            "pages": 1,
+            "source": "Microsoft.App/containerApps/revisions",
+        }
+        malformed = (
+            forged,
+            [{"active": True, "health": "Healthy", "name": "api--r0", "state": "Succeeded", "nextLink": "https://evil.invalid"}],
+            revision_inventory(["api--r0", "api--r0"]),
+        )
+        for rows in malformed:
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                self.build(
+                    app, revision, stage="C3", suffix="gw22s1",
+                    deployments=deployment, manifest=json.dumps(value), existing_revisions=rows,
+                )
+
+    def test_revision_inventory_rejects_naive_times_and_enforces_aware_skew_bounds(self):
+        now = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
+        for observed_at in (
+            datetime(2000, 1, 1, tzinfo=UTC).replace(tzinfo=None).isoformat(),
+            now.replace(tzinfo=None).isoformat(),
+        ):
+            with self.subTest(observed_at=observed_at), self.assertRaisesRegex(ValueError, "timezone offset"):
+                CUTOVER.validate_revision_rows(
+                    revision_inventory(["api--r0"], observed_at=observed_at),
+                    "api", "api--r0", "gw22s1", now=now,
+                )
+        for observed in (now - timedelta(seconds=120), now + timedelta(seconds=30)):
+            CUTOVER.validate_revision_rows(
+                revision_inventory(["api--r0"], observed_at=observed.isoformat()),
+                "api", "api--r0", "gw22s1", now=now,
+            )
+        for observed in (now - timedelta(seconds=121), now + timedelta(seconds=31)):
+            with self.subTest(observed=observed), self.assertRaisesRegex(ValueError, "last 120 seconds"):
+                CUTOVER.validate_revision_rows(
+                    revision_inventory(["api--r0"], observed_at=observed.isoformat()),
+                    "api", "api--r0", "gw22s1", now=now,
+                )
 
     def test_rejects_stale_unhealthy_drifted_or_ambiguous_snapshot(self):
         for field in ("latestRevisionName", "latestReadyRevisionName", "provisioningState"):
@@ -311,14 +408,16 @@ class CutoverTests(unittest.TestCase):
                 self.build(
                     app, revision, stage="C3", suffix="gw22s1",
                     deployments=deployment, manifest=json.dumps(value),
+                    existing_revisions=revision_inventory(["api--r0", "api--legacy"]),
                 )
 
-    def test_refuses_wrong_target_tagged_image_pilot_and_duplicate_env(self):
-        for control in ("target", "image", "pilot", "duplicate-env", "mode", "suffix"):
+    def test_refuses_wrong_target_tagged_image_pilot_duplicate_env_and_suffix(self):
+        for control in ("target", "image", "pilot", "duplicate-env", "mode", "suffix", "existing-suffix"):
             app, revision = snapshot("Multiple")
             value = manifest()
             deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
             suffix = "gw22s1"
+            revisions = ["api--r0", "api--legacy"]
             if control == "target":
                 app["id"] += "-other"
             elif control == "image":
@@ -333,6 +432,8 @@ class CutoverTests(unittest.TestCase):
                 )
             elif control == "mode":
                 app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
+            elif control == "existing-suffix":
+                revisions.append("api--gw22s1")
             else:
                 suffix = "r0"
             revision["properties"]["template"] = copy.deepcopy(app["properties"]["template"])
@@ -340,6 +441,7 @@ class CutoverTests(unittest.TestCase):
                 self.build(
                     app, revision, stage="C3", suffix=suffix,
                     deployments=deployment, manifest=json.dumps(value),
+                    existing_revisions=revision_inventory(revisions),
                 )
 
     def test_cli_writes_reviewable_patch_without_overwriting_existing_output(self):

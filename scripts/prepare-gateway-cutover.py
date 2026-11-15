@@ -16,6 +16,51 @@ SECRET = "shared-gateway-activation-manifest"
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def validate_revision_rows(
+    evidence: object, app_name: str, r0: str, suffix: str, *, now: datetime | None = None,
+) -> None:
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != {"observedAt", "rows"}
+    ):
+        raise ValueError("revision input must contain only an observation time and reader rows")
+    observed_at = evidence["observedAt"]
+    if not isinstance(observed_at, str):
+        raise TypeError("revision observation time must be a string")
+    try:
+        observed = datetime.fromisoformat(observed_at)
+    except ValueError as exc:
+        raise ValueError("revision observation time is invalid") from exc
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise ValueError("revision observation time must include a timezone offset")
+    age_seconds = ((now or datetime.now(UTC)) - observed.astimezone(UTC)).total_seconds()
+    if age_seconds < -30 or age_seconds > 120:
+        raise ValueError("revision rows must be observed within the last 120 seconds")
+    rows = evidence["rows"]
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 639:
+        raise ValueError("revision rows must match the private revision reader's bounded shape")
+    names: list[str] = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"name", "active", "health", "state"}
+            or type(row["active"]) is not bool
+            or row["health"] is not None and not isinstance(row["health"], str)
+            or row["state"] is not None and not isinstance(row["state"], str)
+            or not isinstance(row["name"], str)
+            or len(row["name"]) > 64
+            or re.fullmatch(re.escape(app_name) + r"--[a-z0-9-]{1,80}", row["name"]) is None
+        ):
+            raise ValueError("existing revision rows are incomplete or ambiguous")
+        names.append(row["name"])
+    if len(set(names)) != len(names) or r0 not in names or not any(
+        row["name"] == r0 and row["active"] is True for row in rows
+    ):
+        raise ValueError("existing revision rows are incomplete or ambiguous")
+    if app_name + "--" + suffix in names:
+        raise ValueError("candidate revision name already exists")
+
+
 def build_payload(
     app: dict[str, Any],
     revision: dict[str, Any],
@@ -26,7 +71,7 @@ def build_payload(
     deployments: str = "",
     manifest: str = "",
     api_image: str = "",
-    existing_revisions: dict[str, Any] | None = None,
+    existing_revisions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Require a quiescent R0 snapshot, then pin it in the same request."""
     if stage not in ("C1", "C2", "C3"):
@@ -102,45 +147,10 @@ def build_payload(
     template["revisionSuffix"] = suffix
     if stage == "C2":
         if deployments or manifest or not api_image or existing_revisions is None:
-            raise ValueError("C2 requires an API image and fresh, complete revision inventory evidence only")
+            raise ValueError("C2 requires an API image and revision rows from the private revision reader only")
         require_disabled("AI4IA_CHAT_PILOT_ISOLATION_ENABLED")
         require_disabled("AI4IA_SHARED_GATEWAY_ENABLED")
-        if (
-            not isinstance(existing_revisions, dict)
-            or set(existing_revisions) != {"complete", "names", "observedAt", "pages", "source"}
-            or existing_revisions.get("complete") is not True
-            or existing_revisions.get("source") != "Microsoft.App/containerApps/revisions"
-            or type(existing_revisions.get("pages")) is not int
-            or not 1 <= existing_revisions["pages"] <= 31
-        ):
-            raise ValueError("revision inventory must carry complete bounded ARM pagination evidence")
-        observed_at = existing_revisions["observedAt"]
-        if not isinstance(observed_at, str):
-            raise ValueError("revision inventory observation time is invalid")
-        try:
-            observed = datetime.fromisoformat(observed_at)
-        except ValueError as exc:
-            raise ValueError("revision inventory observation time is invalid") from exc
-        now = datetime.now(UTC)
-        age_seconds = (now - observed.astimezone(UTC)).total_seconds() if observed.tzinfo else -1
-        if age_seconds < -30 or age_seconds > 120:
-            raise ValueError("revision inventory must be observed within the last 120 seconds")
-        revision_names = existing_revisions["names"]
-        if (
-            not isinstance(revision_names, list)
-            or not 1 <= len(revision_names) <= 640
-            or any(
-                not isinstance(name, str)
-                or re.fullmatch(re.escape(app["name"]) + r"--[a-z0-9-]{1,80}", name) is None
-                for name in revision_names
-            )
-            or len(set(revision_names)) != len(revision_names)
-            or r0 not in revision_names
-        ):
-            raise ValueError("existing revision-name inventory is incomplete or ambiguous")
-        candidate_name = app["name"] + "--" + suffix
-        if candidate_name in revision_names:
-            raise ValueError("candidate revision name already exists")
+        validate_revision_rows(existing_revisions, app["name"], r0, suffix)
         acr_image = re.compile(
             r"(?P<repository>[a-z0-9]+\.azurecr\.io/ai4ia/api-[a-z0-9]+(?:-[a-z0-9]+)*)"
             r"@sha256:[0-9a-f]{64}"
@@ -158,8 +168,9 @@ def build_payload(
         template["containers"][0]["image"] = api_image
         payload["properties"]["template"] = template
         return payload
-    if api_image or existing_revisions is not None:
-        raise ValueError("C3 accepts no image-stage inputs")
+    if api_image or existing_revisions is None:
+        raise ValueError("C3 requires revision rows from the private revision reader and accepts no image input")
+    validate_revision_rows(existing_revisions, app["name"], r0, suffix)
     if SECRET not in {secret["name"] for secret in config.get("secrets", [])}:
         raise ValueError("manifest secret must already exist (values are never emitted)")
     require_disabled("AI4IA_CHAT_PILOT_ISOLATION_ENABLED")
@@ -203,7 +214,7 @@ def main() -> int:
     parser.add_argument("--api-image", default="")
     parser.add_argument(
         "--existing-revisions", type=Path,
-        help="Fresh complete ARM pagination evidence JSON (max age 120 seconds)",
+        help="JSON rows from private_revision_rows; this offline helper cannot prove pagination completeness",
     )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

@@ -81,7 +81,7 @@ on:
       operation:
         description: "auto preserves completed releases; pending migration is preview-only"
         type: choice
-        options: [auto, preview, deploy, image, private-image]
+        options: [auto, preview, deploy, image, private-image, private-pair]
         default: auto
       preview_binding:
         description: "Exact fresh binding from the reviewed private-phase preview; required for deploy"
@@ -97,7 +97,7 @@ on:
         type: string
         default: ""
       image_source_sha:
-        description: "Exact main commit to build for the private-image operation"
+        description: "Exact main commit to build for a private image producer operation"
         type: string
         default: ""
       provision:
@@ -121,10 +121,11 @@ jobs:
     timeout-minutes: 5
     outputs:
       deployment_enabled: ${{ steps.validate.outputs.deployment_enabled }}
-      private_api_image_enabled: ${{ steps.validate.outputs.private_api_image_enabled }}
+      private_image_producer_enabled: ${{ steps.validate.outputs.private_image_producer_enabled }}
     env:
       AI4IA_DEPLOYMENT_ENABLED: ${{ vars.AI4IA_DEPLOYMENT_ENABLED }}
       AI4IA_API_IMAGE_PRODUCER_ENABLED: ${{ vars.AI4IA_API_IMAGE_PRODUCER_ENABLED }}
+      AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED: ${{ vars.AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED }}
       AI4IA_RELEASE_OPERATION: ${{ inputs.operation }}
       AI4IA_RELEASE_PROVISION: ${{ toJSON(inputs.provision) }}
       AI4IA_RELEASE_SOURCE_SHA: ${{ inputs.image_source_sha }}
@@ -168,7 +169,7 @@ jobs:
             exit 1
           fi
 
-          private_api_image_enabled=false
+          private_image_producer_enabled=false
           case "${AI4IA_API_IMAGE_PRODUCER_ENABLED:-}" in
             ""|false|true) ;;
             *)
@@ -177,14 +178,30 @@ jobs:
               ;;
           esac
 
-          if [ "${AI4IA_RELEASE_OPERATION:-}" = "private-image" ]; then
+          case "${AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED:-}" in
+            ""|false|true) ;;
+            *)
+              echo "::error::AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED must be true, false, or unset."
+              exit 1
+              ;;
+          esac
+
+          if [ "${AI4IA_RELEASE_OPERATION:-}" = "private-image" ] \
+            || [ "${AI4IA_RELEASE_OPERATION:-}" = "private-pair" ]; then
+            if [ "${AI4IA_RELEASE_OPERATION:-}" = "private-image" ]; then
+              producer_enabled="${AI4IA_API_IMAGE_PRODUCER_ENABLED:-}"
+              producer_name="AI4IA_API_IMAGE_PRODUCER_ENABLED"
+            else
+              producer_enabled="${AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED:-}"
+              producer_name="AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED"
+            fi
             if [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ] \
-              || [ "${AI4IA_API_IMAGE_PRODUCER_ENABLED:-}" != "true" ] \
+              || [ "$producer_enabled" != "true" ] \
               || [ "${AI4IA_RELEASE_PROVISION:-}" != "false" ] \
               || [ "${AI4IA_API_NETWORK_PHASE:-}" != "private" ] \
               || ! [[ "${AI4IA_RELEASE_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
               || [ "${AI4IA_RELEASE_SOURCE_SHA:-}" != "${GITHUB_SHA:-}" ]; then
-              echo "::error::Private API image production requires its default-off gate, exact main source SHA, private phase, and provision=false."
+              echo "::error::Private image production requires ${producer_name}=true, an exact main source SHA, private phase, and provision=false."
               exit 1
             fi
             missing_image=()
@@ -207,13 +224,13 @@ jobs:
               echo "::error::Private API image production is missing required source/registry configuration: ${missing_names%, }."
               exit 1
             fi
-            private_api_image_enabled=true
+            private_image_producer_enabled=true
           fi
 
           case "${AI4IA_DEPLOYMENT_ENABLED,,}" in
             false)
               echo "deployment_enabled=false" >> "$GITHUB_OUTPUT"
-              echo "private_api_image_enabled=${private_api_image_enabled}" >> "$GITHUB_OUTPUT"
+              echo "private_image_producer_enabled=${private_image_producer_enabled}" >> "$GITHUB_OUTPUT"
               echo "::notice::Deployment is explicitly disabled by AI4IA_DEPLOYMENT_ENABLED=false."
               exit 0
               ;;
@@ -324,13 +341,13 @@ jobs:
           fi
 
           echo "deployment_enabled=true" >> "$GITHUB_OUTPUT"
-          echo "private_api_image_enabled=${private_api_image_enabled}" >> "$GITHUB_OUTPUT"
+          echo "private_image_producer_enabled=${private_image_producer_enabled}" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: validate-deployment-configuration
     if: >-
       needs.validate-deployment-configuration.outputs.deployment_enabled == 'true' ||
-      needs.validate-deployment-configuration.outputs.private_api_image_enabled == 'true'
+      needs.validate-deployment-configuration.outputs.private_image_producer_enabled == 'true'
     permissions:
       id-token: write
       contents: read
@@ -508,6 +525,7 @@ jobs:
       AI4IA_RELEASE_PROVISION: ${{ inputs.provision }}
       AI4IA_RELEASE_SOURCE_SHA: ${{ inputs.image_source_sha }}
       AI4IA_API_IMAGE_PRODUCER_ENABLED: ${{ vars.AI4IA_API_IMAGE_PRODUCER_ENABLED }}
+      AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED: ${{ vars.AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED }}
       AI4IA_PRIVATE_PREVIEW_BINDING: ${{ inputs.preview_binding }}
       AI4IA_PRIVATE_STEP: ${{ inputs.private_step }}
       AI4IA_PRIVATE_IMAGE_RECEIPT: ${{ inputs.api_image_receipt }}
@@ -844,11 +862,13 @@ jobs:
 
       - name: Admit registry-only API image preparation
         id: image_execution
-        if: ${{ steps.release_mode.outputs.operation == 'image' || steps.release_mode.outputs.operation == 'private-image' }}
+        if: ${{ steps.release_mode.outputs.operation == 'image' || steps.release_mode.outputs.operation == 'private-image' || steps.release_mode.outputs.operation == 'private-pair' }}
         run: |
           echo "allowed=true" >> "$GITHUB_OUTPUT"
           if [ "$AI4IA_RELEASE_OPERATION" = "private-image" ]; then
             echo "AI4IA_RELEASE_KIND=private-image" >> "$GITHUB_ENV"
+          elif [ "$AI4IA_RELEASE_OPERATION" = "private-pair" ]; then
+            echo "AI4IA_RELEASE_KIND=private-pair" >> "$GITHUB_ENV"
           else
             echo "AI4IA_RELEASE_KIND=image" >> "$GITHUB_ENV"
           fi
@@ -1279,6 +1299,9 @@ jobs:
               && [ "$service" != api ]; then
               continue
             fi
+            if [ "$AI4IA_RELEASE_KIND" = private-pair ] && [ "$service" = proxy ]; then
+              continue
+            fi
             context="${entry#*:}"
             ref="${registry}/ai4ia/${service}-${env_slug}"
             echo "::group::build ${service} (${context})"
@@ -1331,6 +1354,12 @@ jobs:
               --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
             exit 0
           fi
+          if [ "$AI4IA_RELEASE_KIND" = private-pair ]; then
+            python scripts/verify-image-provenance.py prepare --private-api-web \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
+              --expect-image "web=${WEB_IMAGE}" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
           python scripts/verify-image-provenance.py prepare \
             --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
             --expect-image "web=${WEB_IMAGE}" \
@@ -1349,6 +1378,23 @@ jobs:
             --format json --output "${RUNNER_TEMP}/ai4ia-image-evidence/api.vulnerabilities.json" \
             "$API_IMAGE"
 
+      - name: Scan production private API and web images for HIGH/CRITICAL vulnerabilities
+        if: ${{ steps.image_execution.outputs.allowed == 'true' && steps.release_mode.outputs.operation == 'private-pair' }}
+        timeout-minutes: 20
+        env:
+          WEB_IMAGE: ${{ steps.images.outputs.web_image }}
+          API_IMAGE: ${{ steps.images.outputs.api_image }}
+        run: |
+          set -euo pipefail
+          for pair in "web:$WEB_IMAGE" "api:$API_IMAGE"; do
+            service="${pair%%:*}"
+            image="${pair#*:}"
+            trivy image --image-src remote --scanners vuln \
+              --severity HIGH,CRITICAL --exit-code 1 --timeout 10m \
+              --format json --output "${RUNNER_TEMP}/ai4ia-image-evidence/${service}.vulnerabilities.json" \
+              "$image"
+          done
+
       - name: Generate production SPDX SBOMs
         if: ${{ steps.execution.outputs.allowed == 'true' || steps.image_execution.outputs.allowed == 'true' }}
         timeout-minutes: 35
@@ -1365,6 +1411,9 @@ jobs:
               && [ "$service" != api ]; then
               continue
             fi
+            if [ "$AI4IA_RELEASE_KIND" = private-pair ] && [ "$service" = proxy ]; then
+              continue
+            fi
             image="${pair#*:}"
             trivy image --image-src remote --format spdx-json --list-all-pkgs \
               --timeout 10m --output "${RUNNER_TEMP}/ai4ia-image-evidence/${service}.spdx.json" \
@@ -1373,6 +1422,12 @@ jobs:
           if [ "$AI4IA_RELEASE_KIND" = image ] || [ "$AI4IA_RELEASE_KIND" = private-image ]; then
             python scripts/verify-image-provenance.py sboms --private-api \
               --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
+          if [ "$AI4IA_RELEASE_KIND" = private-pair ]; then
+            python scripts/verify-image-provenance.py sboms --private-api-web \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
+              --expect-image "web=${WEB_IMAGE}" --expect-image "api=${API_IMAGE}"
             exit 0
           fi
           python scripts/verify-image-provenance.py sboms \
@@ -1386,7 +1441,7 @@ jobs:
       # Organization-only storage records are disabled: no artifact-metadata or
       # packages token grant is needed for ACR's existing Docker credentials.
       - name: Attest web build provenance
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || (steps.image_execution.outputs.allowed == 'true' && steps.release_mode.outputs.operation == 'private-pair') }}
         id: web_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1397,7 +1452,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Attest web SPDX SBOM
-        if: ${{ steps.execution.outputs.allowed == 'true' }}
+        if: ${{ steps.execution.outputs.allowed == 'true' || (steps.image_execution.outputs.allowed == 'true' && steps.release_mode.outputs.operation == 'private-pair') }}
         id: web_sbom
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         env:
@@ -1475,6 +1530,12 @@ jobs:
           if [ "$AI4IA_RELEASE_KIND" = image ] || [ "$AI4IA_RELEASE_KIND" = private-image ]; then
             python scripts/verify-image-provenance.py verify --private-api \
               --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" --expect-image "api=${API_IMAGE}"
+            exit 0
+          fi
+          if [ "$AI4IA_RELEASE_KIND" = private-pair ]; then
+            python scripts/verify-image-provenance.py verify --private-api-web \
+              --evidence-dir "${RUNNER_TEMP}/ai4ia-image-evidence" \
+              --expect-image "web=${WEB_IMAGE}" --expect-image "api=${API_IMAGE}"
             exit 0
           fi
           python scripts/verify-image-provenance.py verify \

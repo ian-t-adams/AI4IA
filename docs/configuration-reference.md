@@ -345,10 +345,23 @@ patch that keeps the named R0 at 100%, changes only a new digest-pinned image in
 R0's exact API repository and a unique revision suffix, and requires the shared
 gateway selector and pilot isolation flags to be absent or literal `false`.
 Its revision inventory input must come from a fresh, complete, terminal-page
-ARM revisions enumeration (at most 31 pages/640 names and no older than 120
-seconds); the input envelope is caller-supplied evidence, not independently
-authenticated pagination proof. R0's presence alone cannot establish inventory
-completeness. The helper performs no Azure read or write, and its offline merge
+ARM revisions enumeration. Use the rows from
+`preview-api-private.py::private_revision_rows`, which uses
+`check-api-private-network.py::revision_continuation` to rebuild only the exact
+`2024-10-02-preview` / `pageSize=20` scoped request and opaque `skipToken`;
+collection is bounded to 31 pages, 639 rows, and 120 seconds. C2 and C3 reject
+duplicate rows and an already-existing candidate revision name. The offline
+helper validates row shape, name collisions, and a timezone-aware timestamp
+within its 120-second window. The timestamp is caller-supplied: the helper cannot
+authenticate that a file came from the collector or prove its pagination
+completeness or freshness. It does not accept a caller-authored `complete=true`
+claim or follow `nextLink` values. C3 validates the supplied manifest JSON and
+emits the existing named `secretRef`; it does not read or prove that the live
+secret value matches that manifest. No C1/C2/C3 apply consumer exists, so the
+helper's offline output is not sent to Azure. Any future approved apply path
+must re-read with the existing collector, independently bind the secret-free
+manifest contract, and rebind the exact app/revision snapshot immediately before
+dispatch. The helper performs no Azure read or write, and its offline merge
 patch does not prove Azure atomicity, current state at send time, or traffic
 behavior. It is not approval to use a production API app or a replacement for
 the separately reviewed deployment/freeze gates.
@@ -1028,13 +1041,23 @@ provenance/SPDX evidence and receipt. It does not provision, deploy, alter traff
 or prove that an arbitrary currently serving web image is compatible. It still
 uses the existing deploy job's Azure/registry identity; this adds no narrower Azure
 role or permission. Do not use an API-only artifact as a paired application
-release when the serving web may still call retired API routes; no paired API+web
-producer is implemented by this operation.
+release when the serving web may still call retired API routes.
+
+The distinct `operation=private-pair` producer has its own default-off
+`AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED` repository variable and the same manual
+main, exact source SHA, private-phase, no-pending-migration and `provision=false`
+requirements. It builds, scans for HIGH/CRITICAL findings, and verifies signed
+SLSA/SPDX evidence for exactly the web and API images built from the same main
+commit. Its receipt is evidence only: it is not consumed by a deployment path,
+does not prove runtime compatibility, and does not stage revisions or traffic.
+It uses the existing deploy job's Azure/registry identity and adds no narrower
+Azure role or permission. Both private producer gates must be disabled during a
+release freeze.
 
 | Variable | Default | Contract |
 | --- | --- | --- |
 | `AI4IA_API_NETWORK_PHASE` | `legacy` | `candidate` is readiness/options-only; `activate` requires drained legacy workers; `private` switches web/voice only after activated acceptance. No implicit return to legacy once the new API exists. |
-| `AI4IA_API_PRIVATE_VNET_PREFIX` | Empty | Explicit reviewed standalone RFC1918 /24 or /25; no peering or custom DNS. |
+| `AI4IA_API_PRIVATE_VNET_PREFIX` | Empty | Explicit reviewed standalone RFC1918 /24 or /25. AI4IA does not manage shared-gateway peerings or DNS; see the [connectivity ownership boundary](runbooks/deployment.md#shared-gateway-connectivity-ownership). |
 | `AI4IA_API_PRIVATE_SUBNET_PREFIX` | Empty | Contained /26, delegated to Microsoft.App/environments. |
 | `AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX` | Empty | Contained, disjoint /27 for the single Cosmos Sql endpoint. |
 | `AI4IA_API_PRIVATE_INITIAL_IMAGE` | Inert quickstart placeholder | Legacy root/preflight transport only. Scoped candidate creation instead requires the verified build-once producer receipt; no functional placeholder. Never hand-author a promotion image. |

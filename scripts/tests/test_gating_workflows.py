@@ -953,6 +953,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
             env["GITHUB_EVENT_NAME"] = "push"
             env["GITHUB_SHA"] = "a" * 40
             env["AI4IA_API_IMAGE_PRODUCER_ENABLED"] = ""
+            env["AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED"] = ""
             env["AI4IA_RELEASE_OPERATION"] = ""
             env["AI4IA_RELEASE_PROVISION"] = ""
             env["AI4IA_RELEASE_SOURCE_SHA"] = ""
@@ -975,7 +976,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         result, output = self.run_validation()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip().splitlines(), [
-            "deployment_enabled=true", "private_api_image_enabled=false",
+            "deployment_enabled=true", "private_image_producer_enabled=false",
         ])
 
     def test_gateway_authentication_is_explicit_and_not_a_federation_fallback(self) -> None:
@@ -989,7 +990,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         result, output = self.run_validation(extra=gateway, missing=attestation)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip().splitlines(), [
-            "deployment_enabled=true", "private_api_image_enabled=false",
+            "deployment_enabled=true", "private_image_producer_enabled=false",
         ])
         for changes in (
             {"AI4IA_CLAUDE_EXTERNAL_ENABLED": "true"},
@@ -1012,7 +1013,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         result, output = self.run_validation(ref="refs/heads/main")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip().splitlines(), [
-            "deployment_enabled=true", "private_api_image_enabled=false",
+            "deployment_enabled=true", "private_image_producer_enabled=false",
         ])
 
     def test_non_main_ref_is_rejected_even_when_deployment_is_disabled(self) -> None:
@@ -1066,7 +1067,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip().splitlines(), [
-            "deployment_enabled=true", "private_api_image_enabled=false",
+            "deployment_enabled=true", "private_image_producer_enabled=false",
         ])
 
     def test_invalid_claude_posture_fails(self) -> None:
@@ -1081,7 +1082,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip().splitlines(), [
-            "deployment_enabled=false", "private_api_image_enabled=false",
+            "deployment_enabled=false", "private_image_producer_enabled=false",
         ])
 
     def test_private_api_image_is_independently_gated_even_when_deploy_is_disabled(self) -> None:
@@ -1112,7 +1113,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(output.strip().splitlines(), [
-            "deployment_enabled=false", "private_api_image_enabled=true",
+            "deployment_enabled=false", "private_image_producer_enabled=true",
         ])
 
         for update in (
@@ -1148,6 +1149,62 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
         self.assertEqual(output, "")
         self.assertIn("AZURE_CLIENT_ID", result.stdout + result.stderr)
 
+    def test_private_api_web_producer_has_an_independent_default_off_gate(self) -> None:
+        image_config = {
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_SHA": "b" * 40,
+            "AZURE_CLIENT_ID": "a" * 36,
+            "AZURE_TENANT_ID": "b" * 36,
+            "AZURE_SUBSCRIPTION_ID": "c" * 36,
+            "AZURE_ENV_NAME": "synthetic",
+            "AZURE_LOCATION": "eastus2",
+            "AI4IA_API_IMAGE_PRODUCER_ENABLED": "",
+            "AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "true",
+            "AI4IA_RELEASE_OPERATION": "private-pair",
+            "AI4IA_RELEASE_PROVISION": "false",
+            "AI4IA_RELEASE_SOURCE_SHA": "b" * 40,
+            "AI4IA_API_NETWORK_PHASE": "private",
+            "AI4IA_API_PRIVATE_VNET_PREFIX": "10.0.0.0/24",
+            "AI4IA_API_PRIVATE_SUBNET_PREFIX": "10.0.0.0/26",
+            "AI4IA_COSMOS_PRIVATE_ENDPOINT_SUBNET_PREFIX": "10.0.0.64/27",
+        }
+        missing_normal = tuple(
+            name for name in self.REQUIRED
+            if name not in {"AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID",
+                            "AZURE_ENV_NAME", "AZURE_LOCATION"}
+        )
+        result, output = self.run_validation(
+            posture="false", missing=missing_normal, extra=image_config,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(output.strip().splitlines(), [
+            "deployment_enabled=false", "private_image_producer_enabled=true",
+        ])
+
+        for update in (
+            {"AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "false"},
+            {"AI4IA_API_NETWORK_PHASE": "candidate"},
+            {"AI4IA_RELEASE_PROVISION": "true"},
+            {"AI4IA_RELEASE_SOURCE_SHA": "c" * 40},
+            {"GITHUB_EVENT_NAME": "push"},
+            {"AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "invalid"},
+        ):
+            with self.subTest(update=update):
+                result, output = self.run_validation(
+                    posture="false", missing=missing_normal,
+                    extra={**image_config, **update},
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, "")
+
+        result, output = self.run_validation(
+            posture="false", missing=missing_normal,
+            extra={**image_config, "AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": ""},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertIn("AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED", result.stdout + result.stderr)
+
     def test_invalid_posture_fails(self) -> None:
         result, output = self.run_validation(posture="disabled")
         self.assertNotEqual(result.returncode, 0)
@@ -1162,7 +1219,7 @@ class DeployWorkflowConfigurationValidationTests(unittest.TestCase):
             deploy["if"],
         )
         self.assertIn(
-            "needs.validate-deployment-configuration.outputs.private_api_image_enabled",
+            "needs.validate-deployment-configuration.outputs.private_image_producer_enabled",
             deploy["if"],
         )
 
@@ -1661,7 +1718,9 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
     IMAGE_ONLY_STEPS = {
         "Build and push service images, recording their digests", "Bind production image subjects",
         "Generate production SPDX SBOMs", "Attest api build provenance", "Attest api SPDX SBOM",
+        "Attest web build provenance", "Attest web SPDX SBOM",
         "Verify production image attestations", "Retain production image evidence",
+        "Scan production private API and web images for HIGH/CRITICAL vulnerabilities",
     }
 
     @staticmethod
@@ -1692,6 +1751,17 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
         if step.get("name") == "Scan production private API image for HIGH/CRITICAL vulnerabilities":
             expected = ("steps.image_execution.outputs.allowed == 'true' && "
                         "steps.release_mode.outputs.operation == 'private-image'")
+            assert expression == expected, step.get("name")
+            return
+        if step.get("name") == "Scan production private API and web images for HIGH/CRITICAL vulnerabilities":
+            expected = ("steps.image_execution.outputs.allowed == 'true' && "
+                        "steps.release_mode.outputs.operation == 'private-pair'")
+            assert expression == expected, step.get("name")
+            return
+        if step.get("name") in {"Attest web build provenance", "Attest web SPDX SBOM"}:
+            expected = ("steps.execution.outputs.allowed == 'true' || "
+                        "(steps.image_execution.outputs.allowed == 'true' && "
+                        "steps.release_mode.outputs.operation == 'private-pair')")
             assert expression == expected, step.get("name")
             return
         if step.get("name") in PrivatePreviewWorkflowTests.IMAGE_ONLY_STEPS:
@@ -1758,7 +1828,8 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
         apply = next(step for step in steps if step.get("id") == "private_apply")
         for operation, claimed, expected in (("preview", "true", False), ("deploy", "false", False),
                                              ("deploy", "true", True), ("image", "true", False),
-                                             ("private-image", "true", False)):
+                                             ("private-image", "true", False),
+                                             ("private-pair", "true", False)):
             self.assertEqual(self.expression(apply["if"], {
                 "steps.release_mode.outputs.operation": operation,
                 "steps.private_preview.outputs.authorized": claimed,
@@ -1777,17 +1848,22 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
                 deployment_operation({**env, **update}, pending=True, blocked=False)
         steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
         authority = next(step for step in steps if step.get("id") == "image_execution")["if"]
-        for mode in ("ordinary", "preview", "deploy", "image", "private-image"):
+        for mode in ("ordinary", "preview", "deploy", "image", "private-image", "private-pair"):
             self.assertEqual(
                 self.expression(authority, {"steps.release_mode.outputs.operation": mode}),
-                mode in ("image", "private-image"),
+                mode in ("image", "private-image", "private-pair"),
             )
         for step in steps:
             if "steps.image_execution.outputs.allowed" in step.get("if", ""):
-                if step["name"] == "Scan production private API image for HIGH/CRITICAL vulnerabilities":
+                if step["name"] in {
+                    "Scan production private API image for HIGH/CRITICAL vulnerabilities",
+                    "Scan production private API and web images for HIGH/CRITICAL vulnerabilities",
+                }:
                     self.assertEqual(
                         step["if"],
-                        "${{ steps.image_execution.outputs.allowed == 'true' && steps.release_mode.outputs.operation == 'private-image' }}",
+                        "${{ steps.image_execution.outputs.allowed == 'true' && steps.release_mode.outputs.operation == 'private-image' }}"
+                        if step["name"] == "Scan production private API image for HIGH/CRITICAL vulnerabilities"
+                        else "${{ steps.image_execution.outputs.allowed == 'true' && steps.release_mode.outputs.operation == 'private-pair' }}",
                     )
                     continue
                 self.assertIn(step["name"], self.IMAGE_ONLY_STEPS)
@@ -1825,6 +1901,51 @@ class PrivatePreviewWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(update=update, pending=pending, blocked=blocked), self.assertRaises(ValueError):
                 deployment_operation({**env, **update}, pending=pending, blocked=blocked)
+
+    def test_private_pair_requires_its_own_gate_and_never_admits_deployment(self):
+        from scripts._api_private import deployment_operation
+
+        source = "a" * 40
+        env = {
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_SHA": source,
+            "AI4IA_API_NETWORK_PHASE": "private",
+            "AI4IA_RELEASE_OPERATION": "private-pair",
+            "AI4IA_RELEASE_PROVISION": "false",
+            "AI4IA_RELEASE_SOURCE_SHA": source,
+            "AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "true",
+        }
+        self.assertEqual(deployment_operation(env, pending=False, blocked=False), "private-pair")
+        for update, pending, blocked in (
+            ({"GITHUB_EVENT_NAME": "push"}, False, False),
+            ({"AI4IA_API_NETWORK_PHASE": "candidate"}, False, False),
+            ({"AI4IA_RELEASE_PROVISION": "true"}, False, False),
+            ({"AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "false"}, False, False),
+            ({"AI4IA_API_IMAGE_PRODUCER_ENABLED": "true",
+              "AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": ""}, False, False),
+            ({"AI4IA_RELEASE_SOURCE_SHA": "b" * 40}, False, False),
+            ({"AI4IA_PRIVATE_PREVIEW_BINDING": "held"}, False, False),
+            ({"AI4IA_PRIVATE_IMAGE_RECEIPT": "{}"}, False, False),
+            ({}, True, False),
+            ({}, False, True),
+        ):
+            with self.subTest(update=update, pending=pending, blocked=blocked), self.assertRaises(ValueError):
+                deployment_operation({**env, **update}, pending=pending, blocked=blocked)
+
+        steps = yaml.safe_load(DEPLOY_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+        image_execution = next(step for step in steps if step.get("id") == "image_execution")
+        execution = next(step for step in steps if step.get("id") == "execution")
+        self.assertIn("private-pair", image_execution["if"])
+        self.assertEqual(execution["if"], "${{ steps.release_mode.outputs.operation == 'ordinary' }}")
+        pair_scan = next(
+            step for step in steps
+            if step.get("name") == "Scan production private API and web images for HIGH/CRITICAL vulnerabilities"
+        )
+        self.assertIn("private-pair", pair_scan["if"])
+        self.assertIn("--severity HIGH,CRITICAL", pair_scan["run"])
+        self.assertIn("WEB_IMAGE", pair_scan["run"])
+        self.assertIn("API_IMAGE", pair_scan["run"])
 
         workflow = yaml.safe_load(DEPLOY_WORKFLOW.read_text())
         self.assertEqual(workflow["concurrency"]["group"], "deploy-production")
