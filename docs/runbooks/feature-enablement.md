@@ -821,7 +821,7 @@ There is no silent fallback or hot in-process emergency bypass when the flag
 is on. Do not dispatch the production workflow, change settings, or send
 traffic without that approval.
 
-#### Production C1/C3 request preparation (offline only)
+#### Production C1/C2 request preparation (offline only)
 
 `scripts/prepare-gateway-cutover.py` constructs, but never submits, a single
 Container Apps JSON Merge PATCH per step using API `2025-01-01`.
@@ -830,23 +830,27 @@ during a separately authorized cutover. No merge, cloud write, registry upload
 or runtime request is authorized by this section.
 
 The constructor requires matching app and healthy active R0 revision snapshots,
-with R0 both latest and latest-ready and identical templates. C1 requires
-`Single`; C3 requires `Multiple` with an explicit named R0 traffic rule.
+with R0 both latest and latest-ready and identical writable templates. C1
+requires `Single`; C2 requires `Multiple` with an explicit named R0 traffic rule.
 Ambiguous traffic, labels and stale/template-drifted snapshots are refused.
 
 After authorization, obtain fresh ARM GET snapshots at the same API version.
 Use the actual resource ID returned by discovery, not an invented identity:
+all snapshots, manifests and generated payloads belong in a restricted,
+ephemeral directory outside the repository. They may contain sensitive literal
+environment values; do not print, log, commit, or include them in chat.
 
 ```powershell
-# Read-only capture; $resourceId and $r0 must come from reviewed discovery.
+# Read-only capture only; $privateDir must be restricted, ephemeral, and outside
+# the checkout. $resourceId and $r0 must come from reviewed discovery.
 $url = "https://management.azure.com${resourceId}?api-version=2025-01-01"
 az rest --method get --url $url --subscription $sub --output json |
-  Set-Content -Encoding utf8 app-before.json
+  Set-Content -Encoding utf8 "$privateDir\app-before.json"
 az rest --method get --url "https://management.azure.com${resourceId}/revisions/${r0}?api-version=2025-01-01" --subscription $sub --output json |
-  Set-Content -Encoding utf8 r0-before.json
+  Set-Content -Encoding utf8 "$privateDir\r0-before.json"
 
 # These Python commands perform no network access.
-python scripts\prepare-gateway-cutover.py --stage C1 --app app-before.json --revision r0-before.json --resource-id $resourceId --output c1.patch.json
+python scripts\prepare-gateway-cutover.py --stage C1 --app "$privateDir\app-before.json" --revision "$privateDir\r0-before.json" --resource-id $resourceId --output "$privateDir\c1.patch.json"
 ```
 
 C1 contains `location` and only this properties fragment; it omits `template`,
@@ -861,47 +865,50 @@ images, identities and secrets:
 }
 ```
 
-Once C1 has completed and fresh readback confirms unchanged template, image,
-latest/ready identity and named R0=100 traffic, capture new snapshots. Keep the
-pipeline frozen: a subsequent provision with a stale pin, a Single-mode
-setting, or any mismatch with the intended serving state can change traffic.
-After separately approved manifest-secret setup, construct C3:
+The paired-web C2 constructor is an offline stage, not a promotion writer. It
+requires a healthy latest/ready web R0 in `Multiple` mode with its named traffic
+rule at 100%, fresh revision-reader rows, a unique suffix, and an immutable
+`web-<environment>` digest in R0's exact ACR repository. Take the image from the
+independently verified `private-pair` producer receipt; this constructor checks
+image syntax/repository identity but does not verify the receipt or provenance.
+For example:
 
 ```powershell
-python scripts\prepare-gateway-cutover.py --stage C3 --app app-before.json --revision r0-before.json --resource-id $resourceId --suffix gw22s1 --deployments opt-in.stage1.txt --manifest resolved-production.json --output c3.patch.json
+python scripts\prepare-gateway-cutover.py --stage C2 --service web --app "$privateDir\web-before.json" --revision "$privateDir\web-r0-before.json" --resource-id $webResourceId --suffix web01 --web-image $acceptedWebImage --existing-revisions "$privateDir\web-revisions.json" --output "$privateDir\web-c2.patch.json"
 ```
 
-C3 repeats the same explicit R0=100 rule, with no `latestRevision` property,
-and copies the full R0 template. It changes only `revisionSuffix` and the three
-shared-gateway environment entries. All other env entries, secret references,
-resources, probes, scale and image digest are preserved. The manifest must be
-resolved 2.2.0, match the API's caller identity and resolve every exact opt-in.
-The existing manifest secret must be present. Its **value** is not read or
-compared by this tool: secure transport/value reconciliation and catalog
-startup validation remain separate prerequisites. Ensure the suffix is unused
-across all revisions before approval. Snapshot and payload files may contain
-sensitive inherited env values; keep them private, never commit or log them.
+`web-revisions.json` must contain the reader rows plus their observation time;
+the helper validates the shape, name collisions, and age, but cannot prove
+pagination completeness or provenance. The generated body pins the named web
+R0 at 100%, preserves configuration and exact writable template intent, and
+changes only the web image and new revision suffix. There is no web C2 apply or
+promotion consumer.
 
-The exact submission shape, **not authorized to execute**, is:
+The C3 literal-manifest path remains blocked. The strict 2.2.0 loader fixes
+`auth.credential` to `managed-identity` and rejects unknown fields, but that
+schema does not establish that the exact production manifest values are
+nonconfidential. No production manifest was read or classified, so this helper
+does not construct or emit C3. Reconsider only after an authorized owner
+independently classifies the exact manifest as nonconfidential and approves its
+serialized hash; do not infer classification from schema validation.
 
-```powershell
-az rest --method patch --url $url --subscription $sub --headers "Content-Type=application/json" --body "@c1.patch.json"
-# After successful C1 completion/readback, secret setup, fresh capture and C3 review:
-az rest --method patch --url $url --subscription $sub --headers "Content-Type=application/json" --body "@c3.patch.json"
-```
+There is **no C1/C2/C3 apply consumer**. Do not submit generated payloads with
+ad hoc `az rest` commands or any other writer. A future apply path must bind
+fresh source and manifest hash, re-collect the complete revision inventory,
+re-read the exact app/revision state immediately before one write, use
+restricted ephemeral handling while preserving exact template semantics, and
+retain only an explicit redacted receipt plus verified serving readback.
+Metadata-only proof is insufficient. The current CLI rejects snapshot, manifest
+and output paths inside the repository, but it does not establish filesystem
+ACLs or secure deletion; operators must supply a restricted ephemeral directory
+and remove it safely. Do not substitute `az containerapp update --yaml` or
+`az containerapp secret set`, both of which retrieve existing secret values.
 
-Do not substitute a PUT, whole-estate provision, or sequential update/traffic-set
-pair. Inspect and hash each exact payload; re-read before submission and stop if
-the app differs. The API does not document an If-Match precondition here; the
-freeze is necessary and this tool does not prevent concurrent writers.
-For HTTP 202, the operator must wait for the returned operation to complete
-before fresh GET/readback or proceeding.
-
-Offline tests prove request content and RFC 7396 merge semantics: C1 preserves
-the template and C3 changes only the intended env/suffix while traffic remains
-named R0=100. They **do not prove Azure's internal atomic transition or runtime
-zero-traffic behavior**. C1/C3 remain execution-gated on review of the actual
-payload, service behavior and Ian's authorization. Verify post-C3 R1 latest/ready,
+Offline tests prove C1/C2 request content and RFC 7396 merge semantics, and
+verify that C3 is refused while manifest classification is unresolved. They
+**do not prove Azure's internal atomic transition or runtime zero-traffic
+behavior**. C1/C2 remain execution-gated on review of the actual payload,
+service behavior and Ian's authorization. Verify post-C3 R1 latest/ready,
 R0 healthy/active and still 100%, R1 absent from traffic, no latest rule, exact
 same image and intended template diff before labeling or testing. A later
 traffic correction is not proof of initial zero traffic. Gateway actual-value,

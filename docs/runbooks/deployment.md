@@ -2492,9 +2492,18 @@ is still required before either artifact can be promoted.
 The approved design is web first, then the selector-OFF API, then a fresh
 selector-ON revision based on the serving selector-OFF revision. This order keeps
 the current-main web on the existing canonical API while preserving a named
-rollback at each stage. It is not implemented by the image producer or the
-offline request constructor; no apply consumer or traffic writer for its
-C1/C2/C3 gateway requests exists.
+rollback at each stage. The image producer does not implement this order. The
+offline helper constructs C1/C2 requests only; no apply consumer or traffic
+writer exists, and C3 construction remains blocked.
+
+For both API and web snapshots, the offline constructor compares writable
+template intent through the existing `activation_template_projection`: it
+normalizes only `revisionSuffix` and the schema-declared read-only
+`resources.ephemeralStorage` in containers/init containers. It emits the C2
+template with those fields omitted and preserves/rejects every other difference,
+including environment values and secret references. This handles the observed
+healthy R0 GET shape; offline tests do not establish that Azure accepts this
+PATCH body or prove any live service behavior.
 
 1. Stage the current-main web image with its canonical API URL unchanged. Do not
    add a preview hostname, revision label, ingress change, or auth bypass. After
@@ -2503,49 +2512,74 @@ C1/C2/C3 gateway requests exists.
 2. Build the selector-OFF API candidate as a new C2 revision from the exact
    existing API image/template snapshot. C2 keeps the named R0 at 100% in
    Multiple mode and changes only the digest-pinned API image and unique suffix.
-   Qualify the zero-canonical-traffic revision through the approved native
+   Zero canonical traffic does **not** isolate startup/background work. The
+   coordinator's ~04:20 UTC read-only production observation showed
+   `AI4IA_DURABLE_WORKFLOWS_ENABLED=true`,
+   `AI4IA_PRIVATE_RECOVERY_CANDIDATE=false`, and document
+   understanding/compute enabled; candidate `main.py` starts
+   `DurableWorkflowService` and runs document `recover_interrupted()` under
+   those settings. Mixed old/new worker code may therefore act on production
+   state before promotion. Preserve the current flags; do not flip the recovery
+   flag as a shortcut. Before any
+   candidate startup or exec, require a separately reviewed background-worker
+   and mixed-version safety gate covering those stateful side effects. Until
+   that gate exists, stop; no zero-traffic or loopback test is authorized.
+   Once separately cleared, qualification must use the approved native
    exec/loopback path; do not expose a revision label or shift traffic before
    independent approval. Then promote the named selector-OFF revision to 100%,
    capture its readback, and run the bounded app-origin smoke.
 3. Only after R1-OFF is the fresh, healthy latest/ready serving revision at
    100%, capture a new app and revision snapshot plus rows from the bounded
-   private revision reader. C3 must use that R1-OFF snapshot as its baseline:
-   it keeps R1 at 100%, adds a new suffix, enables only the reviewed gateway
-   selector, preserves pilot isolation as disabled, and retains the exact R1
-   image. Never construct C3 from a zero-traffic R1 while old R0 is serving, or
-   change the same-image invariant.
-   The existing named secret reference is not proof that its live value matches
-   the supplied manifest; do not activate C3 until a separate secret-free
-   binding/readback contract is reviewed.
-4. Qualify R2-ON without a preview hostname and require exact manifest,
-   deployment, SKU, operation and streaming validation before a separately
-   approved API traffic shift. Keep R1-OFF as the immediate API rollback and
-   retain the original API R0 and web R0 for full paired rollback. On any failed
-   smoke, restore only the explicitly named prior serving revision and verify
-   readback; never infer or replay an uncertain PATCH.
+   private revision reader. Any future C3 must use that R1-OFF snapshot as its
+   baseline: keep R1 at 100%, add a new suffix, enable only the reviewed gateway
+   selector, preserve pilot isolation as disabled, and retain the exact R1 image.
+   Never construct C3 from a zero-traffic R1 while old R0 is serving, or change
+   the same-image invariant. C3 construction is currently blocked: although the
+   strict 2.2.0 loader fixes `auth.credential` to `managed-identity` and rejects
+   unknown object keys, no production manifest was read or independently
+   classified as nonconfidential. Schema validation is not content
+   classification; do not inline or transmit a manifest until the exact content
+   is independently approved.
+4. Only after that classification, a separately reviewed C3 construction path,
+   and R2-ON qualification without a preview hostname may a distinct approval
+   authorize an API traffic shift. Require exact manifest, deployment, SKU,
+   operation and streaming validation. Keep R1-OFF as the immediate API rollback
+   and retain the original API R0 and web R0 for full paired rollback. On any
+   failed smoke, restore only the explicitly named prior serving revision and
+   verify readback; never infer or replay an uncertain PATCH.
 
-`prepare-gateway-cutover.py` writes request JSON only. Its timestamp and revision
-rows are caller-supplied, and its merge-patch model proves neither pagination
+`prepare-gateway-cutover.py` writes request JSON only. App/revision snapshots and
+the resulting payload may contain sensitive literal environment values: never
+dump them to logs or chat, commit them, or persist them in the shared repository.
+The CLI rejects input/output paths inside the repository, but does not establish
+filesystem ACLs or secure deletion; operators must use restricted ephemeral
+storage and remove it safely. Its timestamp and revision rows are
+caller-supplied, and its merge-patch model proves neither pagination
 completeness, ARM conditionality, nor atomic traffic behavior. A future apply
-path must rerun the scoped collector, re-read exact app/revision state and
-secret-free manifest binding immediately before a single write, then preserve a
-write receipt and verify the serving revision. Do not substitute
+path must use restricted ephemeral handling, preserve exact template semantics,
+rerun the scoped collector, re-read exact app/revision state and any approved
+manifest binding immediately before a single write, emit only an explicit
+redacted receipt, and verify the serving revision. Metadata-only proof is
+insufficient.
+Do not substitute
 `az containerapp update --yaml` or `az containerapp secret set`: Azure CLI
 2.92.0's YAML update calls `list_secrets(show_values=True)`, and `secret set`
 also reads existing secret values before a full `create_or_update`. Neither is
 a safe single-secret PATCH. Retain the reviewed scoped ARM request/helper path
-and never print or persist secret values. The `private-image`
+and never print or persist secret values. The offline C1/C2 helper has no apply
+consumer; these controls are not live-manifest readback or activation
+evidence. The `private-image`
 and `private-pair` manual dispatches are not successful push-triggered
 `foundry-assets` runs; its independent manual-dispatch path remains a separate
 writer and must stay separately controlled during a freeze.
 
 The existing `preview-api-private.py::activation_patch_command` is a different
-private-recovery path, not a consumer of these C1/C2/C3 gateway bodies. It
+private-recovery path, not a consumer of these C1/C2 gateway requests. It
 recollects revisions through `private_revision_rows` before prepare/apply,
 re-reads and binds the live app snapshots, and creates a one-attempt execution
 receipt before its scoped ARM PATCH. Its request does not carry an ARM ETag
 precondition, so those checks and receipts are not an atomic compare-and-swap
-guarantee and do not establish C2/C3 manifest-secret binding.
+guarantee and do not establish C2/C3 manifest binding.
 
 ### Release freeze sequence
 

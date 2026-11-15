@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scripts.tests._loader import load_script
-from scripts.tests.test_feature_prereqs import _lane_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 CUTOVER = load_script("gateway_cutover", ROOT / "scripts" / "prepare-gateway-cutover.py")
@@ -20,46 +19,85 @@ RESOURCE = (
     "/subscriptions/00000000-0000-0000-0000-000000000001"
     "/resourceGroups/synthetic/providers/Microsoft.App/containerApps/api"
 )
+WEB_RESOURCE = RESOURCE.rsplit("/", 1)[0] + "/ca-web-test"
 
 
-def snapshot(mode="Single"):
+def snapshot(mode="Single", service="api"):
+    resource = RESOURCE if service == "api" else WEB_RESOURCE
+    app_name = "api" if service == "api" else "ca-web-test"
+    revision_name = app_name + "--r0"
+    env = (
+        [
+            {"name": "AZURE_CLIENT_ID", "value": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"},
+            {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "false"},
+            {"name": "VOICE_UNCHANGED", "secretRef": "voice"},
+        ]
+        if service == "api" else [
+            {"name": "API_BASE_URL", "value": "https://api.example.invalid"},
+            {"name": "ENTRA_CLIENT_ID", "value": "ffffffff-aaaa-4bbb-8ccc-dddddddddddd"},
+            {"name": "NEXTAUTH_SECRET", "secretRef": "web-auth"},
+        ]
+    )
     template = {
         "revisionSuffix": "r0",
         "containers": [{
-            "name": "api",
-            "image": "example.azurecr.io/ai4ia/api-test@sha256:" + "a" * 64,
-            "env": [
-                {"name": "AZURE_CLIENT_ID", "value": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"},
-                {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "false"},
-                {"name": "VOICE_UNCHANGED", "secretRef": "voice"},
-            ],
+            "name": service,
+            "image": f"example.azurecr.io/ai4ia/{service}-test@sha256:" + "a" * 64,
+            "env": env,
             "resources": {"cpu": 1, "memory": "2Gi"},
+            "probes": [],
         }],
         "scale": {"minReplicas": 1, "maxReplicas": 3},
     }
     app = {
-        "id": RESOURCE, "name": "api", "location": "eastus2",
+        "id": resource, "name": app_name, "location": "eastus2",
         "properties": {
             "provisioningState": "Succeeded",
-            "latestRevisionName": "api--r0", "latestReadyRevisionName": "api--r0",
+            "latestRevisionName": revision_name, "latestReadyRevisionName": revision_name,
             "configuration": {
                 "activeRevisionsMode": mode,
-                "secrets": [{"name": CUTOVER.SECRET}],
+                "secrets": [{"name": "web-auth" if service == "web" else "shared-gateway-activation-manifest"}],
                 "ingress": {
                     "external": False, "targetPort": 8000,
-                    "traffic": [{"revisionName": "api--r0", "weight": 100}],
+                    "traffic": [{"revisionName": revision_name, "weight": 100}],
                 },
             },
             "template": template,
         },
     }
     revision = {
-        "id": RESOURCE + "/revisions/api--r0", "name": "api--r0",
+        "id": resource + "/revisions/" + revision_name, "name": revision_name,
         "properties": {
             "active": True, "healthState": "Healthy", "runningState": "Running",
             "template": copy.deepcopy(template),
         },
     }
+    return app, revision
+
+
+def provider_projection_snapshot(service):
+    app, revision = snapshot("Multiple", service=service)
+    app_name = f"ca-{service}-test"
+    resource = RESOURCE.rsplit("/", 1)[0] + "/" + app_name
+    revision_name = app_name + "--azd-1793658361"
+    app["name"] = app_name
+    app["id"] = resource
+    app["properties"]["latestRevisionName"] = revision_name
+    app["properties"]["latestReadyRevisionName"] = revision_name
+    app["properties"]["configuration"]["ingress"]["traffic"] = [
+        {"revisionName": revision_name, "weight": 100},
+    ]
+    app_template = app["properties"]["template"]
+    app_template["revisionSuffix"] = "azd-1793658361"
+    app_template["containers"][0]["resources"]["ephemeralStorage"] = "2Gi"
+    revision_template = copy.deepcopy(app_template)
+    revision_template.pop("revisionSuffix")
+    revision_template["containers"][0]["resources"].pop("ephemeralStorage")
+    revision.update({
+        "id": resource + "/revisions/" + revision_name,
+        "name": revision_name,
+    })
+    revision["properties"]["template"] = revision_template
     return app, revision
 
 
@@ -74,10 +112,6 @@ def merge_patch(target, patch):
         else:
             result[key] = merge_patch(result.get(key), value)
     return result
-
-
-def manifest():
-    return _lane_manifest("resolved")
 
 
 def revision_inventory(names, *, observed_at=None, active_name="api--r0"):
@@ -97,7 +131,7 @@ def revision_inventory(names, *, observed_at=None, active_name="api--r0"):
 
 class CutoverTests(unittest.TestCase):
     def build(self, app, revision, **kwargs):
-        return CUTOVER.build_payload(app, revision, resource_id=RESOURCE, **kwargs)
+        return CUTOVER.build_payload(app, revision, resource_id=app["id"], **kwargs)
 
     def test_c1_single_request_preserves_everything_except_mode_and_traffic(self):
         app, revision = snapshot()
@@ -114,79 +148,6 @@ class CutoverTests(unittest.TestCase):
         ]
         self.assertEqual(merge_patch(app, payload), expected)
         self.assertEqual(app, original)
-
-    def test_c3_single_request_pins_r0_and_changes_only_suffix_and_gateway_env(self):
-        app, revision = snapshot("Multiple")
-        value = manifest()
-        deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
-        original = copy.deepcopy(app)
-        payload = self.build(
-            app, revision, stage="C3", suffix="gw22s1",
-            deployments=deployment, manifest=json.dumps(value),
-            existing_revisions=revision_inventory(["api--r0", "api--legacy"]),
-        )
-        merged = merge_patch(app, payload)
-        self.assertEqual(merged["properties"]["configuration"], original["properties"]["configuration"])
-        candidate = merged["properties"]["template"]
-        old = original["properties"]["template"]
-        env = {item["name"]: item for item in candidate["containers"][0]["env"]}
-        self.assertEqual(env["AI4IA_SHARED_GATEWAY_ENABLED"]["value"], "true")
-        self.assertEqual(env["AI4IA_SHARED_GATEWAY_DEPLOYMENTS"]["value"], deployment)
-        self.assertEqual(
-            env["AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST"],
-            {"name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST", "secretRef": CUTOVER.SECRET},
-        )
-        self.assertEqual(candidate["containers"][0]["image"], old["containers"][0]["image"])
-        self.assertEqual(candidate["scale"], old["scale"])
-        candidate = copy.deepcopy(candidate)
-        candidate["revisionSuffix"] = old["revisionSuffix"]
-        candidate["containers"][0]["env"] = old["containers"][0]["env"]
-        self.assertEqual(candidate, old)
-        self.assertEqual(app, original)
-
-    def test_c3_baseline_must_be_the_fresh_r1_off_serving_revision(self):
-        app, revision = snapshot("Multiple")
-        revision["name"] = "api--r1"
-        revision["id"] = RESOURCE + "/revisions/api--r1"
-        app["properties"]["latestRevisionName"] = "api--r1"
-        app["properties"]["latestReadyRevisionName"] = "api--r1"
-        app["properties"]["configuration"]["ingress"]["traffic"] = [
-            {"revisionName": "api--r1", "weight": 100},
-        ]
-        value = manifest()
-        deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
-        rows = revision_inventory(["api--r0", "api--r1"], active_name="api--r1")
-
-        payload = self.build(
-            app, revision, stage="C3", suffix="gw22s1",
-            deployments=deployment, manifest=json.dumps(value), existing_revisions=rows,
-        )
-
-        self.assertEqual(
-            payload["properties"]["configuration"]["ingress"]["traffic"],
-            [{"revisionName": "api--r1", "weight": 100}],
-        )
-        candidate = payload["properties"]["template"]
-        self.assertEqual(
-            candidate["containers"][0]["image"],
-            revision["properties"]["template"]["containers"][0]["image"],
-        )
-        self.assertEqual(candidate["revisionSuffix"], "gw22s1")
-        old_revision_serving = copy.deepcopy(app)
-        old_revision_serving["properties"]["configuration"]["ingress"]["traffic"] = [
-            {"revisionName": "api--r0", "weight": 100},
-        ]
-        with self.assertRaisesRegex(ValueError, "traffic must identify R0"):
-            self.build(
-                old_revision_serving, revision, stage="C3", suffix="gw22s2",
-                deployments=deployment, manifest=json.dumps(value), existing_revisions=rows,
-            )
-        inactive_r1 = revision_inventory(["api--r0", "api--r1"])
-        with self.assertRaisesRegex(ValueError, "revision rows"):
-            self.build(
-                app, revision, stage="C3", suffix="gw22s2",
-                deployments=deployment, manifest=json.dumps(value), existing_revisions=inactive_r1,
-            )
 
     def test_c2_candidate_image_keeps_r0_at_100_and_changes_only_image_and_suffix(self):
         app, revision = snapshot("Multiple")
@@ -217,6 +178,146 @@ class CutoverTests(unittest.TestCase):
         candidate["revisionSuffix"] = old_template["revisionSuffix"]
         self.assertEqual(candidate, old_template)
         self.assertEqual(app, original)
+
+    def test_c2_web_stages_only_accepted_image_and_preserves_writable_template(self):
+        app, revision = snapshot("Multiple", service="web")
+        for value in (app["properties"]["template"], revision["properties"]["template"]):
+            value["containers"][0]["resources"]["ephemeralStorage"] = "2Gi"
+            value["initContainers"] = [{
+                "name": "init",
+                "image": "example.azurecr.io/ai4ia/web-init@sha256:" + "c" * 64,
+                "resources": {
+                    "cpu": 0.1, "memory": "1Gi", "ephemeralStorage": "1Gi",
+                },
+            }]
+        old_template = copy.deepcopy(revision["properties"]["template"])
+        original_config = copy.deepcopy(app["properties"]["configuration"])
+        candidate_image = old_template["containers"][0]["image"].rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+        rows = revision_inventory(
+            ["ca-web-test--r0", "ca-web-test--old"], active_name="ca-web-test--r0",
+        )
+        payload = self.build(
+            app, revision, stage="C2", service="web", suffix="web-image-1",
+            web_image=candidate_image, existing_revisions=rows,
+        )
+
+        merged = merge_patch(app, payload)
+        candidate = merged["properties"]["template"]
+        expected = CUTOVER.writable_template_projection(old_template)
+        expected["revisionSuffix"] = "web-image-1"
+        expected["containers"][0]["image"] = candidate_image
+        self.assertEqual(candidate, expected)
+        self.assertNotIn("ephemeralStorage", candidate["containers"][0]["resources"])
+        self.assertNotIn("ephemeralStorage", candidate["initContainers"][0]["resources"])
+        self.assertEqual(merged["properties"]["configuration"], original_config)
+        self.assertEqual(
+            payload["properties"]["configuration"]["ingress"]["traffic"],
+            [{"revisionName": "ca-web-test--r0", "weight": 100}],
+        )
+
+    def test_api_and_web_accept_only_observed_provider_template_projection(self):
+        for service in ("api", "web"):
+            app, revision = provider_projection_snapshot(service)
+            self.assertNotEqual(
+                app["properties"]["template"], revision["properties"]["template"],
+            )
+            old_template = revision["properties"]["template"]
+            old_image = old_template["containers"][0]["image"]
+            candidate_image = old_image.rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+            revision_name = revision["name"]
+            with self.subTest(service=service):
+                kwargs = {
+                    "stage": "C2",
+                    "service": service,
+                    "suffix": "candidate-1",
+                    "existing_revisions": revision_inventory(
+                        [revision_name], active_name=revision_name,
+                    ),
+                }
+                kwargs["api_image" if service == "api" else "web_image"] = candidate_image
+                payload = self.build(app, revision, **kwargs)
+                expected = CUTOVER.writable_template_projection(old_template)
+                expected["revisionSuffix"] = "candidate-1"
+                expected["containers"][0]["image"] = candidate_image
+                self.assertEqual(payload["properties"]["template"], expected)
+
+                changed = copy.deepcopy(app)
+                changed["properties"]["template"]["containers"][0]["env"][0]["value"] = "changed"
+                with self.assertRaisesRegex(ValueError, "identical writable template"):
+                    self.build(changed, revision, **kwargs)
+
+                malformed = copy.deepcopy(app)
+                malformed["properties"]["template"]["containers"][0]["resources"][
+                    "ephemeralStorage"
+                ] = {"unknown": "provider-field"}
+                with self.assertRaises(ValueError):
+                    self.build(malformed, revision, **kwargs)
+
+    def test_c2_web_rejects_bad_image_revision_and_service_inputs(self):
+        for control in (
+            "wrong-repository", "mutable", "same-image", "suffix-collision",
+            "stale-inventory", "missing-r0", "inactive-r0", "wrong-container",
+            "wrong-image-argument", "wrong-source-environment-repository",
+            "wrong-mode", "latest-rule", "stale-latest", "stale-ready",
+        ):
+            app, revision = snapshot("Multiple", service="web")
+            current = revision["properties"]["template"]["containers"][0]["image"]
+            candidate = current.rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+            names = ["ca-web-test--r0", "ca-web-test--old"]
+            active_name = "ca-web-test--r0"
+            rows = revision_inventory(names, active_name=active_name)
+            suffix = "web-image-1"
+            image = candidate
+            api_image = ""
+            if control == "wrong-repository":
+                image = "example.azurecr.io/ai4ia/api-test@sha256:" + "b" * 64
+            elif control == "mutable":
+                image = "example.azurecr.io/ai4ia/web-test:mutable"
+            elif control == "same-image":
+                image = current
+            elif control == "suffix-collision":
+                names.append("ca-web-test--web-image-1")
+                rows = revision_inventory(names, active_name=active_name)
+            elif control == "stale-inventory":
+                rows = revision_inventory(
+                    names, active_name=active_name,
+                    observed_at=(datetime.now(UTC) - timedelta(seconds=121)).isoformat(),
+                )
+            elif control == "missing-r0":
+                rows = revision_inventory(
+                    ["ca-web-test--old"], active_name="ca-web-test--old",
+                )
+            elif control == "inactive-r0":
+                rows = revision_inventory(names, active_name="ca-web-test--old")
+            elif control == "wrong-container":
+                app["properties"]["template"]["containers"][0]["name"] = "api"
+                revision["properties"]["template"]["containers"][0]["name"] = "api"
+            elif control == "wrong-image-argument":
+                api_image, image = candidate, ""
+            elif control == "wrong-source-environment-repository":
+                source_image = "example.azurecr.io/ai4ia/web-prod@sha256:" + "a" * 64
+                app["properties"]["template"]["containers"][0]["image"] = source_image
+                revision["properties"]["template"]["containers"][0]["image"] = source_image
+                image = source_image.rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+            elif control == "wrong-mode":
+                app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
+            elif control == "latest-rule":
+                app["properties"]["configuration"]["ingress"]["traffic"] = [
+                    {"latestRevision": True, "weight": 100},
+                ]
+            elif control == "stale-latest":
+                app["properties"]["latestRevisionName"] = "ca-web-test--old"
+            elif control == "stale-ready":
+                app["properties"]["latestReadyRevisionName"] = "ca-web-test--old"
+            with self.subTest(control=control), self.assertRaises(ValueError):
+                self.build(
+                    app, revision, stage="C2", service="web", suffix=suffix,
+                    api_image=api_image, web_image=image, existing_revisions=rows,
+                )
+
+        app, revision = snapshot("Multiple", service="web")
+        with self.assertRaisesRegex(ValueError, "classified as nonconfidential"):
+            self.build(app, revision, stage="C3", service="web")
 
     def test_c2_rejects_stale_or_ambiguous_revision_and_image_inputs(self):
         app, revision = snapshot("Multiple")
@@ -270,28 +371,15 @@ class CutoverTests(unittest.TestCase):
                     api_image=image, existing_revisions=revisions,
                 )
 
-    def test_c2_requires_all_stage_inputs_and_other_stages_reject_them(self):
+    def test_c2_requires_all_stage_inputs(self):
         app, revision = snapshot("Multiple")
         image = revision["properties"]["template"]["containers"][0]["image"].rsplit("@", 1)[0] + "@sha256:" + "b" * 64
         for kwargs in (
             {"api_image": image},
             {"existing_revisions": revision_inventory(["api--r0"])},
-            {"api_image": image, "existing_revisions": revision_inventory(["api--r0"]), "manifest": manifest().__str__()},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 self.build(app, revision, stage="C2", suffix="image-1", **kwargs)
-        with self.assertRaises(ValueError):
-            self.build(
-                app, revision, stage="C3", suffix="gw22s1", deployments="x",
-                manifest=json.dumps(manifest()), api_image=image,
-                existing_revisions=revision_inventory(["api--r0"]),
-            )
-        deployment = next(iter(manifest()["models"].values()))["targets"][0]["deployment"]
-        with self.assertRaisesRegex(ValueError, "revision rows"):
-            self.build(
-                app, revision, stage="C3", suffix="gw22s1",
-                deployments=deployment, manifest=json.dumps(manifest()),
-            )
 
     def test_c2_allows_absent_selector_flags_with_private_reader_rows(self):
         app, revision = snapshot("Multiple")
@@ -310,10 +398,8 @@ class CutoverTests(unittest.TestCase):
         )
         self.assertEqual(payload["properties"]["template"]["containers"][0]["image"], image)
 
-    def test_c2_c3_reject_hand_authored_completeness_claims_and_malformed_rows(self):
+    def test_c2_rejects_hand_authored_completeness_claims_and_malformed_rows(self):
         app, revision = snapshot("Multiple")
-        value = manifest()
-        deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
         forged = {
             "complete": True,
             "names": ["api--r0"],
@@ -329,8 +415,9 @@ class CutoverTests(unittest.TestCase):
         for rows in malformed:
             with self.subTest(rows=rows), self.assertRaises(ValueError):
                 self.build(
-                    app, revision, stage="C3", suffix="gw22s1",
-                    deployments=deployment, manifest=json.dumps(value), existing_revisions=rows,
+                    app, revision, stage="C2", suffix="image-1",
+                    api_image="example.azurecr.io/ai4ia/api-test@sha256:" + "b" * 64,
+                    existing_revisions=rows,
                 )
 
     def test_revision_inventory_rejects_naive_times_and_enforces_aware_skew_bounds(self):
@@ -381,68 +468,26 @@ class CutoverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.build(app, revision, stage="C1")
 
-    def test_c3_rejects_latest_rule_missing_secret_and_schema_only_manifest(self):
-        for control in ("latest", "secret", "schema-only", "unknown", "empty", "wrong-case"):
-            app, revision = snapshot("Multiple")
-            value = manifest()
-            deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
-            if control == "latest":
-                app["properties"]["configuration"]["ingress"]["traffic"] = [
-                    {"latestRevision": True, "weight": 100},
-                ]
-            elif control == "secret":
-                app["properties"]["configuration"]["secrets"] = []
-            elif control == "schema-only":
-                value = _lane_manifest("schema-only")
-                app["properties"]["template"]["containers"][0]["env"][0]["value"] = (
-                    value["auth"]["callerClientId"]
-                )
-                revision["properties"]["template"] = copy.deepcopy(app["properties"]["template"])
-            elif control == "unknown":
-                deployment = "unknown"
-            elif control == "empty":
-                deployment = ""
-            else:
-                deployment = deployment.upper()
-            with self.subTest(control=control), self.assertRaises(ValueError):
-                self.build(
-                    app, revision, stage="C3", suffix="gw22s1",
-                    deployments=deployment, manifest=json.dumps(value),
-                    existing_revisions=revision_inventory(["api--r0", "api--legacy"]),
-                )
+    def test_c3_is_blocked_without_manifest_classification(self):
+        app, revision = snapshot("Multiple")
+        with self.assertRaisesRegex(ValueError, "classified as nonconfidential"):
+            self.build(app, revision, stage="C3")
 
-    def test_refuses_wrong_target_tagged_image_pilot_duplicate_env_and_suffix(self):
-        for control in ("target", "image", "pilot", "duplicate-env", "mode", "suffix", "existing-suffix"):
-            app, revision = snapshot("Multiple")
-            value = manifest()
-            deployment = next(iter(value["models"].values()))["targets"][0]["deployment"]
-            suffix = "gw22s1"
-            revisions = ["api--r0", "api--legacy"]
-            if control == "target":
-                app["id"] += "-other"
-            elif control == "image":
-                app["properties"]["template"]["containers"][0]["image"] = "example.invalid/api:tag"
-            elif control == "pilot":
-                app["properties"]["template"]["containers"][0]["env"].append(
-                    {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "true"},
-                )
-            elif control == "duplicate-env":
-                app["properties"]["template"]["containers"][0]["env"].append(
-                    {"name": "AZURE_CLIENT_ID", "value": "ambiguous"},
-                )
-            elif control == "mode":
-                app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
-            elif control == "existing-suffix":
-                revisions.append("api--gw22s1")
-            else:
-                suffix = "r0"
-            revision["properties"]["template"] = copy.deepcopy(app["properties"]["template"])
-            with self.subTest(control=control), self.assertRaises(ValueError):
-                self.build(
-                    app, revision, stage="C3", suffix=suffix,
-                    deployments=deployment, manifest=json.dumps(value),
-                    existing_revisions=revision_inventory(revisions),
-                )
+    def test_c3_cli_refuses_before_reading_snapshots_or_writing_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "blocked.json"
+            command = [
+                sys.executable, str(ROOT / "scripts" / "prepare-gateway-cutover.py"),
+                "--stage", "C3",
+                "--app", str(Path(directory) / "missing-app.json"),
+                "--revision", str(Path(directory) / "missing-revision.json"),
+                "--resource-id", RESOURCE, "--output", str(output),
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("classified as nonconfidential", result.stderr)
+            self.assertNotIn("No such file", result.stderr)
+            self.assertFalse(output.exists())
 
     def test_cli_writes_reviewable_patch_without_overwriting_existing_output(self):
         app, revision = snapshot()
@@ -465,6 +510,39 @@ class CutoverTests(unittest.TestCase):
             self.assertEqual(refused.returncode, 1)
             self.assertIn("Cutover payload refused:", refused.stderr)
             self.assertEqual(output.read_bytes(), before)
+
+    def test_cli_refuses_snapshot_or_payload_paths_inside_repository(self):
+        app, revision = snapshot()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            app_path = path / "app.json"
+            revision_path = path / "revision.json"
+            output_path = path / "patch.json"
+            app_path.write_text(json.dumps(app), encoding="utf-8")
+            revision_path.write_text(json.dumps(revision), encoding="utf-8")
+            blocked_input = ROOT / "__private_snapshot_test__.json"
+            blocked_output = ROOT / "__private_payload_test__.json"
+            self.assertFalse(blocked_input.exists())
+            self.assertFalse(blocked_output.exists())
+
+            for app_arg, output_arg in (
+                (blocked_input, output_path),
+                (app_path, blocked_output),
+            ):
+                command = [
+                    sys.executable, str(ROOT / "scripts" / "prepare-gateway-cutover.py"),
+                    "--stage", "C1", "--app", str(app_arg),
+                    "--revision", str(revision_path),
+                    "--resource-id", RESOURCE, "--output", str(output_arg),
+                ]
+                result = subprocess.run(command, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("must stay outside the repository", result.stderr)
+                self.assertNotIn(str(blocked_input), result.stderr)
+                self.assertNotIn(str(blocked_output), result.stderr)
+
+            self.assertFalse(blocked_input.exists())
+            self.assertFalse(blocked_output.exists())
 
 
 if __name__ == "__main__":

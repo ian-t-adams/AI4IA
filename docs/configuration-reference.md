@@ -340,31 +340,38 @@ stale pin. Keep the workflow frozen until a separately reviewed reconciliation;
 the pin is not evidence of Azure's atomic transition behavior.
 
 `scripts/prepare-gateway-cutover.py --stage C2` is an offline request-body
-constructor only. Given a stable healthy R0 snapshot, it emits a Multiple-mode
-patch that keeps the named R0 at 100%, changes only a new digest-pinned image in
-R0's exact API repository and a unique revision suffix, and requires the shared
-gateway selector and pilot isolation flags to be absent or literal `false`.
-Its revision inventory input must come from a fresh, complete, terminal-page
-ARM revisions enumeration. Use the rows from
+constructor only. Given a healthy latest/ready R0 snapshot, API C2 emits a
+Multiple-mode patch that keeps the named R0 at 100%, changes only a new
+digest-pinned image in R0's exact API repository and a unique revision suffix,
+and requires the shared-gateway selector and pilot isolation flags to be absent
+or literal `false`. Web C2 uses `--service web`, requires the exact
+`web-<environment>` ACR repository derived from the app name and an independently
+verified paired-producer image digest, and changes only the web image and
+revision suffix. The helper does not verify producer provenance. Both paths use
+the existing writable-template projection: only `revisionSuffix` and the
+schema-declared read-only `resources.ephemeralStorage` fields in containers and
+init containers are omitted; other differences are preserved or refused. This
+defines the offline request shape, not Azure PATCH acceptance.
+The revision rows must be collected with the fresh, complete, terminal-page ARM
+revisions reader. Use the rows from
 `preview-api-private.py::private_revision_rows`, which uses
 `check-api-private-network.py::revision_continuation` to rebuild only the exact
 `2024-10-02-preview` / `pageSize=20` scoped request and opaque `skipToken`;
-collection is bounded to 31 pages, 639 rows, and 120 seconds. C2 and C3 reject
-duplicate rows and an already-existing candidate revision name. The offline
-helper validates row shape, name collisions, and a timezone-aware timestamp
-within its 120-second window. The timestamp is caller-supplied: the helper cannot
-authenticate that a file came from the collector or prove its pagination
-completeness or freshness. It does not accept a caller-authored `complete=true`
-claim or follow `nextLink` values. C3 validates the supplied manifest JSON and
-emits the existing named `secretRef`; it does not read or prove that the live
-secret value matches that manifest. No C1/C2/C3 apply consumer exists, so the
-helper's offline output is not sent to Azure. Any future approved apply path
-must re-read with the existing collector, independently bind the secret-free
+collection is bounded to 31 pages, 639 rows, and 120 seconds. The helper checks
+row shape, duplicate/candidate names, and a timezone-aware caller-supplied
+timestamp within its 120-second window. It cannot authenticate that the rows
+came from the collector or prove pagination completeness or freshness. It does
+not accept a caller-authored `complete=true` claim or follow `nextLink` values.
+C3 construction is explicitly refused until the exact production manifest is
+independently classified as nonconfidential; schema validation alone is not
+classification, and no production manifest was read. No C1/C2/C3 apply consumer
+exists, so helper output is not sent to Azure. Any future approved apply path
+must re-read with the existing collector, independently bind any approved
 manifest contract, and rebind the exact app/revision snapshot immediately before
 dispatch. The helper performs no Azure read or write, and its offline merge
-patch does not prove Azure atomicity, current state at send time, or traffic
-behavior. It is not approval to use a production API app or a replacement for
-the separately reviewed deployment/freeze gates.
+patch does not prove Azure acceptance, atomicity, current state at send time, or
+traffic behavior. It is not approval to use a production app or a replacement
+for the separately reviewed deployment/freeze gates.
 
 Onboarding dependency: `gateway.baseUrl` must identify a reachable,
 dedicated bearer-validating SimpleL7Proxy, not APIM and not AI4IA's existing

@@ -738,13 +738,24 @@ Preserve that ownership: AI4IA preflight is read-only for this connectivity and
 must never duplicate, replace, delete, or use complete-mode cleanup on c2-owned
 resources. Missing or ambiguous peering/DNS evidence blocks readiness; it does
 not authorize repair.
-`scripts/prepare-gateway-cutover.py` is offline only. Its C2/C3 revision rows
+`scripts/prepare-gateway-cutover.py` is offline only. Its API/web C2 revision rows
 must be sourced from `preview-api-private.py::private_revision_rows`, which uses
 the scoped `check-api-private-network.py::revision_continuation` contract. The
-constructor checks row shape and name collisions but cannot prove pagination
-completeness or freshness; do not treat its output as authority to send a PATCH.
+constructor checks row shape, age and name collisions but cannot prove
+pagination completeness or provenance; do not treat its output as authority to
+send a PATCH.
 Any future apply path must re-read through the existing collector and bind that
 result with the live app/revision snapshot immediately before dispatch.
+The C3 literal-manifest path remains blocked until an authorized owner classifies
+the exact production manifest as nonconfidential; schema validation alone is not
+classification. The 2.2.0 loader fixes `auth.credential` to `managed-identity`
+and rejects unknown keys, but no production manifest has been read or classified.
+Snapshots and payloads may contain sensitive environment values: never log,
+commit, or place them in chat or the shared repository. The CLI rejects files
+inside the repository, but that does not establish restricted ACLs or secure
+deletion; use private ephemeral storage. A future apply path needs restricted
+ephemeral handling, exact template-semantics preservation, and an explicit
+redacted receipt, not metadata-only proof.
 The foundation retains the two corporate-governance NSGs at their exact
 `vnet-<workload>-<environment>-api-private-<api|cosmos>-nsg-<location>` names
 and subnet associations. Both declare `securityRules: []`: default rules only,
