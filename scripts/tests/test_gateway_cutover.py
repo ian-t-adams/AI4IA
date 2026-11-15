@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -625,6 +626,51 @@ class CutoverTests(unittest.TestCase):
             CUTOVER.git_blob_sha1(loader_path.read_bytes()),
             "cd89beaffe81acb0dd344ddd8a81d1a0c78e890e",
         )
+
+    def test_c3_ignores_preloaded_unqualified_loader(self):
+        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        fake = types.ModuleType("ai4ia_api.shared_gateway_contract")
+        fake.load_shared_gateway_manifest = lambda *args, **kwargs: self.fail(
+            "cached, unqualified loader was invoked",
+        )
+        with patches[0], patches[1], patch.dict(
+            sys.modules, {"ai4ia_api.shared_gateway_contract": fake},
+        ):
+            _, manifest = CUTOVER.load_c3_contract(manifest_bytes, sidecar_bytes, API_CLIENT_ID)
+            self.assertEqual(manifest.contract_version, "2.2.0")
+            self.assertIs(sys.modules["ai4ia_api.shared_gateway_contract"], fake)
+
+    def test_c3_executes_checked_loader_bytes_after_disk_swap(self):
+        manifest_bytes, sidecar_bytes = synthetic_c3_inputs()
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar_bytes)
+        qualified = (ROOT / "app" / "api" / "src" / "ai4ia_api" / "shared_gateway_contract.py").read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            loader_path = root / "app" / "api" / "src" / "ai4ia_api" / "shared_gateway_contract.py"
+            loader_path.parent.mkdir(parents=True)
+            loader_path.write_bytes(qualified)
+            original_read = Path.read_bytes
+            reads = []
+
+            def swap_after_read(path):
+                result = original_read(path)
+                if path == loader_path:
+                    reads.append(path)
+                    loader_path.write_text(
+                        "raise AssertionError('swapped loader executed')\n", encoding="utf-8",
+                    )
+                return result
+
+            package = types.ModuleType("ai4ia_api")
+            package.__path__ = [str(loader_path.parent)]
+            with patches[0], patches[1], patch.object(CUTOVER, "ROOT", root), patch.object(
+                Path, "read_bytes", swap_after_read,
+            ), patch.dict(sys.modules, {"ai4ia_api": package}):
+                sys.modules.pop("ai4ia_api.shared_gateway_contract", None)
+                _, manifest = CUTOVER.load_c3_contract(manifest_bytes, sidecar_bytes, API_CLIENT_ID)
+                self.assertEqual(manifest.contract_version, "2.2.0")
+                self.assertEqual(reads, [loader_path])
 
     def test_c3_rejects_hash_sidecar_activation_and_classification_mismatches(self):
         manifest_bytes, sidecar_bytes = synthetic_c3_inputs()

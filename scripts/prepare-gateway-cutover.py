@@ -9,7 +9,9 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
+from uuid import uuid4
 
 API_VERSION = "2025-01-01"
 C3_BLOCKER = (
@@ -93,7 +95,8 @@ def load_c3_contract(
         raise ValueError("C3 evidence sidecar digest does not match the pinned handoff")
 
     loader_path = ROOT / "app" / "api" / "src" / "ai4ia_api" / "shared_gateway_contract.py"
-    if git_blob_sha1(loader_path.read_bytes()) != C3_QUALIFIED_LOADER_SHA256:
+    loader_bytes = loader_path.read_bytes()
+    if git_blob_sha1(loader_bytes) != C3_QUALIFIED_LOADER_SHA256:
         raise ValueError("C3 requires the qualified shared gateway contract loader")
 
     try:
@@ -112,13 +115,12 @@ def load_c3_contract(
     ):
         raise ValueError("C3 evidence sidecar does not prove the required non-activation state")
 
-    api_source = ROOT / "app" / "api" / "src"
-    if str(api_source) not in sys.path:
-        sys.path.insert(0, str(api_source))
-    from ai4ia_api.shared_gateway_contract import load_shared_gateway_manifest
-
+    module_name = f"_ai4ia_qualified_gateway_contract_{uuid4().hex}"
+    module = ModuleType(module_name)
+    sys.modules[module_name] = module
     try:
-        manifest = load_shared_gateway_manifest(
+        exec(compile(loader_bytes, "<qualified-shared-gateway-contract>", "exec"), module.__dict__)  # noqa: S102 - digest-pinned repository source
+        manifest = module.load_shared_gateway_manifest(
             raw_manifest,
             api_identity_client_id=api_identity_client_id,
             require_api_identity=True,
@@ -128,6 +130,8 @@ def load_c3_contract(
         raise ValueError(
             "C3 manifest is rejected by the qualified shared gateway contract loader"
         ) from exc
+    finally:
+        del sys.modules[module_name]
     if (
         manifest.contract_version != "2.2.0"
         or manifest.status != "resolved"

@@ -2561,7 +2561,9 @@ PATCH body or prove any live service behavior.
    to report `activationReady=false`, unchanged application and zero model
    requests, and validates the manifest with the qualified
    `shared_gateway_contract.py` Git blob
-   `cd89beaffe81acb0dd344ddd8a81d1a0c78e890e`. That strict 2.2 loader binds the
+   `cd89beaffe81acb0dd344ddd8a81d1a0c78e890e`; the exact checked bytes run in
+   an isolated module, not a cached import or a second disk read. That strict
+   2.2 loader binds the
    manifest caller to the API's literal `AZURE_CLIENT_ID`, requires the fixed
    `managed-identity` credential, and rejects extra schema fields. The
    constructor replaces only the exact existing manifest `secretRef` with the
@@ -2574,6 +2576,15 @@ PATCH body or prove any live service behavior.
    readiness or activation evidence. A local qualification resolved all 71
    manifest model rows and rejected 213 wrong alternatives; it is not a
    substitute for a fresh app-bound snapshot or a CI/live service proof.
+   The constructor additionally requires an existing manifest `secretRef`,
+   literal false selector and nonempty resolved deployment list in R1. C2 changes
+   only image and suffix and does not create these inputs; the coordinator reports
+   that the baseline has no manifest secret, while a fresh R1 is not available
+   here to verify the selector and deployment list. Therefore this is a hypothetical
+   fail-closed constructor,
+   not an executable transition from that baseline. A separately reviewed
+   source and operator contract is needed before addressing absent inputs; do
+   not infer or perform an intermediate settings or secret write.
 4. C3 construction does not authorize staging, activation, traffic change or
    model requests. Worker-transition/quiescence, deployed-SDK, exact fresh
    snapshot, readiness, route-operation and streaming gates remain separate.
