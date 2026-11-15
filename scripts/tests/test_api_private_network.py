@@ -326,6 +326,87 @@ class PrivateAdmissionTests(unittest.TestCase):
             self.assertNotIn(f"vars.{name}", workflow)
 
 
+class PeeredPrivateNetworkTests(unittest.TestCase):
+    SOURCE = "a" * 40
+    REMOTE = (f"/subscriptions/{SUB}/resourceGroups/rg-gateway/providers/"
+              "Microsoft.Network/virtualNetworks/vnet-gateway")
+
+    def cloud(self, peerings=None, prefixes=("10.241.0.0/25",)):
+        cloud = Cloud(staged=False)
+        for row in cloud.details["ca-web-test"]["properties"]["template"]["containers"][0]["env"]:
+            row["value"] = "https://ca-api-private-test.synthetic.azurecontainerapps.io"
+        if peerings is None:
+            peerings = [{"id": VNET + "/virtualNetworkPeerings/to-gateway",
+                         "remoteVirtualNetwork": {"id": self.REMOTE}, "peeringState": "Connected"}]
+        cloud.networks.append({"id": VNET, "prefixes": list(prefixes), "peerings": peerings})
+        return cloud
+
+    def env(self, operation="private-pair", **overrides):
+        values = {**ENV, "AI4IA_API_NETWORK_PHASE": "private", "GITHUB_REF": "refs/heads/main",
+                  "GITHUB_EVENT_NAME": "workflow_dispatch", "AI4IA_RELEASE_OPERATION": operation,
+                  "AI4IA_RELEASE_PROVISION": "false", "AI4IA_RELEASE_SOURCE_SHA": self.SOURCE,
+                  "GITHUB_SHA": self.SOURCE, "AI4IA_API_IMAGE_PRODUCER_ENABLED": "true",
+                  "AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "true", **overrides}
+        return {key: value for key, value in values.items() if value is not None}
+
+    def admit(self, cloud, env, preview=True):
+        return MODULE.admission(env, cloud.read, lambda _: True, preview=preview)
+
+    def test_registry_only_image_operations_tolerate_a_valid_peering(self):
+        for operation in ("private-image", "private-pair"):
+            with self.subTest(operation=operation):
+                result = self.admit(self.cloud(), self.env(operation))
+                self.assertEqual((result["AI4IA_PRIVATE_MIGRATION_PENDING"],
+                                  result["AI4IA_PRIVATE_EXECUTION_BLOCKERS"]), ("false", "[]"))
+        self.admit(self.cloud(peerings=[]), self.env(AI4IA_RELEASE_OPERATION="deploy"), preview=False)
+
+    def test_peering_never_relaxes_provisioning_deployment_or_forged_gates(self):
+        refusals = [
+            (self.env("deploy", AI4IA_RELEASE_PROVISION="true", AI4IA_PRIVATE_PREVIEW_BINDING="x"), True),
+            (self.env("auto"), True), (self.env("preview"), True), (self.env("image"), True),
+            (self.env("private-pair", AI4IA_RELEASE_PROVISION="true"), True),
+            (self.env("private-pair", AI4IA_RELEASE_PROVISION=None), True),
+            (self.env("private-pair", AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED=None), True),
+            (self.env("private-pair", AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED="false"), True),
+            (self.env("private-image", AI4IA_API_IMAGE_PRODUCER_ENABLED=None), True),
+            (self.env("private-pair", AI4IA_RELEASE_SOURCE_SHA="b" * 40), True),
+            (self.env("private-pair", GITHUB_EVENT_NAME="push"), True),
+            (self.env("private-pair", GITHUB_REF="refs/heads/feature"), True),
+            (self.env("private-pair", AI4IA_PRIVATE_PREVIEW_BINDING="x"), True),
+            (self.env("private-pair"), False),
+        ]
+        for index, (env, preview) in enumerate(refusals):
+            with self.subTest(index=index):
+                with self.assertRaisesRegex(ValueError, "registry-only image operation"):
+                    self.admit(self.cloud(), env, preview)
+
+    def test_peered_registry_operation_still_needs_exact_prefixes_and_completed_state(self):
+        with self.assertRaisesRegex(ValueError, "standalone address plan"):
+            self.admit(self.cloud(prefixes=("10.241.0.0/24",)), self.env())
+        cloud = self.cloud()
+        for row in cloud.details["ca-web-test"]["properties"]["template"]["containers"][0]["env"]:
+            row["value"] = "https://ca-api-test.synthetic.azurecontainerapps.io"
+        with self.assertRaisesRegex(ValueError, "registry-only image operation"):
+            self.admit(cloud, self.env())
+        cloud = self.cloud()
+        cloud.apps["ca-api-private-test"] = None
+        for row in cloud.details["ca-web-test"]["properties"]["template"]["containers"][0]["env"]:
+            row["value"] = "https://ca-api-test.synthetic.azurecontainerapps.io"
+        with self.assertRaisesRegex(ValueError, "registry-only image operation"):
+            self.admit(cloud, self.env(AI4IA_API_NETWORK_PHASE="candidate"))
+
+    def test_malformed_peering_inventory_refuses(self):
+        good = {"id": VNET + "/virtualNetworkPeerings/to-gateway", "remoteVirtualNetwork": {"id": self.REMOTE}}
+        for peerings in (None, "x", [None], [{}], [{**good, "id": "other/virtualNetworkPeerings/x"}],
+                         [{**good, "remoteVirtualNetwork": {"id": VNET}}], [{**good, "remoteVirtualNetwork": None}],
+                         [good] * 9):
+            with self.subTest(peerings=peerings):
+                cloud = self.cloud()
+                cloud.networks[0]["peerings"] = peerings
+                with self.assertRaisesRegex(ValueError, "peering inventory is invalid"):
+                    self.admit(cloud, self.env())
+
+
 class LegacyRevisionInventoryTests(unittest.TestCase):
     path = f"/subscriptions/{SUB}/resourceGroups/rg-ai4ia-test/providers/Microsoft.App/containerApps/ca-api-test/revisions"
 
