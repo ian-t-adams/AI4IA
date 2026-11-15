@@ -70,6 +70,7 @@ class FakeArm:
         self.sleep = self.clock.sleep
         self.writes = 0
         self.calls = []
+        self.requests = []
         self.fail = {}
         self.unready = set()
         self.app = {
@@ -118,6 +119,7 @@ class FakeArm:
     def write(self, method, path, body=None, *, timeout=600, phase="write"):
         self.writes += 1
         self.calls.append((method, path, phase))
+        self.requests.append((method, path, copy.deepcopy(body), phase))
         if phase in self.fail:
             raise self.fail.pop(phase)
         if method == "POST" and path.endswith("/deactivate"):
@@ -593,6 +595,34 @@ class RollbackTests(ReleaseFlowBase):
         with self.assertRaisesRegex(release.Refused, "dts-gate"):
             runner.rollback(R0)
         self.assertEqual(arm.writes, 0)
+
+
+class CutoverIntegrationTests(unittest.TestCase):
+    def test_real_c2_builder_preserves_references_and_released_image(self):
+        baseline_env = [{"name": "VOICE_UNCHANGED", "secretRef": "voice"}]
+        arm = FakeArm(extra_env=baseline_env)
+        arm.app["properties"]["configuration"]["secrets"] = [{"name": "voice"}]
+        now = datetime.now(UTC)
+        arm.gate_values = [metrics(ZERO, at=now - timedelta(minutes=1))]
+        gate = release.DtsGate(arm, now=lambda: now, attempts=1)
+        receipt = {"steps": []}
+        runner = release.Release(arm, env(), receipt, gate=gate, now=lambda: now)
+
+        runner.run("c2-api")
+
+        self.assertEqual(receipt["serving"], receipt["candidate"])
+        self.assertEqual(arm.app["properties"]["configuration"]["secrets"], [{"name": "voice"}])
+        self.assertEqual(
+            arm.revisions[receipt["candidate"]]["properties"]["template"]["containers"][0]["env"],
+            baseline_env,
+        )
+        self.assertEqual(
+            arm.revisions[receipt["candidate"]]["properties"]["template"]["containers"][0]["image"],
+            release.IMAGES["api"],
+        )
+        for _, _, body, _ in arm.requests:
+            if body is not None:
+                self.assertNotIn("secrets", (body["properties"].get("configuration") or {}))
 
 
 class SmokeTests(unittest.TestCase):
