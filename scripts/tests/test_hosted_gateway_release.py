@@ -1307,12 +1307,15 @@ class WebSocketTests(unittest.TestCase):
         sock = ChunkSocket([server_frame(b"\x00\x01$ "), server_frame(
             b"\x00\x01" + release.SMOKE_MARK.encode() + json.dumps(result).encode() + b"\n")])
         self.assertEqual(release.exec_smoke(sock, [], deadline=240, clock=lambda: 0), result)
-        self.assertEqual(sock.timeouts, [20, 240])
+        self.assertEqual(sock.timeouts, [240, 20, 240])
 
     def test_marker_before_stdin_is_refused(self):
         sock = FakeSocket(server_frame(b"\x00\x01" + release.SMOKE_MARK.encode() + b"{}\n"))
+        diag = release.new_exec_diagnostics()
         with self.assertRaisesRegex(release.Refused, "smoke-output"):
-            release.exec_smoke(sock, [b"x\n"], deadline=60, clock=lambda: 0)
+            release.exec_smoke(sock, [b"x\n"], deadline=60, clock=lambda: 0, diag=diag)
+        self.assertTrue(diag["first_output_before_stdin"])
+        self.assertTrue(diag["marker_seen"])
 
     def test_unexpected_forwarded_stream_is_a_refusal(self):
         diag = release.new_exec_diagnostics()
@@ -1349,6 +1352,38 @@ class WebSocketTests(unittest.TestCase):
             release.exec_smoke(FakeSocket(frame), [], deadline=1, clock=lambda: 0, diag=diag)
         self.assertEqual((diag["close_code"], diag["frames_by_opcode"]["close"]), (1011, 1))
         self.assertNotIn("PRIVATE_REASON_SENTINEL", json.dumps(diag))
+
+    def test_deadline_bounds_pacing_and_prevents_further_stdin(self):
+        clock = Clock()
+        diag = release.new_exec_diagnostics()
+        sock = FakeSocket(server_frame(b"\x00\x01$ "))
+        with self.assertRaisesRegex(release.Refused, "smoke-timeout"):
+            release.exec_smoke(sock, [b"one\n", b"two\n"], deadline=0.01,
+                               clock=clock, sleep=clock.sleep, diag=diag)
+        self.assertEqual(clock.t, 0.01)
+        self.assertEqual(diag["stdin_frames_sent"], 1)
+
+    def test_partial_frame_survives_attach_timeout(self):
+        clock = Clock()
+        marker = server_frame(b"\x00\x01" + release.SMOKE_MARK.encode() + b'{"ok":true}\n')
+
+        class PartialSocket(FakeSocket):
+            def __init__(self):
+                super().__init__(b"")
+                self.chunks = [b"\x82", None, b"\x04\x00\x01$ ", marker]
+
+            def recv(self, size):
+                chunk = self.chunks.pop(0)
+                if chunk is None:
+                    clock.t += self.timeouts[-1]
+                    raise TimeoutError()
+                return chunk
+
+        diag = release.new_exec_diagnostics()
+        self.assertEqual(release.exec_smoke(PartialSocket(), [b"exit\n"], deadline=60,
+                                            clock=clock, sleep=clock.sleep, diag=diag), {"ok": True})
+        self.assertFalse(diag["first_output_before_stdin"])
+        self.assertEqual(diag["frames_by_channel"]["forward_stdout"], 2)
 
 
 def client_frames(data: bytes) -> list[tuple[int, bytes]]:
@@ -1489,7 +1524,7 @@ class ReferenceExecTests(unittest.TestCase):
         result = self.probe(server)
         self.assertTrue(release.web_probe_passed(result))
         self.assertFalse(result["exec"]["first_output_before_stdin"])
-        self.assertEqual(server.timeouts[1], release.ATTACH_WAIT)
+        self.assertIn(release.ATTACH_WAIT, server.timeouts)
 
     def test_refusal_carries_content_free_exec_diagnostics(self):
         server = ReferenceExecServer("NEVER_MATCHING_MARK=", {}, attach_output=True)
@@ -1502,6 +1537,60 @@ class ReferenceExecTests(unittest.TestCase):
         text = json.dumps(caught.exception.detail)
         for sentinel in SENTINELS:
             self.assertNotIn(sentinel, text)
+
+    def test_early_refusals_include_empty_content_free_diagnostics(self):
+        arm = ReferenceArm("web")
+        cases = (
+            ("smoke-replicas", "list", []),
+            ("smoke-endpoint", "get", {"properties": {"containers": [
+                {"name": "web", "logStreamEndpoint": "https://invalid.example/"}
+            ]}}),
+            ("smoke-token", "_call", (403, {}, b"PRIVATE_TOKEN_SENTINEL")),
+        )
+        for phase, method, result in cases:
+            with self.subTest(phase=phase), mock.patch.object(arm, method, return_value=result):
+                with self.assertRaises(release.Refused) as caught:
+                    self.probe_with_arm(arm)
+                self.assertEqual(caught.exception.phase, phase)
+                self.assertEqual(caught.exception.detail["exec"], release.new_exec_diagnostics())
+
+        with mock.patch.object(arm, "list",
+                               side_effect=release.Refused("smoke-replicas", 403, {"prior": True})):
+            with self.assertRaises(release.Refused) as caught:
+                self.probe_with_arm(arm)
+            self.assertTrue(caught.exception.detail["prior"])
+            self.assertEqual(caught.exception.detail["exec"], release.new_exec_diagnostics())
+
+        class BadHandshake(ReferenceExecServer):
+            def sendall(self, data):
+                raise OSError("PRIVATE_TOKEN_SENTINEL")
+
+        server = BadHandshake(release.WEB_PROBE_MARK, {})
+        with self.assertRaises(release.Refused) as caught:
+            self.probe(server)
+        self.assertEqual(caught.exception.phase, "smoke-handshake")
+        self.assertEqual(caught.exception.detail["exec"], release.new_exec_diagnostics())
+        self.assertNotIn("PRIVATE_TOKEN_SENTINEL", json.dumps(caught.exception.detail))
+
+    def probe_with_arm(self, arm):
+        return release.run_web_probe(arm, release.APPS["web"], "rev",
+                                     connect=lambda h: self.fail("unexpected connection"))
+
+    def test_send_failures_are_reported_with_partial_diagnostics(self):
+        class BrokenStdin(ReferenceExecServer):
+            def sendall(self, data):
+                if self.handshaken and client_frames(data)[0][1].startswith(b"\x00\x00"):
+                    raise OSError("PRIVATE_OUTPUT_SENTINEL")
+                super().sendall(data)
+
+        server = BrokenStdin(release.WEB_PROBE_MARK, {})
+        with self.assertRaises(release.Refused) as caught:
+            self.probe(server)
+        self.assertEqual(caught.exception.phase, "smoke-transport")
+        diag = caught.exception.detail["exec"]
+        self.assertTrue(diag["resize_sent"])
+        self.assertEqual(diag["stdin_frames_sent"], 0)
+        self.assertNotIn("PRIVATE_OUTPUT_SENTINEL", json.dumps(caught.exception.detail))
 
 
 class ExecuteTests(unittest.TestCase):

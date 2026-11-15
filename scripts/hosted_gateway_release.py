@@ -911,8 +911,8 @@ class FrameReader:
             remaining = deadline - clock()
             if remaining <= 0:
                 raise Refused("smoke-timeout")
-            self.sock.settimeout(remaining)
             try:
+                self.sock.settimeout(remaining)
                 chunk = self.sock.recv(65536)
             except TimeoutError:
                 raise Refused("smoke-timeout") from None
@@ -999,6 +999,18 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
     output = bytearray()
     start = clock()
 
+    def send(payload: bytes, opcode: int) -> None:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise Refused("smoke-timeout")
+        try:
+            sock.settimeout(remaining)
+            sock.sendall(ws_frame(payload, opcode))
+        except TimeoutError:
+            raise Refused("smoke-timeout") from None
+        except OSError:
+            raise Refused("smoke-transport") from None
+
     def handle(opcode: int, payload: bytes) -> Any:
         diag["frames_by_opcode"][OPCODE_NAMES.get(opcode, "other")] += 1
         if opcode == 0x8:
@@ -1007,7 +1019,7 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
                 diag["close_code"] = code if 1000 <= code <= 4999 else None
             raise Refused("smoke-transport")
         if opcode == 0x9:
-            sock.sendall(ws_frame(payload, 0xA))
+            send(payload, 0xA)
             return None
         if opcode not in (0x0, 0x1, 0x2):
             return None
@@ -1032,6 +1044,7 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
         diag[stream + "_bytes"] += len(payload) - 2
         if diag["first_output"] is None:
             diag["first_output"] = latency_bucket(clock() - start)
+            diag["first_output_before_stdin"] = diag["stdin_frames_sent"] == 0
         output.extend(payload[2:])
         if len(output) > cap:
             raise Refused("smoke-output")
@@ -1050,7 +1063,7 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
                     raise Refused("smoke-output") from None
         return None
 
-    sock.sendall(ws_frame(TERMINAL_RESIZE, 0x1))
+    send(TERMINAL_RESIZE, 0x1)
     diag["resize_sent"] = True
     attach_deadline = min(start + attach_wait, deadline)
     while diag["first_output"] is None and clock() < attach_deadline:
@@ -1065,8 +1078,11 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
     diag["first_output_before_stdin"] = diag["first_output"] is not None
     for index, line in enumerate(lines):
         if index:
-            sleep(pacing)
-        sock.sendall(ws_frame(b"\x00\x00" + line, 0x1))
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise Refused("smoke-timeout")
+            sleep(min(pacing, remaining))
+        send(b"\x00\x00" + line, 0x1)
         diag["stdin_frames_sent"] += 1
     while clock() < deadline:
         opcode, payload = reader.read(deadline=deadline, clock=clock)
@@ -1094,6 +1110,19 @@ def run_web_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=time
 def run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[bytes],
              mark: str, seconds: float, *, connect=None, clock=time.monotonic,
              sleep=time.sleep) -> tuple[Any, dict]:
+    diag = new_exec_diagnostics()
+    try:
+        result = _run_exec(arm, app_id, revision, container, lines, mark, seconds,
+                           diag=diag, connect=connect, clock=clock, sleep=sleep)
+    except Refused as e:
+        if e.phase.startswith("smoke-"):
+            e.detail = {**(e.detail or {}), "exec": diag}
+        raise
+    return result, diag
+
+
+def _run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[bytes],
+              mark: str, seconds: float, *, diag: dict, connect, clock, sleep) -> Any:
     replicas = arm.list(f"{app_id}/revisions/{revision}/replicas", phase="smoke-replicas")
     names = [r.get("name") for r in replicas if isinstance(r, dict)
              and str((r.get("properties") or {}).get("runningState", "")).startswith("Running")]
@@ -1128,19 +1157,18 @@ def run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[b
         def connect(h):
             raw = socket.create_connection((h, 443), timeout=30)
             return tls_context().wrap_socket(raw, server_hostname=h)
-    sock = connect(host)
     try:
-        sock.settimeout(30)
-        ws_handshake(sock, host, path, token)
-        diag = new_exec_diagnostics()
+        sock = connect(host)
+    except (TimeoutError, OSError):
+        raise Refused("smoke-transport") from None
+    try:
         try:
-            result = exec_smoke(sock, lines, deadline=clock() + seconds, clock=clock, mark=mark,
-                                diag=diag, sleep=sleep)
-        except Refused as e:
-            if e.detail is None:
-                e.detail = {"exec": diag}
-            raise
-        return result, diag
+            sock.settimeout(30)
+            ws_handshake(sock, host, path, token)
+        except (TimeoutError, OSError):
+            raise Refused("smoke-handshake") from None
+        return exec_smoke(sock, lines, deadline=clock() + seconds, clock=clock, mark=mark,
+                          diag=diag, sleep=sleep)
     finally:
         try:
             sock.close()
