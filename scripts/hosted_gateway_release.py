@@ -682,28 +682,37 @@ def ws_frame(payload: bytes, opcode: int = 0x2, mask: bytes | None = None) -> by
     return header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
 
 
-def _read_exact(sock, size: int) -> bytes:
+def _read_exact(sock, size: int, *, deadline: float, clock) -> bytes:
     data = bytearray()
     while len(data) < size:
-        chunk = sock.recv(size - len(data))
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise Refused("smoke-timeout")
+        sock.settimeout(remaining)
+        try:
+            chunk = sock.recv(size - len(data))
+        except socket.timeout:
+            raise Refused("smoke-timeout") from None
+        except OSError:
+            raise Refused("smoke-transport") from None
         if not chunk:
             raise Refused("smoke-transport")
         data.extend(chunk)
     return bytes(data)
 
 
-def ws_read(sock, limit: int = 65536) -> tuple[int, bytes]:
-    first, second = _read_exact(sock, 2)
+def ws_read(sock, *, deadline: float, clock, limit: int = 65536) -> tuple[int, bytes]:
+    first, second = _read_exact(sock, 2, deadline=deadline, clock=clock)
     opcode, size = first & 0x0F, second & 0x7F
     if second & 0x80:
         raise Refused("smoke-transport")
     if size == 126:
-        size = int.from_bytes(_read_exact(sock, 2), "big")
+        size = int.from_bytes(_read_exact(sock, 2, deadline=deadline, clock=clock), "big")
     elif size == 127:
-        size = int.from_bytes(_read_exact(sock, 8), "big")
+        size = int.from_bytes(_read_exact(sock, 8, deadline=deadline, clock=clock), "big")
     if size > limit:
         raise Refused("smoke-transport")
-    return opcode, _read_exact(sock, size)
+    return opcode, _read_exact(sock, size, deadline=deadline, clock=clock)
 
 
 def ws_handshake(sock, host: str, path: str, token: str, key: bytes | None = None) -> None:
@@ -742,7 +751,7 @@ def exec_smoke(sock, lines: list[bytes], *, deadline: float, clock=time.monotoni
         sock.sendall(ws_frame(b"\x00\x00" + line))
     output = bytearray()
     while clock() < deadline:
-        opcode, payload = ws_read(sock)
+        opcode, payload = ws_read(sock, deadline=deadline, clock=clock)
         if opcode == 0x8:
             raise Refused("smoke-transport")
         if opcode == 0x9:
@@ -907,7 +916,7 @@ class Release:
                 self.step("smoke-passed", calls=len(result["calls"]))
         except Uncertain:
             raise
-        except Refused:
+        except Exception:  # Cleanup is guarded; the original failure is re-raised.
             self.deactivate(service, candidate, "deactivate-unpromoted", r0)
             raise
         self.gate.require_fresh()

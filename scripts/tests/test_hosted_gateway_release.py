@@ -527,6 +527,20 @@ class StageTests(ReleaseFlowBase):
         self.assertEqual(arm.app["properties"]["configuration"]["ingress"]["traffic"],
                          [{"revisionName": R0, "weight": 100}])
 
+    def test_smoke_transport_exception_deactivates_unpromoted_candidate(self):
+        arm = FakeArm(image=release.IMAGES["api"])
+
+        def disconnected(*_args):
+            raise OSError("connection lost")
+
+        runner, receipt = self.run_stage(arm, stage="c3-api", smoke=disconnected)
+        with mock.patch.object(release, "load_manifest", return_value=b"m"), \
+                mock.patch.object(release, "load_sidecar", return_value=b"s"), \
+                self.assertRaises(OSError):
+            runner.run("c3-api")
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+        self.assertEqual([c[2] for c in arm.calls if c[0] != "GET"], ["create", "deactivate-unpromoted"])
+
     def test_c3_requires_the_released_r1_image(self):
         arm = FakeArm()
         runner, _ = self.run_stage(arm, stage="c3-api")
@@ -617,9 +631,13 @@ class FakeSocket:
     def __init__(self, incoming: bytes):
         self.incoming = bytearray(incoming)
         self.sent = bytearray()
+        self.timeouts = []
 
     def sendall(self, data):
         self.sent.extend(data)
+
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
 
     def recv(self, size):
         chunk = bytes(self.incoming[:size])
@@ -656,6 +674,24 @@ class WebSocketTests(unittest.TestCase):
                   + server_frame(b"\x00\x01" + json.dumps(result).encode()[40:] + b"\r\n"))
         sock = FakeSocket(stream)
         self.assertEqual(release.exec_smoke(sock, [b"x\n"], deadline=1, clock=lambda: 0), result)
+
+    def test_exec_uses_remaining_deadline_for_blocking_reads(self):
+        result = {"phase": "complete"}
+        sock = FakeSocket(server_frame(
+            b"\x00\x01" + release.SMOKE_MARK.encode() + json.dumps(result).encode() + b"\n"))
+        self.assertEqual(release.exec_smoke(sock, [], deadline=240, clock=lambda: 0), result)
+        self.assertEqual(sock.timeouts, [240, 240])
+
+    def test_partial_websocket_frame_cannot_extend_deadline(self):
+        clock = Clock()
+
+        class SlowSocket(FakeSocket):
+            def recv(self, size):
+                clock.t += 0.6
+                return super().recv(min(size, 1))
+
+        with self.assertRaisesRegex(release.Refused, "smoke-timeout"):
+            release.exec_smoke(SlowSocket(b"\x82\x05hello"), [], deadline=1, clock=clock)
 
     def test_exec_output_is_capped(self):
         sock = FakeSocket(server_frame(b"\x00\x01" + b"x" * 100) * 3)
