@@ -630,8 +630,7 @@ def template_matches(actual: Any, expected: Any) -> bool:
     if not isinstance(actual, dict) or not isinstance(expected, dict):
         return False
     try:
-        project = cutover().writable_template_projection
-        return project(actual) == project(expected)
+        return cutover().compare_r0_templates(actual, expected)["compatible"]
     except (ValueError, KeyError, TypeError):
         return False
 
@@ -1059,9 +1058,11 @@ class Release:
         comparison = cutover().compare_r0_templates(
             app["properties"]["template"], rev["properties"]["template"],
         )
-        if comparison["compatible"] and not comparison["template_equal"]:
+        if comparison["compatible"] and comparison["template_diff"]["entries"]:
             self.step("r0-template-normalized", template_diff=comparison["template_diff"],
-                      facts={"template_equal": False, "template_equal_canonical": True})
+                      facts={key: comparison[key] for key in (
+                          "template_equal", "template_equal_canonical",
+                      )})
 
     def guarded_patch(self, service: str, expected: dict, payload: dict, name: str) -> None:
         """Re-read immediately before one PATCH. Not atomic CAS (no If-Match support)."""
@@ -1098,7 +1099,9 @@ class Release:
         if (after["properties"]["configuration"].get("activeRevisionsMode") != "Multiple"
                 or not traffic_is(after, r0) or after["properties"].get("latestRevisionName") != r0):
             raise Refused("c1-readback")
-        self.step("c1-verified", revision=r0)
+        config = after["properties"]["configuration"]
+        self.step("c1-verified", revision=r0, mode=config["activeRevisionsMode"],
+                  traffic=config["ingress"]["traffic"])
 
     def create_and_promote(self, service: str, stage: str, **inputs: Any) -> None:
         sha, run = self.env["GITHUB_SHA"], self.env["GITHUB_RUN_ID"]

@@ -697,6 +697,126 @@ class CutoverIntegrationTests(unittest.TestCase):
             arm_class=lambda token: arm, now=lambda: NOW,
         )
 
+    def test_scale_defaults_and_numeric_representations_pass_c1_and_are_audited(self):
+        absent = object()
+        for field, default in (("cooldownPeriod", 300), ("pollingInterval", 30)):
+            for a, b, kind, left_type, right_type in (
+                (default, None, "provider_default", "int", "null"),
+                (None, default, "provider_default", "null", "int"),
+                (absent, default, "provider_default", "absent", "int"),
+                (default, absent, "provider_default", "int", "absent"),
+                (default, float(default), "numeric_repr", "int", "float"),
+                (float(default), default, "numeric_repr", "float", "int"),
+                (60, 60.0, "numeric_repr", "int", "float"),
+            ):
+                arm = FakeArm()
+                left = arm.app["properties"]["template"]
+                right = arm.revisions[R0]["properties"]["template"]
+                left["scale"] = {} if a is absent else {field: a}
+                right["scale"] = {} if b is absent else {field: b}
+                originals = copy.deepcopy((left, right))
+                with self.subTest(field=field, kind=kind, left=left_type, right=right_type):
+                    receipt = self.execute_c1(arm)
+                    self.assertEqual((receipt["outcome"], receipt["writes"]), ("complete", 1))
+                    step = next(s for s in receipt["steps"] if s["step"] == "r0-template-normalized")
+                    self.assertEqual(step["template_diff"], {"entries": [{
+                        "path": ["scale", field], "kind": kind,
+                        "left_type": left_type, "right_type": right_type,
+                    }], "truncated": False})
+                    if kind == "provider_default":
+                        self.assertFalse(step["facts"]["template_equal_canonical"])
+                    self.assertEqual((left, right), originals)
+                    verified = next(s for s in receipt["steps"] if s["step"] == "c1-verified")
+                    self.assertEqual((verified["mode"], verified["traffic"]),
+                                     ("Multiple", [{"revisionName": R0, "weight": 100}]))
+
+    def test_other_scale_types_values_and_other_paths_refuse_with_types(self):
+        absent = object()
+        for field in ("cooldownPeriod", "pollingInterval"):
+            for a, b, kind, left_type, right_type in (
+                (None, 60, "type", "null", "int"),
+                ("300", 300, "type", "str", "int"),
+                (True, 300, "type", "bool", "int"),
+                (None, 300.0, "type", "null", "float"),
+                (300, 300.5, "type", "int", "float"),
+                (absent, 60, "missing_left", "absent", "int"),
+                (60, absent, "missing_right", "int", "absent"),
+            ):
+                arm = FakeArm()
+                left = arm.app["properties"]["template"]
+                right = arm.revisions[R0]["properties"]["template"]
+                left["scale"] = {} if a is absent else {field: a}
+                right["scale"] = {} if b is absent else {field: b}
+                with self.subTest(field=field, kind=kind, left=left_type, right=right_type):
+                    receipt = self.execute_c1(arm)
+                    self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
+                    self.assertEqual(receipt["detail"]["template_diff"]["entries"], [{
+                        "path": ["scale", field], "kind": kind,
+                        "left_type": left_type, "right_type": right_type,
+                    }])
+        for a, b in ((None, 30), (30, 30.0)):
+            arm = FakeArm()
+            arm.app["properties"]["template"]["containers"][0]["probes"] = [{"periodSeconds": a}]
+            arm.revisions[R0]["properties"]["template"]["containers"][0]["probes"] = [{"periodSeconds": b}]
+            receipt = self.execute_c1(arm)
+            self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
+            entry = receipt["detail"]["template_diff"]["entries"][0]
+            self.assertEqual((entry["path"], entry["kind"]),
+                             (["containers", 0, "probes", 0, "periodSeconds"], "type"))
+        arm = FakeArm()
+        arm.app["properties"]["template"]["scale"] = {"cooldownPeriod": 300}
+        arm.revisions[R0]["properties"]["template"]["scale"] = {"cooldownPeriod": 60}
+        receipt = self.execute_c1(arm)
+        self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
+        self.assertEqual(receipt["detail"]["template_diff"]["entries"][0]["kind"], "value")
+
+    def test_c2_app_default_readback_matches_unmodified_revision_payload(self):
+        class DefaultReadbackArm(FakeArm):
+            def write(self, method, path, body=None, **kwargs):
+                super().write(method, path, body, **kwargs)
+                if kwargs.get("phase") == "create":
+                    template = body["properties"]["template"]
+                    candidate = self.app["properties"]["latestRevisionName"]
+                    self.revisions[candidate]["properties"]["template"] = copy.deepcopy(template)
+                    self.app["properties"]["template"] = copy.deepcopy(template)
+                    self.app["properties"]["template"]["scale"] = {
+                        "cooldownPeriod": 300, "pollingInterval": 30,
+                    }
+
+        arm = DefaultReadbackArm()
+        arm.app["properties"]["template"]["scale"] = {"cooldownPeriod": 300, "pollingInterval": 30}
+        arm.revisions[R0]["properties"]["template"]["scale"] = {"cooldownPeriod": None, "pollingInterval": None}
+        now = datetime.now(UTC)
+        arm.gate_values = [metrics(ZERO, at=now - timedelta(minutes=1))]
+        receipt = {"steps": []}
+        runner = release.Release(arm, env(), receipt, now=lambda: now)
+
+        runner.run("c2-api")
+
+        self.assertEqual(receipt["serving"], receipt["candidate"])
+        self.assertIn("candidate-ready", [s["step"] for s in receipt["steps"]])
+        created = next(body for _, _, body, phase in arm.requests if phase == "create")
+        self.assertEqual(created["properties"]["template"]["scale"],
+                         {"cooldownPeriod": None, "pollingInterval": None})
+        self.assertFalse(arm.revisions[R0]["properties"]["active"])
+
+    def test_template_matches_still_refuses_image_env_and_list_position_drift(self):
+        expected = {"containers": [{"name": "api", "image": "PRIVATE_IMAGE_SENTINEL", "env": [
+            {"name": "PRIVATE_ENV_SENTINEL", "value": "PRIVATE_VALUE_SENTINEL"},
+        ]}], "scale": {"cooldownPeriod": None}}
+        actual = copy.deepcopy(expected)
+        actual["scale"]["cooldownPeriod"] = 300
+        self.assertTrue(release.template_matches(actual, expected))
+        for field in ("image", "env"):
+            changed = copy.deepcopy(actual)
+            if field == "image":
+                changed["containers"][0]["image"] = "PRIVATE_CHANGED_SENTINEL"
+            else:
+                changed["containers"][0]["env"][0]["value"] = "PRIVATE_CHANGED_SENTINEL"
+            self.assertFalse(release.template_matches(changed, expected))
+        for a, b in (([None], [{}]), ([None], [[]])):
+            self.assertFalse(release.template_matches({"args": a}, {"args": b}))
+
     def test_empties_only_pass_and_are_audited_without_mutating_templates(self):
         arm = FakeArm()
         left = arm.app["properties"]["template"]
@@ -744,7 +864,11 @@ class CutoverIntegrationTests(unittest.TestCase):
             target["properties"]["template"][sentinel] = sentinel
             receipt = self.execute_c1(arm)
             self.assertEqual((receipt["detail"]["reason"], receipt["writes"]), ("r0-state", 0))
-            self.assertEqual(receipt["detail"]["template_diff"]["entries"], [{"path": ["?"], "kind": kind}])
+            self.assertEqual(receipt["detail"]["template_diff"]["entries"], [{
+                "path": ["?"], "kind": kind,
+                "left_type": "absent" if missing_side == "app" else "str",
+                "right_type": "str" if missing_side == "app" else "absent",
+            }])
             self.assertNotIn(sentinel, json.dumps(receipt))
 
     def test_diff_cap_does_not_hide_a_nonempty_difference_after_32_empty_diffs(self):
@@ -795,8 +919,10 @@ class CutoverIntegrationTests(unittest.TestCase):
         app, rev = copy.deepcopy(arm.app), copy.deepcopy(arm.revisions[R0])
         app["properties"]["template"]["volumes"] = None
         self.assertNotEqual(release.projection(app), release.projection(arm.app))
-        self.assertFalse(release.template_matches(
+        self.assertTrue(release.template_matches(
             app["properties"]["template"], rev["properties"]["template"]))
+        project = release.cutover().writable_template_projection
+        self.assertNotEqual(project(app["properties"]["template"]), project(rev["properties"]["template"]))
         with self.assertRaisesRegex(release.Refused, "concurrent-change"):
             release.Release(arm, env(), {"steps": []}).guarded_patch(
                 "api", release.projection(app), {"properties": {}}, "must-not-write",

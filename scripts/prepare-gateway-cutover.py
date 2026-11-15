@@ -114,6 +114,7 @@ TEMPLATE_DIFF_KEYS = frozenset({
     "subPath", "storageType", "storageName", "secrets", "mountOptions", "value",
     "secretRef", "serviceId", "clientType",
 })
+SCALE_DEFAULTS = {"cooldownPeriod": 300, "pollingInterval": 30}
 
 
 def canonical_template(value: Any) -> Any:
@@ -131,52 +132,86 @@ def compare_r0_templates(left: dict[str, Any], right: dict[str, Any]) -> dict[st
     right = writable_template_projection(right)
     entries: list[dict[str, Any]] = []
     truncated = False
-    empty_only = True
+    compatible_kinds = True
+    normalized_fields: set[str] = set()
+    absent = object()
 
-    def record(path: list[str | int], kind: str) -> None:
-        nonlocal truncated, empty_only
-        empty_only = empty_only and kind in ("absent_vs_empty", "null_vs_empty")
+    def type_name(value: Any) -> str:
+        if value is absent:
+            return "absent"
+        return {type(None): "null", bool: "bool", int: "int", float: "float",
+                str: "str", list: "list", dict: "dict"}[type(value)]
+
+    def record(path: list[str | int], kind: str, a: Any, b: Any) -> None:
+        nonlocal truncated, compatible_kinds
+        compatible_kinds = compatible_kinds and kind in (
+            "absent_vs_empty", "null_vs_empty", "provider_default", "numeric_repr",
+        )
         if len(entries) < 32:
-            entries.append({"path": path, "kind": kind})
+            entry: dict[str, Any] = {"path": path, "kind": kind}
+            if kind in ("type", "missing_left", "missing_right", "absent_vs_empty",
+                        "provider_default", "numeric_repr"):
+                entry.update(left_type=type_name(a), right_type=type_name(b))
+            entries.append(entry)
         else:
             truncated = True
 
     def walk(a: Any, b: Any, path: list[str | int]) -> None:
         nonlocal truncated
-        if (a is None and canonical_template(b) in ([], {})
+        default = SCALE_DEFAULTS.get(path[1]) if len(path) == 2 and path[0] == "scale" else None
+        if default is not None and (
+                ((a is None or a is absent) and type(b) is int and b == default)
+                or ((b is None or b is absent) and type(a) is int and a == default)):
+            normalized_fields.add(path[1])
+            record(path, "provider_default", a, b)
+        elif default is not None and (
+                (type(a) is int and type(b) is float and b.is_integer() and a == b)
+                or (type(b) is int and type(a) is float and a.is_integer() and a == b)):
+            normalized_fields.add(path[1])
+            record(path, "numeric_repr", a, b)
+        elif a is absent:
+            record(path, "absent_vs_empty" if canonical_template(b) in (None, [], {})
+                   else "missing_left", a, b)
+        elif b is absent:
+            record(path, "absent_vs_empty" if canonical_template(a) in (None, [], {})
+                   else "missing_right", a, b)
+        elif (a is None and canonical_template(b) in ([], {})
                 or b is None and canonical_template(a) in ([], {})):
-            record(path, "null_vs_empty")
+            record(path, "null_vs_empty", a, b)
         elif type(a) is not type(b):
-            record(path, "type")
+            record(path, "type", a, b)
         elif isinstance(a, (dict, list)):
             if len(path) >= 16 and (a or b):
-                record(path, "value")
+                record(path, "value", a, b)
                 truncated = True
             elif isinstance(a, dict):
                 for key in sorted(a.keys() | b.keys()):
                     child_path = [*path, key if key in TEMPLATE_DIFF_KEYS else "?"]
-                    if key not in a:
-                        record(child_path, "absent_vs_empty" if canonical_template(b[key]) in (None, [], {})
-                               else "missing_left")
-                    elif key not in b:
-                        record(child_path, "absent_vs_empty" if canonical_template(a[key]) in (None, [], {})
-                               else "missing_right")
-                    else:
-                        walk(a[key], b[key], child_path)
+                    walk(a.get(key, absent), b.get(key, absent), child_path)
             else:
                 if len(a) != len(b):
-                    record(path, "length")
+                    record(path, "length", a, b)
                 for index, (aa, bb) in enumerate(zip(a, b, strict=False)):
                     walk(aa, bb, [*path, index])
         elif a != b:
-            record(path, "value")
+            record(path, "value", a, b)
 
     walk(left, right, [])
     canonical_equal = canonical_template(left) == canonical_template(right)
+
+    def comparison_form(template: dict[str, Any]) -> dict[str, Any]:
+        value = canonical_template(template)
+        scale = value.get("scale")
+        if isinstance(scale, dict):
+            # Only discard pairs already qualified at their exact schema paths.
+            for key in normalized_fields:
+                scale.pop(key, None)
+        return canonical_template(value)
+
     return {
         "template_equal": left == right,
         "template_equal_canonical": canonical_equal,
-        "compatible": canonical_equal and empty_only,
+        "compatible": compatible_kinds and comparison_form(left) == comparison_form(right),
         "template_diff": {"entries": entries, "truncated": truncated},
     }
 

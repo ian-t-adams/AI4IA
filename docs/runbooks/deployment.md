@@ -2689,15 +2689,23 @@ Both are size- and SHA-256-checked, and the sidecar is decompressed with a
 bound. The receipt records only their hashes. Payloads are built by the
 reviewed C1/C2/C3 helper, including the API catalog's C3 validation.
 
-The R0 app/revision equality guard alone tolerates absent/null/empty dictionary
-entries after recursive comparison-only canonicalization; list positions and
-all nonempty values must still match. Other difference kinds refuse the payload.
+The R0 app/revision guard and candidate/restore `template_matches` checks share
+one comparison-only compatibility rule. They tolerate absent/null/empty dictionary
+entries while retaining list positions. Only at `scale.cooldownPeriod` and
+`scale.pollingInterval`, null or absent versus an exact integer default (300 and
+30 seconds, respectively) is `provider_default`; equal integral int/float pairs
+are `numeric_repr`. Strings, booleans, non-default null pairs and differences
+at other paths receive no such exception.
 Receipts include a content-free `template_diff` (at most 32 entries, depth 16,
 with `truncated`), using only schema-allowlisted path keys and numeric indices;
 unknown keys render as `?`. Each entry records only a path and difference kind.
-Empties-only admission records an `r0-template-normalized` step even on success.
-The shared projection, emitted C2/C3 templates and all pre/post invariance
-comparators remain strict and are not canonicalized.
+Type, missing and provider-representation entries also include allowlisted
+`left_type`/`right_type` labels, never values.
+Compatible differences record an `r0-template-normalized` step even on success;
+`template_equal_canonical` continues to describe empties-only canonicalization,
+so a provider-default exception can pass compatibility while that fact is false.
+The shared projection, emitted C2/C3 templates, `guarded_patch` and same-shape
+app pre/post invariance comparisons remain strict and are not canonicalized.
 
 The lane depends on these controls and limitations:
 
