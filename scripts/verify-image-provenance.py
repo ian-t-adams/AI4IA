@@ -174,10 +174,23 @@ def release_images(values: Sequence[str], environment: str, *, private_api: bool
 def subjects(args: argparse.Namespace, env: Mapping[str, str]) -> dict:
     private_api = getattr(args, "private_api", False)
     if private_api:
-        require(env.get("AI4IA_RELEASE_KIND") == "image"
-                and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-                and env.get("AI4IA_API_NETWORK_PHASE") == "candidate",
-                "API-only image preparation requires its explicit candidate operation")
+        kind = env.get("AI4IA_RELEASE_KIND")
+        candidate_image = (
+            kind == "image"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("AI4IA_API_NETWORK_PHASE") == "candidate"
+        )
+        private_image = (
+            kind == "private-image"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("AI4IA_API_NETWORK_PHASE") == "private"
+            and env.get("AI4IA_API_IMAGE_PRODUCER_ENABLED") == "true"
+            and env.get("AI4IA_RELEASE_PROVISION") == "false"
+            and bool(re.fullmatch(r"[0-9a-f]{40}", env.get("AI4IA_RELEASE_SOURCE_SHA", "")))
+            and env.get("AI4IA_RELEASE_SOURCE_SHA") == env.get("GITHUB_SHA")
+        )
+        require(candidate_image or private_image,
+                "API-only image preparation requires its exact candidate or private-image operation")
     result = {
         "schemaVersion": 1,
         "identity": identity(env),

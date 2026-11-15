@@ -63,7 +63,9 @@ def deployment_operation(env: Mapping[str, str], *, pending: bool, blocked: bool
         raise ValueError("Configure the reviewed private migration phase before releasing.")
     operation = env.get("AI4IA_RELEASE_OPERATION") or "auto"
     event = env.get("GITHUB_EVENT_NAME")
-    if event not in ("push", "workflow_dispatch") or operation not in ("auto", "preview", "deploy", "image"):
+    if event not in ("push", "workflow_dispatch") or operation not in (
+        "auto", "preview", "deploy", "image", "private-image",
+    ):
         raise ValueError("Unknown release operation or event.")
     if operation == "image":
         if (event != "workflow_dispatch" or selected != "candidate" or blocked
@@ -71,6 +73,22 @@ def deployment_operation(env: Mapping[str, str], *, pending: bool, blocked: bool
                 or env.get("AI4IA_PRIVATE_PREVIEW_BINDING") or env.get("AI4IA_PRIVATE_IMAGE_RECEIPT")):
             raise ValueError("API image preparation requires an explicit registry-only candidate operation.")
         return "image"
+    if operation == "private-image":
+        source = env.get("AI4IA_RELEASE_SOURCE_SHA", "")
+        if (
+            event != "workflow_dispatch"
+            or selected != "private"
+            or pending
+            or blocked
+            or env.get("AI4IA_RELEASE_PROVISION") != "false"
+            or env.get("AI4IA_API_IMAGE_PRODUCER_ENABLED") != "true"
+            or not re.fullmatch(r"[0-9a-f]{40}", source)
+            or source != env.get("GITHUB_SHA")
+            or env.get("AI4IA_PRIVATE_PREVIEW_BINDING")
+            or env.get("AI4IA_PRIVATE_IMAGE_RECEIPT")
+        ):
+            raise ValueError("Private API image production requires its exact-source registry-only gate.")
+        return "private-image"
     if operation == "preview":
         return "preview"
     if operation == "deploy":

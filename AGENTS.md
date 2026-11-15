@@ -657,6 +657,18 @@ mutable tag, unsigned JSON approval, registry-list heuristic or a rebuild.
 Same-run bundle selection avoids accepting an older signature for identical image
 bytes; it is not a readback of every registry referrer.
 
+The distinct `operation=private-image` producer is default-off behind
+`AI4IA_API_IMAGE_PRODUCER_ENABLED`; it requires a manual main dispatch, exact
+`GITHUB_SHA` source input, private API phase and `provision=false`, and may run
+while `AI4IA_DEPLOYMENT_ENABLED=false`. It builds/scans/attests only the API and
+never provisions, deploys or shifts traffic. It still uses the existing deploy
+job's Azure/registry identity; do not describe it as a new registry-only role or
+as a compatible API+web release. The candidate-phase `operation=image` remains
+separately gated. A complete release freeze must disable both variables, drain
+already admitted runs, and separately hold `foundry-assets` manual dispatch;
+the ordinary deployment flag does not control that workflow's manual path.
+See the release runbook's private image and freeze sections.
+
 The 30-day production evidence artifact contains SPDX documents, Sigstore
 bundles, CLI verification results and the small sealed image manifest, not runtime
 prompts, secrets or environment dumps. Partial evidence is retained on failure,

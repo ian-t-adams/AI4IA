@@ -2457,6 +2457,63 @@ predicate, different producer or changed original inventory refuses. Ordinary
 three-service production verification remains same-run and complete. Keep the
 image receipt and both preview/execution artifacts with the operator's review.
 
+### Private-phase API image producer
+
+The separate `operation=private-image` lane is default-off behind
+`AI4IA_API_IMAGE_PRODUCER_ENABLED`. It requires an explicit `workflow_dispatch`
+from `main`, `AI4IA_API_NETWORK_PHASE=private`, no pending or blocked migration,
+`provision=false`, and an `image_source_sha` identical to the workflow's
+`GITHUB_SHA`. It remains independently admissible while
+`AI4IA_DEPLOYMENT_ENABLED=false`; the candidate-phase `operation=image` gate and
+its restrictions are unchanged.
+
+This lane builds only the API artifact in the existing ACR, scans the exact
+registry digest for HIGH/CRITICAL vulnerabilities, and uses the existing
+`deploy.yml@main` identity/source checks for signed SLSA provenance and SPDX.
+It writes a producer receipt only after the signed proof and generated SPDX
+fingerprint match. It has no application deploy or traffic-shift step, but it
+still executes in the existing deploy job with that job's Azure/registry
+identity; it does not establish a registry-only Azure role. It is not a
+compatible release by itself when the serving web may still call removed API
+routes. A paired API+web producer and its separate staging/rollback path are not
+implemented here.
+
+### Release freeze sequence
+
+This is an operator procedure, not an automated control. No freeze is active
+because of this documentation or the producer code. Before declaring a freeze:
+
+1. Record the exact `main` SHA, the current values of both
+   `AI4IA_DEPLOYMENT_ENABLED` and `AI4IA_API_IMAGE_PRODUCER_ENABLED`, and all
+   queued/running `deploy` and `foundry-assets` workflow runs. Set both variables
+   to literal `false`; the private-image lane has its own admission output and
+   would otherwise still start while the general deployment flag is false.
+2. Do not assume changing variables stops a job already admitted. Wait for every
+   active release, provision, image push, and downstream workflow to finish and
+   retain its run/artifact receipt. Do not cancel an in-flight `azd provision`;
+   a cancellation can leave an active ARM deployment. Prevent new merges/pushes,
+   manual deploy/image dispatches, re-runs, and retry attempts while frozen.
+3. For the frozen merge/push, verify the exact `deploy.yml` run reports
+   `deployment_enabled=false` and the `deploy` job is `skipped`. Then inspect the
+   exact `foundry-assets.yml` `workflow_run` consumer and confirm it skipped
+   reconciliation because that exact deploy job was skipped. Check separately
+   for already queued/running or manually dispatched Foundry-assets runs.
+4. The `foundry-assets` manual-dispatch path is independent of the deploy-job
+   flag. A flag-only freeze therefore is not complete: keep that dispatch
+   unavailable by an independently reviewed repository-level operator hold and
+   verify no such run is active. The workflow currently has no shared
+   `AI4IA_DEPLOYMENT_ENABLED` gate for manual dispatch.
+5. Resume only after the release owner authorizes it, all freeze receipts are
+   reconciled, and the exact prior values are reviewed. Restore recorded values
+   deliberately; do not infer them from current defaults or automatically
+   enable either producer.
+
+The deployment flag protects the ordinary job, not runs that have already
+passed admission. A false value also does not disable the independent
+`foundry-assets` manual dispatch. The status checks above are evidence for a
+particular freeze window, not a distributed lock or protection against a
+concurrent repository setting change.
+
 ### Topology and protected state
 
 ACA's default Azure network reaches internet endpoints only; the environment

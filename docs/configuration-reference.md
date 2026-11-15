@@ -316,6 +316,18 @@ images, audio and realtime stay on the existing proxy by configuration; a
 gateway failure never falls back to it. Setting the list while the selector is
 OFF fails validation. Empty (the default) emits no variable.
 
+Expansion is explicit, never inferred from static catalog text: the operator
+supplies the versioned resolved manifest and the exact opt-in deployment list.
+Preprovision/startup first reject unresolved opt-ins; startup then requires each
+listed deployment to resolve to exactly one eligible catalog option and its
+manifest binding by exact deployment, SKU, and chat/Responses operation.
+Dispatch repeats the model/operation/SKU check and additionally enforces that
+operation's stream permission. The initial four-key canary remains a separate
+small allowlist; matching 71 static text keys to a catalog is not a manifest,
+capacity/entitlement observation, or streaming proof and does not expand that
+canary. Every later addition needs its own resolved manifest and exact runtime
+validation.
+
 `AI4IA_API_ACTIVE_REVISIONS_MODE` (Bicep `apiActiveRevisionsMode`) defaults to
 `Single`. `Multiple` exists only for a reviewed staged traffic cutover while
 the deploy pipeline is frozen; see the feature-enablement runbook.
@@ -326,6 +338,20 @@ Validation checks the name's format, not whether it is the intended or current
 serving revision. A provision can change an existing split or send traffic to a
 stale pin. Keep the workflow frozen until a separately reviewed reconciliation;
 the pin is not evidence of Azure's atomic transition behavior.
+
+`scripts/prepare-gateway-cutover.py --stage C2` is an offline request-body
+constructor only. Given a stable healthy R0 snapshot, it emits a Multiple-mode
+patch that keeps the named R0 at 100%, changes only a new digest-pinned image in
+R0's exact API repository and a unique revision suffix, and requires the shared
+gateway selector and pilot isolation flags to be absent or literal `false`.
+Its revision inventory input must come from a fresh, complete, terminal-page
+ARM revisions enumeration (at most 31 pages/640 names and no older than 120
+seconds); the input envelope is caller-supplied evidence, not independently
+authenticated pagination proof. R0's presence alone cannot establish inventory
+completeness. The helper performs no Azure read or write, and its offline merge
+patch does not prove Azure atomicity, current state at send time, or traffic
+behavior. It is not approval to use a production API app or a replacement for
+the separately reviewed deployment/freeze gates.
 
 Onboarding dependency: `gateway.baseUrl` must identify a reachable,
 dedicated bearer-validating SimpleL7Proxy, not APIM and not AI4IA's existing
@@ -991,6 +1017,19 @@ API producer. Its unchanged `api_image_receipt` is required for candidate
 preview/apply and activation; no rebuild or missing-evidence fallback is allowed.
 These are workflow inputs, not new azd variables or activation grants. Default `auto`
 returns to normal releases only after observed completed private cutover.
+
+The distinct `operation=private-image` producer requires the separately default-off
+`AI4IA_API_IMAGE_PRODUCER_ENABLED` repository variable, a manual dispatch from
+`main`, `AI4IA_API_NETWORK_PHASE=private`, no pending/blocked migration, the exact
+current `image_source_sha`, and `provision=false`. It can run while
+`AI4IA_DEPLOYMENT_ENABLED=false`; it builds only the API image, scans its exact
+registry digest for HIGH/CRITICAL vulnerabilities, and retains the existing signed
+provenance/SPDX evidence and receipt. It does not provision, deploy, alter traffic,
+or prove that an arbitrary currently serving web image is compatible. It still
+uses the existing deploy job's Azure/registry identity; this adds no narrower Azure
+role or permission. Do not use an API-only artifact as a paired application
+release when the serving web may still call retired API routes; no paired API+web
+producer is implemented by this operation.
 
 | Variable | Default | Contract |
 | --- | --- | --- |

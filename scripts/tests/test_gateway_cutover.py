@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.tests._loader import load_script
@@ -26,7 +27,7 @@ def snapshot(mode="Single"):
         "revisionSuffix": "r0",
         "containers": [{
             "name": "api",
-            "image": "example.invalid/api@sha256:" + "a" * 64,
+            "image": "example.azurecr.io/ai4ia/api-test@sha256:" + "a" * 64,
             "env": [
                 {"name": "AZURE_CLIENT_ID", "value": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"},
                 {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "false"},
@@ -79,6 +80,17 @@ def manifest():
     return _lane_manifest("resolved")
 
 
+def revision_inventory(names, *, complete=True, pages=1, observed_at=None):
+    observed_at = observed_at or datetime.now(UTC).isoformat()
+    return {
+        "complete": complete,
+        "names": names,
+        "observedAt": observed_at,
+        "pages": pages,
+        "source": "Microsoft.App/containerApps/revisions",
+    }
+
+
 class CutoverTests(unittest.TestCase):
     def build(self, app, revision, **kwargs):
         return CUTOVER.build_payload(app, revision, resource_id=RESOURCE, **kwargs)
@@ -126,6 +138,126 @@ class CutoverTests(unittest.TestCase):
         candidate["containers"][0]["env"] = old["containers"][0]["env"]
         self.assertEqual(candidate, old)
         self.assertEqual(app, original)
+
+    def test_c2_candidate_image_keeps_r0_at_100_and_changes_only_image_and_suffix(self):
+        app, revision = snapshot("Multiple")
+        original = copy.deepcopy(app)
+        old_template = copy.deepcopy(revision["properties"]["template"])
+        candidate_image = old_template["containers"][0]["image"].rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+        payload = self.build(
+            app, revision, stage="C2", suffix="image-1",
+            api_image=candidate_image,
+            existing_revisions=revision_inventory(["api--r0", "api--legacy"]),
+        )
+        merged = merge_patch(app, payload)
+        self.assertEqual(
+            merged["properties"]["configuration"]["activeRevisionsMode"], "Multiple",
+        )
+        self.assertEqual(
+            merged["properties"]["configuration"]["ingress"]["traffic"],
+            [{"revisionName": "api--r0", "weight": 100}],
+        )
+        candidate = merged["properties"]["template"]
+        self.assertEqual(candidate["containers"][0]["image"], candidate_image)
+        self.assertEqual(candidate["revisionSuffix"], "image-1")
+        self.assertEqual(
+            candidate["containers"][0]["env"], old_template["containers"][0]["env"],
+        )
+        candidate = copy.deepcopy(candidate)
+        candidate["containers"][0]["image"] = old_template["containers"][0]["image"]
+        candidate["revisionSuffix"] = old_template["revisionSuffix"]
+        self.assertEqual(candidate, old_template)
+        self.assertEqual(app, original)
+
+    def test_c2_rejects_stale_or_ambiguous_revision_and_image_inputs(self):
+        app, revision = snapshot("Multiple")
+        current_image = revision["properties"]["template"]["containers"][0]["image"]
+        candidate_image = current_image.rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+        controls = [
+            ("mode", {"app_change": ("properties", "configuration", "activeRevisionsMode", "Single")}),
+            ("latest", {"app_change": ("properties", "configuration", "ingress", "traffic", [{"latestRevision": True, "weight": 100}])}),
+            ("stale", {"app_change": ("properties", "latestReadyRevisionName", "api--old")}),
+            ("gateway-enabled", {"env_change": ("AI4IA_SHARED_GATEWAY_ENABLED", {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "true"})}),
+            ("gateway-secret-ref", {"env_change": ("AI4IA_SHARED_GATEWAY_ENABLED", {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "secretRef": "gate"})}),
+            ("gateway-value-and-secret-ref", {"env_change": ("AI4IA_SHARED_GATEWAY_ENABLED", {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "false", "secretRef": "gate"})}),
+            ("pilot-enabled", {"env_change": ("AI4IA_CHAT_PILOT_ISOLATION_ENABLED", {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "true"})}),
+            ("pilot-secret-ref", {"env_change": ("AI4IA_CHAT_PILOT_ISOLATION_ENABLED", {"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "secretRef": "pilot"})}),
+            ("duplicate-selector", {"duplicate_env": "AI4IA_SHARED_GATEWAY_ENABLED"}),
+            ("same-image", {"image": current_image}),
+            ("tag", {"image": current_image.split("@", 1)[0] + ":mutable"}),
+            ("wrong-repository", {"image": "other.azurecr.io/ai4ia/api-test@sha256:" + "b" * 64}),
+            ("existing-suffix", {"suffix": "old", "revisions": ["api--r0", "api--old"]}),
+            ("missing-r0", {"revisions": ["api--old"]}),
+            ("duplicate-revisions", {"revisions": ["api--r0", "api--r0"]}),
+            ("candidate-exists", {"revisions": ["api--r0", "api--image-1"]}),
+            ("malformed-inventory", {"revisions": ["api--r0", "not-a-revision"]}),
+            ("too-many-revisions", {"revisions": ["api--r0", *[f"api--old{i}" for i in range(640)]]}),
+            ("unproven-complete", {"inventory": {"complete": False}}),
+            ("stale-inventory", {"inventory": {"observedAt": "2000-01-01T00:00:00+00:00"}}),
+            ("missing-page-evidence", {"inventory": {"pages": 0}}),
+        ]
+        for label, change in controls:
+            changed_app, changed_revision = copy.deepcopy((app, revision))
+            revisions = revision_inventory(change.get("revisions", ["api--r0"]))
+            revisions.update(change.get("inventory", {}))
+            image = change.get("image", candidate_image)
+            suffix = change.get("suffix", "image-1")
+            if "app_change" in change:
+                path = change["app_change"]
+                target = changed_app
+                *keys, value = path
+                for key in keys[:-1]:
+                    target = target[key]
+                target[keys[-1]] = value
+            if "env_change" in change:
+                name, value = change["env_change"]
+                env = changed_app["properties"]["template"]["containers"][0]["env"]
+                env[:] = [item for item in env if item["name"] != name]
+                env.append(value)
+                changed_revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(env)
+            if "duplicate_env" in change:
+                env = changed_app["properties"]["template"]["containers"][0]["env"]
+                env.append(copy.deepcopy(next(item for item in env if item["name"] == change["duplicate_env"])))
+                changed_revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(env)
+            with self.subTest(control=label), self.assertRaises(ValueError):
+                self.build(
+                    changed_app, changed_revision, stage="C2", suffix=suffix,
+                    api_image=image, existing_revisions=revisions,
+                )
+
+    def test_c2_requires_all_stage_inputs_and_other_stages_reject_them(self):
+        app, revision = snapshot("Multiple")
+        image = revision["properties"]["template"]["containers"][0]["image"].rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+        for kwargs in (
+            {"api_image": image},
+            {"existing_revisions": revision_inventory(["api--r0"])},
+            {"api_image": image, "existing_revisions": revision_inventory(["api--r0"]), "manifest": manifest().__str__()},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                self.build(app, revision, stage="C2", suffix="image-1", **kwargs)
+        with self.assertRaises(ValueError):
+            self.build(
+                app, revision, stage="C3", suffix="gw22s1", deployments="x",
+                manifest=json.dumps(manifest()), api_image=image,
+                existing_revisions=revision_inventory(["api--r0"]),
+            )
+
+    def test_c2_allows_absent_selector_flags_only_with_complete_fresh_inventory(self):
+        app, revision = snapshot("Multiple")
+        for item in ("AI4IA_SHARED_GATEWAY_ENABLED",):
+            app["properties"]["template"]["containers"][0]["env"] = [
+                env for env in app["properties"]["template"]["containers"][0]["env"]
+                if env["name"] != item
+            ]
+            revision["properties"]["template"]["containers"][0]["env"] = copy.deepcopy(
+                app["properties"]["template"]["containers"][0]["env"]
+            )
+        image = revision["properties"]["template"]["containers"][0]["image"].rsplit("@", 1)[0] + "@sha256:" + "b" * 64
+        payload = self.build(
+            app, revision, stage="C2", suffix="image-2", api_image=image,
+            existing_revisions=revision_inventory(["api--r0"], pages=1),
+        )
+        self.assertEqual(payload["properties"]["template"]["containers"][0]["image"], image)
 
     def test_rejects_stale_unhealthy_drifted_or_ambiguous_snapshot(self):
         for field in ("latestRevisionName", "latestReadyRevisionName", "provisioningState"):
