@@ -103,6 +103,84 @@ def writable_template_projection(template: dict[str, Any]) -> dict[str, Any]:
     return activation_template_projection(template)
 
 
+TEMPLATE_DIFF_KEYS = frozenset({
+    "containers", "initContainers", "volumes", "scale", "serviceBinds",
+    "terminationGracePeriodSeconds", "name", "image", "imageType", "command", "args",
+    "env", "resources", "cpu", "memory", "probes", "volumeMounts", "minReplicas",
+    "maxReplicas", "cooldownPeriod", "pollingInterval", "rules", "http", "tcp",
+    "azureQueue", "custom", "auth", "type", "initialDelaySeconds", "periodSeconds",
+    "timeoutSeconds", "failureThreshold", "successThreshold", "httpGet", "tcpSocket",
+    "port", "path", "scheme", "httpHeaders", "host", "volumeName", "mountPath",
+    "subPath", "storageType", "storageName", "secrets", "mountOptions", "value",
+    "secretRef", "serviceId", "clientType",
+})
+
+
+def canonical_template(value: Any) -> Any:
+    """Comparison only: retain list positions, dropping recursively empty dict entries."""
+    if isinstance(value, dict):
+        children = {key: canonical_template(child) for key, child in value.items()}
+        return {key: child for key, child in children.items() if child not in (None, [], {})}
+    if isinstance(value, list):
+        return [canonical_template(child) for child in value]
+    return value
+
+
+def compare_r0_templates(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    left = writable_template_projection(left)
+    right = writable_template_projection(right)
+    entries: list[dict[str, Any]] = []
+    truncated = False
+    empty_only = True
+
+    def record(path: list[str | int], kind: str) -> None:
+        nonlocal truncated, empty_only
+        empty_only = empty_only and kind in ("absent_vs_empty", "null_vs_empty")
+        if len(entries) < 32:
+            entries.append({"path": path, "kind": kind})
+        else:
+            truncated = True
+
+    def walk(a: Any, b: Any, path: list[str | int]) -> None:
+        nonlocal truncated
+        if (a is None and canonical_template(b) in ([], {})
+                or b is None and canonical_template(a) in ([], {})):
+            record(path, "null_vs_empty")
+        elif type(a) is not type(b):
+            record(path, "type")
+        elif isinstance(a, (dict, list)):
+            if len(path) >= 16 and (a or b):
+                record(path, "value")
+                truncated = True
+            elif isinstance(a, dict):
+                for key in sorted(a.keys() | b.keys()):
+                    child_path = [*path, key if key in TEMPLATE_DIFF_KEYS else "?"]
+                    if key not in a:
+                        record(child_path, "absent_vs_empty" if canonical_template(b[key]) in (None, [], {})
+                               else "missing_left")
+                    elif key not in b:
+                        record(child_path, "absent_vs_empty" if canonical_template(a[key]) in (None, [], {})
+                               else "missing_right")
+                    else:
+                        walk(a[key], b[key], child_path)
+            else:
+                if len(a) != len(b):
+                    record(path, "length")
+                for index, (aa, bb) in enumerate(zip(a, b, strict=False)):
+                    walk(aa, bb, [*path, index])
+        elif a != b:
+            record(path, "value")
+
+    walk(left, right, [])
+    canonical_equal = canonical_template(left) == canonical_template(right)
+    return {
+        "template_equal": left == right,
+        "template_equal_canonical": canonical_equal,
+        "compatible": canonical_equal and empty_only,
+        "template_diff": {"entries": entries, "truncated": truncated},
+    }
+
+
 def git_blob_sha1(content: bytes) -> str:
     header = f"blob {len(content)}\0".encode("ascii")
     return hashlib.sha1(header + content).hexdigest()
@@ -313,8 +391,7 @@ def build_payload(
         or rev.get("active") is not True
         or rev.get("healthState") != "Healthy"
         or rev.get("runningState") not in ("Running", "RunningAtMaxScale")
-        or writable_template_projection(props["template"])
-        != writable_template_projection(rev["template"])
+        or not compare_r0_templates(props["template"], rev["template"])["compatible"]
     ):
         raise ValueError("R0 must be healthy, active, latest/ready, with an identical writable template")
     mode = "Single" if stage == "C1" else "Multiple"

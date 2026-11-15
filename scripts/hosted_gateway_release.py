@@ -135,10 +135,11 @@ def snapshot_facts(app: Any, rev: Any, resource_id: str) -> dict[str, Any]:
     k = lambda: r()["template"]["containers"]
     rev_id = lambda: resource_id + "/revisions/" + rev["name"]
     try:
-        projection_equal = (cutover().writable_template_projection(p()["template"])
-                            == cutover().writable_template_projection(r()["template"]))
+        comparison = cutover().compare_r0_templates(p()["template"], r()["template"])
+        projection_equal = comparison["template_equal"]
+        canonical_equal = comparison["template_equal_canonical"]
     except Exception:  # noqa: BLE001
-        projection_equal = None
+        projection_equal = canonical_equal = None
     mode = _safe(lambda: c()["activeRevisionsMode"] in ("Single", "Multiple"))
     return {
         "app_id_exact": _safe(lambda: app["id"] == resource_id),
@@ -153,6 +154,7 @@ def snapshot_facts(app: Any, rev: Any, resource_id: str) -> dict[str, Any]:
         "healthy": _safe(lambda: r()["healthState"] == "Healthy"),
         "running": _safe(lambda: r()["runningState"] in ("Running", "RunningAtMaxScale")),
         "template_equal": projection_equal,
+        "template_equal_canonical": canonical_equal,
         "mode": c()["activeRevisionsMode"] if mode else None,
         "traffic_single": _safe(lambda: len(t()) == 1 and t()[0].get("weight") == 100),
         "traffic_latest": _safe(lambda: t()[0] == {"latestRevision": True, "weight": 100}),
@@ -208,6 +210,12 @@ def build_payload(*args: Any, **kwargs: Any) -> dict:
             "reason": payload_reason(e)}
         if len(args) >= 2 and isinstance(kwargs.get("resource_id"), str):
             detail["facts"] = snapshot_facts(args[0], args[1], kwargs["resource_id"])
+            try:
+                detail["template_diff"] = cutover().compare_r0_templates(
+                    args[0]["properties"]["template"], args[1]["properties"]["template"],
+                )["template_diff"]
+            except (ValueError, KeyError, TypeError):
+                detail["template_diff"] = {"entries": [], "truncated": True}
         raise Refused("payload", detail=detail) from None
 
 
@@ -1047,6 +1055,14 @@ class Release:
             raise Refused("read")
         return app, self.arm.get(f"{APPS[service]}/revisions/{r0}", phase="read")
 
+    def record_template_comparison(self, app: dict, rev: dict) -> None:
+        comparison = cutover().compare_r0_templates(
+            app["properties"]["template"], rev["properties"]["template"],
+        )
+        if comparison["compatible"] and not comparison["template_equal"]:
+            self.step("r0-template-normalized", template_diff=comparison["template_diff"],
+                      facts={"template_equal": False, "template_equal_canonical": True})
+
     def guarded_patch(self, service: str, expected: dict, payload: dict, name: str) -> None:
         """Re-read immediately before one PATCH. Not atomic CAS (no If-Match support)."""
         if projection(self.arm.get(APPS[service], phase="reread")) != expected:
@@ -1074,6 +1090,7 @@ class Release:
     def c1(self, service: str) -> None:
         app, rev = self.snapshot(service)
         payload = build_payload(app, rev, resource_id=APPS[service], stage="C1", service=service)
+        self.record_template_comparison(app, rev)
         r0 = rev["name"]
         self.receipt["r0"] = r0
         self.guarded_patch(service, projection(app), payload, "c1-patch")
@@ -1097,6 +1114,7 @@ class Release:
             app, rev, resource_id=app_id, stage=stage, service=service, suffix=suffix,
             existing_revisions=revision_rows(self.arm, app_id, self.now()), **inputs,
         )
+        self.record_template_comparison(app, rev)
         self.gate.require_fresh()
         self.guarded_patch(service, projection(app), payload, "create")
         try:
