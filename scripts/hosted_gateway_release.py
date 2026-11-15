@@ -92,10 +92,11 @@ WEB_BUILD_ID = "3cb6c94fb22f05fe9b5a"
 class Refused(Exception):
     """A deliberate stop. ``phase`` is an allowlisted label, never response text."""
 
-    def __init__(self, phase: str, status: int | None = None):
+    def __init__(self, phase: str, status: int | None = None, detail: dict | None = None):
         super().__init__(phase)
         self.phase = phase
         self.status = status if type(status) is int and 100 <= status <= 599 else None
+        self.detail = detail
 
 
 class Uncertain(Refused):
@@ -118,12 +119,96 @@ def cutover():
     return _load("_ai4ia_prepare_gateway_cutover", ROOT / "scripts" / "prepare-gateway-cutover.py")
 
 
+def _safe(fn: Any) -> bool | None:
+    try:
+        return bool(fn())
+    except Exception:  # noqa: BLE001 - an unreadable fact is unknown, never false
+        return None
+
+
+def snapshot_facts(app: Any, rev: Any, resource_id: str) -> dict[str, Any]:
+    """Content-free booleans/enums about an R0 snapshot: no IDs, names, images or values."""
+    p = lambda: app["properties"]
+    c = lambda: p()["configuration"]
+    r = lambda: rev["properties"]
+    t = lambda: c()["ingress"]["traffic"]
+    k = lambda: r()["template"]["containers"]
+    rev_id = lambda: resource_id + "/revisions/" + rev["name"]
+    try:
+        projection_equal = (cutover().writable_template_projection(p()["template"])
+                            == cutover().writable_template_projection(r()["template"]))
+    except Exception:  # noqa: BLE001
+        projection_equal = None
+    mode = _safe(lambda: c()["activeRevisionsMode"] in ("Single", "Multiple"))
+    return {
+        "app_id_exact": _safe(lambda: app["id"] == resource_id),
+        "app_id_casefold": _safe(lambda: app["id"].casefold() == resource_id.casefold()),
+        "app_name": _safe(lambda: app["name"] == resource_id.rsplit("/", 1)[-1]),
+        "rev_id_exact": _safe(lambda: rev["id"] == rev_id()),
+        "rev_id_casefold": _safe(lambda: rev["id"].casefold() == rev_id().casefold()),
+        "provisioned": _safe(lambda: p()["provisioningState"] == "Succeeded"),
+        "latest": _safe(lambda: p()["latestRevisionName"] == rev["name"]),
+        "latest_ready": _safe(lambda: p()["latestReadyRevisionName"] == rev["name"]),
+        "active": _safe(lambda: r()["active"] is True),
+        "healthy": _safe(lambda: r()["healthState"] == "Healthy"),
+        "running": _safe(lambda: r()["runningState"] in ("Running", "RunningAtMaxScale")),
+        "template_equal": projection_equal,
+        "mode": c()["activeRevisionsMode"] if mode else None,
+        "traffic_single": _safe(lambda: len(t()) == 1 and t()[0].get("weight") == 100),
+        "traffic_latest": _safe(lambda: t()[0] == {"latestRevision": True, "weight": 100}),
+        "traffic_named": _safe(lambda: t()[0] == {"revisionName": rev["name"], "weight": 100}),
+        "one_container": _safe(lambda: len(k()) == 1),
+        "digest_pinned": _safe(lambda: re.fullmatch(r".+@sha256:[0-9a-f]{64}", k()[0]["image"])),
+    }
+
+
+PAYLOAD_REASONS = (
+    ("explicit Container App resource ID", "id"),
+    ("resource name must identify", "id"),
+    ("R0 must be healthy", "r0-state"),
+    ("mode", "mode"),
+    ("serving rule", "traffic"),
+    ("traffic must identify", "traffic"),
+    ("exactly one", "container"),
+    ("digest-pinned", "image"),
+    ("C1 accepts no candidate inputs", "inputs"),
+    ("manifest inputs", "inputs"),
+    ("candidate", "candidate"),
+    ("C3", "c3"),
+    ("Activation", "template"),
+)
+
+
+def payload_reason(e: Exception) -> str:
+    """Map a builder message to a closed code; the message itself is never recorded."""
+    message = str(e) if isinstance(e, ValueError) else ""
+    for needle, code in PAYLOAD_REASONS:
+        if needle in message:
+            return code
+    return "other"
+
+
 def build_payload(*args: Any, **kwargs: Any) -> dict:
-    """The reviewed cutover builder; its validation messages never reach receipts."""
+    """The reviewed cutover builder; its validation messages never reach receipts.
+
+    A refusal carries only the builder's raise line and content-free snapshot facts.
+    """
     try:
         return cutover().build_payload(*args, **kwargs)
-    except (ValueError, KeyError, TypeError):
-        raise Refused("payload") from None
+    except (ValueError, KeyError, TypeError) as e:
+        line = None
+        tb = e.__traceback__
+        while tb is not None:
+            if Path(tb.tb_frame.f_code.co_filename).name in (
+                    "prepare-gateway-cutover.py", "_private_recovery_packets.py"):
+                line = tb.tb_lineno
+            tb = tb.tb_next
+        detail: dict[str, Any] = {"error": type(e).__name__ if type(e).__name__ in (
+            "ValueError", "KeyError", "TypeError", "PacketError") else "other", "line": line,
+            "reason": payload_reason(e)}
+        if len(args) >= 2 and isinstance(kwargs.get("resource_id"), str):
+            detail["facts"] = snapshot_facts(args[0], args[1], kwargs["resource_id"])
+        raise Refused("payload", detail=detail) from None
 
 
 # --------------------------------------------------------------------------- admission
@@ -1207,6 +1292,8 @@ def execute(env: dict[str, str], *, token_source=acquire_arm_token, arm_class=Ar
         receipt["reconciled"] = reconcile(arm, receipt.get("stage"))
     except Refused as e:
         receipt.update(phase=e.phase, status=e.status)
+        if e.detail is not None:
+            receipt["detail"] = e.detail
     except Exception as e:  # noqa: BLE001 - receipt records only the exception type
         receipt.update(outcome="error", error=type(e).__name__)
     receipt["writes"] = arm.writes if arm is not None else 0

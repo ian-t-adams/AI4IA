@@ -290,7 +290,8 @@ def build_payload(
             r"/providers/Microsoft\.App/containerApps/[a-z0-9-]+",
             resource_id,
         ) is None
-        or app.get("id") != resource_id
+        or not isinstance(app.get("id"), str)
+        or app["id"].casefold() != resource_id.casefold()
         or resource_id.rsplit("/", 1)[-1] != app.get("name")
     ):
         raise ValueError("snapshot must match the explicit Container App resource ID")
@@ -302,14 +303,16 @@ def build_payload(
     config = props["configuration"]
     rev = revision["properties"]
     r0 = revision["name"]
+    # ARM may return provider/segment casing that differs from the explicit ID.
     if (
-        revision.get("id") != resource_id + "/revisions/" + r0
+        not isinstance(revision.get("id"), str)
+        or revision["id"].casefold() != (resource_id + "/revisions/" + r0).casefold()
         or props.get("provisioningState") != "Succeeded"
         or props.get("latestRevisionName") != r0
         or props.get("latestReadyRevisionName") != r0
         or rev.get("active") is not True
         or rev.get("healthState") != "Healthy"
-        or rev.get("runningState") != "Running"
+        or rev.get("runningState") not in ("Running", "RunningAtMaxScale")
         or writable_template_projection(props["template"])
         != writable_template_projection(rev["template"])
     ):
