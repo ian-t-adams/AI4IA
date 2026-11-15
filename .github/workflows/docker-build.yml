@@ -10,9 +10,10 @@ name: docker-build
 # build-and-push path at deploy time (see azure.yaml); this
 # workflow is build-and-load validation only - no registry, no credentials.
 #
-# The proxy image is also scanned by its exact loaded image tag. That gate uses
-# a reviewed, CVE-specific exception file, emits an SPDX SBOM, and retains build
-# metadata so the result is about final runtime bytes rather than source files.
+# API and web scans bind their exact loaded image IDs, reject HIGH/CRITICAL
+# findings without exclusions, and retain reports/SPDX even on scan failure.
+# The separate proxy gate keeps its existing reviewed CVE-specific exception
+# file and build metadata; it is not an API/web scanner policy.
 #
 # The dockerignore-context job below builds separate, throwaway probe
 # images (not the real app images) to prove app/web/.dockerignore and
@@ -72,6 +73,48 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-build-web
       - name: Verify image was produced
         run: docker image inspect ai4ia-web:ci --format 'Built {{.RepoTags}} - {{.Size}} bytes'
+
+      - name: Capture final web image ID
+        id: web-image
+        run: |
+          set -euo pipefail
+          echo "image_id=$(docker image inspect ai4ia-web:ci --format '{{.Id}}')" \
+            >> "${GITHUB_OUTPUT}"
+
+      - name: Scan final web image for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.web-image.outputs.image_id }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: web-vulnerabilities.json
+          exit-code: "1"
+          version: v0.71.2
+
+      - name: Generate web SPDX SBOM
+        if: always() && steps.web-image.outcome == 'success'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.web-image.outputs.image_id }}
+          scanners: vuln
+          format: spdx-json
+          output: web-sbom.spdx.json
+          exit-code: "0"
+          version: v0.71.2
+
+      - name: Retain web vulnerability report and SBOM
+        if: always() && steps.web-image.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-image-evidence-${{ github.sha }}
+          path: |
+            web-vulnerabilities.json
+            web-sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 30
 
   api:
     name: api image

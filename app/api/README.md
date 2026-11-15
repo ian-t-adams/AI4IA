@@ -91,9 +91,9 @@ CI exercises serialization as well as native gRPC and cryptography imports.
 PR image CI checks stdlib compression/SQLite/TLS, SDK imports, workflow calendars,
 non-root ownership, the default command with a non-default port, loopback-only
 health probes with networking disabled, and graceful SIGTERM. `exec` keeps
-Uvicorn as PID 1 while retaining `/bin/sh` for Container Apps exec. The final API
-image is scanned for all HIGH/CRITICAL findings, including unfixed findings,
-with no ignore file; its vulnerability JSON and complete SPDX SBOM are retained
+Uvicorn as PID 1 while retaining `/bin/sh` for Container Apps exec. Both final service
+images are scanned for all HIGH/CRITICAL findings, including unfixed findings,
+with no ignore file; their vulnerability JSON and complete SPDX SBOMs are retained
 even when the scan fails. A base-only scan is not final-image acceptance.
 
 When changing dependencies, refresh the lock deliberately from public PyPI and

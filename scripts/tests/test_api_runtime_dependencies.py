@@ -113,29 +113,41 @@ class ApiRuntimeDockerContractTests(unittest.TestCase):
         self.assertIn("docker run --rm --interactive ai4ia-api:ci python -", docker_ci)
         self.assertIn("< app/api/tests/test_lazy_imports_are_declared.py", docker_ci)
 
-    def test_api_final_image_scan_is_blocking_and_retains_inventory_on_failure(self) -> None:
+    def test_final_service_scans_are_blocking_and_retain_inventory_on_failure(self) -> None:
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/docker-build.yml").read_text(encoding="utf-8"),
         )
-        steps = workflow["jobs"]["api"]["steps"]
-        scan = next(step for step in steps if step["name"].startswith("Scan final API image"))
-        options = scan["with"]
-        self.assertEqual(options["scan-type"], "image")
-        self.assertEqual(options["image-ref"], "${{ steps.api-image.outputs.image_id }}")
-        self.assertEqual(options["scanners"], "vuln")
-        self.assertEqual(options["severity"], "HIGH,CRITICAL")
-        self.assertEqual(options["exit-code"], "1")
-        self.assertFalse(scan.get("continue-on-error"))
-        self.assertFalse(scan.get("if"))
-        self.assertFalse({"ignore-unfixed", "trivyignores", "vex"} & options.keys())
-        sbom = next(step for step in steps if step["name"] == "Generate API SPDX SBOM")
-        self.assertEqual(sbom["with"]["image-ref"], options["image-ref"])
-        self.assertEqual(sbom["with"]["format"], "spdx-json")
-        retention = next(step for step in steps if step["name"].startswith("Retain API vulnerability"))
-        for step in (sbom, retention):
-            self.assertEqual(step["if"], "always() && steps.api-image.outcome == 'success'")
-        self.assertIn(options["output"], retention["with"]["path"])
-        self.assertIn(sbom["with"]["output"], retention["with"]["path"])
+        for service, label in (("api", "API"), ("web", "web")):
+            with self.subTest(service=service):
+                steps = workflow["jobs"][service]["steps"]
+                scan = next(
+                    step for step in steps
+                    if step["name"] == f"Scan final {label} image for HIGH/CRITICAL vulnerabilities"
+                )
+                options = scan["with"]
+                self.assertEqual(options["scan-type"], "image")
+                self.assertEqual(
+                    options["image-ref"], "${{ steps." + service + "-image.outputs.image_id }}",
+                )
+                self.assertEqual(options["scanners"], "vuln")
+                self.assertEqual(options["severity"], "HIGH,CRITICAL")
+                self.assertEqual(options["exit-code"], "1")
+                self.assertFalse(scan.get("continue-on-error"))
+                self.assertFalse(scan.get("if"))
+                self.assertFalse({"ignore-unfixed", "trivyignores", "vex"} & options.keys())
+                sbom = next(step for step in steps if step["name"] == f"Generate {label} SPDX SBOM")
+                self.assertEqual(sbom["with"]["image-ref"], options["image-ref"])
+                self.assertEqual(sbom["with"]["format"], "spdx-json")
+                retention = next(
+                    step for step in steps
+                    if step["name"] == f"Retain {label} vulnerability report and SBOM"
+                )
+                for step in (sbom, retention):
+                    self.assertEqual(
+                        step["if"], f"always() && steps.{service}-image.outcome == 'success'",
+                    )
+                self.assertIn(options["output"], retention["with"]["path"])
+                self.assertIn(sbom["with"]["output"], retention["with"]["path"])
 
 
 class ApiRuntimeLockBehaviorTests(unittest.TestCase):
