@@ -32,12 +32,23 @@ async def list_models(
     if binding is not None:
         binding.require_configuration()
     catalog: ModelCatalog = request.app.state.catalog
-    protocol = request.app.state.settings.realtime_protocol
-    return ModelCatalog(
-        residencyPolicy=catalog.residencyPolicy,
-        models=[
-            entry.model_copy(update={"options": catalog.eligible_options(entry)})
-            for entry in catalog.models
-            if catalog.available(entry) and entry.supports_realtime_protocol(protocol)
-        ],
-    )
+    settings = request.app.state.settings
+    gateway = request.app.state.gateway
+    models = []
+    for entry in catalog.models:
+        if not catalog.available(entry) or not entry.supports_realtime_protocol(
+            settings.realtime_protocol
+        ):
+            continue
+        options = catalog.eligible_options(entry)
+        if settings.chat_pilot_isolation_enabled:
+            options = [
+                option for option in options
+                if gateway.chat_pilot_model_key(
+                    entry.api, option.deploymentName, option.sku,
+                    model_id=entry.id,
+                ) is not None
+            ]
+        if options:
+            models.append(entry.model_copy(update={"options": options}))
+    return ModelCatalog(residencyPolicy=catalog.residencyPolicy, models=models)

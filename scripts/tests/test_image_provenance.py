@@ -7,8 +7,8 @@ remain synthetic: these tests establish local policy, not cryptographic proof.
 
 from __future__ import annotations
 
-import base64
 import argparse
+import base64
 import copy
 import hashlib
 import io
@@ -261,6 +261,16 @@ if tool == "azd":
 if tool == "trivy":
     image = args[-1]
     service = next(service for service, reference in images.items() if reference == image)
+    if "--scanners" in args:
+        if args[:3] != ["image", "--image-src", "remote"] or \
+           args[args.index("--scanners") + 1] != "vuln" or \
+           args[args.index("--severity") + 1] != "HIGH,CRITICAL" or \
+           args[args.index("--exit-code") + 1] != "1":
+            fail("vulnerability scan must use the exact digest and fail on HIGH/CRITICAL")
+        if os.environ.get("FAKE_FAILURE") == "vulnerability:" + service:
+            fail("sensitive-stub-diagnostic")
+        Path(args[args.index("--output") + 1]).write_text('{"Results":[]}', encoding="utf-8")
+        raise SystemExit(0)
     if args[:6] != ["image", "--image-src", "remote", "--format", "spdx-json", "--list-all-pkgs"]:
         fail("scanner must read registry bytes as SPDX")
     if os.environ.get("FAKE_FAILURE") == "trivy:" + service:
@@ -529,13 +539,76 @@ class PrivateApiProofTests(unittest.TestCase):
                        {"AI4IA_API_NETWORK_PHASE": "private"}):
             with self.assertRaises(provenance.ProvenanceError):
                 provenance.subjects(args, {**env, **update})
+        private_source = ENVIRONMENT["GITHUB_SHA"]
+        private_env = {
+            **ENVIRONMENT,
+            "AI4IA_RELEASE_KIND": "private-image",
+            "AI4IA_API_NETWORK_PHASE": "private",
+            "AI4IA_API_IMAGE_PRODUCER_ENABLED": "true",
+            "AI4IA_RELEASE_PROVISION": "false",
+            "AI4IA_RELEASE_SOURCE_SHA": private_source,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+        }
+        private_manifest = provenance.subjects(args, private_env)
+        self.assertIs(private_manifest["privateApiImage"], True)
+        for update in (
+            {"AI4IA_RELEASE_KIND": "image"},
+            {"AI4IA_API_NETWORK_PHASE": "candidate"},
+            {"AI4IA_API_IMAGE_PRODUCER_ENABLED": "false"},
+            {"AI4IA_RELEASE_PROVISION": "true"},
+            {"AI4IA_RELEASE_SOURCE_SHA": "f" * 40},
+            {"GITHUB_EVENT_NAME": "push"},
+        ):
+            with self.subTest(update=update), self.assertRaises(provenance.ProvenanceError):
+                provenance.subjects(args, {**private_env, **update})
         args.expect_image.extend([f"web={IMAGES['web']}", f"proxy={IMAGES['proxy']}"])
         with self.assertRaises(provenance.ProvenanceError):
             provenance.subjects(args, env)
 
+    def test_api_web_pair_is_a_separate_exact_source_producer_scope(self):
+        args = argparse.Namespace(
+            expect_image=[f"web={IMAGES['web']}", f"api={IMAGES['api']}"],
+            private_api=False, private_api_web=True,
+        )
+        env = {
+            **ENVIRONMENT,
+            "AI4IA_RELEASE_KIND": "private-pair",
+            "AI4IA_API_NETWORK_PHASE": "private",
+            "AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "true",
+            "AI4IA_RELEASE_PROVISION": "false",
+            "AI4IA_RELEASE_SOURCE_SHA": ENVIRONMENT["GITHUB_SHA"],
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+        }
+        manifest = provenance.subjects(args, env)
+        self.assertIs(manifest["privateApiWebImages"], True)
+        self.assertEqual(manifest["images"], {"web": IMAGES["web"], "api": IMAGES["api"]})
+        for update in (
+            {"AI4IA_RELEASE_KIND": "private-image"},
+            {"AI4IA_API_NETWORK_PHASE": "candidate"},
+            {"AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED": "false"},
+            {"AI4IA_RELEASE_PROVISION": "true"},
+            {"AI4IA_RELEASE_SOURCE_SHA": "f" * 40},
+            {"GITHUB_EVENT_NAME": "push"},
+        ):
+            with self.subTest(update=update), self.assertRaises(provenance.ProvenanceError):
+                provenance.subjects(args, {**env, **update})
+        for images in (
+            [f"api={IMAGES['api']}"],
+            [f"web={IMAGES['web']}", f"api={IMAGES['api']}", f"proxy={IMAGES['proxy']}"],
+        ):
+            with self.subTest(images=images), self.assertRaises(provenance.ProvenanceError):
+                provenance.subjects(argparse.Namespace(
+                    expect_image=images, private_api=False, private_api_web=True,
+                ), env)
+        with self.assertRaises(provenance.ProvenanceError):
+            provenance.subjects(argparse.Namespace(
+                expect_image=args.expect_image, private_api=True, private_api_web=True,
+            ), env)
+
 
 class ReleaseGateBehaviorTests(unittest.TestCase):
-    def flow(self, *, change=None, overrides=None, missing_bundle="", after_verify="", private_api=False):
+    def flow(self, *, change=None, overrides=None, missing_bundle="", after_verify="",
+             private_api=False, private_api_kind="image"):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixture = {
@@ -545,15 +618,34 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
             }
             documents = {service: spdx(image) for service, image in IMAGES.items()}
             if private_api:
-                for row in fixture["api"].values():
-                    row[0]["verificationResult"]["signature"]["certificate"]["buildTrigger"] = "workflow_dispatch"
+                private_services = ("web", "api") if private_api_kind == "private-pair" else ("api",)
+                for service in private_services:
+                    for row in fixture[service].values():
+                        row[0]["verificationResult"]["signature"]["certificate"]["buildTrigger"] = "workflow_dispatch"
             if change:
                 change(fixture, documents)
             (root / "images.json").write_text(json.dumps(IMAGES), encoding="utf-8")
             env = {**os.environ, **ENVIRONMENT}
             if private_api:
-                env.update(AI4IA_RELEASE_KIND="image", AI4IA_API_NETWORK_PHASE="candidate",
-                           GITHUB_EVENT_NAME="workflow_dispatch")
+                env.update(
+                    AI4IA_RELEASE_KIND=private_api_kind,
+                    AI4IA_API_NETWORK_PHASE=(
+                        "private" if private_api_kind in ("private-image", "private-pair") else "candidate"
+                    ),
+                    GITHUB_EVENT_NAME="workflow_dispatch",
+                )
+                if private_api_kind == "private-image":
+                    env.update(
+                        AI4IA_API_IMAGE_PRODUCER_ENABLED="true",
+                        AI4IA_RELEASE_PROVISION="false",
+                        AI4IA_RELEASE_SOURCE_SHA=ENVIRONMENT["GITHUB_SHA"],
+                    )
+                elif private_api_kind == "private-pair":
+                    env.update(
+                        AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED="true",
+                        AI4IA_RELEASE_PROVISION="false",
+                        AI4IA_RELEASE_SOURCE_SHA=ENVIRONMENT["GITHUB_SHA"],
+                    )
             env.update(
                 RUNNER_TEMP=root.as_posix(), FAKE_ROOT=str(root),
                 GITHUB_OUTPUT=str(root / "outputs"), GITHUB_STEP_SUMMARY=str(root / "summary"),
@@ -591,7 +683,12 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
             run = f'export PATH="$(cd {shlex.quote(bin_dir.as_posix())} && pwd):$PATH"\n'
             if private_api:
                 run += "set -euo pipefail\n"
-                run += "\n".join("(\n" + _step(name)["run"] + "\n)" for name in (PREPARE, GENERATE, VERIFY))
+                run += "(\n" + _step(PREPARE)["run"] + "\n)\n"
+                if private_api_kind == "private-pair":
+                    run += "(\n" + _step(
+                        "Scan production private API and web images for HIGH/CRITICAL vulnerabilities"
+                    )["run"] + "\n)\n"
+                run += "\n".join("(\n" + _step(name)["run"] + "\n)" for name in (GENERATE, VERIFY))
             else:
                 run += "\n".join(_step(name)["run"] for name in (PREPARE, GENERATE, VERIFY))
                 run += '\nIMAGE_PROOF_SHA256="$(sed -n \'s/^proof_sha256=//p\' "$GITHUB_OUTPUT")"\n'
@@ -650,6 +747,59 @@ class ReleaseGateBehaviorTests(unittest.TestCase):
         result, calls, outputs, proof = self.flow(private_api=True, missing_bundle="API_SBOM_BUNDLE")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("private_api_receipt", outputs)
+        self.assertIsNone(proof)
+
+    def test_distinct_private_image_producer_uses_same_exact_signed_proof_path(self):
+        result, calls, outputs, proof = self.flow(
+            private_api=True, private_api_kind="private-image",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        scans = [call for call in calls if call["tool"] == "trivy"]
+        verifications = [call for call in calls if call["tool"] == "gh" and call["args"][0] == "attestation"]
+        self.assertEqual(len(scans), 1)
+        self.assertEqual(len(verifications), 2)
+        self.assertFalse(any(call["tool"] == "azd" for call in calls))
+        self.assertIs(proof["privateApiImage"], True)
+        self.assertEqual(proof["identity"]["sourceCommit"], ENVIRONMENT["GITHUB_SHA"])
+        self.assertEqual(proof["images"], {"api": IMAGES["api"]})
+        self.assertEqual(set(proof["files"]), set(provenance.evidence_names(("api",))))
+        receipt = json.loads(outputs["private_api_receipt"])
+        self.assertEqual(receipt["sourceCommit"], ENVIRONMENT["GITHUB_SHA"])
+        self.assertEqual(receipt["image"], IMAGES["api"])
+
+    def test_private_api_web_producer_scans_and_verifies_both_images_without_deployment(self):
+        result, calls, outputs, proof = self.flow(
+            private_api=True, private_api_kind="private-pair",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        scans = [call for call in calls if call["tool"] == "trivy" and "--scanners" in call["args"]]
+        sboms = [
+            call for call in calls
+            if call["tool"] == "trivy" and "--format" in call["args"]
+            and call["args"][call["args"].index("--format") + 1] == "spdx-json"
+        ]
+        verifications = [call for call in calls if call["tool"] == "gh" and call["args"][0] == "attestation"]
+        self.assertEqual(len(scans), 2)
+        self.assertEqual(len(sboms), 2)
+        self.assertTrue(all(call["args"][0] == "image" for call in scans))
+        self.assertEqual(len(verifications), 4)
+        self.assertFalse(any(call["tool"] == "azd" for call in calls))
+        self.assertIs(proof["privateApiWebImages"], True)
+        self.assertEqual(proof["identity"]["sourceCommit"], ENVIRONMENT["GITHUB_SHA"])
+        self.assertEqual(proof["images"], {"web": IMAGES["web"], "api": IMAGES["api"]})
+        self.assertEqual(set(proof["files"]), set(provenance.evidence_names(("web", "api"))))
+        receipt = json.loads(outputs["private_api_web_receipt"])
+        self.assertEqual(receipt["operation"], "private-api-web-images")
+        self.assertEqual(receipt["sourceCommit"], ENVIRONMENT["GITHUB_SHA"])
+        self.assertEqual(receipt["images"], {"web": IMAGES["web"], "api": IMAGES["api"]})
+        self.assertEqual(
+            set(receipt["sbomCanonicalSha256"]), {"web", "api"},
+        )
+        result, calls, outputs, proof = self.flow(
+            private_api=True, private_api_kind="private-pair", missing_bundle="WEB_SBOM_BUNDLE",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("private_api_web_receipt", outputs)
         self.assertIsNone(proof)
 
     def test_each_subject_and_predicate_mismatch_denies_before_any_deploy(self):
@@ -953,6 +1103,8 @@ class ImageAttestationWorkflowTests(unittest.TestCase):
                 gate = "steps.execution.outputs.allowed == 'true'"
                 if service == "api":
                     gate += " || steps.image_execution.outputs.allowed == 'true'"
+                elif service == "web":
+                    gate += " || (steps.image_execution.outputs.allowed == 'true' && steps.release_mode.outputs.operation == 'private-pair')"
                 self.assertEqual(step["if"], "${{ " + gate + " }}")
                 self.assertNotIn("continue-on-error", step)
                 self.assertLess(_step_index(GENERATE), _step_index(step["name"]))

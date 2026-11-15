@@ -57,8 +57,33 @@ describe("Entra API token acquisition", () => {
     expect(new Headers(init?.headers).get("Authorization")).toBe(
       "Bearer access-token",
     );
+    expect(init?.redirect).toBeUndefined();
     expect(mocks.client.acquireTokenRedirect).not.toHaveBeenCalled();
   });
+
+  it.each(["dev", "entra"] as const)(
+    "preserves redirect rejection without retry or anonymous fallback (%s)",
+    async (provider) => {
+      mocks.client.acquireTokenSilent.mockResolvedValue({ accessToken: "synthetic-token" });
+      mocks.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      const { apiFetch, initAuth } = await import("./auth");
+      initAuth(provider === "entra"
+        ? entraConfig
+        : { provider: "dev", clientId: "", tenantId: "", apiScope: "" });
+      const body = JSON.stringify({ sessionId: "s1", content: "synthetic question" });
+      const init: RequestInit = { method: "POST", body, redirect: "error" };
+
+      await expect(apiFetch("/api/chat", init)).rejects.toThrow("Failed to fetch");
+
+      expect(mocks.fetch).toHaveBeenCalledOnce();
+      expect(mocks.fetch.mock.calls[0][0]).toBe("/api/chat");
+      expect(mocks.fetch.mock.calls[0][1]).toMatchObject(init);
+      expect(new Headers(mocks.fetch.mock.calls[0][1]?.headers).get("Authorization")).toBe(
+        provider === "entra" ? "Bearer synthetic-token" : null,
+      );
+      expect(mocks.client.acquireTokenRedirect).not.toHaveBeenCalled();
+    },
+  );
 
   it("single-flights interaction-required redirects and never sends an anonymous request", async () => {
     let rejectRedirect!: (error: Error) => void;

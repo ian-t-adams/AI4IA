@@ -8,6 +8,24 @@ import { EditableSessionTitle } from "./EditableSessionTitle";
 afterEach(cleanup);
 
 describe("EditableSessionTitle", () => {
+  it("omits rename controls when the title is read-only", async () => {
+    const user = userEvent.setup();
+    render(
+      <EditableSessionTitle
+        title="Pilot conversation"
+        onSave={vi.fn()}
+        onOpen={vi.fn()}
+        allowRename={false}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Pilot conversation" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Pilot conversation" }));
+    await user.keyboard("{F2}");
+    expect(screen.queryByRole("textbox", { name: "Conversation title" })).not.toBeInTheDocument();
+  });
+
   it("supports F2, Enter save, and focus return", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();

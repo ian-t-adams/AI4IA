@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import httpx
 import jwt
@@ -23,12 +25,39 @@ _JWKS_FORCED_REFRESH_COOLDOWN_SECONDS = 60
 _ALLOWED_ALGS = ("RS256",)
 
 
+def _canonical_guid(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class EntraPilotAdmission:
+    tenant_id: str
+    oid: str
+    azp: str
+    required_scope: str = "access_as_user"
+
+    def __post_init__(self) -> None:
+        if not all(
+            _canonical_guid(value)
+            for value in (self.tenant_id, self.oid, self.azp)
+        ):
+            raise ValueError("pilot tenant, object, and client IDs must be GUIDs")
+        if not self.required_scope:
+            raise ValueError("pilot delegated scope is required")
+
+
 class EntraAuthProvider:
     def __init__(
         self,
         *,
         audience: str,
         allowed_tenants: list[str],
+        pilot_admission: EntraPilotAdmission | None = None,
         user_ids: InternalUserIdProvider | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -50,6 +79,35 @@ class EntraAuthProvider:
             accepted.add(f"api://{audience}")
         self._accepted_audiences = accepted
         self._allowed_tenants = {t.lower() for t in allowed_tenants}
+        self._pilot_admission = pilot_admission
+        self._pilot_tenant_id = (
+            _canonical_guid(pilot_admission.tenant_id)
+            if pilot_admission is not None
+            else None
+        )
+        self._pilot_oid = (
+            _canonical_guid(pilot_admission.oid)
+            if pilot_admission is not None
+            else None
+        )
+        self._pilot_azp = (
+            _canonical_guid(pilot_admission.azp)
+            if pilot_admission is not None
+            else None
+        )
+        configured_audience = audience.removeprefix("api://")
+        self._pilot_audience = (
+            _canonical_guid(configured_audience)
+            if pilot_admission is not None
+            else None
+        )
+        if pilot_admission is not None and self._pilot_audience is None:
+            raise ValueError("pilot v2 audience must be the API client-ID GUID")
+        if pilot_admission is not None and self._pilot_oid in {
+            self._pilot_azp,
+            self._pilot_audience,
+        }:
+            raise ValueError("pilot user object ID must differ from client IDs")
         self._user_ids = user_ids or InternalUserIdProvider()
         self._http = http_client
         self._jwks_cache: dict[str, tuple[float, dict]] = {}
@@ -126,8 +184,16 @@ class EntraAuthProvider:
         except jwt.PyJWTError as exc:  # malformed token
             raise AuthError(f"Invalid token: {exc}") from exc
 
-        tenant_id = str(unverified.get("tid", "")).lower()
+        unverified_tenant = unverified.get("tid")
+        if self._pilot_admission is not None and not isinstance(unverified_tenant, str):
+            raise AuthError("Token tenant is not allowed")
+        tenant_id = str(unverified_tenant or "").lower()
         if tenant_id not in self._allowed_tenants:
+            raise AuthError("Token tenant is not allowed")
+        if (
+            self._pilot_admission is not None
+            and _canonical_guid(unverified_tenant) != self._pilot_tenant_id
+        ):
             raise AuthError("Token tenant is not allowed")
 
         keys = await self._jwks(tenant_id)
@@ -154,11 +220,33 @@ class EntraAuthProvider:
             raise AuthError(f"Token validation failed: {exc}") from exc
 
         aud = claims.get("aud")
-        token_auds = [aud] if isinstance(aud, str) else list(aud or [])
-        if not any(a in self._accepted_audiences for a in token_auds):
-            raise AuthError("Token validation failed: Invalid audience")
+        if self._pilot_admission is not None:
+            if not isinstance(aud, str) or aud != self._pilot_audience:
+                raise AuthError("Token does not satisfy the pilot identity contract")
+        else:
+            token_auds = [aud] if isinstance(aud, str) else list(aud or [])
+            if not any(a in self._accepted_audiences for a in token_auds):
+                raise AuthError("Token validation failed: Invalid audience")
 
-        subject = str(claims.get("oid") or claims.get("sub") or "")
+        oid = claims.get("oid")
+        if self._pilot_admission is not None:
+            if (
+                _canonical_guid(claims.get("tid")) != self._pilot_tenant_id
+                or claims.get("iss") != issuer
+                or claims.get("ver") != "2.0"
+                or _canonical_guid(oid) != self._pilot_oid
+                or _canonical_guid(claims.get("azp")) != self._pilot_azp
+            ):
+                raise AuthError("Token does not satisfy the pilot identity contract")
+            scopes = claims.get("scp")
+            if (
+                not isinstance(scopes, str)
+                or self._pilot_admission.required_scope not in scopes.split(" ")
+            ):
+                raise AuthError("Token does not satisfy the pilot delegated scope")
+            subject = oid
+        else:
+            subject = str(claims.get("oid") or claims.get("sub") or "")
         if not subject:
             raise AuthError("Token has no subject (oid/sub)")
 
@@ -173,5 +261,10 @@ class EntraAuthProvider:
             name=claims.get("name"),
             email=claims.get("preferred_username") or claims.get("email"),
             claims={k: claims.get(k) for k in ("roles", "scp") if k in claims},
+            oid=oid if isinstance(oid, str) else None,
+            tid=claims.get("tid") if isinstance(claims.get("tid"), str) else None,
+            iss=claims.get("iss") if isinstance(claims.get("iss"), str) else None,
+            ver=claims.get("ver") if isinstance(claims.get("ver"), str) else None,
+            azp=claims.get("azp") if isinstance(claims.get("azp"), str) else None,
             policy_claims=verified_policy_claims(claims),
         )

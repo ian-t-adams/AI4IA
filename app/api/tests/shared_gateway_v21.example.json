@@ -1,0 +1,115 @@
+{
+  "contractVersion": "2.1.0",
+  "status": "schema-only",
+  "gateway": {
+    "baseUrl": "https://gateway.example.invalid/openai/v1",
+    "allowedHosts": ["gateway.example.invalid"],
+    "pathPrefix": "/openai/v1",
+    "anthropicBaseUrl": "https://gateway.example.invalid/anthropic/v1",
+    "videoBaseUrl": "https://gateway.example.invalid/video/v1"
+  },
+  "auth": {
+    "tenantId": "00000000-0000-0000-0000-000000000000",
+    "issuer": "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0",
+    "audience": "api://gateway.example.invalid",
+    "scope": "api://gateway.example.invalid/.default",
+    "accessTokenVersion": 2,
+    "callerClientId": "00000000-0000-0000-0000-000000000000",
+    "credential": "managed-identity"
+  },
+  "operations": [
+    { "method": "POST", "path": "/chat/completions", "stream": "allowed" },
+    { "method": "POST", "path": "/responses", "stream": "allowed" }
+  ],
+  "models": {
+    "example-chat-deployment": {
+      "kind": "deployment-name",
+      "operations": ["/chat/completions", "/responses"],
+      "targets": [
+        { "deployment": "example-chat-deployment", "sku": "GlobalStandard" }
+      ]
+    }
+  },
+  "retry": {
+    "owner": "gateway",
+    "clientSdkMaxRetries": 0,
+    "clientAppFailover": false,
+    "replayAfterFirstByte": false,
+    "retryAfterHonored": true
+  },
+  "responses": {
+    "storeRequired": false,
+    "forbiddenFields": ["previous_response_id", "background", "conversation"]
+  },
+  "streaming": {
+    "format": "text/event-stream",
+    "cancellation": "client-disconnect",
+    "terminalUsage": "unverified"
+  },
+  "correlation": {
+    "responseHeader": "x-S7P-ID",
+    "servedBackendGuaranteed": false
+  },
+  "privacy": {
+    "reviewCapture": "off",
+    "userAttribution": "disabled",
+    "forbiddenRequestHeaders": [
+      "api-key",
+      "x-LLMModel",
+      "S7P-Model-Override",
+      "x-backend-affinity",
+      "x-S7PPriority",
+      "x-PolicyCycleCounter",
+      "S7PDEBUG",
+      "X-MS-CLIENT-PRINCIPAL-ID",
+      "X-UserID"
+    ]
+  },
+  "bypass": {
+    "automaticDirectFallback": false,
+    "operatorBypass": "clear-base-url-with-logged-marker",
+    "captureDenyPreservedOnBypass": true
+  },
+  "capabilities": {
+    "claudeMessages": {
+      "enabled": false,
+      "operations": {
+        "messages": { "method": "POST", "path": "/messages", "stream": "allowed" }
+      },
+      "models": {
+        "example-claude": {
+          "kind": "alias",
+          "operations": ["/messages"],
+          "targets": [
+            {
+              "deployment": "example-claude-deployment",
+              "sku": "GlobalStandard",
+              "backend": "example-claude-backend"
+            }
+          ]
+        }
+      }
+    },
+    "videoJobs": {
+      "enabled": false,
+      "operations": {
+        "submit": { "method": "POST", "path": "/jobs" },
+        "status": { "method": "GET", "path": "/jobs/{id}" },
+        "content": { "method": "GET", "path": "/jobs/{id}/content" }
+      },
+      "models": {
+        "example-video": {
+          "kind": "alias",
+          "operations": ["/jobs", "/jobs/{id}", "/jobs/{id}/content"],
+          "targets": [
+            {
+              "deployment": "example-video-deployment",
+              "sku": "GlobalStandard",
+              "backend": "example-video-backend"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

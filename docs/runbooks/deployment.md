@@ -2457,6 +2457,214 @@ predicate, different producer or changed original inventory refuses. Ordinary
 three-service production verification remains same-run and complete. Keep the
 image receipt and both preview/execution artifacts with the operator's review.
 
+### Private-phase API image producer
+
+The separate `operation=private-image` lane is default-off behind
+`AI4IA_API_IMAGE_PRODUCER_ENABLED`. It requires an explicit `workflow_dispatch`
+from `main`, `AI4IA_API_NETWORK_PHASE=private`, no pending or blocked migration,
+`provision=false`, and an `image_source_sha` identical to the workflow's
+`GITHUB_SHA`. It remains independently admissible while
+`AI4IA_DEPLOYMENT_ENABLED=false`; the candidate-phase `operation=image` gate and
+its restrictions are unchanged.
+
+This lane builds only the API artifact in the existing ACR, scans the exact
+registry digest for HIGH/CRITICAL vulnerabilities, and uses the existing
+`deploy.yml@main` identity/source checks for signed SLSA provenance and SPDX.
+It writes a producer receipt only after the signed proof and generated SPDX
+fingerprint match. It has no application deploy or traffic-shift step, but it
+still executes in the existing deploy job with that job's Azure/registry
+identity; it does not establish a registry-only Azure role. It is not a compatible release by itself when the serving web may still call
+removed API routes.
+
+The separate `operation=private-pair` lane has its own default-off
+`AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED` gate. It uses the same manual-main,
+exact-source, private-phase and no-provision admission, and builds only web and
+API from the same commit. Both exact digests receive a fresh HIGH/CRITICAL scan,
+SPDX inventory and current-run signed SLSA/SPDX verification. The resulting
+receipt and retained evidence are not consumed by a deployment path and prove
+neither runtime compatibility nor readiness. The lane changes no revisions,
+configuration or traffic; it still uses the existing deploy job's Azure/registry
+identity. A separate reviewed web/API staging, readback and rollback procedure
+is still required before either artifact can be promoted.
+
+### Required paired rollout order (not an apply path)
+
+The approved design is web first, then the selector-OFF API, then a fresh
+selector-ON revision based on the serving selector-OFF revision. This order keeps
+the current-main web on the existing canonical API while preserving a named
+rollback at each stage. The image producer does not implement this order. The
+offline helper constructs C1/C2/C3 request bodies only; no apply consumer or
+traffic writer exists. Web C1 is a config-only Single-to-Multiple request that
+pins the exact serving R0 and contains no template. Its construction does not
+qualify an apply mechanism or authorize staging.
+
+For both API and web snapshots, the offline constructor compares writable
+template intent through the existing `activation_template_projection`: it
+normalizes only `revisionSuffix` and the schema-declared read-only
+`resources.ephemeralStorage` in containers/init containers. It emits the C2
+template with those fields omitted and preserves/rejects every other difference,
+including environment values and secret references. This handles the observed
+healthy R0 GET shape; offline tests do not establish that Azure accepts this
+PATCH body or prove any live service behavior.
+
+1. Construct the current-main web C1 request from the exact healthy, latest and
+   ready Single-mode R0. It changes only `activeRevisionsMode` to Multiple and
+   pins that named R0 at 100%; it does not change the template, canonical API
+   URL, ingress or auth. No reviewed web apply/readback path is included here.
+   Any later web-image C2 staging must preserve the canonical API URL and use a
+   separately approved promotion, bounded app-origin smoke and retained R0
+   rollback. Do not add a preview hostname, revision label or auth bypass.
+2. Build the selector-OFF API candidate as a new C2 revision from the exact
+   existing API image/template snapshot. C2 keeps the named R0 at 100% in
+   Multiple mode and changes only the digest-pinned API image and unique suffix.
+   Zero canonical traffic does **not** isolate startup/background work. The
+   coordinator's ~04:20 UTC read-only production observation showed
+   `AI4IA_DURABLE_WORKFLOWS_ENABLED=true`,
+   `AI4IA_PRIVATE_RECOVERY_CANDIDATE=false`, and document
+   understanding/compute enabled; candidate `main.py` starts
+   `DurableWorkflowService` and runs document `recover_interrupted()` under
+   those settings. Mixed old/new worker code may therefore act on production
+   state before promotion. Preserve the current flags; do not flip the recovery
+   flag as a shortcut. Before any
+   candidate startup or exec, require a separately reviewed background-worker
+   and mixed-version safety gate covering those stateful side effects. Until
+   that gate exists, stop; no zero-traffic or loopback test is authorized.
+   The source replay found mixed-version behavior changes even though the
+   persistence and automation record/store files are byte-identical: the newer
+   retired-tool check reached by `automation_service.advance` terminally fences
+   affected runs as `context_revoked`, and a schedule tick can persist `paused`
+   or record delayed occurrences over 300 seconds as `missed`. Turning scheduling
+   off is therefore not a harmless drain. Source/schema parity does not prove
+   worker compatibility or authorize a scheduling change.
+   Likewise, task-hub active/pending counts and connected-worker counts do not
+   prove quiescence: they omit sleeping schedules, pending approvals, future
+   timers, and document ingestion. Zero HTTP traffic or an idle metadata snapshot
+   is not a safe candidate-start condition. A reviewed gate must account for
+   these paths; none is established here. Use metadata-only evidence and do not
+   read orchestration content to establish worker readiness.
+   Once separately cleared, qualification must use the approved native
+   exec/loopback path; do not expose a revision label or shift traffic before
+   independent approval. Then promote the named selector-OFF revision to 100%,
+   capture its readback, and run the bounded app-origin smoke.
+3. Only after R1-OFF is the fresh, healthy latest/ready serving revision at
+   100%, capture a new app and revision snapshot plus rows from the bounded
+   private revision reader. Any future C3 must use that R1-OFF snapshot as its
+   baseline: keep R1 at 100%, add a new suffix, enable only the reviewed gateway
+   selector, preserve pilot isolation as disabled, and retain the exact R1 image.
+   Never construct C3 from a zero-traffic R1 while old R0 is serving, or change
+   the same-image invariant. The offline C3 constructor is limited to the exact
+   classified contract bytes with SHA-256
+   `94c2edf581b40a2677f3f90fad76eb2fc957478e5969c5007132d35040e72cb5` and
+   handoff sidecar bytes with SHA-256
+   `f73a55378dbe418e92ca4ea3d0bc8e30ef6ae09778f3aebddc3525e5b571ecc4`.
+   It verifies both raw-byte hashes before parsing, requires the pinned sidecar
+   to report `activationReady=false`, unchanged application and zero model
+   requests, and validates the manifest with the qualified
+   `shared_gateway_contract.py` Git blob
+   `cd89beaffe81acb0dd344ddd8a81d1a0c78e890e`; the exact checked bytes run in
+   an isolated module, not a cached import or a second disk read. That strict
+   2.2 loader binds the
+   manifest caller to the API's literal `AZURE_CLIENT_ID`, requires the fixed
+   `managed-identity` credential, and rejects extra schema fields. The
+   constructor replaces only the exact existing manifest `secretRef` with the
+   byte-identical JSON literal, leaves all Container App secrets and other
+   secret references untouched, keeps the exact R1 image and 100% R1 traffic,
+   enables only the gateway selector, and preserves disabled pilot isolation.
+   The offline input is classified only for this exact digest; do not commit,
+   print or persist the manifest, sidecar, snapshots or generated payload in the
+   shared repository. The `activationReady=false` sidecar is explicitly not
+   readiness or activation evidence. A local qualification resolved all 71
+   manifest model rows and rejected 213 wrong alternatives; it is not a
+   substitute for a fresh app-bound snapshot or a CI/live service proof.
+   The constructor additionally requires an existing manifest `secretRef`,
+   literal false selector and nonempty resolved deployment list in R1. C2 changes
+   only image and suffix and does not create these inputs; the coordinator reports
+   that the baseline has no manifest secret, while a fresh R1 is not available
+   here to verify the selector and deployment list. Therefore this is a hypothetical
+   fail-closed constructor,
+   not an executable transition from that baseline. A separately reviewed
+   source and operator contract is needed before addressing absent inputs; do
+   not infer or perform an intermediate settings or secret write.
+4. C3 construction does not authorize staging, activation, traffic change or
+   model requests. Worker-transition/quiescence, deployed-SDK, exact fresh
+   snapshot, readiness, route-operation and streaming gates remain separate.
+   Only after each is independently reviewed may a distinct approval authorize
+   an API traffic shift. Keep R1-OFF as the immediate API rollback and retain
+   the original API R0 and web R0 for full paired rollback. On any failed
+   smoke, restore only the explicitly named prior serving revision and verify
+   readback; never infer or replay an uncertain PATCH.
+
+`prepare-gateway-cutover.py` writes request JSON only. App/revision snapshots and
+the resulting payload may contain sensitive literal environment values; the C3
+payload also carries the classified manifest as a literal. Never dump them to
+logs or chat, commit them, or persist them in the shared repository. The CLI
+rejects input/output paths inside the repository, but does not establish
+filesystem ACLs or secure deletion; operators must use restricted ephemeral
+storage and remove it safely. Its timestamp and revision rows are
+caller-supplied, and its merge-patch model proves neither pagination
+completeness, ARM conditionality, nor atomic traffic behavior. A future apply
+path must use restricted ephemeral handling, preserve exact template semantics,
+rerun the scoped collector, re-read exact app/revision state and the pinned
+manifest binding immediately before a single write, emit only an explicit
+redacted receipt, and verify the serving revision. Metadata-only proof is
+insufficient.
+Do not substitute
+`az containerapp update --yaml` or `az containerapp secret set`: Azure CLI
+2.92.0's YAML update calls `list_secrets(show_values=True)`, and `secret set`
+also reads existing secret values before a full `create_or_update`. Neither is
+a safe single-secret PATCH. Retain the reviewed scoped ARM request/helper path
+and never print or persist secret values. The offline C1/C2/C3 helper has no
+apply consumer; these controls are not live-manifest readback or activation
+evidence. The `private-image`
+and `private-pair` manual dispatches are not successful push-triggered
+`foundry-assets` runs; its independent manual-dispatch path remains a separate
+writer and must stay separately controlled during a freeze.
+
+The existing `preview-api-private.py::activation_patch_command` is a different
+private-recovery path, not a consumer of these C1/C2 gateway requests. It
+recollects revisions through `private_revision_rows` before prepare/apply,
+re-reads and binds the live app snapshots, and creates a one-attempt execution
+receipt before its scoped ARM PATCH. Its request does not carry an ARM ETag
+precondition, so those checks and receipts are not an atomic compare-and-swap
+guarantee and do not establish C2/C3 manifest binding.
+
+### Release freeze sequence
+
+This is an operator procedure, not an automated control. No freeze is active
+because of this documentation or the producer code. Before declaring a freeze:
+
+1. Record the exact `main` SHA, the current values of
+   `AI4IA_DEPLOYMENT_ENABLED`, `AI4IA_API_IMAGE_PRODUCER_ENABLED`, and
+   `AI4IA_API_WEB_IMAGE_PRODUCER_ENABLED`, and all queued/running `deploy` and
+   `foundry-assets` workflow runs. Set all three variables to literal `false`;
+   either private producer can otherwise start while general deployment is
+   disabled.
+2. Do not assume changing variables stops a job already admitted. Wait for every
+   active release, provision, image push, and downstream workflow to finish and
+   retain its run/artifact receipt. Do not cancel an in-flight `azd provision`;
+   a cancellation can leave an active ARM deployment. Prevent new merges/pushes,
+   manual deploy/image dispatches, re-runs, and retry attempts while frozen.
+3. For the frozen merge/push, verify the exact `deploy.yml` run reports
+   `deployment_enabled=false` and the `deploy` job is `skipped`. Then inspect the
+   exact `foundry-assets.yml` `workflow_run` consumer and confirm it skipped
+   reconciliation because that exact deploy job was skipped. Check separately
+   for already queued/running or manually dispatched Foundry-assets runs.
+4. The `foundry-assets` manual-dispatch path is independent of the deploy-job
+   flag. A flag-only freeze therefore is not complete: keep that dispatch
+   unavailable by an independently reviewed repository-level operator hold and
+   verify no such run is active. The workflow currently has no shared
+   `AI4IA_DEPLOYMENT_ENABLED` gate for manual dispatch.
+5. Resume only after the release owner authorizes it, all freeze receipts are
+   reconciled, and the exact prior values are reviewed. Restore recorded values
+   deliberately; do not infer them from current defaults or automatically
+   enable either producer.
+
+The deployment flag protects the ordinary job, not runs that have already
+passed admission. A false value also does not disable the independent
+`foundry-assets` manual dispatch. The status checks above are evidence for a
+particular freeze window, not a distributed lock or protection against a
+concurrent repository setting change.
+
 ### Topology and protected state
 
 ACA's default Azure network reaches internet endpoints only; the environment
@@ -2469,12 +2677,25 @@ customer-data migration or new Cosmos grant.
 
 | Scope | Permitted recovery delta |
 | --- | --- |
-| New API network | One standalone RFC1918 VNet, /26 delegated API subnet, separate /27 PE subnet; no peering, custom DNS, NAT, firewall, VM or inbound ACA PE |
+| New API network | One standalone RFC1918 VNet, /26 delegated API subnet and separate /27 PE subnet; the AI4IA recovery module does not manage gateway peering or DNS, NAT, firewall, VM or inbound ACA PE |
 | New API environment/app | External Consumption environment; same API UAMI, configuration/secret references and signed ACR image. Candidate 0.5 vCPU / 1 GiB, min1/max1; active min1/max3 |
 | Cosmos | Existing account stays Entra-only and public-network Disabled; one approved `Sql` PE, `privatelink.documents.azure.com` zone, VNet link and zone group |
 | Existing web/proxy/APIM | Same environment, public domains, authentication and gateway path. Preserve actual web/proxy serving image digests during infrastructure reconciliation |
 | Final traffic selection | Only web `API_BASE_URL` and direct voice `API_PUBLIC_URL` move together to the new API FQDN; no alert resource is reconciled by the scoped migration |
 | Retained legacy API | Explicitly drain/deactivate only at the separately approved activation boundary; no deletion, resource replacement or parallel worker processing |
+
+### Shared-gateway connectivity ownership
+
+The shared-gateway B/C peerings and caller DNS link are separately owned by
+`c2/ai4ia-connectivity.bicep`, under its `ai4ia-production-gateway` child. They
+are not resources of `infra/modules/api-private-network.bicep`. The AI4IA
+recovery module and release preflight must preserve this boundary: do not
+duplicate, replace, delete, or reconcile those resources, and never run
+complete-mode cleanup against the c2-owned connectivity scope. Before a staged
+gateway route is considered reachable, use read-only evidence to verify the
+existing peerings are `Connected` and the caller DNS link targets the intended
+private environment. Missing or ambiguous evidence blocks readiness; it is not
+authorization for AI4IA to create or repair shared connectivity.
 
 The October 24 proposed source environment is
 `cae-ai4ia-slurmfactory-api-private`, app `ca-api-private-slurmfactory`,

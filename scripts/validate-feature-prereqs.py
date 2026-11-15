@@ -18,17 +18,23 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app" / "api" / "src"))
 from _capacity_evidence import EvidenceError
 from _claude_binding import configured_binding
 from _json_transport import TRANSPORTS, TransportError, decode
 from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
 from _api_private import validate_prefixes
+from ai4ia_api.shared_gateway_contract import load_shared_gateway_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 PARAMETERS_FILE = ROOT / "infra" / "main.parameters.json"
 MODELS_FILE = ROOT / "infra" / "models.json"
 PLACEHOLDER_RE = re.compile(r"^\$\{(?P<name>[A-Z0-9_]+)(?:=(?P<default>.*))?\}$")
-RAW_JSON_TOKEN_RE = re.compile(r"\$\{([A-Z0-9_]+_JSON)(?:=[^}]*)?\}")
+RAW_JSON_TOKEN_RE = re.compile(
+    r"\$\{("
+    + "|".join(re.escape(transport.variable) for transport in TRANSPORTS)
+    + r")(?:=[^}]*)?\}"
+)
 
 
 def parameter_value(parameters: dict[str, Any], name: str, default: Any = None) -> Any:
@@ -182,6 +188,58 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     except ValueError as exc:
         errors.append(str(exc))
     json_values = transported_json(parameters, errors)
+    revisions_mode = text(parameter_value(parameters, "apiActiveRevisionsMode", "Single"))
+    traffic_revision = text(parameter_value(parameters, "apiTrafficRevisionName", "")).strip()
+    if revisions_mode not in {"Single", "Multiple"}:
+        errors.append("apiActiveRevisionsMode must be Single or Multiple.")
+    elif revisions_mode == "Multiple" and not re.fullmatch(
+        r"[a-z][a-z0-9-]{0,30}--[a-z0-9][a-z0-9-]{0,62}", traffic_revision
+    ):
+        errors.append(
+            "apiActiveRevisionsMode=Multiple requires apiTrafficRevisionName to name the exact "
+            "serving revision; provisioning must never fall back to latestRevision traffic."
+        )
+    elif revisions_mode == "Single" and traffic_revision:
+        errors.append("apiTrafficRevisionName must be empty when apiActiveRevisionsMode=Single.")
+    shared_enabled = truthy(parameter_value(parameters, "sharedGatewayEnabled", False))
+    opted_in = {
+        item.strip()
+        for item in text(parameter_value(parameters, "sharedGatewayDeployments", "")).split(",")
+        if item.strip()
+    }
+    if opted_in and not shared_enabled:
+        errors.append("sharedGatewayDeployments requires sharedGatewayEnabled=true.")
+    if shared_enabled:
+        if text(parameter_value(parameters, "apiNetworkPhase", "legacy")).lower() != "private":
+            errors.append(
+                "Shared gateway routing requires apiNetworkPhase=private for the "
+                "active private-API pilot."
+            )
+        if text(parameter_value(parameters, "apiAuthProvider", "dev")).lower() != "entra":
+            errors.append("Shared gateway routing requires apiAuthProvider=entra.")
+        if text(parameter_value(parameters, "appEnvironment", "dev")).lower() == "local":
+            errors.append("Shared gateway routing is unavailable in the local environment.")
+        try:
+            # The deployed API compares this caller id with its actual AZURE_CLIENT_ID.
+            manifest = load_shared_gateway_manifest(
+                json_values.get("sharedGatewayActivationManifest"),
+                api_identity_client_id=None,
+                require_api_identity=False,
+            )
+            # The loader accepts schema-only fixtures; only a resolved manifest may provision.
+            if manifest.status != "resolved":
+                raise ValueError("a resolved manifest is required; schema-only cannot enable routing.")
+            if not opted_in:
+                raise ValueError(
+                    "sharedGatewayEnabled requires a non-empty sharedGatewayDeployments opt-in list."
+                )
+            unresolved = manifest.unresolved_opt_ins(opted_in)
+            if unresolved:
+                raise ValueError(
+                    f"opt-in deployment {unresolved[0]!r} is not in the manifest."
+                )
+        except ValueError as exc:
+            errors.append(f"Shared gateway activation: {exc}")
     model_capacity_profile = text(
         parameter_value(parameters, "modelCapacityProfile", "baseline")
     ).lower()

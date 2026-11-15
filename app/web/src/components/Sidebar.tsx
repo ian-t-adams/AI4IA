@@ -34,6 +34,7 @@ interface Destination {
 const SEARCH_THRESHOLD = 6;
 
 export function Sidebar({
+  chatOnly = false,
   mode = "expanded",
   sessions,
   activeId,
@@ -60,6 +61,7 @@ export function Sidebar({
   disabled = false,
   disabledReason,
 }: {
+  chatOnly?: boolean;
   mode?: SidebarMode;
   sessions: Session[];
   activeId: string | null;
@@ -165,14 +167,14 @@ export function Sidebar({
     cancelDeletion(id);
   };
 
-  const destinations: Destination[] = [
+  const destinations: Destination[] = chatOnly ? [] : [
     { view: "chat", label: "Chat", icon: "chat", lockable: false },
     ...(decisionsAvailable
       ? [{ view: "decisions" as const, label: "Decisions", icon: "sliders" as const, lockable: true }]
       : []),
     { view: "studio", label: "Studio", icon: "studio", lockable: true },
   ];
-  const resources: Destination[] = [
+  const resources: Destination[] = chatOnly ? [] : [
     ...(libraryAvailable
       ? [{ view: "library" as const, label: "Document library", icon: "library" as const, lockable: true }]
       : []),
@@ -289,7 +291,7 @@ export function Sidebar({
             </button>
           ) : null}
           <div className="sidebar-rail-spacer" />
-          <ul className="sidebar-rail-group" aria-label="Utilities and account">
+          {!chatOnly ? <ul className="sidebar-rail-group" aria-label="Utilities and account">
             <li>
               <WorkflowApprovalInboxEntry disabled={disabled} compact />
             </li>
@@ -308,6 +310,7 @@ export function Sidebar({
               </button>
             </li>
           </ul>
+          : null}
         </div>
       </nav>
     );
@@ -363,14 +366,18 @@ export function Sidebar({
           <Icon name="plus" size={18} />
           New chat
         </button>
-        <ul className="sidebar-nav" aria-label="Destinations">
-          {destinations.map((destination) => (
-            <li key={destination.view}>
-              {destinationButton(destination)}
-            </li>
-          ))}
-        </ul>
-        {availabilityNotice}
+        {!chatOnly ? (
+          <>
+            <ul className="sidebar-nav" aria-label="Destinations">
+              {destinations.map((destination) => (
+                <li key={destination.view}>
+                  {destinationButton(destination)}
+                </li>
+              ))}
+            </ul>
+            {availabilityNotice}
+          </>
+        ) : null}
         <section className="sidebar-conversations" aria-labelledby={headingId}>
           <h2 className="sidebar-section-title" id={headingId}>
             Conversations
@@ -423,10 +430,11 @@ export function Sidebar({
                             onOpen={() => onSelect(session.id)}
                             current={session.id === activeId}
                             disabled={disabled}
+                            allowRename={!chatOnly}
                             disabledReasonId={lockHintId}
                             compact
                           />
-                          <button
+                          {!chatOnly ? <button
                             ref={(element) => {
                               if (element) deleteButtons.current.set(session.id, element);
                               else deleteButtons.current.delete(session.id);
@@ -443,7 +451,7 @@ export function Sidebar({
                             title={disabled || blocked ? undefined : "Delete"}
                           >
                             <Icon name="trash" size={16} />
-                          </button>
+                          </button> : null}
                         </div>
                         {asking ? (
                           <div
@@ -529,6 +537,8 @@ export function Sidebar({
           )}
         </section>
         <div className="sidebar-footer" aria-label="Utilities and account" role="group">
+          {!chatOnly ? (
+            <>
           <div className="sidebar-footer-row">
             <button
               ref={utilitiesButton}
@@ -588,6 +598,18 @@ export function Sidebar({
             <AdminLink disabled={disabled} disabledReasonId={describedBy} />
             <UserMenu onBeforeSignOut={onBeforeSignOut} />
           </div>
+            </>
+          ) : (
+            <>
+              <div className="sidebar-footer-row">
+                <a className="sidebar-link" href={DOCS_INDEX_URL} target="_blank" rel="noopener noreferrer">
+                  <Icon name="docs" />
+                  <span>Docs</span>
+                </a>
+              </div>
+              <UserMenu onBeforeSignOut={onBeforeSignOut} />
+            </>
+          )}
         </div>
       </div>
     </nav>

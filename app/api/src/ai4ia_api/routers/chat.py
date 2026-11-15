@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..auth.base import AuthenticatedUser
 from ..auth.dependencies import get_current_user
-from ..catalog import ModelCatalog, ModelEntry
+from ..catalog import DeploymentOption, ModelCatalog, ModelEntry
 from ..config import Settings
 from ..chat_timing import ChatTiming, bind_chat_timing
 from ..request_constraints import arm_fresh_dispatch, constrain_request, conversation_tools_check, tools_allowed
@@ -165,6 +165,57 @@ router = APIRouter(prefix="/api", tags=["chat"])
 # Request-body trust boundary. Model-specific validation below can narrow this
 # further after routing resolves the selected catalog entry.
 MAX_CHAT_CONTENT_CHARS = 32_000
+
+
+class _RawJsonObjectPairs(list[tuple[str, Any]]):
+    def __init__(self, pairs: list[tuple[str, Any]]) -> None:
+        super().__init__(
+            (key, value)
+            for key, value in pairs
+            if key in {"params", "max_tokens", "max_completion_tokens", "max_output_tokens"}
+        )
+
+
+async def _require_pilot_output_tokens(request: Request) -> None:
+    if not request.app.state.settings.chat_pilot_isolation_enabled:
+        return
+
+    try:
+        raw_body = json.loads(
+            await request.body(),
+            object_pairs_hook=_RawJsonObjectPairs,
+        )
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        ) from exc
+
+    params_values = (
+        [value for key, value in raw_body if key == "params"]
+        if isinstance(raw_body, _RawJsonObjectPairs)
+        else []
+    )
+    if len(params_values) != 1 or not isinstance(params_values[0], _RawJsonObjectPairs):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        )
+
+    token_fields = [
+        (key, value) for key, value in params_values[0]
+        if key in {"max_tokens", "max_completion_tokens", "max_output_tokens"}
+    ]
+    if (
+        len(token_fields) != 1
+        or token_fields[0][0] != "max_tokens"
+        or type(token_fields[0][1]) is not int
+        or token_fields[0][1] != 256
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        )
 
 
 class ChatParams(BaseModel):
@@ -845,12 +896,37 @@ def _ephemeral_tool_agent(name: str) -> AgentSpec:
     )
 
 
-@router.post("/chat", dependencies=[Depends(_request_constraints, scope="request")])
+@router.post(
+    "/chat",
+    dependencies=[
+        Depends(_request_constraints, scope="request"),
+        Depends(_require_pilot_output_tokens),
+    ],
+)
 async def chat(
     body: ChatRequest,
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ):
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        body.params is None
+        or type(body.params.max_tokens) is not int
+        or body.params.max_tokens != 256
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests require exactly 256 output tokens.",
+        )
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        body.allowTools
+        or body.allowAutomaticMemory
+        or body.requireFreshSession
+        or body.approvals
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests must disable tools and automatic memory.",
+        )
     repo: SessionRepository = request.app.state.session_repo
     continuation: ChatContinuationController | None = None
     resume_message: Message | None = getattr(request.state, "chat_resume", None)
@@ -921,6 +997,18 @@ async def chat(
     )
 
     session = await repo.get_session(user.internal_user_id, body.sessionId)
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        session.toolsEnabled
+        or session.agentName is not None
+        or session.toolOverrides.added
+        or session.toolOverrides.removed
+        or session.libraryDocumentIds
+        or session.imagePreferences.models
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This conversation has capabilities unavailable in isolated chat-pilot mode.",
+        )
     if resume_seed is not None and _chat_session_binding(session) != resume_seed["sessionBinding"]:
         raise HTTPException(409, "Conversation settings changed. Send a fresh request.")
     if resume_seed is not None and resume_seed["sourceAgent"] is not None:
@@ -943,6 +1031,13 @@ async def chat(
         )
 
     parsed = parse_input(body.content)
+    if request.app.state.settings.chat_pilot_isolation_enabled and (
+        parsed.agent is not None or parsed.command is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Isolated chat-pilot requests accept plain chat messages only.",
+        )
     if body.requireFreshSession and (parsed.agent is not None or parsed.command is not None):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1211,8 +1306,24 @@ async def chat(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No model selected for this chat",
         )
+    deployment_option_filter = None
+    if request.app.state.settings.chat_pilot_isolation_enabled:
+        entry_for_routing = catalog.get(model_id)
+        if entry_for_routing is not None:
+            def pilot_option_filter(option: DeploymentOption) -> bool:
+                return gateway.chat_pilot_model_key(
+                    entry_for_routing.api,
+                    option.deploymentName,
+                    option.sku,
+                    model_id=entry_for_routing.id,
+                ) is not None
+
+            deployment_option_filter = pilot_option_filter
     deployment = catalog.resolve_deployment(
-        model_id, region=body.region, data_zone=body.dataZone
+        model_id,
+        region=body.region,
+        data_zone=body.dataZone,
+        option_filter=deployment_option_filter,
     )
     if deployment is None:
         raise HTTPException(
@@ -2572,6 +2683,7 @@ async def chat(
     plain_fallback_usage = TokenUsage.empty()
     plain_tool_run: AgentRunResult | None = None
     plain_model_attempts = 0
+    plain_tool_loop_attempted = False
     plain_compute_active = (
         compute is not None
         and compute_decision is not None
@@ -2649,6 +2761,7 @@ async def chat(
                     f"plain-chat synthetic tool names collide: {collisions}"
                 )
             if plain_tools:
+                plain_tool_loop_attempted = True
                 turn_timing.mark_tool_loop()
                 if body.stream:
                     # Live-stream the tool activity + answer. If the tool turn yields
@@ -2947,12 +3060,22 @@ async def chat(
             await memory_guard.prepare(payload_messages)
             if continuation is not None:
                 await continuation.begin_fallback()
+            shared_gateway_options: dict[str, Any] = {}
+            if (
+                request.app.state.settings.shared_gateway_enabled
+                and not plain_tool_loop_attempted
+            ):
+                shared_gateway_options = {
+                    "shared_gateway_eligible": api in {"chat", "responses"},
+                    "shared_gateway_sku": deployment.sku,
+                }
             result = await model_evidence.observe(gateway.complete(
                 deployment=deployment.deploymentName,
                 messages=payload_messages,
                 params=effective_params,
                 correlation_id=correlation_id,
                 api=api,
+                **shared_gateway_options,
             ))
             if continuation is not None:
                 await continuation.finish_fallback()
@@ -3021,6 +3144,15 @@ async def chat(
             )
             if isinstance(exc, asyncio.CancelledError):
                 raise
+            if exc.shared_throttling_message is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=exc.shared_throttling_message,
+                    headers=(
+                        {"Retry-After": str(exc.retry_after_seconds)}
+                        if exc.retry_after_seconds is not None else None
+                    ),
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=CHAT_COMPLETION_FAILED,
@@ -3165,6 +3297,7 @@ async def chat(
                 receipt_draft=receipt_draft,
                 safety_provider=safety_provider,
                 prepare_model_context=memory_guard.prepare,
+                shared_gateway_enabled=request.app.state.settings.shared_gateway_enabled,
             ),
         ),
         media_type="text/event-stream",
