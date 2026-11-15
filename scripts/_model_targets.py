@@ -59,6 +59,18 @@ def runtime_enabled(model: dict[str, Any]) -> bool:
     return value
 
 
+def provisioning_enabled(model: dict[str, Any]) -> bool:
+    """Read the strict optional ``provisioningEnabled`` Boolean (default true).
+
+    False excludes the model from infrastructure deployment generation; unlike
+    ``runtimeEnabled``, it does not retain desired deployment inventory.
+    """
+    value = model.get("provisioningEnabled", True)
+    if type(value) is not bool:
+        raise ValueError("provisioningEnabled must be a Boolean")
+    return value
+
+
 def image_editing(model: dict[str, Any]) -> bool:
     """Read the strict optional ``imageEditing`` Boolean (default false).
 
@@ -94,3 +106,18 @@ def source_catalog(models: dict[str, Any]) -> dict[str, Any]:
         **models,
         "catalog": [model for model in models["catalog"] if model_target(model) == "source"],
     }
+
+
+def declared_capacity_pool(deployment: dict[str, Any], regions: dict[str, Any]) -> str | None:
+    """Validate source membership only; a matching label never proves Azure scope."""
+    if "maxCapacityPool" not in deployment:
+        return None
+    pool, region = deployment["maxCapacityPool"], deployment.get("region")
+    if isinstance(pool, str) and isinstance(region, str) and region in regions:
+        if pool in ("global", f"region:{region}"):
+            return pool
+        configuration = regions[region]
+        zone = configuration.get("dataZone") if isinstance(configuration, dict) else None
+        if zone in ("US", "EU") and pool == f"data-zone:{zone}":
+            return pool
+    raise ValueError("maxCapacityPool must be global or match its deployment region/dataZone")

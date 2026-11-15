@@ -309,6 +309,36 @@ decisions; this code does not decide which workloads can forgo a reserve.
 Maximum's historical heuristics and `maxCapacityPool` cannot establish a
 production pool or set a production ceiling.
 
+For production preflight, a source deployment is required when either
+`provisioningEnabled` or `runtimeEnabled` is true (each defaults true). Only a
+dual-disabled candidate can be absent, after successful complete regional
+inventory; unknown/failed/continued inventory is not absence.
+Inventory failure diagnostics retain the region, operation and failure type
+only; untrusted CLI stderr is withheld, not made safe by credential regexes.
+This also applies before regional inventory collection (account context,
+account lists and quota reads) and to the capacity sync CLI. Sync failure
+messages use fixed operation labels, not full command arguments or provider
+payloads; failed reads never authorize a plan or catalog write.
+Missing production metadata is allowed for that absent candidate only. A present provisioning-disabled
+deployment must have exact scoped identity/model/version/SKU/state/upgrade-policy
+evidence and reviewed production capacity/bounds. Pool accounting preserves its
+actual positive integer allocation within those bounds, not an unexecuted desired
+reduction. Outside allocation and replacement/retry/other-workload reserves still
+apply: retained 100 + outside 40 + reserved 90 cannot fit a counter limit of 190.
+No absent candidate creates free quota, and no template change reconciles a
+retained deployment. Preflight rejects retained capacity differing from the
+selected profile's exact postprovision evidence in all three profiles, even
+when conservative pool accounting alone would fit. Those profiles also share
+the exact retained account/resource identity, model/format/version/SKU,
+Succeeded state, upgrade-policy and configured routing checks; matching capacity
+alone cannot admit a retained resource. Scoped ARM resource IDs compare as
+case-insensitive strings, consistently with the postprovision gate; other model
+and deployment identity fields retain their existing exact checks.
+Ordinary provisioning-enabled resources
+still follow reconciliation checks. Unknown expected/actual capacity refuses;
+changing the catalog cannot apply a retained-capacity change. These source
+checks do not authorize deployment, prove live quota or enable video routing.
+
 ### Prepare, recommend, review, then select
 
 1. Obtain owner decisions for criticality, bounds, reserve units and sizing
@@ -457,6 +487,36 @@ planner never reduces a live deployment; that is not proof that its maximum is a
 safe production reserve policy. Use the read-only evidence report and a separate
 scope review before approving any capacity change.
 
+Declared `maxCapacityPool` labels must be internally consistent: `region:<name>`
+matches the deployment's own region, and `data-zone:<US|EU>` matches that region's
+catalog `dataZone`. Catalog validation, preflight and both sync modes refuse a
+contradictory label before grouping allocations. `global` remains valid; matching
+labels prove only source consistency, never the real Azure pool boundary.
+Maximum preflight retains regional quota observations: conflicting counter
+identities or limits within one declared pool refuse regardless of read order.
+Separate valid region/data-zone pools retain their independent limits; this
+does not strengthen the warning-only nonproduction `currentValue` check.
+Maximum mode also rejects duplicate/overlapping normalized counter aliases
+within one regional response when any selected deployment's candidate lookup
+key overlaps, including loose aliases. Unrelated ambiguous keys are omitted
+without blocking a selected model's unambiguous evidence; row order never
+selects a winner for an ambiguous key.
+
+Both modes refuse nonzero unattributed usage instead of calculating outside
+allocation from a guessed pool. The selected counter's complete, unique native
+integer current/limit evidence must agree with the catalog's validated live
+allocation; missing usage is not zero. Multiple versions sharing a counter are
+unsupported by both planners, rather than receiving separate allocations from
+the same headroom. Counter identity is case-insensitive, and overlapping
+normalized lookup aliases across regions also share the version fence. This
+conservatively refuses ambiguous aliases without claiming live-counter
+equivalence. Unknown deployments or mismatched resource/model/version/SKU/state
+evidence refuse before the live inventory is reduced to capacity numbers.
+Continued/duplicate/invalid quota and platform responses cannot become actionable
+plans. Refusal writes neither the catalog nor a requested plan file, even with
+`--apply`. These are conservative planner limits, not new pool-scope proof or a
+change to nonproduction preflight's existing warning-only quota contract.
+
 When an existing recorded pool exceeds a newly reduced quota, use the separate
 reduction-only mode:
 
@@ -469,8 +529,11 @@ python scripts/sync-model-capacity.py `
 # Review the reductions, then repeat with --apply to record them in source.
 ```
 
-This mode retains each recorded pool, subtracts observed outside allocation,
-and refuses missing/contradictory evidence or a quota below portable baselines.
+This mode retains each recorded pool and requires zero unattributed usage before
+considering even an apparently healthy recorded pool. Outside allocation is
+currently unsupported: a recorded total plus apparent outside allocation exactly
+at the limit is still refused without independent membership evidence. It also
+refuses missing/contradictory evidence or a quota below portable baselines.
 It never increases a live/desired capacity or changes regions, versions, SKUs or
 pool membership. `--apply` edits only the catalog; Azure changes still require
 the normal approved provision. Every subsequent read is bound to the checked

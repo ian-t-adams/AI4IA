@@ -27,6 +27,7 @@ import json
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
 
 def _ps_literal(value: str) -> str:
@@ -37,30 +38,35 @@ def _ps_literal(value: str) -> str:
 def _run_pwsh(
     command: str,
     *,
-    cwd: "Path | None" = None,
-    env: "dict | None" = None,
+    cwd: Path | None = None,
+    env: dict | None = None,
     timeout: int = 45,
+    executable: str = "pwsh",
 ) -> dict[str, object]:
-    """Execute *command* with ``pwsh`` and return the last-line JSON payload.
+    """Execute *command* with the chosen shell and return last-line JSON.
 
-    Raises ``unittest.SkipTest`` when ``pwsh`` is absent, and
+    Defaults to ``pwsh``; Windows compatibility controls choose PowerShell 5.1.
+    Raises ``unittest.SkipTest`` when the executable is absent, and
     ``AssertionError`` when the process exits non-zero.
     """
-    return _run_pwsh_with_output(command, cwd=cwd, env=env, timeout=timeout)[0]
+    return _run_pwsh_with_output(
+        command, cwd=cwd, env=env, timeout=timeout, executable=executable,
+    )[0]
 
 
 def _run_pwsh_with_output(
     command: str,
     *,
-    cwd: "Path | None" = None,
-    env: "dict | None" = None,
+    cwd: Path | None = None,
+    env: dict | None = None,
     timeout: int = 45,
+    executable: str = "pwsh",
 ) -> tuple[dict[str, object], str]:
     """Like ``_run_pwsh``, plus the combined stdout and stderr text."""
-    if shutil.which("pwsh") is None:
-        raise unittest.SkipTest("pwsh is required for executable postprovision tests")
+    if shutil.which(executable) is None:
+        raise unittest.SkipTest(f"{executable} is required for executable postprovision tests")
     proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
+        [executable, "-NoProfile", "-NonInteractive", "-Command", command],
         cwd=cwd,
         env=env,
         check=False,

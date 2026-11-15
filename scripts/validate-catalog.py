@@ -22,7 +22,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _capacity_evidence import EvidenceError
 from _production_capacity import parse_policy
-from _model_targets import image_editing, image_editing_default, model_target, runtime_enabled
+from _model_targets import (
+    declared_capacity_pool, image_editing, image_editing_default, model_target, provisioning_enabled, runtime_enabled,
+)
 from _model_routing import routing_configuration
 from _model_naming import deployment_base, deployment_name
 
@@ -61,6 +63,10 @@ def main() -> int:
             errors.append(f"{name}: {exc}")
         try:
             runtime_enabled(model)
+        except ValueError as exc:
+            errors.append(f"{name}: {exc}")
+        try:
+            provisioning_enabled(model)
         except ValueError as exc:
             errors.append(f"{name}: {exc}")
         try:
@@ -165,6 +171,10 @@ def main() -> int:
             capacity = int(dep["capacity"])
             max_capacity = int(dep.get("maxCapacity", capacity))
             max_capacity_pool = dep.get("maxCapacityPool")
+            try:
+                declared_capacity_pool(dep, data["regions"])
+            except ValueError as exc:
+                errors.append(f"{name} in {region}/{sku}: {exc}")
             if max_capacity < capacity:
                 errors.append(
                     f"{name}: maxCapacity {max_capacity} is below baseline capacity "

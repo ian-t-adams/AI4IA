@@ -975,6 +975,59 @@ class DeploymentAttestationTests(unittest.TestCase):
 
 
 class PrimaryLocationCatalogTests(unittest.TestCase):
+    def test_required_cu_models_follow_actual_provisioning_filter(self) -> None:
+        for name in ("gpt-5.2", "text-embedding-3-large"):
+            for cu_enabled in (False, True):
+                for fields, valid in (
+                    ({}, True),
+                    ({"provisioningEnabled": True}, True),
+                    ({"runtimeEnabled": False}, True),
+                    ({"provisioningEnabled": False}, False),
+                    ({"provisioningEnabled": None}, False),
+                    ({"deploymentTarget": "external-claude"}, False),
+                    ({"format": "Anthropic"}, False),
+                ):
+                    with self.subTest(name=name, cu=cu_enabled, fields=fields):
+                        models = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+                        model = next(row for row in models["catalog"] if row["name"] == name)
+                        model.update(fields)
+                        with tempfile.TemporaryDirectory() as tmp, _environment():
+                            path = Path(tmp) / "models.json"
+                            path.write_text(json.dumps(models), encoding="utf-8")
+                            parameters = _write_parameters(tmp, {
+                                "documentUnderstandingEnabled": cu_enabled,
+                                "documentComputeEnabled": False,
+                                "cuPreviewEnabled": False,
+                            })
+                            with patch.object(VALIDATOR, "MODELS_FILE", path):
+                                code, _, err = _run(parameters)
+                        self.assertEqual(code, 0 if valid else 1, err)
+                        if not valid:
+                            self.assertIn(f"{name}/GlobalStandard", err)
+                            self.assertIn("provisioningEnabled=true", err)
+                            if name == "gpt-5.2":
+                                self.assertIn("2025-12-11", err)
+
+    def test_agentic_capacity_does_not_count_opted_out_completion(self) -> None:
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as tmp, _environment():
+                models = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))
+                model = next(row for row in models["catalog"] if row["name"] == "gpt-5.2")
+                model["provisioningEnabled"] = enabled
+                for deployment in model["deployments"]:
+                    deployment["capacity"] = 400
+                path = Path(tmp) / "models.json"
+                path.write_text(json.dumps(models), encoding="utf-8")
+                parameters = _write_parameters(tmp, {
+                    "documentUnderstandingEnabled": True,
+                    "cuPreviewEnabled": True,
+                    "cuAgenticAnalyzerId": "agentic.contract",
+                })
+                with patch.object(VALIDATOR, "MODELS_FILE", path):
+                    code, _, err = _run(parameters)
+                self.assertEqual(code, 0 if enabled else 1, err)
+                self.assertEqual("400K TPM" in err, not enabled)
+
     def test_non_catalog_location_is_rejected_before_provision(self) -> None:
         with _environment(AZURE_LOCATION="moonbase"):
             code, _, err = _run(REAL_PARAMETERS)

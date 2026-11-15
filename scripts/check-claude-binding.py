@@ -43,7 +43,7 @@ def main() -> int:
         print(f"ERROR: {code}; Claude activation is unavailable. No mutation was attempted.")
         return 1
     label = "Claude target plan: available catalog intents (not a reservation)" if args.target_preflight else "Claude exact-target readback: deployments verified"
-    print(f"{label}: {count}." if count else "Claude binding: disabled.")
+    print(f"{label}: {count}." if binding is not None else "Claude binding: disabled.")
     return 0
 
 

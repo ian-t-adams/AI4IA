@@ -15,12 +15,73 @@ import unittest
 from pathlib import Path
 
 from scripts._json_transport import TRANSPORTS
-from scripts._private_metadata import MetadataEvaluator
+from scripts._private_metadata import Expression
 from scripts.tests._production_fixture import production_document
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "infra" / "main.bicep"
 MODELS = ROOT / "infra" / "models.json"
+
+
+def _provisioning_projection(template: dict, expression: str, catalog: list[dict]):
+    """Evaluate only the emitted provisioning-filter subset, not the ARM runtime."""
+    functions = {
+        name.lower(): member
+        for row in template["functions"] if row["namespace"] == "__bicep"
+        for name, member in row["members"].items()
+    }
+
+    def evaluate(node, scope):
+        if node[0] == "literal":
+            return node[1]
+        if node[0] == "get":
+            return evaluate(node[1], scope)[evaluate(node[2], scope)]
+        if node[0] != "call":
+            raise AssertionError(f"Unsupported provisioning node: {node[0]}")
+        _, name, args = node
+        if name == "if":
+            return evaluate(args[1] if evaluate(args[0], scope) else args[2], scope)
+        if name == "filter":
+            _, function, (binding, body) = args[1]
+            assert function == "lambda"
+            key = evaluate(binding, scope)
+            return [row for row in evaluate(args[0], scope) if evaluate(body, {**scope, key: row})]
+        values = [evaluate(arg, scope) for arg in args]
+        if name in ("parameters", "lambdavariables"):
+            return scope[values[0]]
+        if name == "variables":
+            assert values[0] in ("catalog", "models")
+            return catalog if values[0] == "catalog" else {"catalog": catalog}
+        if name.startswith("__bicep_"):
+            member = functions[name.removeprefix("__bicep_")]
+            bindings = dict(zip((p["name"] for p in member["parameters"]), values, strict=True))
+            value = evaluate(Expression(member["output"]["value"][1:-1]).parse(), bindings)
+            if member["output"]["type"] == "bool" and type(value) is not bool:
+                raise ValueError("Boolean UDF output required")
+            return value
+        if name in ("true", "false"):
+            return name == "true"
+        if name == "createarray":
+            return values
+        if name == "contains":
+            container, item = values
+            if isinstance(container, dict):
+                return item.casefold() in (key.casefold() for key in container)
+            return any(type(value) is type(item) and value == item for value in container)
+        if name == "tryget":
+            return values[0].get(values[1])
+        if name == "coalesce":
+            return next((value for value in values if value is not None), None)
+        if name == "equals":
+            return type(values[0]) is type(values[1]) and values[0] == values[1]
+        if name == "not":
+            return not values[0]
+        if name == "and":
+            return all(values)
+        raise AssertionError(f"Unsupported provisioning function: {name}")
+
+    # The shared parser has no namespaced-call syntax; retain each member name.
+    return evaluate(Expression(expression[1:-1].replace("__bicep.", "__bicep_")).parse(), {})
 
 
 def _compile(main: Path = MAIN) -> subprocess.CompletedProcess[str]:
@@ -135,6 +196,97 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             json.dumps(self.template["variables"]["deployableCatalog"]),
         )
         self.assertIn("not(equals(lambdaVariables('model').format, 'Anthropic'))", self.template["variables"]["deployableCatalog"])
+
+    def test_model_provisioning_opt_out_filters_both_deployment_entrypoints(self) -> None:
+        main_filter = json.dumps(self.template["variables"]["deployableCatalog"])
+        self.assertIn("__bicep.deploymentProvisioningEnabled", main_filter)
+
+        result = _compile(ROOT / "infra" / "claude-target.bicep")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = json.loads(result.stdout)
+        external_filter = json.dumps(target["variables"]["external"])
+        self.assertIn("__bicep.deploymentProvisioningEnabled", external_filter)
+        deployment_rows = json.dumps(target["variables"]["deploymentRows"])
+        self.assertIn("variables('external')", deployment_rows)
+
+        resources = target["resources"]
+        rows = list(resources.values()) if isinstance(resources, dict) else resources
+        account = next(row for row in rows if row["type"] == "Microsoft.CognitiveServices/accounts")
+        deployment_module = next(row for row in rows if row["type"] == "Microsoft.Resources/deployments")
+        self.assertIn("not(empty(variables('deploymentRows')))", account["condition"])
+        self.assertIn("not(empty(variables('deploymentRows')))", deployment_module["condition"])
+
+        expected = (
+            "[if(contains(parameters('model'), 'provisioningEnabled'), "
+            "tryGet(parameters('model'), 'provisioningEnabled'), true())]"
+        )
+        for template, variable, deployment_target in (
+            (self.template, "deployableCatalog", "source"),
+            (target, "external", "external-claude"),
+        ):
+            functions = next(row["members"] for row in template["functions"] if row["namespace"] == "__bicep")
+            self.assertEqual(functions["deploymentProvisioningEnabled"]["output"]["value"], expected)
+            cases = [
+                ("omitted", {}),
+                ("true", {"provisioningEnabled": True}),
+                ("false", {"provisioningEnabled": False}),
+            ]
+            catalog = [
+                {
+                    "name": label,
+                    "format": "Anthropic" if deployment_target == "external-claude" else "OpenAI",
+                    "deploymentTarget": deployment_target,
+                    **fields,
+                }
+                for label, fields in cases
+            ]
+            with self.subTest(entrypoint=variable):
+                admitted = _provisioning_projection(template, template["variables"][variable], catalog)
+                self.assertEqual([row["name"] for row in admitted], ["omitted", "true"])
+                for value in (None, "true", "false", 0, 1, 1.0, [], {}):
+                    with self.subTest(value=value), self.assertRaisesRegex(ValueError, "Boolean"):
+                        _provisioning_projection(
+                            template, template["variables"][variable],
+                            [{**catalog[0], "provisioningEnabled": value}],
+                        )
+                legacy = json.loads(MODELS.read_text(encoding="utf-8"))["catalog"]
+                expected_legacy = [
+                    row for row in legacy
+                    if row.get("deploymentTarget", "source") == deployment_target
+                    and (deployment_target != "source" or row["format"] != "Anthropic")
+                ]
+                self.assertEqual(
+                    _provisioning_projection(template, template["variables"][variable], legacy),
+                    expected_legacy,
+                )
+
+    def test_provisioning_helper_in_offline_bicep_evaluator(self) -> None:
+        bicep = shutil.which("bicep")
+        if not bicep:
+            self.skipTest("Local expression evaluation requires standalone Bicep console.")
+        source = (ROOT / "infra" / "model-targets.bicep").read_text(encoding="utf-8")
+        declarations = re.findall(r"^func deploymentProvisioningEnabled\(.*$", source, re.MULTILINE)
+        self.assertEqual(len(declarations), 1)
+        rows = [{}] + [
+            {"provisioningEnabled": value}
+            for value in (True, False, None, "true", "false", 0, 1, 1.0, [], {})
+        ]
+        for index, row in enumerate(rows):
+            with self.subTest(row=row):
+                expression = f"deploymentProvisioningEnabled(json('{json.dumps(row)}'))"
+                result = subprocess.run(
+                    [bicep, "console"], input=f"{declarations[0]}\n{expression}\n",
+                    capture_output=True, text=True, timeout=30, check=False,
+                )
+                output = result.stdout + result.stderr
+                if index < 3:
+                    self.assertEqual(result.returncode, 0, output)
+                    self.assertEqual(output.split(), ["true" if index < 2 else "false"])
+                else:
+                    # Console can exit zero on errors: require a typed diagnostic,
+                    # never a success-shaped false result.
+                    self.assertIn("bool", output.lower())
+                    self.assertNotIn(output.strip(), ("true", "false", ""))
 
     def test_decision_alias_changes_resource_token_not_provider_model(self) -> None:
         inputs = next(row["input"] for row in self.template["variables"]["copy"]
@@ -355,7 +507,12 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
                 resources = template["resources"]
                 rows = list(resources.values()) if isinstance(resources, dict) else resources
                 self.assertEqual({row["type"] for row in rows}, allowed)
-                self.assertTrue(all(row["condition"] == f"[parameters('{gate}')]" for row in rows))
+                expected_condition = f"[parameters('{gate}')]"
+                if filename == "claude-target.bicep":
+                    expected_condition = (
+                        f"[and(parameters('{gate}'), not(empty(variables('deploymentRows'))))]"
+                    )
+                self.assertTrue(all(row["condition"] == expected_condition for row in rows))
                 if filename == "claude-target.bicep":
                     network = template["parameters"]["networkMode"]
                     self.assertNotIn("defaultValue", network)
@@ -869,6 +1026,14 @@ class BicepCompiledBehaviorTests(unittest.TestCase):
             expected_models["deploymentNames"],
         )
         self.assertIn("deploymentName", expected_models["deploymentNames"])
+        self.assertEqual(expected_models["verificationVersion"], 1)
+        self.assertEqual(
+            expected_models["deploymentEvidence"],
+            "[variables('modelEvidenceByRegion')[copyIndex()]]",
+        )
+        self.assertIn("resourceId(subscription().subscriptionId", expected_models["accountId"])
+        self.assertIn("variables('resourceGroupName')", expected_models["accountId"])
+        self.assertIn("Microsoft.CognitiveServices/accounts", expected_models["accountId"])
         self.assertEqual(
             outputs["AZURE_PRIMARY_FOUNDRY_REGION"]["value"],
             "[parameters('location')]",
@@ -958,6 +1123,242 @@ param selections = {
         self.assertIn(document, template["variables"].values())
         self.assertIn("production", template["parameters"]["modelCapacityProfile"]["allowedValues"])
         self.assertIn("__bicep.selectedCapacity", json.dumps(template["variables"]["copy"]))
+
+
+class ExternalClaudeFlagsCompiledTests(unittest.TestCase):
+    """Evaluate the operator target's actual filter, without provisioning."""
+
+    def evaluate(self, flags: dict) -> subprocess.CompletedProcess[str]:
+        document = production_document()
+        document["catalog"][0].update(deploymentTarget="external-claude", format="Anthropic", **flags)
+        source = (ROOT / "infra" / "claude-target.bicep").read_text(encoding="utf-8")
+        declaration = re.search(r"^var external = .+$", source, re.MULTILINE)
+        imports = re.search(r"^import \{.+\} from './model-targets\.bicep'$", source, re.MULTILINE)
+        self.assertIsNotNone(declaration)
+        self.assertIsNotNone(imports)
+        assert declaration is not None and imports is not None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(ROOT / "infra" / "model-targets.bicep", root)
+            (root / "models.json").write_text(json.dumps(document), encoding="utf-8")
+            parameters = root / "fixture.bicepparam"
+            parameters.write_text("\n".join((
+                "using none", imports[0], "var models = loadJsonContent('models.json')",
+                declaration[0], "param projection = external", "",
+            )), encoding="utf-8")
+            bicep = shutil.which("bicep")
+            self.assertIsNotNone(bicep, "The infra-validate Bicep compiler is required.")
+            return subprocess.run(
+                [str(bicep), "build-params", str(parameters), "--stdout"],
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+
+    def test_valid_flags_preserve_provisioning_only_selection(self):
+        for runtime in ("omitted", True, False):
+            for provisioning in ("omitted", True, False):
+                flags = {key: value for key, value in (
+                    ("runtimeEnabled", runtime), ("provisioningEnabled", provisioning),
+                ) if value != "omitted"}
+                with self.subTest(flags=flags):
+                    result = self.evaluate(flags)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    envelope = json.loads(result.stdout)
+                    payload = json.loads(envelope["parametersJson"]) if "parametersJson" in envelope else envelope
+                    rows = payload["parameters"]["projection"]["value"]
+                    self.assertEqual(len(rows), 0 if provisioning is False else 1)
+
+    def test_both_malformed_flags_fail_with_peer_omitted_true_or_false(self):
+        for field in ("runtimeEnabled", "provisioningEnabled"):
+            peer = "provisioningEnabled" if field == "runtimeEnabled" else "runtimeEnabled"
+            for peer_value in ("omitted", True, False):
+                for value in (None, "false", 0):
+                    flags = {field: value}
+                    if peer_value != "omitted":
+                        flags[peer] = peer_value
+                    with self.subTest(flags=flags):
+                        result = self.evaluate(flags)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("Error BCP338", result.stderr)
+
+
+class SourceInventoryCompiledTests(unittest.TestCase):
+    """Evaluate the actual root projections locally, then drive the actual PS gate."""
+
+    def build_evidence(
+        self, document: dict, profile: str = "baseline", projection: str = "both",
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("capacity.bicep", "model-targets.bicep"):
+                shutil.copy2(ROOT / "infra" / name, root / name)
+            (root / "models.json").write_text(json.dumps(document), encoding="utf-8")
+            source = MAIN.read_text(encoding="utf-8")
+            deployable = re.search(r"^var deployableCatalog = .+$", source, re.MULTILINE)
+            self.assertIsNotNone(deployable)
+            assert deployable is not None
+            # Extract both complete declarations; do not recreate their naming or filters.
+            records = source.split("var modelDeploymentsByRegion = ", 1)[1].split(
+                "\nvar uniqueSuffix", 1,
+            )[0]
+            fixture = """using none
+import { selectedCapacity, verificationCapacity } from './capacity.bicep'
+import { deploymentNameBase, deploymentTarget, deploymentProvisioningEnabled, deploymentRuntimeEnabled, deploymentRouting } from './model-targets.bicep'
+var models = loadJsonContent('models.json')
+var catalog = models.catalog
+var skuShort = models.naming.skuShort
+var subscriptionToken = models.naming.subscriptionToken
+var regionList = map(items(models.regions), r => { name: r.key })
+"""
+            fixture += f"var modelCapacityProfile = '{profile}'\n{deployable[0]}\n"
+            fixture += "var modelDeploymentsByRegion = " + records
+            if projection in ("both", "evidence"):
+                fixture += "\nparam evidence = modelEvidenceByRegion\n"
+            if projection in ("both", "deployments"):
+                fixture += "\nparam deployments = modelDeploymentsByRegion\n"
+            parameters = root / "fixture.bicepparam"
+            parameters.write_text(fixture, encoding="utf-8")
+            bicep = shutil.which("bicep")
+            self.assertIsNotNone(bicep, "The infra-validate Bicep compiler is required.")
+            return subprocess.run(
+                [str(bicep), "build-params", str(parameters), "--stdout"],
+                capture_output=True, text=True, timeout=180, check=False,
+            )
+
+    def selections(self, document: dict, profile: str = "baseline") -> dict:
+        result = self.build_evidence(document, profile)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotRegex(result.stderr, r"\(\d+,\d+\)\s*:\s*(?:Warning|Error)")
+        envelope = json.loads(result.stdout)
+        parameters = json.loads(envelope["parametersJson"]) if "parametersJson" in envelope else envelope
+        return {key: value["value"] for key, value in parameters["parameters"].items()}
+
+    def test_flags_required_vs_staged_and_resource_projection_are_independent(self) -> None:
+        for flags, required, provisioned in (
+            ({}, True, True),
+            ({"runtimeEnabled": True}, True, True),
+            ({"runtimeEnabled": False}, True, True),
+            ({"provisioningEnabled": True}, True, True),
+            ({"provisioningEnabled": True, "runtimeEnabled": True}, True, True),
+            ({"provisioningEnabled": True, "runtimeEnabled": False}, True, True),
+            ({"provisioningEnabled": False}, True, False),
+            ({"provisioningEnabled": False, "runtimeEnabled": True}, True, False),
+            ({"provisioningEnabled": False, "runtimeEnabled": False}, False, False),
+        ):
+            with self.subTest(flags=flags):
+                document = production_document()
+                document["catalog"][0].update(flags, deploymentNameBase="azure-safe-synthetic")
+                actual = self.selections(document)
+                for projection in ("evidence", "deployments"):
+                    isolated = self.build_evidence(document, projection=projection)
+                    self.assertEqual(isolated.returncode, 0, isolated.stderr)
+                for index, region in enumerate(sorted(document["regions"])):
+                    evidence = actual["evidence"][index][0]
+                    self.assertIs(evidence["required"], required)
+                    self.assertEqual(evidence["name"], f"azure-safe-synthetic-example-{region}-glbl")
+                    deployments = actual["deployments"][index]
+                    self.assertEqual(len(deployments), int(provisioned))
+                    if provisioned:
+                        self.assertEqual(evidence["name"], deployments[0]["deploymentName"])
+                        self.assertEqual(evidence["capacity"], deployments[0]["capacity"])
+                        self.assertEqual(evidence["model"]["name"], deployments[0]["modelName"])
+
+    def test_external_targets_are_not_source_inventory_or_resources(self) -> None:
+        document = production_document()
+        document["catalog"][0].update(deploymentTarget="external-claude", format="Anthropic")
+        actual = self.selections(document)
+        self.assertEqual(actual, {"evidence": [[], []], "deployments": [[], []]})
+
+    def test_verification_upgrade_policy_matches_the_compiled_resource(self) -> None:
+        result = _compile(ROOT / "infra" / "modules" / "models.bicep")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resource = next(
+            row for row in json.loads(result.stdout)["resources"]
+            if row["type"] == "Microsoft.CognitiveServices/accounts/deployments"
+        )
+        properties = resource["properties"]
+        node = Expression(properties[1:-1]).parse()
+        self.assertEqual(node[:2], ("call", "union"))
+        base = node[2][0]
+        self.assertEqual(base[:2], ("call", "createobject"))
+        fields = {base[2][i][1]: base[2][i + 1] for i in range(0, len(base[2]), 2)}
+        policy = fields["versionUpgradeOption"]
+        self.assertEqual(policy[0], "literal")
+        actual = self.selections(production_document())
+        self.assertEqual(actual["evidence"][0][0]["versionUpgradeOption"], policy[1])
+
+    def test_present_malformed_flags_fail_actual_evaluation(self) -> None:
+        for field in ("runtimeEnabled", "provisioningEnabled"):
+            other = "provisioningEnabled" if field == "runtimeEnabled" else "runtimeEnabled"
+            for other_value in ("omitted", True, False):
+                for value in (None, "false", 0):
+                    document = production_document()
+                    model = document["catalog"][0]
+                    model.pop(other, None)
+                    if other_value != "omitted":
+                        model[other] = other_value
+                    model[field] = value
+                    for projection in ("evidence", "deployments"):
+                        with self.subTest(
+                            field=field, other=other_value, value=value, projection=projection,
+                        ):
+                            denied = self.build_evidence(document, projection=projection)
+                            self.assertNotEqual(denied.returncode, 0)
+                            self.assertIn("Error BCP338", denied.stderr)
+
+    def test_profiles_unknown_optional_capacity_and_required_failure(self) -> None:
+        document = production_document()
+        for profile, capacities in (
+            ("baseline", [10, 10]), ("maximum", [100, 100]), ("production", [40, 20]),
+        ):
+            actual = self.selections(document, profile)
+            self.assertEqual([rows[0]["capacity"] for rows in actual["evidence"]], capacities)
+        model = document["catalog"][0]
+        model.update(provisioningEnabled=False, runtimeEnabled=False)
+        for deployment in model["deployments"]:
+            del deployment["production"]
+        actual = self.selections(document, "production")
+        self.assertEqual([rows[0]["capacity"] for rows in actual["evidence"]], [None, None])
+        self.assertEqual(actual["deployments"], [[], []])
+        model["runtimeEnabled"] = True
+        denied = self.build_evidence(document, "production")
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("Error", denied.stderr)
+
+    def test_bicep_evidence_drives_absent_retained_and_unknown_capacity_ps_gate(self) -> None:
+        from scripts.tests.test_postprovision_hard_gates import _run_model
+
+        document = production_document()
+        model = document["catalog"][0]
+        model.update(provisioningEnabled=False, runtimeEnabled=False)
+        account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-ai4ia-test/providers/Microsoft.CognitiveServices/accounts/mf-example-sweden"
+        for missing_capacity in (False, True):
+            if missing_capacity:
+                for deployment in model["deployments"]:
+                    del deployment["production"]
+            selections = self.selections(document, "production")
+            # Use the actual compiled root output's schema, not a second PS fixture.
+            target = {
+                "accountName": "mf-example-sweden", "region": "eastus2",
+                "deploymentNames": [row["deploymentName"] for row in selections["deployments"][0]],
+                "verificationVersion": 1, "accountId": account_id,
+                "deploymentEvidence": selections["evidence"][0],
+            }
+            evidence = target["deploymentEvidence"][0]
+            actual = {
+                "name": evidence["name"], "id": account_id + "/deployments/" + evidence["name"],
+                "sku": {"name": evidence["sku"], "capacity": 40},
+                "properties": {
+                    "model": evidence["model"], "provisioningState": "Succeeded",
+                    "versionUpgradeOption": evidence["versionUpgradeOption"],
+                },
+            }
+            for deployments in ([], [actual]):
+                payload = _run_model(
+                    overrides={"AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target])},
+                    deployments=deployments,
+                )
+                expected = "FAIL" if missing_capacity and deployments else "PASS"
+                self.assertEqual(payload["results"][0]["status"], expected, payload)
 
 
 if __name__ == "__main__":

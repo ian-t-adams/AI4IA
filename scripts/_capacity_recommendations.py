@@ -353,6 +353,8 @@ def recommend(policy: Policy, snapshot: Snapshot, now: datetime) -> dict:
             },
         }
         try:
+            if any(not policy.intents[d.key].provisioning for d in members):
+                raise evidence.EvidenceError("provisioning_disabled_capacity_planning_unsupported")
             matching = [p for p in snapshot.pools if {k: p[k] for k in POOL_FIELDS} == pool.assertion]
             if len(matching) != 1:
                 raise evidence.EvidenceError("pool_assertion_not_established")

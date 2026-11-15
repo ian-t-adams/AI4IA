@@ -69,15 +69,27 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _capacity_evidence as capacity_evidence
 import _model_retirement as retirement
 from _claude_binding import verify_configured
-from _model_routing import offered_routing_models, routing_configuration, routing_matches
-from _model_targets import ModelTarget, model_target
 from _model_naming import deployment_name
+from _model_routing import (
+    offered_routing_models,
+    routing_configuration,
+    routing_matches,
+)
+from _model_targets import (
+    ModelTarget,
+    declared_capacity_pool,
+    model_target,
+    provisioning_enabled,
+    runtime_enabled,
+)
 from _production_capacity import (
     PROFILES,
     bind_scope,
     check_live_pools,
     effective_capacity,
     parse_policy,
+    preflight_membership,
+    retained_source_identity_errors,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,12 +128,11 @@ def active_subscription(expected_subscription_id: str | None = None) -> dict[str
         "json",
     )
     if result.returncode != 0:
-        detail = result.stderr.strip() or "Azure CLI returned no account."
         raise SystemExit(
             "ERROR: the model availability/quota preflight requires Azure CLI "
             "credentials for the target subscription. Run `az login` and "
-            "`az account set --subscription <id>` before `azd provision`.\n"
-            f"Azure CLI: {detail}"
+            "`az account set --subscription <id>` before `azd provision`. "
+            "Azure CLI account show failed (nonzero exit status); untrusted error detail withheld."
         )
     try:
         account = json.loads(result.stdout or "{}")
@@ -167,6 +178,7 @@ def catalog_requirements(
         parse_policy(models, required=True, include_anthropic=include_anthropic)
     by_region: dict[str, list[dict[str, Any]]] = {}
     for entry in models.get("catalog", []):
+        provisioning, runtime = provisioning_enabled(entry), runtime_enabled(entry)
         declared_target = model_target(entry)
         routing = routing_configuration(entry, models)
         if target is not None and declared_target != target:
@@ -174,6 +186,7 @@ def catalog_requirements(
         if not include_anthropic and entry.get("format") == "Anthropic":
             continue
         for deployment in entry.get("deployments", []):
+            pool = declared_capacity_pool(deployment, models.get("regions", {}))
             region = deployment.get("region")
             sku = deployment.get("sku", "")
             if not region:
@@ -186,14 +199,20 @@ def catalog_requirements(
                     "format": entry.get("format", "OpenAI"),
                     "sku": sku,
                     "version": str(deployment.get("version", "")),
-                    "capacity": effective_capacity(deployment, capacity_profile),
+                    "capacity": (
+                        None if capacity_profile == "production" and not (provisioning or runtime)
+                        and "capacity" not in (deployment.get("production") or {})
+                        else effective_capacity(deployment, capacity_profile)
+                    ),
                     "capacityPool": (
-                        deployment.get("maxCapacityPool")
+                        pool
                         if capacity_profile == "maximum"
                         else None
                     ),
                     "versionUpgradeOption": "NoAutoUpgrade",
                     "region": region,
+                    "provisioningEnabled": provisioning,
+                    "required": provisioning or runtime,
                     **({"routing": routing} if routing is not None else {}),
                     **({"deploymentTarget": declared_target} if declared_target != "source" else {}),
                 }
@@ -203,10 +222,9 @@ def catalog_requirements(
 
 def _json_result(result: subprocess.CompletedProcess[str], context: str) -> Any:
     if result.returncode != 0:
-        detail = result.stderr.strip() or "Azure CLI returned no detail."
         raise SystemExit(
-            f"ERROR: {context}; existing-state lifecycle safety cannot be evaluated.\n"
-            f"Azure CLI: {detail}"
+            f"ERROR: {context}; existing-state lifecycle safety cannot be evaluated. "
+            "Azure CLI command failed (nonzero exit status); untrusted error detail withheld."
         )
     if len((result.stdout or "").encode("utf-8")) > MAX_AZURE_RESPONSE_BYTES:
         raise SystemExit(f"ERROR: {context}; Azure CLI response exceeded the 16 MiB read budget.")
@@ -237,6 +255,8 @@ def _foundry_accounts_from_output(raw: str | None) -> dict[str, str]:
     if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
         raise SystemExit("ERROR: AZURE_FOUNDRY_ENDPOINTS must be an array of account/region objects.")
     for entry in entries:
+        if any(not isinstance(entry.get(field), str) or not entry[field].strip() for field in ("region", "accountName")):
+            raise SystemExit("ERROR: AZURE_FOUNDRY_ENDPOINTS has an invalid account/region identity.")
         region = _normal_location(entry.get("region"))
         account_name = str(entry.get("accountName") or "").strip()
         if not region or not account_name:
@@ -257,6 +277,7 @@ def existing_deployment_inventory(
     environment_name: str | None,
     foundry_endpoints_raw: str | None = None,
     region_reads: dict[str, retirement.SourceRead] | None = None,
+    diagnostics: list[str] | None = None,
     read: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str]]:
     """Inventory exact deployments azd would reconcile, or enter explicit addition mode.
@@ -264,9 +285,11 @@ def existing_deployment_inventory(
     No context means a manual/greenfield check: every desired deployment is treated
     as an addition. In an azd hook the target resource group/environment are known;
     any Azure inventory error fails rather than incorrectly exempting a lifecycle
-    block. A report caller may supply region_reads to retain successful regions
-    alongside explicit unavailable states; preprovision never opts into that
-    partial-read mode. All operations are read-only.
+    block. Callers may supply region_reads to retain successful regions alongside
+    explicit unavailable states. Preprovision uses those states but still refuses
+    any unavailable regional inventory; reports retain partial coverage.
+    Optional diagnostics preserve bounded operator context, not report evidence.
+    All operations are read-only.
     """
     resource_group = (resource_group or "").strip()
     environment_name = (environment_name or "").strip()
@@ -330,9 +353,12 @@ def existing_deployment_inventory(
                 environment_name=environment_name, foundry_token=foundry_token,
                 read=query,
             )
-        except (SystemExit, OSError):
+        except (SystemExit, OSError) as exc:
             if region_reads is None:
                 raise
+            if diagnostics is not None:
+                reason = _inventory_diagnostic(exc) if isinstance(exc, SystemExit) else "OSError: OS read failed"
+                diagnostics.append(f"ERROR: deployment inventory in {region}: {reason}")
             region_reads[region] = retirement.SourceRead(
                 "deployment-inventory", region, "unavailable", retirement.timestamp(datetime.now(UTC)),
                 "inventory-read-failed-or-ambiguous",
@@ -344,6 +370,14 @@ def existing_deployment_inventory(
                 "deployment-inventory", region, "observed", retirement.timestamp(datetime.now(UTC))
             )
     return inventory, []
+
+
+def _inventory_diagnostic(_exc: SystemExit) -> str:
+    """Project fixed operation/type context, never regex-redacted CLI payloads."""
+    return (
+        "SystemExit: account selection/deployment inventory failed; "
+        "untrusted error detail withheld."
+    )
 
 
 def _regional_deployment_inventory(
@@ -358,19 +392,27 @@ def _regional_deployment_inventory(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Read a whole account atomically so malformed rows cannot become partial absence."""
     normalized_region = _normal_location(region)
+    if any(
+        not isinstance(account.get("name"), str)
+        or not account["name"].strip()
+        or account["name"] != account["name"].strip()
+        for account in accounts
+    ):
+        raise SystemExit("ERROR: account inventory contains an invalid account name.")
+    prefix = f"mf-{foundry_token}-{environment_name}-{region}-".casefold()
+    owned_candidates = [
+        account for account in accounts
+        if environment_name and account["name"].casefold().startswith(prefix)
+    ]
     if expected_name:
         candidates = [
             account for account in accounts
-            if str(account.get("name") or "").casefold() == expected_name.casefold()
+            if account["name"].casefold() == expected_name.casefold()
         ]
+        if any(account["name"].casefold() != expected_name.casefold() for account in owned_candidates):
+            raise SystemExit("ERROR: endpoint output conflicts with candidate Foundry account inventory.")
     elif environment_name:
-        prefix = f"mf-{foundry_token}-{environment_name}-{region}-".casefold()
-        candidates = [
-            account for account in accounts
-            if str(account.get("kind") or "").casefold() == "aiservices"
-            and _normal_location(account.get("location")) == normalized_region
-            and str(account.get("name") or "").casefold().startswith(prefix)
-        ]
+        candidates = owned_candidates
     else:
         raise SystemExit(
             "ERROR: the target resource group exists, but neither AZURE_ENV_NAME "
@@ -386,8 +428,11 @@ def _regional_deployment_inventory(
     if not candidates:
         return {}
     if (
-        str(candidates[0].get("kind") or "").casefold() != "aiservices"
-        or _normal_location(candidates[0].get("location")) != normalized_region
+        not isinstance(candidates[0].get("kind"), str)
+        or candidates[0]["kind"].casefold() != "aiservices"
+        or not isinstance(candidates[0].get("location"), str)
+        or not candidates[0]["location"].strip()
+        or re.sub(r"\s+", "", candidates[0]["location"].casefold()) != normalized_region
     ):
         raise SystemExit("ERROR: the selected Foundry account has a different kind or region.")
     account_name = str(candidates[0].get("name") or "")
@@ -420,16 +465,17 @@ def _regional_deployment_inventory(
         if (normalized_region, deployment_name.casefold()) in inventory:
             raise SystemExit("ERROR: deployment inventory contains duplicate deployment identities.")
         inventory[(normalized_region, deployment_name.casefold())] = {
+            "id": deployment.get("id"),
             "accountName": account_name,
             "deploymentName": deployment_name,
             "region": region,
-            "modelName": str(model.get("name") or ""),
-            "format": str(model.get("format") or ""),
-            "version": str(model.get("version") or ""),
-            "sku": str(sku.get("name") or ""),
+            "modelName": model.get("name", ""),
+            "format": model.get("format", ""),
+            "version": model.get("version", ""),
+            "sku": sku.get("name", ""),
             "capacity": sku.get("capacity"),
-            "versionUpgradeOption": str(properties.get("versionUpgradeOption") or ""),
-            "provisioningState": str(properties.get("provisioningState") or ""),
+            "versionUpgradeOption": properties.get("versionUpgradeOption", ""),
+            "provisioningState": properties.get("provisioningState", ""),
             **({"routing": properties["routing"]} if "routing" in properties else {}),
         }
     return inventory
@@ -483,6 +529,35 @@ def existing_deployment_drift(
     if "routing" in required and not routing_matches(existing.get("routing"), required["routing"]):
         differences.append("routing mode or exact model subset differs")
     return differences
+
+
+def retained_capacity_errors(
+    by_region: dict[str, list[dict[str, Any]]],
+    inventory: dict[tuple[str, str], dict[str, Any]],
+) -> list[str]:
+    """Unmanaged retained capacity cannot be reconciled to a different profile target."""
+    errors = []
+    for region, rows in by_region.items():
+        for item in rows:
+            if item["provisioningEnabled"]:
+                continue
+            existing = inventory.get((_normal_location(region), item["deploymentName"].casefold()))
+            if existing is None:
+                # Absence admission belongs to inventory/membership, not capacity comparison.
+                continue
+            expected, actual = item["capacity"], existing.get("capacity")
+            if type(expected) is not int or expected <= 0 or type(actual) is not int or actual <= 0:
+                code = "retained_deployment_capacity_unknown"
+            elif expected != actual:
+                code = "retained_deployment_capacity_mismatch"
+            else:
+                continue
+            errors.append(
+                f"{item['deploymentName']} ({region}): {code}; provisioning is disabled, "
+                "so the selected profile capacity cannot be applied. Exact retained capacity "
+                "must match the catalog's postprovision evidence before proceeding."
+            )
+    return errors
 
 
 def all_deployments_exact_existing(
@@ -697,12 +772,7 @@ def run_retirement_report(
 
 def quota_usage(region: str) -> list[dict[str, Any]]:
     result = _az("cognitiveservices", "usage", "list", "--location", region, "-o", "json")
-    if result.returncode != 0:
-        raise SystemExit(
-            f"ERROR: could not read quota in {region}. Run `az login` and "
-            f"`az account set --subscription <id>` first.\n{result.stderr.strip()}"
-        )
-    return json.loads(result.stdout or "[]")
+    return _json_result(result, f"could not read quota in {region}")
 
 
 def _quota_keys(sku: str, model: str) -> list[str]:
@@ -741,14 +811,20 @@ def _quota_keys(sku: str, model: str) -> list[str]:
     return keys
 
 
-def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def index_quota(
+    raw: Iterable[dict[str, Any]], *, reject_ambiguous: bool = False,
+    required_keys: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Index usage counters as {"<sku>|<model>": {limit, current, counter}}.
 
     Keys are normalised the same way as :func:`_quota_keys`, and the publisher
     prefix (`OpenAI.` / `AIServices.`) is dropped so both namespaces land in one
     index -- the catalog does not record which publisher a model belongs to.
+    Maximum-mode callers reject collisions on any selected lookup candidate.
+    Unrelated ambiguous keys are omitted rather than selecting a winning row.
     """
     index: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
     for item in raw:
         counter = (item.get("name") or {}).get("value")
         if not counter or counter.count(".") < 2:
@@ -759,7 +835,13 @@ def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         sku, _, model = remainder.partition(".")
         if not sku or not model:
             continue
-        for key in _quota_keys(sku, model):
+        for key in dict.fromkeys(_quota_keys(sku, model)):
+            if reject_ambiguous and (key in index or key in ambiguous):
+                if required_keys is None or key in required_keys:
+                    raise ValueError("ambiguous quota counter lookup aliases; maximum capacity cannot be revalidated")
+                index.pop(key, None)
+                ambiguous.add(key)
+                continue
             index.setdefault(
                 key,
                 {
@@ -961,8 +1043,10 @@ def evaluate_shared_quota(
 def evaluate_declared_capacity_pools(
     by_region: dict[str, list[dict[str, Any]]],
     index: dict[str, dict[str, Any]],
+    *,
+    regional_indexes: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Validate generated maximum capacities against their recorded Azure pool."""
+    """Validate declared source pools without treating labels as Azure scope proof."""
     errors: list[str] = []
     warnings: list[str] = []
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
@@ -980,13 +1064,28 @@ def evaluate_declared_capacity_pools(
             grouped.setdefault((item["sku"], item["name"], pool), []).append(item)
 
     for (sku, name, pool), items in sorted(grouped.items()):
-        entry = next((index[key] for key in _quota_keys(sku, name) if key in index), None)
-        if entry is None:
+        observations = []
+        for region in {item["region"] for item in items}:
+            regional = regional_indexes.get(region, {}) if regional_indexes is not None else index
+            entry = next((regional[key] for key in _quota_keys(sku, name) if key in regional), None)
+            if entry is not None:
+                observations.append(entry)
+        if not observations:
             warnings.append(
                 f"{name} ({sku}, {pool}): no quota counter matched; maximum "
                 "capacity cannot be revalidated."
             )
             continue
+        if (
+            len({entry["limit"] for entry in observations}) != 1
+            or len({entry["counter"].casefold() for entry in observations}) != 1
+        ):
+            errors.append(
+                f"{name} ({sku}, {pool}): contradictory quota counter identity/limits "
+                "across declared pool members; maximum capacity cannot be revalidated."
+            )
+            continue
+        entry = observations[0]
         total = sum(int(item.get("capacity") or 0) for item in items)
         if total > entry["limit"]:
             errors.append(
@@ -1241,6 +1340,16 @@ def main() -> int:
     if args.retirement_report:
         return run_retirement_report(args, models, catalog_bytes)
     try:
+        by_region = catalog_requirements(
+            models,
+            include_anthropic=claude_enabled,
+            capacity_profile=args.capacity_profile,
+            target="source",
+        )
+    except ValueError as exc:
+        print(f"ERROR: catalog deployment configuration: {exc}", file=sys.stderr)
+        return 1
+    try:
         external_count = verify_configured(models)
         if external_count:
             print(f"Verified {external_count} external Claude deployments in their exact target scope.", flush=True)
@@ -1253,19 +1362,86 @@ def main() -> int:
     account_label = f"{account['name']} ({account['id']})" if account["name"] else account["id"]
     print(f"Checking Azure subscription {account_label}.", flush=True)
 
-    by_region = catalog_requirements(
-        models,
-        include_anthropic=claude_enabled,
-        capacity_profile=args.capacity_profile,
-        target="source",
-    )
     regions = sorted(models["regions"] if args.capacity_profile == "production" else set(args.region or by_region))
+    region_reads: dict[str, retirement.SourceRead] = {}
+    inventory_diagnostics: list[str] = []
     existing_deployments, inventory_warnings = existing_deployment_inventory(
         models,
         resource_group=resource_group,
         environment_name=environment_name,
         foundry_endpoints_raw=os.environ.get("AZURE_FOUNDRY_ENDPOINTS"),
+        region_reads=region_reads,
+        diagnostics=inventory_diagnostics,
     )
+    for diagnostic in inventory_diagnostics:
+        print(diagnostic, file=sys.stderr)
+    complete_regions = frozenset(region for region, read in region_reads.items() if read.status == "observed")
+    retained_errors = retained_capacity_errors(by_region, existing_deployments)
+    if args.capacity_profile != "production":
+        for region, requirements in by_region.items():
+            unmanaged = [item for item in requirements if not item["provisioningEnabled"]]
+            if unmanaged and region not in complete_regions:
+                print("ERROR: staged/retained deployment inventory is unknown.", file=sys.stderr)
+                return 1
+            missing_required = [
+                item for item in unmanaged if item["required"]
+                and (_normal_location(region), item["deploymentName"].casefold()) not in existing_deployments
+            ]
+            if missing_required:
+                print("ERROR: required externally managed deployments are absent.", file=sys.stderr)
+                return 1
+        by_region = {
+            region: [
+                item for item in requirements if item["required"]
+                or (_normal_location(region), item["deploymentName"].casefold()) in existing_deployments
+            ]
+            for region, requirements in by_region.items()
+        }
+        if any(read.status != "observed" for read in region_reads.values()):
+            print("ERROR: deployment inventory is unavailable.", file=sys.stderr)
+            return 1
+        if any(
+            not item["provisioningEnabled"]
+            and (_normal_location(region), item["deploymentName"].casefold()) in existing_deployments
+            for region, requirements in by_region.items() for item in requirements
+        ):
+            try:
+                retained_errors.extend(retained_source_identity_errors(
+                    models, existing_deployments, subscription=account["id"],
+                    resource_group=resource_group, environment=environment_name,
+                ))
+            except capacity_evidence.EvidenceError as exc:
+                print(f"ERROR: retained deployment verification unavailable: {exc.code}", file=sys.stderr)
+                return 1
+        if retained_errors:
+            for error in retained_errors:
+                print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+    if args.capacity_profile == "production" and policy is not None:
+        try:
+            if complete_regions != frozenset(models["regions"]):
+                raise capacity_evidence.EvidenceError("production_inventory_unknown")
+            active = preflight_membership(
+                policy, existing_deployments, include_anthropic=claude_enabled, complete_regions=complete_regions,
+            )
+            by_region = {
+                region: [
+                    {
+                        **item,
+                        **({"capacity": existing_deployments[(region, item["deploymentName"].casefold())]["capacity"]}
+                           if not item["provisioningEnabled"] else {}),
+                    }
+                    for item in rows if (region, item["deploymentName"]) in active
+                ] for region, rows in by_region.items()
+            }
+            quota_regions = {
+                region for pool in policy.pools if any(d.key in active for d in policy.members(pool))
+                for region in pool.assertion["regions"]
+            }
+            regions = sorted(quota_regions | {region for region, rows in by_region.items() if rows})
+        except capacity_evidence.EvidenceError as exc:
+            print(f"ERROR: production capacity preflight: {exc.code}", file=sys.stderr)
+            return 1
     inventory_at = datetime.now(UTC)
     inventory_state: retirement.InventoryState = (
         "observed" if resource_group or environment_name else "not-requested"
@@ -1279,17 +1455,24 @@ def main() -> int:
             flush=True,
         )
 
-    total_errors = 0
+    for error in retained_errors:
+        print(f"ERROR: {error}")
+    total_errors = len(retained_errors)
     total_warnings = 0
     merged_quota: dict[str, dict[str, Any]] = {}
+    regional_quota: dict[str, dict[str, dict[str, Any]]] = {}
     production_quotas: dict[str, list[dict]] = {}
+    selected_quota_keys = {
+        key for rows in by_region.values() for item in rows
+        for key in _quota_keys(item["sku"], item["name"])
+    }
     for region in regions:
         required = by_region.get(region, [])
         if not required and args.capacity_profile != "production":
             print(f"{region}: no deployments in the catalog; skipping.")
             continue
         print(f"Checking {len(required)} deployments in {region} ...", flush=True)
-        offered = offered_models(region)
+        offered = offered_models(region) if required else []
         scoped_offered = catalog_offerings(required, offered)
         index = index_offered(scoped_offered)
         errors, warnings = evaluate(
@@ -1330,10 +1513,20 @@ def main() -> int:
                     production_quotas[region] = capacity_evidence.parse_quota({"value": raw_quota})
                 except capacity_evidence.EvidenceError as exc:
                     errors.append(f"Production quota evidence is unavailable: {exc.code}")
-            quota_index = index_quota(raw_quota) if args.capacity_profile != "production" else {}
-            # Counters are subscription-wide and identical in every region, so
-            # merging is safe; a region that does not offer a model can still be
-            # missing its counter, which is why this merges instead of picking one.
+            try:
+                quota_index = index_quota(
+                    raw_quota, reject_ambiguous=args.capacity_profile == "maximum",
+                    required_keys=selected_quota_keys,
+                ) if args.capacity_profile != "production" else {}
+            except ValueError:
+                errors.append(
+                    f"Quota evidence in {region} is invalid or has ambiguous quota counter lookup aliases; "
+                    "capacity cannot be revalidated."
+                )
+                quota_index = {}
+            regional_quota[region] = quota_index
+            # Keep the legacy fallback projection, but declared maximum pools
+            # compare their own regional evidence before accepting a shared limit.
             for key, entry in quota_index.items():
                 merged_quota.setdefault(key, entry)
             quota_errors, quota_warnings = evaluate_quota(
@@ -1362,6 +1555,7 @@ def main() -> int:
         try:
             for pool in check_live_pools(
                 policy, existing_deployments, production_quotas, include_anthropic=claude_enabled,
+                complete_regions=complete_regions,
             ):
                 print(
                     f"Production pool {pool['id']} [{pool['counter']}, {pool['scope']}, "
@@ -1380,7 +1574,7 @@ def main() -> int:
         # overcommit that `--region` was used to investigate.
         if args.capacity_profile == "maximum":
             shared_errors, shared_warnings = evaluate_declared_capacity_pools(
-                by_region, merged_quota
+                by_region, merged_quota, regional_indexes=regional_quota
             )
             fallback = {
                 region: [

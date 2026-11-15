@@ -1440,6 +1440,17 @@ conversation/model version is rewritten, and there is no automatic substitution
 or protocol downgrade. Unavailable new connections are denied before provider
 egress. Already accepted connections are not replayed or migrated.
 
+`provisioningEnabled` is a separate strict optional Boolean, default true for
+legacy rows. New candidate rows must explicitly set it to `false` until their
+deployment scope is approved. False excludes a row from both the main stack and
+the separately invoked Claude-target template before deployment records or
+Anthropic `modelProviderData` are constructed. It does not imply
+`runtimeEnabled: false`, change runtime catalog availability, or delete an
+already-existing deployment. The templates use incremental deployment behavior:
+omitting a resource preserves it, so any physical cleanup requires a distinct
+reviewed and approved operation. Do not use this flag as proof that an existing
+deployment has been removed.
+
 **Required rollout order (separate approvals):**
 
 1. Revalidate exact AIServices model/version/SKU offerings, lifecycle evidence,

@@ -78,6 +78,29 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    eligibility gate refuses disabled rows even without actor filtering.
    Generated HTTP, preview/GA realtime routes, default realtime selection and
    voice-provider projections all honor disablement.
+   `provisioningEnabled` independently defaults true and gates desired deployment
+   construction, not runtime or deletion. A staged default-off row needs both
+   flags explicitly false. Source Bicep resource and verification projections
+   eagerly validate both typed flags; Boolean short-circuiting must not admit a
+   malformed peer flag. The separate default-off Claude target validates both
+   flags too, while only provisioning controls its deployment selection.
+   The source postprovision output retains legacy names
+   and adds versioned exact-identity/capacity evidence: only dual-disabled rows
+   may be absent after complete inventory; retained rows still verify exactly.
+   Unknown optional production capacity stays null and refuses a present row,
+   never baseline/zero/free quota. Production preflight requires terminal
+   inventory before optional absence and keeps provisioning-disabled retained
+   allocation at its verified actual capacity, with exact scoped identity,
+   reviewed bounds, outside allocation and reserves. All profiles also refuse
+   present provisioning-disabled capacity that cannot match exact selected
+   postprovision evidence; accounting is not a capacity reconciliation.
+   Baseline/maximum preflight and sync planning omit only proven dual-disabled
+   absence. Sync refuses all present provisioning-disabled catalog deployments
+   before lossy inventory projection or plan/catalog writes; recommendations
+   hold such pools without a proposed budget. Evidence preserves optional
+   absence separately from unknown inventory and unknown usage, retaining actual
+   allocation and outside usage. See the configuration reference before adding
+   candidates; this source contract does not enable video routes or activation.
    Never interpret runtime disablement as physical deletion or free quota. Every
    seam offering a capability backed by such a model shares one availability
    predicate and still re-checks at execution.
@@ -868,6 +891,7 @@ python -m unittest scripts.tests.test_policy_json_shape
 python -m unittest scripts.tests.test_voice_provider_catalog
 python -m unittest scripts.tests.test_feature_prereqs
 python -m unittest scripts.tests.test_model_capacity_profile
+python -m unittest scripts.tests.test_model_provisioning
 python -m unittest scripts.tests.test_foundry_local_auth scripts.tests.test_foundry_role_scope scripts.tests.test_web_auth_config scripts.tests.test_postgres_retired scripts.tests.test_runtime_rbac_and_model_pins
 python -m unittest scripts.tests.test_rai_policy
 python -m unittest scripts.tests.test_bicep_naming
@@ -886,6 +910,10 @@ The Foundry toolbox schema and provisioner both require an inline A2A `baseUrl` 
 be a public HTTPS endpoint without credentials, query, fragment, loopback,
 private, link-local, or reserved IP space. Prefer a `projectConnectionId`, which
 keeps endpoint and authentication configuration in the Foundry project connection.
+
+Windows model-deployment gate controls run separately on `windows-latest` under
+both Windows PowerShell 5.1 and pwsh; skipped or empty execution fails that job.
+The existing Linux/pwsh operator suite remains in place.
 
 `quality` runs actionlint + shellcheck over workflows, PSScriptAnalyzer on
 `scripts`, hadolint on the three Dockerfiles, the proxy .NET build/auth tests,
@@ -1510,6 +1538,18 @@ Model deployment `capacity` is the portable baseline. Optional `maxCapacity` val
 are subscription-specific output from `scripts/sync-model-capacity.py`; never
 hand-copy portal bars or set every regional deployment to the same global limit.
 Bicep uses them only when `AI4IA_MODEL_CAPACITY_PROFILE=maximum`.
+A sync plan refuses unproven outside/shared-counter allocation before any
+healthy-recorded-pool shortcut or write. Neither planner may allocate one
+counter independently to multiple versions; missing quota usage is never zero.
+Declared regional/data-zone maximum pool labels must match each deployment's
+catalog region/dataZone through the shared source validator. That consistency
+does not prove an Azure pool boundary or change warning-only nonproduction
+currentValue checks.
+Maximum preflight must compare regional counter identity/limit observations
+within each declared pool, not accept whichever replica was merged first.
+Its regional quota index rejects duplicate/overlapping selected lookup aliases,
+including loose candidates, rather than choosing one counter by response order.
+Unrelated ambiguous keys are omitted without blocking unambiguous selected keys.
 A GlobalStandard usage counter reported with the same limit in every region is
 often one subscription-wide pool, not per-region headroom: `gpt-image-2.5-*`
 has a single 2-unit pool, so its eastus2 replica consumed it and the swedencentral

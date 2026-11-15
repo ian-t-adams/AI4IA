@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import copy
 import contextlib
+import copy
 import io
+import json
 import os
 import subprocess
 import sys
@@ -32,6 +32,7 @@ preflight = load_script(
 )
 validator = load_script("production_feature_prereqs", ROOT / "scripts" / "validate-feature-prereqs.py")
 generator = load_script("production_catalog_generator", ROOT / "scripts" / "gen-model-catalog.py")
+catalog_validator = load_script("capacity_catalog_validator", ROOT / "scripts" / "validate-catalog.py")
 
 
 def _models(sku: str = "GlobalStandard") -> dict:
@@ -109,6 +110,43 @@ def _platform(sku: str, east: int, sweden: int) -> dict:
 
 
 class CapacityAllocationTests(unittest.TestCase):
+    def test_staged_absence_and_retained_refusal_in_both_planners(self):
+        for planner in ("maximum", "reduce"):
+            models = QuotaReductionTests().models()
+            staged = copy.deepcopy(models["catalog"][0])
+            staged.update(name="staged-video", runtimeEnabled=False, provisioningEnabled=False)
+            models["catalog"].append(staged)
+            def run(document, live):
+                if planner == "reduce":
+                    return capacity.reduce_capacity_to_quota(document, live, _quota("GlobalStandard", 100, 1000))
+                return capacity.build_capacity_plan(
+                    document, live, _quota("GlobalStandard", 100, 1000), _platform("GlobalStandard", 900, 900),
+                )
+            with self.subTest(planner=planner):
+                expected = run({**models, "catalog": models["catalog"][:1]}, _live("GlobalStandard"))
+                self.assertEqual(run(models, _live("GlobalStandard")), expected)
+                with self.assertRaisesRegex(ValueError, "complete deployment inventory"):
+                    run(models, {})
+                for runtime in (False, True):
+                    staged["runtimeEnabled"] = runtime
+                    live = _live("GlobalStandard")
+                    for d in staged["deployments"]:
+                        live[d["region"]][capacity.deployment_name(models, staged["name"], d)] = 100
+                    with self.assertRaisesRegex(ValueError, "retained provisioning-disabled"):
+                        run(models, live)
+                with self.assertRaisesRegex(ValueError, "required externally managed"):
+                    run(models, _live("GlobalStandard"))
+                for field in ("runtimeEnabled", "provisioningEnabled"):
+                    for value in (None, "false", 0):
+                        malformed = copy.deepcopy(models)
+                        malformed["catalog"][0][field] = value
+                        with self.assertRaises(ValueError):
+                            run(malformed, _live("GlobalStandard"))
+                required = copy.deepcopy(models)
+                required["catalog"] = required["catalog"][:1]
+                with self.assertRaisesRegex(ValueError, "required externally managed or provisioned"):
+                    run(required, {region: {} for region in required["regions"]})
+
     def test_shared_global_pool_is_balanced_without_double_counting(self) -> None:
         plan, pools, _ = capacity.build_capacity_plan(
             _models(),
@@ -149,21 +187,13 @@ class CapacityAllocationTests(unittest.TestCase):
             "data-zone:EU",
         )
 
-    def test_partner_global_pool_is_shared_even_when_counters_look_regional(self) -> None:
-        plan, pools, _ = capacity.build_capacity_plan(
-            _models(),
-            _live("GlobalStandard"),
-            _quota(
-                "GlobalStandard",
-                current=50,
-                limit=300,
-                publisher="AIServices",
-            ),
-            _platform("GlobalStandard", east=250, sweden=250),
-        )
-        self.assertEqual(plan[("model-a", "eastus2", "GlobalStandard")], 150)
-        self.assertEqual(plan[("model-a", "swedencentral", "GlobalStandard")], 150)
-        self.assertEqual(pools[("model-a", "eastus2", "GlobalStandard")], "global")
+    def test_publisher_does_not_override_contradictory_shared_counter_usage(self) -> None:
+        with self.assertRaisesRegex(ValueError, "shared-counter membership"):
+            capacity.build_capacity_plan(
+                _models(), _live("GlobalStandard"),
+                _quota("GlobalStandard", current=50, limit=300, publisher="AIServices"),
+                _platform("GlobalStandard", east=250, sweden=250),
+            )
 
     def test_shared_data_zone_availability_is_counted_once(self) -> None:
         models = _models("DataZoneStandard")
@@ -203,6 +233,144 @@ class CapacityAllocationTests(unittest.TestCase):
             )
 
 
+class SyncStagedMainTests(unittest.TestCase):
+    def run_sync(self, models, *, apply=False, reduce=False, corruption=None, absent=False, inventory="complete"):
+        models["naming"]["foundryToken"] = "demo"
+        accounts = [
+            {"name": f"mf-demo-example-{region}-abcdefghijklm", "kind": "AIServices", "location": region}
+            for region in models["regions"]
+        ]
+        def azure(*args):
+            if args[:2] == ("account", "show"):
+                return {"id": SUBSCRIPTION}
+            if args[:3] == ("cognitiveservices", "account", "list"):
+                if inventory == "failed":
+                    raise RuntimeError("mock failed account inventory")
+                if inventory == "continued":
+                    return {"value": accounts, "nextLink": "unconsumed"}
+                if inventory == "empty":
+                    return []
+                return accounts
+            if args[:4] == ("cognitiveservices", "account", "deployment", "list"):
+                account = args[args.index("--name") + 1]
+                region = next(a["location"] for a in accounts if a["name"] == account)
+                rows = []
+                for model in models["catalog"]:
+                    if absent and not model.get("provisioningEnabled", True):
+                        continue
+                    for d in model["deployments"]:
+                        if d["region"] != region:
+                            continue
+                        name = capacity.deployment_name(models, model["name"], d)
+                        rows.append({
+                            "name": name, "id": f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg-demo-example/"
+                            f"providers/Microsoft.CognitiveServices/accounts/{account}/deployments/{name}",
+                            "sku": {"name": d["sku"], "capacity": 100},
+                            "properties": {"model": {"format": model["format"], "name": model["name"], "version": d["version"]},
+                                           "provisioningState": "Succeeded"},
+                        })
+                if corruption and rows:
+                    row = rows[-1]
+                    if corruption == "id":
+                        row["id"] = row["id"].replace(account, "foreign-account")
+                    elif corruption == "id-case":
+                        row["id"] = row["id"].upper()
+                    elif corruption == "id-type":
+                        row["id"] = [row["id"]]
+                    elif corruption in ("format", "name", "version"):
+                        row["properties"]["model"][corruption] = "wrong"
+                    elif corruption == "sku":
+                        row["sku"]["name"] = "Standard"
+                    elif corruption == "state":
+                        row["properties"]["provisioningState"] = "Failed"
+                    elif corruption == "duplicate":
+                        rows.append(copy.deepcopy(row))
+                    elif corruption == "capacity":
+                        row["sku"]["capacity"] = True
+                    elif corruption == "outside":
+                        outside = copy.deepcopy(row)
+                        outside["name"] += "-outside"
+                        outside["id"] += "-outside"
+                        rows.append(outside)
+                    elif corruption == "continued":
+                        return {"value": rows, "nextLink": "unconsumed"}
+                return rows
+            if args[:3] == ("cognitiveservices", "usage", "list"):
+                return _quota("GlobalStandard", 200, 300)["eastus2"]
+            if args[:1] == ("rest",):
+                return _platform("GlobalStandard", 100, 100)[("OpenAI", "model-a", "1")]
+            raise AssertionError(args)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            plan = Path(directory) / "plan.json"
+            original = json.dumps(models).encode()
+            path.write_bytes(original)
+            args = ["sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                    "--environment-name", "example", "--output-plan", str(plan)]
+            args += ["--apply"] if apply else []
+            args += ["--reduce-to-quota"] if reduce else []
+            with patch.object(capacity, "MODELS_FILE", path), patch.object(capacity, "ROOT", Path(directory)), \
+                 patch.object(capacity, "_az_json", side_effect=azure), patch.object(sys, "argv", args), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    code = capacity.main()
+                except (ValueError, RuntimeError) as exc:
+                    self.assertEqual(path.read_bytes(), original)
+                    self.assertFalse(plan.exists())
+                    return str(exc)
+            return code
+
+    def test_retained_refuses_before_catalog_or_plan_write_with_valid_control(self):
+        for runtime in (False, True):
+            for apply in (False, True):
+                for reduce in (False, True):
+                    for corruption in (None, "id", "format", "name", "version", "sku", "state", "duplicate", "capacity", "continued"):
+                        with self.subTest(runtime=runtime, apply=apply, reduce=reduce, corruption=corruption):
+                            models = _models()
+                            models["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=runtime)
+                            self.assertIsInstance(self.run_sync(models, apply=apply, reduce=reduce, corruption=corruption), str)
+        models = _models()
+        models["catalog"][0].update(provisioningEnabled=True, runtimeEnabled=False)
+        self.assertEqual(self.run_sync(models, apply=True), 0)
+
+    def test_optional_absent_candidate_keeps_existing_plan_and_apply(self):
+        for apply in (False, True):
+            for reduce in (False, True):
+                models = _models()
+                candidate = copy.deepcopy(models["catalog"][0])
+                candidate.update(name="staged-video", runtimeEnabled=False, provisioningEnabled=False)
+                models["catalog"].append(candidate)
+                self.assertEqual(self.run_sync(models, apply=apply, reduce=reduce, absent=True), 0)
+
+    def test_provisioned_allocations_require_exact_identity_before_quota_arithmetic(self):
+        for apply in (False, True):
+            for reduce in (False, True):
+                for corruption in ("id", "id-type", "format", "name", "version", "sku", "state", "duplicate", "capacity", "outside"):
+                    with self.subTest(apply=apply, reduce=reduce, corruption=corruption):
+                        models = _models()
+                        self.assertIsInstance(self.run_sync(
+                            models, apply=apply, reduce=reduce, corruption=corruption,
+                        ), str)
+                self.assertEqual(self.run_sync(_models(), apply=apply, reduce=reduce), 0)
+                self.assertEqual(self.run_sync(_models(), apply=apply, reduce=reduce, corruption="id-case"), 0)
+
+    def test_optional_absence_requires_complete_inventory_and_required_rows_refuse(self):
+        for apply in (False, True):
+            for reduce in (False, True):
+                for runtime in (False, True):
+                    models = _models()
+                    models["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=runtime)
+                    for inventory in ("failed", "continued"):
+                        self.assertIsInstance(self.run_sync(
+                            models, apply=apply, reduce=reduce, inventory=inventory,
+                        ), str)
+                    result = self.run_sync(models, apply=apply, reduce=reduce, inventory="empty")
+                    if runtime:
+                        self.assertIsInstance(result, str)
+                    else:
+                        self.assertEqual(result, 0)
+
+
 class QuotaReductionTests(unittest.TestCase):
     def models(self, sku="GlobalStandard"):
         models = _models(sku)
@@ -228,12 +396,11 @@ class QuotaReductionTests(unittest.TestCase):
         self.assertEqual(models, before)
 
     def test_outside_allocation_is_not_spent_by_the_reduction(self):
-        plan, _, _ = capacity.reduce_capacity_to_quota(
-            self.models(), _live("GlobalStandard", 500, 500),
-            _quota("GlobalStandard", 1050, 250),
-        )
-        self.assertEqual(sum(plan.values()), 200)
-        self.assertEqual(set(plan.values()), {100})
+        with self.assertRaisesRegex(ValueError, "outside allocation.*unproven"):
+            capacity.reduce_capacity_to_quota(
+                self.models(), _live("GlobalStandard", 500, 500),
+                _quota("GlobalStandard", 1050, 250),
+            )
 
     def test_data_zones_remain_independent_and_healthy_pools_are_untouched(self):
         plan, pools, _ = capacity.reduce_capacity_to_quota(
@@ -267,6 +434,614 @@ class QuotaReductionTests(unittest.TestCase):
                     deployment["maxCapacityPool"] = "unrecognized"
             with self.subTest(change=change), self.assertRaises(ValueError):
                 capacity.reduce_capacity_to_quota(models, live, quota)
+
+
+class DeclaredPoolMembershipTests(unittest.TestCase):
+    def fixture(self, *, distinct_zones=False):
+        models = _models("DataZoneStandard")
+        models["regions"] = {
+            "eastus2": {"dataZone": "US", "primary": True},
+            "westus3": {"dataZone": "EU" if distinct_zones else "US", "primary": True},
+        }
+        for deployment, region in zip(models["catalog"][0]["deployments"], models["regions"], strict=True):
+            deployment.update(
+                region=region, maxCapacity=100,
+                maxCapacityPool=f"data-zone:{models['regions'][region]['dataZone']}",
+            )
+        return models
+
+    def validate(self, models):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps(models), encoding="utf-8")
+            with patch.object(catalog_validator, "MODELS", path), contextlib.redirect_stdout(io.StringIO()):
+                return catalog_validator.main()
+
+    def preflight(self, models, *, limits=None, quota_rows=None, counters=None, region=None):
+        def azure(*args):
+            if args[:2] == ("account", "show"):
+                return subprocess.CompletedProcess(args, 0, stdout='{"id":"sub","name":"fixture"}', stderr="")
+            if args[:2] == ("group", "exists"):
+                return subprocess.CompletedProcess(args, 0, stdout="false", stderr="")
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps(models), encoding="utf-8")
+            with (
+                patch.object(preflight, "MODELS_FILE", path),
+                patch.dict(os.environ, {"AI4IA_MODEL_CAPACITY_PROFILE": "maximum"}, clear=True),
+                patch.object(sys, "argv", [
+                    "check-model-availability.py", "--resource-group", "rg-demo-example", "--environment-name", "example",
+                ] + (["--region", region] if region else [])),
+                patch.object(preflight, "_az", side_effect=azure) as read,
+                patch.object(preflight, "verify_configured", return_value=0),
+                patch.object(preflight, "offered_models", return_value=[{
+                    "model": {"name": models["catalog"][0]["name"], "format": "OpenAI", "version": "1",
+                              "skus": [{"name": "DataZoneStandard"}]},
+                }]) as offers,
+                patch.object(preflight, "quota_usage", side_effect=lambda region: quota_rows if quota_rows is not None else [{
+                    "name": {"value": (counters or {}).get(region, "AIServices.DataZoneStandard.model-a")},
+                    "currentValue": 140,
+                    "limit": (limits or {}).get(region, 150),
+                }]) as quotas,
+                contextlib.redirect_stdout(io.StringIO()) as out,
+                contextlib.redirect_stderr(io.StringIO()) as err,
+            ):
+                code = preflight.main()
+            return code, out.getvalue() + err.getvalue(), read.call_count, offers.call_count, quotas.call_count
+
+    def test_contradictory_labels_refuse_in_validator_and_full_preflight_before_reads(self):
+        for label in ("data-zone:EU", "region:eastus2"):
+            for provisioning, runtime in ((True, True), (False, False), (False, True), (True, False)):
+                models = self.fixture()
+                models["catalog"][0].update(provisioningEnabled=provisioning, runtimeEnabled=runtime)
+                models["catalog"][0]["deployments"][1]["maxCapacityPool"] = label
+                with self.subTest(label=label, provisioning=provisioning, runtime=runtime):
+                    with self.subTest(surface="validator"):
+                        self.assertEqual(self.validate(models), 1)
+                    with self.subTest(surface="preflight"):
+                        code, text, reads, offers, quotas = self.preflight(models)
+                        self.assertEqual(code, 1, text)
+                        self.assertIn("maxCapacityPool", text)
+                        self.assertEqual((reads, offers, quotas), (0, 0, 0))
+
+    def test_shared_pool_conflicting_limits_refuse_in_both_region_orders(self):
+        for kind in ("shared", "global", "distinct", "region"):
+            for east, west in ((220, 150), (150, 220), (220, 220), (150, 150)):
+                models = self.fixture(distinct_zones=kind == "distinct")
+                if kind == "region":
+                    for deployment in models["catalog"][0]["deployments"]:
+                        deployment["maxCapacityPool"] = f"region:{deployment['region']}"
+                elif kind == "global":
+                    for deployment in models["catalog"][0]["deployments"]:
+                        deployment["maxCapacityPool"] = "global"
+                with self.subTest(kind=kind, east=east, west=west):
+                    code, text, reads, offers, quotas = self.preflight(
+                        models, limits={"eastus2": east, "westus3": west},
+                    )
+                    self.assertEqual(code, int(kind in ("shared", "global") and min(east, west) < 200), text)
+                    self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                    self.assertIn("currentValue is unreliable", text)
+                    if kind in ("shared", "global") and east != west:
+                        self.assertIn("contradictory quota counter identity/limits", text)
+                    else:
+                        self.assertNotIn("contradictory", text)
+
+    def test_pool_counter_identity_preserves_casefold_and_independent_pool_controls(self):
+        for distinct_zones, counter, expected in (
+            (False, "aiservices.DATAZONESTANDARD.MODEL-A", 0),
+            (False, "OpenAI.DataZoneStandard.model-a", 1),
+            (True, "OpenAI.DataZoneStandard.model-a", 0),
+        ):
+            with self.subTest(distinct_zones=distinct_zones, counter=counter):
+                code, text, *_ = self.preflight(
+                    self.fixture(distinct_zones=distinct_zones),
+                    limits={"eastus2": 220, "westus3": 220},
+                    counters={"westus3": counter},
+                )
+                self.assertEqual(code, expected, text)
+                self.assertEqual("contradictory quota counter identity/limits" in text, bool(expected))
+
+    def test_colliding_counter_aliases_refuse_both_response_orders_and_distinct_control_passes(self):
+        valid = {
+            "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 220,
+        }
+        conflicting = {
+            "name": {"value": "OpenAI.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 150,
+        }
+        unrelated = {
+            **conflicting, "name": {"value": "OpenAI.DataZoneStandard.model-b"},
+        }
+        for first, second, expected in (
+            (valid, conflicting, 1), (conflicting, valid, 1), (valid, unrelated, 0), (unrelated, valid, 0),
+        ):
+            with self.subTest(first=first["name"], second=second["name"]):
+                code, text, reads, offers, quotas = self.preflight(self.fixture(), quota_rows=[first, second])
+                self.assertEqual(code, expected, text)
+                self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                if expected:
+                    self.assertIn("ambiguous quota counter lookup aliases", text)
+                else:
+                    self.assertNotIn("ambiguous", text)
+
+    def test_unrelated_collisions_do_not_block_but_selected_loose_aliases_do(self):
+        valid = {
+            "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 220,
+        }
+        for name, expected in (("other-model", 0), ("modela", 1), ("model-a.Azure", 1), ("model-a.0", 1)):
+            collisions = [
+                {**valid, "name": {"value": f"{publisher}.DataZoneStandard.{name}"}}
+                for publisher in ("AIServices", "OpenAI")
+            ]
+            for rows in (
+                [valid, *collisions], [*reversed(collisions), valid],
+                [collisions[0], valid, collisions[1]],
+            ):
+                with self.subTest(name=name, rows=[row["name"]["value"] for row in rows]):
+                    code, text, reads, offers, quotas = self.preflight(self.fixture(), quota_rows=rows)
+                    self.assertEqual(code, expected, text)
+                    self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                    self.assertEqual("ambiguous quota counter lookup aliases" in text, bool(expected))
+                    self.assertNotIn("other-model", text)
+        unrelated = [
+            {**valid, "name": {"value": f"{publisher}.DataZoneStandard.other-model"}}
+            for publisher in ("AIServices", "OpenAI")
+        ]
+        index = preflight.index_quota(
+            [valid, *unrelated, unrelated[0]], reject_ambiguous=True,
+            required_keys=set(preflight._quota_keys("DataZoneStandard", "model-a")),
+        )
+        self.assertEqual(index, {"datazonestandard|modela": {
+            "limit": 220, "current": 100, "counter": valid["name"]["value"],
+        }})
+        # A selected model's loose key still protects against overlapping rows,
+        # even when its preferred exact key is present and unambiguous.
+        models = self.fixture()
+        models["catalog"][0]["name"] = "model-a.Azure"
+        exact = {**valid, "name": {"value": "AIServices.DataZoneStandard.model-a.Azure"}}
+        code, text, *_ = self.preflight(models, quota_rows=[exact])
+        self.assertEqual(code, 0, text)
+        code, text, *_ = self.preflight(models, quota_rows=[
+            exact, valid, {**valid, "name": {"value": "OpenAI.DataZoneStandard.model-a"}},
+        ])
+        self.assertEqual(code, 1, text)
+        self.assertIn("ambiguous quota counter lookup aliases", text)
+
+    def test_region_filter_still_fences_other_catalog_regions_candidate_keys(self):
+        models = self.fixture()
+        other = copy.deepcopy(models["catalog"][0])
+        other["name"] = "model-b"
+        other["deployments"] = [other["deployments"][1]]
+        other["deployments"][0].update(sku="GlobalStandard", maxCapacityPool="global")
+        models["catalog"].append(other)
+        local = {
+            "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 220,
+        }
+        remote = {
+            "name": {"value": "AIServices.GlobalStandard.model-b"}, "currentValue": 100, "limit": 220,
+        }
+        for alias in ("modelb", "model-b.Azure", "model-b.0", "model-b-lookalike"):
+            conflicting = {
+                **remote, "name": {"value": f"OpenAI.GlobalStandard.{alias}"},
+            }
+            for rows in ([local, remote, conflicting], [conflicting, remote, local]):
+                with self.subTest(alias=alias, first=rows[0]["name"]):
+                    code, text, reads, offers, quotas = self.preflight(
+                        models, quota_rows=rows, region="eastus2",
+                    )
+                    expected = int(alias != "model-b-lookalike")
+                    self.assertEqual(code, expected, text)
+                    self.assertEqual((reads, offers, quotas), (2, 1, 1))
+                    self.assertEqual("ambiguous quota counter lookup aliases" in text, bool(expected))
+
+    def test_valid_shared_distinct_region_and_global_pool_controls(self):
+        for kind, expected in (("shared", 1), ("distinct", 0), ("region", 0), ("global", 1)):
+            models = self.fixture(distinct_zones=kind == "distinct")
+            if kind in ("region", "global"):
+                for deployment in models["catalog"][0]["deployments"]:
+                    deployment["maxCapacityPool"] = "global" if kind == "global" else f"region:{deployment['region']}"
+            with self.subTest(kind=kind):
+                self.assertEqual(self.validate(models), 0)
+                code, text, reads, offers, quotas = self.preflight(models)
+                self.assertEqual(code, expected, text)
+                self.assertEqual((reads, offers, quotas), (2, 2, 2))
+                self.assertIn("currentValue is unreliable", text)
+                if expected:
+                    self.assertIn("maximum profile requests 200", text)
+                else:
+                    models["catalog"][0].update(provisioningEnabled=False, runtimeEnabled=False)
+                    absent = self.preflight(models)
+                    self.assertEqual(absent[0], 0, absent[1])
+                    self.assertEqual(absent[3:], (0, 0))
+
+    def test_planners_and_temp_apply_refuse_contradictory_membership(self):
+        for label in ("data-zone:EU", "region:eastus2"):
+            for apply in (False, True):
+                models = self.fixture()
+                live = {
+                    region: {f"model-a-sub-{region}-dz": 50} for region in models["regions"]
+                }
+                quotas = {region: [{
+                    "name": {"value": "AIServices.DataZoneStandard.model-a"}, "currentValue": 100, "limit": 150,
+                }] for region in models["regions"]}
+                platform = {("OpenAI", "model-a", "1"): {"value": [{
+                    "location": region, "properties": {"skuName": "DataZoneStandard", "availableCapacity": 50},
+                } for region in models["regions"]]}}
+                # Identical complete evidence remains actionable with consistent labels.
+                self.assertEqual(sum(capacity.build_capacity_plan(models, live, quotas, platform)[0].values()), 150)
+                reduction_live = {region: {name: 100 for name in rows} for region, rows in live.items()}
+                reduction_quota = copy.deepcopy(quotas)
+                for rows in reduction_quota.values():
+                    rows[0]["currentValue"] = 200
+                self.assertEqual(sum(capacity.reduce_capacity_to_quota(models, reduction_live, reduction_quota)[0].values()), 150)
+                models["catalog"][0]["deployments"][1]["maxCapacityPool"] = label
+                with self.subTest(label=label, apply=apply):
+                    for plan in (
+                        lambda: capacity.build_capacity_plan(models, live, quotas, platform),
+                        lambda: capacity.reduce_capacity_to_quota(models, reduction_live, reduction_quota),
+                    ):
+                        with self.assertRaisesRegex(ValueError, "maxCapacityPool"):
+                            plan()
+                    with tempfile.TemporaryDirectory() as directory:
+                        catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                        original = json.dumps(models)
+                        catalog.write_text(original, encoding="utf-8")
+                        with (
+                            patch.object(capacity, "MODELS_FILE", catalog),
+                            patch.object(capacity, "ROOT", Path(directory)),
+                            patch.object(capacity, "_collect_live", return_value=live),
+                            patch.object(capacity, "_az_json", return_value={"id": SUBSCRIPTION}) as read,
+                            patch.object(sys, "argv", [
+                                "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                                "--environment-name", "example", "--output-plan", str(output),
+                            ] + (["--apply"] if apply else [])),
+                            self.assertRaisesRegex(ValueError, "maxCapacityPool"),
+                        ):
+                            capacity.main()
+                        read.assert_called_once_with("account", "show")
+                        self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                        self.assertFalse(output.exists())
+
+
+class CliDiagnosticPrivacyTests(unittest.TestCase):
+    PAYLOADS = (
+        "client_secret=synthetic-secret",
+        "Authorization: Basic c3ludGhldGlj",
+        "Cookie: synthetic-session",
+        "X-Unknown-Credential: synthetic-private-value",
+        '{"credentials":{"unrecognized":"synthetic-private-value"}}',
+        "synthetic-private-value\n\x1b[31mforged diagnostic\x1b[0m",
+        "synthetic-private-value" * 2048,
+    )
+
+    def test_preflight_direct_entry_points_withhold_failure_payloads(self):
+        for payload in self.PAYLOADS:
+            failed = subprocess.CompletedProcess(["az"], 1, stdout=payload, stderr=payload)
+            calls = (
+                ("account show", lambda: preflight.active_subscription("sub"), [failed]),
+                ("account inventory", lambda: preflight._json_result(failed, "account inventory"), []),
+                ("quota in eastus2", lambda: preflight.quota_usage("eastus2"), [failed]),
+                ("offerings in eastus2", lambda: preflight.offered_models("eastus2"), [failed]),
+                ("resource group rg-demo-example", lambda: preflight.existing_deployment_inventory(
+                    _models(), resource_group="rg-demo-example", environment_name="example",
+                ), [failed]),
+                ("accounts in rg-demo-example", lambda: preflight.existing_deployment_inventory(
+                    _models(), resource_group="rg-demo-example", environment_name="example",
+                ), [subprocess.CompletedProcess(["az"], 0, stdout="true", stderr=""), failed]),
+            )
+            for operation, call, results in calls:
+                output = io.StringIO()
+                with (
+                    self.subTest(operation=operation, payload=payload[:64]),
+                    patch.object(preflight, "_az", side_effect=results) as read,
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(output),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    call()
+                diagnostic = str(raised.exception)
+                with self.subTest(operation=operation, payload=payload[:64], evidence="diagnostic"):
+                    self.assertNotIn(payload, diagnostic)
+                    self.assertNotIn("synthetic-", diagnostic)
+                    self.assertNotIn("\x1b", diagnostic)
+                    self.assertIn(operation, diagnostic)
+                    self.assertIn("nonzero exit status", diagnostic)
+                    self.assertIn("untrusted error detail withheld", diagnostic)
+                    self.assertLess(len(diagnostic), 512)
+                    self.assertEqual(output.getvalue(), "")
+                    self.assertEqual(read.call_count, len(results))
+
+    def test_preflight_successful_reads_keep_native_results(self):
+        for value, call, expected in (
+            ({"id": "sub", "name": "fixture", "tenantId": "tenant"},
+             lambda: preflight.active_subscription("sub"), {"id": "sub", "name": "fixture", "tenantId": "tenant"}),
+            ([{"name": "native quota"}], lambda: preflight.quota_usage("eastus2"), [{"name": "native quota"}]),
+            ([], lambda: preflight.offered_models("eastus2"), []),
+            (False, lambda: preflight.existing_deployment_inventory(
+                _models(), resource_group="rg-demo-example", environment_name="example",
+            ), None),
+        ):
+            result = subprocess.CompletedProcess(["az"], 0, stdout=json.dumps(value), stderr=self.PAYLOADS[0])
+            with self.subTest(value=value), patch.object(preflight, "_az", return_value=result) as read:
+                actual = call()
+            if expected is None:
+                self.assertEqual(actual[0], {})
+            else:
+                self.assertEqual(actual, expected)
+            self.assertEqual(preflight._json_result(result, "synthetic operation"), value)
+            read.assert_called_once()
+
+    def test_sync_failure_and_invalid_json_context_never_echoes_arguments(self):
+        operations = (
+            (("account", "show"), "account show"),
+            (("cognitiveservices", "account", "list"), "account inventory"),
+            (("cognitiveservices", "account", "deployment", "list"), "deployment inventory"),
+            (("cognitiveservices", "usage", "list", "--location", "eastus2"), "quota usage in eastus2"),
+            (("rest", "--method", "GET"), "platform capacity read"),
+            (("unknown-synthetic-command",), "unrecognized read"),
+            (("cognitiveservices", "usage", "list", "--location", "Cookie: synthetic-session"), "quota usage in unknown region"),
+        )
+        for args, operation in operations:
+            args = (*args, "--name", "synthetic-private-argument")
+            for payload in self.PAYLOADS:
+                for failure in ("exit", "json", "os"):
+                    result = subprocess.CompletedProcess(
+                        ["az"], 1 if failure == "exit" else 0,
+                        stdout="!" + payload if failure == "json" else payload, stderr=payload,
+                    )
+                    with (
+                        self.subTest(operation=operation, failure=failure, payload=payload[:64]),
+                        patch.object(capacity.subprocess, "run", **(
+                            {"side_effect": OSError(payload)} if failure == "os" else {"return_value": result}
+                        )) as read,
+                        self.assertRaises(RuntimeError) as raised,
+                    ):
+                        capacity._az_json(*args)
+                    diagnostic = str(raised.exception)
+                    with self.subTest(operation=operation, failure=failure, payload=payload[:64], evidence="diagnostic"):
+                        self.assertNotIn(payload, diagnostic)
+                        self.assertNotIn("synthetic-", diagnostic)
+                        self.assertIn(operation, diagnostic)
+                        self.assertIn(
+                            {"exit": "nonzero exit status", "json": "invalid JSON", "os": "OSError"}[failure],
+                            diagnostic,
+                        )
+                        self.assertLess(len(diagnostic), 256)
+                        read.assert_called_once()
+            with patch.object(capacity.subprocess, "run", return_value=subprocess.CompletedProcess(
+                ["az"], 0, stdout='{"value":[1]}', stderr=self.PAYLOADS[0],
+            )):
+                self.assertEqual(capacity._az_json(*args), {"value": [1]})
+
+    def test_sync_cli_account_and_quota_failures_stop_without_writing(self):
+        for phase in ("account", "quota"):
+            for apply in (False, True):
+                for payload in self.PAYLOADS:
+                    with self.subTest(phase=phase, apply=apply, payload=payload[:64]), tempfile.TemporaryDirectory() as directory:
+                        catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                        original = json.dumps(_models())
+                        catalog.write_text(original, encoding="utf-8")
+                        failed = subprocess.CompletedProcess(["az"], 1, stdout=payload, stderr=payload)
+                        results = ([subprocess.CompletedProcess(
+                            ["az"], 0, stdout=json.dumps({"id": SUBSCRIPTION}), stderr="",
+                        )] if phase == "quota" else []) + [failed]
+                        argv = [
+                            "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                            "--environment-name", "example", "--output-plan", str(output),
+                        ] + (["--apply"] if apply else [])
+                        captured = io.StringIO()
+                        with (
+                            patch.object(capacity, "MODELS_FILE", catalog),
+                            patch.object(capacity, "ROOT", Path(directory)),
+                            patch.object(capacity, "_collect_live", return_value=_live("GlobalStandard")) as live,
+                            patch.object(capacity, "_collect_platform") as platform,
+                            patch.object(capacity.subprocess, "run", side_effect=results) as read,
+                            patch.object(sys, "argv", argv),
+                            contextlib.redirect_stdout(captured),
+                            contextlib.redirect_stderr(captured),
+                            self.assertRaises(RuntimeError) as raised,
+                        ):
+                            capacity.main()
+                        self.assertNotIn(payload, str(raised.exception))
+                        self.assertIn("account show" if phase == "account" else "quota usage in eastus2", str(raised.exception))
+                        self.assertNotIn("synthetic-", str(raised.exception))
+                        self.assertEqual(read.call_count, len(results))
+                        self.assertEqual(live.call_count, 0 if phase == "account" else 1)
+                        platform.assert_not_called()
+                        self.assertEqual(captured.getvalue(), "")
+                        self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                        self.assertFalse(output.exists())
+
+
+class SyncCounterSafetyTests(unittest.TestCase):
+    def fixture(self, *, reduce=False, staged=False, outside=True):
+        models = QuotaReductionTests().models() if reduce else _models()
+        if reduce:
+            for d in models["catalog"][0]["deployments"]:
+                d["maxCapacity"] = 80
+        if staged:
+            candidate = copy.deepcopy(models["catalog"][0])
+            candidate.update(name="staged-video", runtimeEnabled=False, provisioningEnabled=False)
+            models["catalog"].append(candidate)
+        live = _live("GlobalStandard", 100, 100) if reduce else _live("GlobalStandard")
+        current = (200 if reduce else 100) + ((20 if reduce else 40) if outside else 0)
+        quota = _quota("GlobalStandard", current, 170, publisher="AIServices")
+        return models, live, quota, _platform("GlobalStandard", 70, 70)
+
+    def run_plan(self, models, live, quota, platform, *, reduce=False):
+        if reduce:
+            return capacity.reduce_capacity_to_quota(models, live, quota)
+        return capacity.build_capacity_plan(models, live, quota, platform)
+
+    def test_outside_allocation_refuses_before_actionable_plan_or_healthy_shortcut(self):
+        for reduce in (False, True):
+            for staged in (False, True):
+                with self.subTest(reduce=reduce, staged=staged):
+                    fixture = self.fixture(reduce=reduce, staged=staged)
+                    original = copy.deepcopy(fixture)
+                    with self.assertRaisesRegex(ValueError, "outside allocation.*unproven"):
+                        self.run_plan(*fixture, reduce=reduce)
+                    self.assertEqual(fixture, original)
+                    models, live, quota, platform = self.fixture(reduce=reduce, staged=staged, outside=False)
+                    plan, _, _ = self.run_plan(models, live, quota, platform, reduce=reduce)
+                    self.assertEqual(sum(plan.values()), 0 if reduce else 170)
+                    # Even a numerically exact outside boundary lacks proven pool membership.
+                    if reduce:
+                        for d in models["catalog"][0]["deployments"]:
+                            d["maxCapacity"] = 75
+                        with self.assertRaisesRegex(ValueError, "outside allocation"):
+                            self.run_plan(models, live, fixture[2], platform, reduce=True)
+
+    def test_dry_run_and_temp_apply_refuse_without_writing_and_zero_outside_control_runs(self):
+        for reduce in (False, True):
+            for staged in (False, True):
+                for apply in (False, True):
+                    for outside in (False, True):
+                        with self.subTest(reduce=reduce, staged=staged, apply=apply, outside=outside):
+                            models, live, quota, platform = self.fixture(reduce=reduce, staged=staged, outside=outside)
+                            with tempfile.TemporaryDirectory() as directory:
+                                catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                                original = json.dumps(models)
+                                catalog.write_text(original, encoding="utf-8")
+                                def azure(*args, quota=quota):
+                                    if args[:2] == ("account", "show"):
+                                        return {"id": SUBSCRIPTION}
+                                    if args[:3] == ("cognitiveservices", "usage", "list"):
+                                        return quota[args[args.index("--location") + 1]]
+                                    raise AssertionError(args)
+                                argv = [
+                                    "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                                    "--environment-name", "example", "--output-plan", str(output),
+                                ]
+                                if apply:
+                                    argv.append("--apply")
+                                if reduce:
+                                    argv.append("--reduce-to-quota")
+                                with (
+                                    patch.object(capacity, "MODELS_FILE", catalog),
+                                    patch.object(capacity, "ROOT", Path(directory)),
+                                    patch.object(capacity, "_collect_live", return_value=live),
+                                    patch.object(capacity, "_collect_platform", return_value=platform),
+                                    patch.object(capacity, "_az_json", side_effect=azure),
+                                    patch.object(sys, "argv", argv),
+                                    contextlib.redirect_stdout(io.StringIO()),
+                                ):
+                                    if outside:
+                                        with self.assertRaisesRegex(ValueError, "outside allocation"):
+                                            capacity.main()
+                                    else:
+                                        self.assertEqual(capacity.main(), 0)
+                                if outside:
+                                    self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                                    self.assertFalse(output.exists())
+                                else:
+                                    self.assertTrue(output.exists())
+
+    def test_quota_current_and_limit_are_known_native_counts_not_defaults(self):
+        for reduce in (False, True):
+            for field in ("currentValue", "limit"):
+                for value in ("missing", None, True, -1, 100.5, "100"):
+                    models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+                    for rows in quota.values():
+                        if value == "missing":
+                            rows[0].pop(field, None)
+                        else:
+                            rows[0][field] = value
+                    with self.subTest(reduce=reduce, field=field, value=value):
+                        with self.assertRaisesRegex(ValueError, "known nonnegative integers"):
+                            self.run_plan(models, live, quota, platform, reduce=reduce)
+
+    def test_duplicate_quota_continuation_and_platform_evidence_are_not_projected_away(self):
+        models, live, quota, platform = self.fixture(outside=False)
+        for region in quota:
+            quota[region].append(copy.deepcopy(quota[region][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate or aliased"):
+            self.run_plan(models, live, quota, platform)
+        with self.assertRaisesRegex(TypeError, "Complete quota"):
+            capacity.index_quota({"value": [], "nextLink": "continued"})
+        for value in (None, True, -1, 70.5, "70"):
+            models, live, quota, platform = self.fixture(outside=False)
+            next(iter(platform.values()))["value"][0]["properties"]["availableCapacity"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "must be explicit"):
+                self.run_plan(models, live, quota, platform)
+        with self.assertRaisesRegex(ValueError, "Complete platform"):
+            capacity._platform_index({"value": [], "nextLink": "continued"})
+
+    def test_versions_cannot_spend_the_same_counter_twice(self):
+        for reduce in (False, True):
+            models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+            models["catalog"][0]["deployments"][1]["version"] = "2"
+            platform[("OpenAI", "model-a", "2")] = copy.deepcopy(platform[("OpenAI", "model-a", "1")])
+            with self.subTest(reduce=reduce), self.assertRaisesRegex(ValueError, "Multiple model/version"):
+                self.run_plan(models, live, quota, platform, reduce=reduce)
+
+    def test_counter_case_variants_share_version_fence_and_refuse_temp_writes(self):
+        for reduce, variant in (
+            (reduce, variant) for reduce in (False, True) for variant in ("case", "modela", "model-a.azure", "model-a.0")
+        ):
+            models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+            models["catalog"][0]["deployments"][1]["version"] = "2"
+            platform[("OpenAI", "model-a", "2")] = copy.deepcopy(platform[("OpenAI", "model-a", "1")])
+            if not reduce:
+                for rows in platform.values():
+                    for row in rows["value"]:
+                        row["properties"]["availableCapacity"] = 120
+                quota = _quota("GlobalStandard", 50, 170, publisher="AIServices")
+            quota["swedencentral"] = copy.deepcopy(quota["swedencentral"])
+            counter = quota["swedencentral"][0]["name"]["value"]
+            quota["swedencentral"][0]["name"]["value"] = (
+                counter.swapcase() if variant == "case" else counter[:-len("model-a")] + variant
+            )
+            with self.subTest(reduce=reduce, variant=variant), self.assertRaisesRegex(ValueError, "Multiple model/version"):
+                self.run_plan(models, live, quota, platform, reduce=reduce)
+            for apply in (False, True):
+                with tempfile.TemporaryDirectory() as directory:
+                    catalog, output = Path(directory) / "models.json", Path(directory) / "plan.json"
+                    original = json.dumps(models)
+                    catalog.write_text(original, encoding="utf-8")
+                    def azure(*args, quota=quota):
+                        if args[:2] == ("account", "show"):
+                            return {"id": SUBSCRIPTION}
+                        if args[:3] == ("cognitiveservices", "usage", "list"):
+                            return quota[args[args.index("--location") + 1]]
+                        raise AssertionError(args)
+                    argv = [
+                        "sync-model-capacity.py", "--resource-group", "rg-demo-example",
+                        "--environment-name", "example", "--output-plan", str(output),
+                    ] + (["--apply"] if apply else []) + (["--reduce-to-quota"] if reduce else [])
+                    with (
+                        self.subTest(reduce=reduce, variant=variant, apply=apply),
+                        patch.object(capacity, "MODELS_FILE", catalog),
+                        patch.object(capacity, "ROOT", Path(directory)),
+                        patch.object(capacity, "_collect_live", return_value=live),
+                        patch.object(capacity, "_collect_platform", return_value=platform),
+                        patch.object(capacity, "_az_json", side_effect=azure),
+                        patch.object(sys, "argv", argv),
+                        self.assertRaisesRegex(ValueError, "Multiple model/version"),
+                    ):
+                        capacity.main()
+                    self.assertEqual(catalog.read_text(encoding="utf-8"), original)
+                    self.assertFalse(output.exists())
+
+    def test_single_version_counter_case_variants_and_distinct_counters_keep_controls(self):
+        for reduce in (False, True):
+            models, live, quota, platform = self.fixture(reduce=reduce, outside=False)
+            quota["swedencentral"] = copy.deepcopy(quota["swedencentral"])
+            quota["swedencentral"][0]["name"]["value"] = quota["swedencentral"][0]["name"]["value"].swapcase()
+            plan, _, _ = self.run_plan(models, live, quota, platform, reduce=reduce)
+            self.assertEqual(sum(plan.values()), 0 if reduce else 170)
+            other = copy.deepcopy(models["catalog"][0])
+            other["name"] = "model-b"
+            models["catalog"].append(other)
+            for region, allocations in live.items():
+                allocations.update({name.replace("model-a", "model-b"): value for name, value in list(allocations.items())})
+                other_quota = copy.deepcopy(quota[region][0])
+                other_quota["name"]["value"] = other_quota["name"]["value"][:-len("model-a")] + "model-b"
+                quota[region].append(other_quota)
+            platform[("OpenAI", "model-b", "1")] = copy.deepcopy(platform[("OpenAI", "model-a", "1")])
+            plan, _, _ = self.run_plan(models, live, quota, platform, reduce=reduce)
+            self.assertEqual(sum(plan.values()), 0 if reduce else 340)
 
 
 class CapacityIacTests(unittest.TestCase):
@@ -434,6 +1209,577 @@ class CapacityIacTests(unittest.TestCase):
                 for error in errors
             )
         )
+
+
+class RetainedProductionPreflightTests(unittest.TestCase):
+    def fixture(self, runtime=False, provisioning=False):
+        models = production_document()
+        models["catalog"][0].update(runtimeEnabled=runtime, provisioningEnabled=provisioning)
+        policy = production.parse_policy(models, required=True, include_anthropic=False)
+        assert policy is not None
+        inventory = {}
+        for d in policy.scope.catalog.deployments:
+            account = f"mf-demo-example-{d.region}-abcdefghijklm"
+            inventory[(d.region, d.name.casefold())] = {
+                "id": f"{policy.scope.group_path}/providers/Microsoft.CognitiveServices/accounts/{account}/deployments/{d.name}",
+                "accountName": account, "region": d.region, "deploymentName": d.name,
+                "format": d.model.format, "modelName": d.model.name, "version": d.model.version,
+                "sku": d.model.sku, "capacity": 50, "provisioningState": "Succeeded",
+                "versionUpgradeOption": "NoAutoUpgrade",
+            }
+        quotas = {
+            region: [{
+                "counter": policy.pools[0].assertion["counter"],
+                "unit": "Count", "currentValue": 140, "limit": 300,
+            }] for region in models["regions"]
+        }
+        return models, policy, inventory, quotas
+
+    def run_main(
+        self, models, inventory, *, limit=300, failure=None, malformed=None,
+        profile="production", failure_detail="fixture read failed",
+    ):
+        calls = []
+
+        def azure(*args):
+            calls.append(args)
+            operation = args[:4]
+            if args[:2] == ("account", "show"):
+                result = {"id": SUBSCRIPTION, "name": "fixture"}
+            elif args[:2] == ("group", "exists"):
+                result = True
+            elif args[:3] == ("cognitiveservices", "account", "list"):
+                result = [
+                    {"name": f"mf-demo-example-{region}-abcdefghijklm", "kind": "AIServices", "location": region}
+                    for region in models["regions"]
+                ]
+                if malformed == "duplicate-account":
+                    result.append(dict(result[0]))
+                elif malformed == "continued-accounts":
+                    result = {"value": result, "nextLink": "unconsumed"}
+                elif malformed == "empty-accounts":
+                    result = []
+                elif isinstance(malformed, tuple):
+                    field, value = malformed
+                    for account in result:
+                        if value is None:
+                            account.pop(field)
+                        else:
+                            account[field] = value
+            elif operation == ("cognitiveservices", "account", "deployment", "list"):
+                name = args[args.index("--name") + 1]
+                if failure == name:
+                    return subprocess.CompletedProcess(args, 1, stdout="", stderr=failure_detail)
+                result = [{
+                    "id": row["id"], "name": row["deploymentName"],
+                    "sku": {"name": row["sku"], "capacity": row["capacity"]},
+                    "properties": {
+                        "model": {"format": row["format"], "name": row["modelName"], "version": row["version"]},
+                        "provisioningState": row["provisioningState"],
+                        "versionUpgradeOption": row["versionUpgradeOption"],
+                    },
+                } for row in inventory.values() if row["accountName"] == name]
+                if malformed == "continued-deployments":
+                    result = {"value": result, "nextLink": "unconsumed"}
+                elif malformed == "duplicate-deployment" and result:
+                    result.append(dict(result[0]))
+            else:
+                raise AssertionError(f"unapproved test operation: {args}")
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(result), stderr="")
+
+        offered = [{
+            "model": {
+                "format": m["format"], "name": m["name"], "version": d["version"],
+                "lifecycleStatus": "GenerallyAvailable", "skus": [{"name": d["sku"]}],
+            },
+        } for m in models["catalog"] for d in m["deployments"]]
+        quota = [{
+            "name": {"value": models["productionCapacityPolicy"]["pools"][0]["pool"]["counter"]},
+            "unit": "Count", "currentValue": 140, "limit": limit,
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps(models), encoding="utf-8")
+            env = {
+                "AI4IA_MODEL_CAPACITY_PROFILE": profile, "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                "AZURE_ENV_NAME": "example", "AI4IA_WORKLOAD": "demo",
+            }
+            if malformed == "stale-endpoints":
+                env["AZURE_FOUNDRY_ENDPOINTS"] = json.dumps([
+                    {"region": region, "accountName": f"mf-demo-example-{region}-nonexistent"}
+                    for region in models["regions"]
+                ])
+            with patch.dict(os.environ, env, clear=True), patch.object(preflight, "MODELS_FILE", path), \
+                 patch.object(sys, "argv", ["check-model-availability.py"]), \
+                 patch.object(preflight, "_az", side_effect=azure), \
+                 patch.object(preflight, "verify_configured", return_value=0), \
+                 patch.object(preflight, "offered_models", return_value=offered) as offers, \
+                 patch.object(preflight, "quota_usage", return_value=quota) as quotas, \
+                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+                try:
+                    code = preflight.main()
+                except SystemExit as exc:
+                    code = str(exc)
+        return code, out.getvalue() + err.getvalue(), calls, offers.call_args_list, quotas.call_args_list
+
+    def test_retained_capacity_matches_actual_bicep_and_postprovision_all_profiles(self):
+        from scripts.tests.test_bicep_compilation import SourceInventoryCompiledTests
+        from scripts.tests.test_postprovision_hard_gates import _run_model
+
+        for profile in ("baseline", "production", "maximum"):
+            for runtime in (False, True):
+                for exact in (False, True):
+                    with self.subTest(profile=profile, runtime=runtime, exact=exact):
+                        models, policy, inventory, _ = self.fixture(runtime=runtime)
+                        if profile == "maximum":
+                            for deployment in models["catalog"][0]["deployments"]:
+                                deployment["maxCapacity"] = 50
+                        compiled = SourceInventoryCompiledTests().selections(models, profile)
+                        for index, region in enumerate(sorted(models["regions"])):
+                            evidence_row = compiled["evidence"][index][0]
+                            row = next(item for item in inventory.values() if item["region"] == region)
+                            row["capacity"] = evidence_row["capacity"] if exact else (
+                                60 if profile == "maximum" else 50
+                            )
+                            account_id = policy.scope.account_path(row["accountName"])
+                            target = {
+                                "accountName": row["accountName"], "accountId": account_id,
+                                "region": region, "verificationVersion": 1,
+                                "deploymentNames": [],
+                                "deploymentEvidence": compiled["evidence"][index],
+                            }
+                            actual = {
+                                "name": row["deploymentName"], "id": row["id"],
+                                "sku": {"name": row["sku"], "capacity": row["capacity"]},
+                                "properties": {
+                                    "model": evidence_row["model"], "provisioningState": "Succeeded",
+                                    "versionUpgradeOption": row["versionUpgradeOption"],
+                                },
+                            }
+                            gate = _run_model(overrides={
+                                "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target]),
+                                "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                                "AZURE_RESOURCE_GROUP": policy.scope.resource_group,
+                            }, deployments=[actual])
+                            self.assertEqual(gate["results"][0]["status"], "PASS" if exact else "FAIL")
+                        code, text, _, _, _ = self.run_main(models, inventory, profile=profile)
+                        self.assertEqual(code, 0 if exact else 1, text)
+                        if not exact:
+                            self.assertIn("retained_deployment_capacity_mismatch", text)
+
+    def test_retained_identity_matches_real_bicep_and_ps_gate_all_profiles(self):
+        from scripts.tests.test_bicep_compilation import SourceInventoryCompiledTests
+        from scripts.tests.test_postprovision_hard_gates import _run_model
+
+        for profile in ("baseline", "maximum", "production"):
+            for runtime in (False, True):
+                models, policy, inventory, _ = self.fixture(runtime=runtime)
+                compiled = SourceInventoryCompiledTests().selections(models, profile)
+                for index, region in enumerate(sorted(models["regions"])):
+                    inventory[(region, compiled["evidence"][index][0]["name"].casefold())]["capacity"] = (
+                        compiled["evidence"][index][0]["capacity"]
+                    )
+                region = "eastus2"
+                index = sorted(models["regions"]).index(region)
+                key = region, compiled["evidence"][index][0]["name"].casefold()
+                for field, value in (
+                    (None, None), ("id", inventory[key]["id"].upper()),
+                    ("modelName", "different-model"), ("format", "different-format"),
+                    ("version", "99"), ("sku", "Standard"), ("provisioningState", "Failed"),
+                    ("versionUpgradeOption", "OnceNewDefaultVersionAvailable"),
+                    ("id", inventory[key]["id"].replace(inventory[key]["accountName"], "foreign-account")),
+                ):
+                    with self.subTest(profile=profile, runtime=runtime, field=field):
+                        actual_inventory = copy.deepcopy(inventory)
+                        row = actual_inventory[key]
+                        if field is not None:
+                            row[field] = value
+                        valid = field is None or value == inventory[key]["id"].upper()
+                        target = {
+                            "region": region, "accountName": row["accountName"],
+                            "accountId": policy.scope.account_path(row["accountName"]),
+                            "verificationVersion": 1, "deploymentNames": [],
+                            "deploymentEvidence": compiled["evidence"][index],
+                        }
+                        actual = {
+                            "name": row["deploymentName"], "id": row["id"],
+                            "sku": {"name": row["sku"], "capacity": row["capacity"]},
+                            "properties": {
+                                "model": {
+                                    "name": row["modelName"], "format": row["format"], "version": row["version"],
+                                },
+                                "provisioningState": row["provisioningState"],
+                                "versionUpgradeOption": row["versionUpgradeOption"],
+                            },
+                        }
+                        gate = _run_model(overrides={
+                            "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target]),
+                            "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
+                            "AZURE_RESOURCE_GROUP": policy.scope.resource_group,
+                        }, deployments=[actual])
+                        self.assertEqual(gate["results"][0]["status"], "PASS" if valid else "FAIL")
+                        code, text, _, offers, quota_reads = self.run_main(
+                            models, actual_inventory, profile=profile,
+                        )
+                        self.assertEqual(code, 0 if valid else 1, text)
+                        if not valid:
+                            self.assertIn("retained_deployment_", text)
+                            self.assertFalse(offers or quota_reads)
+
+    def test_provisioned_identity_drift_still_reconciles_with_legacy_defaults(self):
+        for profile in ("baseline", "maximum"):
+            for runtime in ("omitted", False, True):
+                with self.subTest(profile=profile, runtime=runtime):
+                    models, _, inventory, _ = self.fixture(provisioning=True)
+                    del models["catalog"][0]["provisioningEnabled"]
+                    if runtime == "omitted":
+                        del models["catalog"][0]["runtimeEnabled"]
+                    else:
+                        models["catalog"][0]["runtimeEnabled"] = runtime
+                    for row in inventory.values():
+                        row.update(provisioningState="Failed", versionUpgradeOption="OnceNewDefaultVersionAvailable")
+                    code, text, _, _, _ = self.run_main(models, inventory, profile=profile)
+                    self.assertEqual(code, 0, text)
+
+    def test_retained_identity_requires_each_native_evidence_field(self):
+        models, policy, inventory, _ = self.fixture()
+        scope = policy.scope
+        args = {
+            "subscription": scope.subscription, "resource_group": scope.resource_group,
+            "environment": scope.environment,
+        }
+        self.assertEqual(preflight.retained_source_identity_errors(models, inventory, **args), [])
+        key = next(iter(inventory))
+        for field in (
+            "region", "deploymentName", "accountName", "id", "format", "modelName",
+            "version", "sku", "provisioningState", "versionUpgradeOption",
+        ):
+            for value in (None, False, [], {}, 7):
+                with self.subTest(field=field, value=value):
+                    actual = copy.deepcopy(inventory)
+                    actual[key][field] = value
+                    errors = preflight.retained_source_identity_errors(models, actual, **args)
+                    self.assertEqual(len(errors), 1)
+                    self.assertIn("mismatch", errors[0])
+
+    def test_account_filtering_cannot_establish_optional_absence(self):
+        models, _, inventory, _ = self.fixture()
+        for malformed in (
+            ("name", None), ("name", ["account"]), ("name", 123), ("name", " "),
+            ("kind", None), ("kind", ["AIServices"]), ("kind", "Other"),
+            ("location", None), ("location", ["eastus2"]), ("location", 123),
+            ("location", "east-us2"), ("location", "westus"),
+            "stale-endpoints",
+        ):
+            with self.subTest(malformed=malformed):
+                code, text, _, offers, quota_reads = self.run_main(
+                    models, inventory, limit=190, malformed=malformed,
+                )
+                self.assertEqual(code, 1, text)
+                self.assertIn("production_inventory_unknown", text)
+                self.assertFalse(offers or quota_reads)
+        code, text, calls, offers, quota_reads = self.run_main(
+            models, inventory, limit=190, malformed="empty-accounts",
+        )
+        self.assertEqual(code, 0, text)
+        self.assertFalse(offers or quota_reads)
+        self.assertFalse(any(call[:4] == ("cognitiveservices", "account", "deployment", "list") for call in calls))
+
+    def test_confirmed_optional_absence_skips_offers_in_all_profiles(self):
+        for profile in ("baseline", "maximum", "production"):
+            models, _, _, _ = self.fixture()
+            for model in models["catalog"]:
+                for deployment in model["deployments"]:
+                    deployment.pop("production", None)
+            code, text, _, offers, quota_reads = self.run_main(models, {}, profile=profile)
+            self.assertEqual(code, 0, text)
+            self.assertFalse(offers or quota_reads)
+            for malformed in ("continued-accounts", "continued-deployments", ("kind", None)):
+                code, text, _, offers, quota_reads = self.run_main(models, {}, profile=profile, malformed=malformed)
+                self.assertNotEqual(code, 0, text)
+                self.assertFalse(offers or quota_reads)
+            models["catalog"][0]["runtimeEnabled"] = True
+            code, text, _, _, _ = self.run_main(models, {}, profile=profile)
+            self.assertNotEqual(code, 0, text)
+
+    def test_endpoint_account_identity_requires_strings(self):
+        entry = {"region": "eastus2", "accountName": "mf-demo-example-eastus2-abcdefghijklm"}
+        self.assertEqual(preflight._foundry_accounts_from_output(json.dumps([entry])), {
+            entry["region"]: entry["accountName"],
+        })
+        for field in entry:
+            for value in (None, [], ["eastus2"], 123, True, ""):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(SystemExit):
+                        preflight._foundry_accounts_from_output(json.dumps([{**entry, field: value}]))
+
+    def test_retained_capacity_requires_native_positive_integer_evidence(self):
+        for profile in ("baseline", "production", "maximum"):
+            models, _, inventory, _ = self.fixture()
+            requirements = preflight.catalog_requirements(models, capacity_profile=profile)
+            for region, rows in requirements.items():
+                inventory[(region, rows[0]["deploymentName"].casefold())]["capacity"] = rows[0]["capacity"]
+            self.assertEqual(preflight.retained_capacity_errors(requirements, inventory), [])
+            for side in ("expected", "actual"):
+                for value in (None, True, False, 0, -1, 1.0, "40"):
+                    with self.subTest(profile=profile, side=side, value=value):
+                        desired, observed = copy.deepcopy(requirements), copy.deepcopy(inventory)
+                        if side == "expected":
+                            desired["eastus2"][0]["capacity"] = value
+                        else:
+                            next(iter(observed.values()))["capacity"] = value
+                        errors = preflight.retained_capacity_errors(desired, observed)
+                        self.assertEqual(len(errors), 1)
+                        self.assertIn("retained_deployment_capacity_unknown", errors[0])
+
+    def test_provisioned_capacity_drift_remains_reconcilable_in_all_profiles(self):
+        for profile in ("baseline", "production", "maximum"):
+            for legacy in (False, True):
+                with self.subTest(profile=profile, legacy=legacy):
+                    models, _, inventory, _ = self.fixture(provisioning=True)
+                    if legacy:
+                        del models["catalog"][0]["provisioningEnabled"]
+                        del models["catalog"][0]["runtimeEnabled"]
+                    code, text, _, _, _ = self.run_main(models, inventory, profile=profile)
+                    self.assertEqual(code, 0, text)
+                    self.assertNotIn("retained_deployment_capacity_", text)
+
+    def test_retained_actual_allocation_with_outside_and_reserves(self):
+        for runtime in (False, True):
+            models, policy, inventory, quotas = self.fixture(runtime=runtime)
+            result = production.check_live_pools(policy, inventory, quotas, include_anthropic=False)[0]
+            self.assertEqual(result["currentCatalogAllocation"], 100)
+            self.assertEqual(result["proposedCatalogAllocation"], 100)
+            self.assertEqual(result["outsideCatalogOrUnattributedAllocation"], 40)
+            self.assertEqual(sum(result["reserve"].values()), 90)
+            for rows in quotas.values():
+                rows[0]["limit"] = 190
+            with self.assertRaisesRegex(evidence.EvidenceError, "production_pool_reserve_exceeded"):
+                production.check_live_pools(policy, inventory, quotas, include_anthropic=False)
+            for limit in (300, 230, 229, 190):
+                with self.subTest(runtime=runtime, limit=limit):
+                    code, text, _, _, _ = self.run_main(models, inventory, limit=limit)
+                    self.assertEqual(code, 1, text)
+                    self.assertIn("retained_deployment_capacity_mismatch", text)
+                    self.assertNotIn("selected 60", text)
+                    if limit < 230:
+                        self.assertIn("production_pool_reserve_exceeded", text)
+                    else:
+                        self.assertIn("selected 100", text)
+
+    def test_provisioned_runtime_off_and_legacy_keep_desired_selection(self):
+        for legacy in (False, True):
+            models, _, inventory, _ = self.fixture(provisioning=True)
+            if legacy:
+                del models["catalog"][0]["runtimeEnabled"]
+                del models["catalog"][0]["provisioningEnabled"]
+            code, text, _, offers, _ = self.run_main(models, inventory, limit=190)
+            self.assertEqual(code, 0, text)
+            self.assertIn("selected 60", text)
+            self.assertEqual(len(offers), 2)
+
+    def test_absence_requires_terminal_inventory_and_only_both_flags_off(self):
+        models, policy, _, quotas = self.fixture()
+        with self.assertRaisesRegex(evidence.EvidenceError, "optional_deployment_inventory_unknown"):
+            production.check_live_pools(policy, {}, quotas, include_anthropic=False)
+        self.assertEqual(production.check_live_pools(
+            policy, {}, {}, include_anthropic=False, complete_regions=frozenset(models["regions"]),
+        ), [])
+        for runtime, provisioning in ((False, False), (True, False), (False, True)):
+            models, _, _, _ = self.fixture(runtime, provisioning)
+            code, text, calls, offers, quota_reads = self.run_main(models, {})
+            self.assertEqual(code, 0 if not (runtime or provisioning) else 1, text)
+            self.assertEqual(sum(c[:4] == ("cognitiveservices", "account", "deployment", "list") for c in calls), 2)
+            if not (runtime or provisioning):
+                self.assertEqual(offers, [])
+                self.assertEqual(quota_reads, [])
+
+    def test_optional_missing_production_metadata_is_lazy_but_retained_is_not(self):
+        models, _, inventory, _ = self.fixture()
+        for d in models["catalog"][0]["deployments"]:
+            del d["production"]
+        self.assertIsNotNone(production.parse_policy(models, required=True, include_anthropic=False))
+        code, text, _, offers, quota_reads = self.run_main(models, {})
+        self.assertEqual(code, 0, text)
+        self.assertFalse(offers or quota_reads)
+        code, text, _, offers, quota_reads = self.run_main(models, inventory)
+        self.assertEqual(code, 1, text)
+        self.assertIn("retained_production_capacity_not_configured", text)
+        self.assertFalse(offers or quota_reads)
+        models["catalog"][0]["runtimeEnabled"] = True
+        with self.assertRaisesRegex(evidence.EvidenceError, "production_deployment_not_configured"):
+            production.parse_policy(models, required=True, include_anthropic=False)
+
+    def test_new_staged_identity_does_not_request_offering_or_capacity(self):
+        models, _, inventory, _ = self.fixture(provisioning=True)
+        staged = copy.deepcopy(models["catalog"][0])
+        staged.update(name="staged-model", runtimeEnabled=False, provisioningEnabled=False)
+        for d in staged["deployments"]:
+            del d["production"]
+        models["catalog"].append(staged)
+        code, text, _, offers, _ = self.run_main(models, inventory)
+        self.assertEqual(code, 0, text)
+        self.assertIn("Checking 1 deployments in eastus2", text)
+        self.assertEqual(len(offers), 2)
+        requirements = preflight.catalog_requirements(models, capacity_profile="production", include_anthropic=False)
+        self.assertIsNone(requirements["eastus2"][1]["capacity"])
+
+    def test_retained_exact_evidence_and_integer_bounds_refuse(self):
+        mutations = {
+            "id": ("wrong", None),
+            "accountName": ("other-account", None),
+            "deploymentName": ("unknown", None),
+            "region": ("other-region", None),
+            "format": ("Other", None),
+            "modelName": ("unknown", None),
+            "version": ("unreviewed", 1, None),
+            "sku": ("Standard", None),
+            "provisioningState": ("Failed", None),
+            "versionUpgradeOption": ("OnceNewDefaultVersionAvailable", None),
+            "capacity": (None, True, 0, -1, 50.0, "50", 101, 29),
+        }
+        for field, values in mutations.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    _, policy, inventory, quotas = self.fixture()
+                    next(iter(inventory.values()))[field] = value
+                    with self.assertRaises(evidence.EvidenceError):
+                        production.check_live_pools(policy, inventory, quotas, include_anthropic=False)
+
+    def test_retained_boolean_capacity_is_not_integer_one(self):
+        models, _, inventory, quotas = self.fixture()
+        for d in models["catalog"][0]["deployments"]:
+            d["capacity"] = 1
+            d["production"]["criticalMinimum"] = int(d["production"]["critical"])
+        policy = production.parse_policy(models, required=True, include_anthropic=False)
+        assert policy is not None
+        row = next(iter(inventory.values()))
+        row["capacity"] = 1
+        self.assertTrue(production.check_live_pools(policy, inventory, quotas, include_anthropic=False))
+        row["capacity"] = True
+        with self.assertRaisesRegex(evidence.EvidenceError, "invalid_production_integer"):
+            production.check_live_pools(policy, inventory, quotas, include_anthropic=False)
+
+    def test_failed_partial_continued_duplicate_inventory_never_establishes_absence(self):
+        models, _, inventory, _ = self.fixture()
+        for profile in ("baseline", "production", "maximum"):
+            for malformed in ("continued-accounts", "duplicate-account", "continued-deployments", "duplicate-deployment"):
+                with self.subTest(profile=profile, malformed=malformed):
+                    code, text, _, _, _ = self.run_main(models, inventory, malformed=malformed, profile=profile)
+                    self.assertNotEqual(code, 0, text)
+            for current in ({}, inventory):
+                code, text, _, offers, quota_reads = self.run_main(
+                    models, current, failure="mf-demo-example-swedencentral-abcdefghijklm", profile=profile,
+                )
+                self.assertNotEqual(code, 0, text)
+                if profile == "production":
+                    self.assertIn("production_inventory_unknown", text)
+                self.assertFalse(offers or quota_reads)
+
+    def test_inventory_failures_preserve_region_and_redacted_command_context(self):
+        models, _, inventory, _ = self.fixture()
+        for profile in ("baseline", "maximum", "production"):
+            with self.subTest(profile=profile):
+                code, text, _, offers, quota_reads = self.run_main(
+                    models, inventory, profile=profile,
+                    failure="mf-demo-example-eastus2-abcdefghijklm",
+                    failure_detail=(
+                        'synthetic failure\nAuthorization: Bearer private-bearer '
+                        '"api_key": "private-key" password=private-password '
+                        "https://example.invalid/?sig=private-signature "
+                        + "a" * 40
+                    ),
+                )
+                self.assertNotEqual(code, 0)
+                self.assertIn("deployment inventory in eastus2", text)
+                self.assertIn("SystemExit: account selection/deployment inventory failed", text)
+                for private in (
+                    "synthetic failure", "private-bearer", "private-key", "private-password",
+                    "private-signature", "a" * 40,
+                ):
+                    self.assertNotIn(private, text)
+                self.assertFalse(offers or quota_reads)
+
+    def test_inventory_diagnostic_is_bounded_and_control_safe(self):
+        detail = preflight._inventory_diagnostic(SystemExit(
+            "synthetic failure\x1b\nabcdefgh.ijklmnop.qrstuvwx " + "word " * 2000,
+        ))
+        self.assertIn("SystemExit: account selection/deployment inventory failed", detail)
+        self.assertNotIn("synthetic failure", detail)
+        self.assertNotIn("abcdefgh.ijklmnop.qrstuvwx", detail)
+        self.assertLessEqual(len(detail), 512)
+        self.assertNotRegex(detail, r"[\x00-\x1f\x7f-\x9f]")
+
+    def test_inventory_diagnostics_never_echo_known_or_unknown_credential_formats(self):
+        models, _, inventory, _ = self.fixture()
+        for deployment in models["catalog"][0]["deployments"]:
+            for row in inventory.values():
+                if row["region"] == deployment["region"]:
+                    row["capacity"] = deployment["production"]["capacity"]
+        payloads = (
+            "client_secret=synthetic-secret",
+            "Authorization: Basic c3ludGhldGlj",
+            "Cookie: synthetic-session",
+            "Custom-Unrecognized-Header: short-private-value",
+            '{"unknown_credential_field": "unrecognized-private-value"}',
+            "not-a-known-header arbitrary-private-text",
+            "\x1b[31mclient_secret=private\x1b[0m\n" + "private " * 2000,
+        )
+        expected = (
+            "SystemExit: account selection/deployment inventory failed; "
+            "untrusted error detail withheld."
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload[:60]):
+                self.assertEqual(preflight._inventory_diagnostic(SystemExit(payload)), expected)
+                for profile in ("baseline", "maximum", "production"):
+                    code, text, _, offers, quota_reads = self.run_main(
+                        models, inventory, profile=profile,
+                        failure="mf-demo-example-eastus2-abcdefghijklm", failure_detail=payload,
+                    )
+                    self.assertNotEqual(code, 0)
+                    self.assertIn(f"ERROR: deployment inventory in eastus2: {expected}", text)
+                    self.assertNotIn(payload, text)
+                    for private in (
+                        "synthetic-secret", "c3ludGhldGlj", "synthetic-session", "short-private-value",
+                        "unrecognized-private-value", "arbitrary-private-text", "client_secret=private",
+                    ):
+                        self.assertNotIn(private, text)
+                    self.assertFalse(offers or quota_reads)
+        code, text, _, _, _ = self.run_main(models, inventory)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn(expected, text)
+
+    def test_os_inventory_failure_keeps_typed_reason_without_exception_payload(self):
+        models, _, _, _ = self.fixture()
+        observed, diagnostics = {}, []
+        with patch.object(
+            preflight, "_regional_deployment_inventory", side_effect=OSError("private OS payload"),
+        ):
+            inventory, _ = preflight.existing_deployment_inventory(
+                models, resource_group="rg-demo-example", environment_name="example",
+                region_reads=observed, diagnostics=diagnostics,
+                read=lambda *args: subprocess.CompletedProcess(args, 0, stdout=(
+                    "true" if args[:2] == ("group", "exists") else "[]"
+                ), stderr=""),
+            )
+        self.assertEqual(inventory, {})
+        self.assertEqual(len(diagnostics), len(models["regions"]))
+        self.assertTrue(all(row.status == "unavailable" for row in observed.values()))
+        self.assertIn("deployment inventory in eastus2: OSError", diagnostics[0])
+        self.assertNotIn("private OS payload", "".join(diagnostics))
+
+    def test_malformed_flags_fail_before_any_reads(self):
+        for field in ("runtimeEnabled", "provisioningEnabled"):
+            for value in (None, "false", 0, 1, []):
+                with self.subTest(field=field, value=value):
+                    models, _, _, _ = self.fixture()
+                    models["catalog"][0][field] = value
+                    for profile in ("baseline", "production", "maximum"):
+                        code, text, calls, offers, quota_reads = self.run_main(models, {}, profile=profile)
+                        self.assertEqual(code, 1, text)
+                        self.assertIn("invalid_production_model_intent", text)
+                        self.assertFalse(calls or offers or quota_reads)
 
 
 class ProductionProfileTests(unittest.TestCase):

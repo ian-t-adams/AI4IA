@@ -165,6 +165,36 @@ jobs:
           # Regenerate locally with: python scripts/gen-docs-catalog.py
           python3 scripts/gen-docs-catalog.py --check
 
+  windows-model-gate:
+    name: Windows model deployment gate
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Run actual model gate on Windows PowerShell 5.1 and pwsh
+        shell: pwsh
+        run: |
+          @'
+          import sys
+          import unittest
+
+          suites = [
+              "scripts.tests.test_postprovision_hard_gates.ModelDeploymentHardGateTests",
+              "scripts.tests.test_postprovision_hard_gates.WindowsPowerShell51ModelDeploymentTests",
+          ]
+          suite = unittest.defaultTestLoader.loadTestsFromNames(suites)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          sys.exit(not (result.wasSuccessful() and result.testsRun > 0 and not result.skipped))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   script-tests:
     name: operator script unit tests
     runs-on: ubuntu-latest

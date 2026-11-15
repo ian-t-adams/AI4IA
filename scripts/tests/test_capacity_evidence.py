@@ -258,6 +258,48 @@ class Fixture:
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_optional_absent_inventory_is_complete_but_usage_is_unknown(self):
+        for runtime in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                document = catalog_document()
+                for model in document["catalog"]:
+                    model.update(provisioningEnabled=False, runtimeEnabled=runtime)
+                fixture = Fixture(Path(directory), document)
+                control = fixture.report(fixture.evidence())
+                self.assertEqual(control["status"], "complete")
+                for region in fixture.catalog.regions:
+                    fixture.responses[f"deployments:{region}"]["value"] = []
+                report = fixture.report(fixture.evidence())
+                codes = report["measurementCoverage"]["codes"]
+                self.assertEqual("incomplete_catalog_inventory" in codes, runtime)
+                self.assertIn("incomplete_usage", codes)
+                self.assertEqual(report["status"], "partial")
+                self.assertTrue(all(row["inventoryStatus"] == "absent" and row["live"] is None for row in report["deployments"]))
+                self.assertTrue(all(
+                    value["status"] == "unknown" and value["total"] is None
+                    for row in report["deployments"] for value in row["usage"].values()
+                ))
+                if not runtime:
+                    self.assertEqual(report["poolCoverage"]["status"], "consistent")
+                    self.assertTrue(all(row["outsideCatalogOrUnattributedAllocation"] == 140 for row in report["pools"]))
+                fixture.failures["deployments:eastus2"] = "mock_inventory_unavailable"
+                failed = fixture.report(fixture.evidence())
+                self.assertIn("incomplete_catalog_inventory", failed["measurementCoverage"]["codes"])
+                self.assertEqual(failed["poolCoverage"]["status"], "unknown")
+                capacity.render(failed, "markdown")
+
+    def test_catalog_intent_flags_are_strict_and_default_true(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(Path(directory))
+            self.assertTrue(all(d.required and d.provisioning and d.runtime for d in fixture.catalog.deployments))
+            for field in ("runtimeEnabled", "provisioningEnabled"):
+                for value in (None, 0, "false", []):
+                    document = catalog_document()
+                    document["catalog"][0][field] = value
+                    write_json(fixture.catalog_path, document)
+                    with self.assertRaises(capacity.EvidenceError):
+                        capacity.load_catalog(fixture.catalog_path)
+
     def test_external_rows_stay_unknown_even_with_same_named_healthy_source_deployments(self):
         document = catalog_document()
         real = json.loads((ROOT / "infra" / "models.json").read_text(encoding="utf-8"))

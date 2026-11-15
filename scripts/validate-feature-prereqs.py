@@ -24,6 +24,7 @@ from _claude_binding import configured_binding
 from _json_transport import TRANSPORTS, TransportError, decode
 from _production_capacity import PROFILES, bind_scope, effective_capacity, parse_policy
 from _api_private import validate_prefixes
+from _model_targets import provisioning_enabled
 from ai4ia_api.shared_gateway_contract import load_shared_gateway_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,6 +179,19 @@ def main(*, require_deployment_attestation: bool = False) -> int:
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
     errors = retired_configuration_errors(parameters)
     warnings: list[str] = []
+    deployable_catalog = []
+    for model in models.get("catalog", []):
+        try:
+            enabled = provisioning_enabled(model)
+        except ValueError as exc:
+            errors.append(f"Model {model.get('name')!r}: {exc}.")
+            continue
+        if (
+            enabled
+            and model.get("deploymentTarget", "source") == "source"
+            and model.get("format") != "Anthropic"
+        ):
+            deployable_catalog.append(model)
     try:
         validate_prefixes(
             text(parameter_value(parameters, "apiNetworkPhase", "legacy")),
@@ -374,7 +388,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
         }
         available = {
             (model.get("name"), deployment.get("sku"))
-            for model in models.get("catalog", [])
+            for model in deployable_catalog
             for deployment in model.get("deployments", [])
             if deployment.get("region") == location
         }
@@ -383,11 +397,14 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             rendered = ", ".join(f"{name}/{sku}" for name, sku in missing)
             errors.append(
                 "Bicep primary-region outputs require Content Understanding model "
-                f"deployments in {location}: missing {rendered}."
+                f"deployments in {location}: missing {rendered}. "
+                "Required rows must remain source-targeted, non-Anthropic and "
+                "provisioningEnabled=true (or omitted), even when "
+                "documentUnderstandingEnabled=false."
             )
         cu_completion_versions = {
             deployment.get("version")
-            for model in models.get("catalog", [])
+            for model in deployable_catalog
             if model.get("name") == "gpt-5.2"
             for deployment in model.get("deployments", [])
             if deployment.get("region") == location
@@ -650,7 +667,7 @@ def main(*, require_deployment_attestation: bool = False) -> int:
             )
         capacities = [
             int(effective_capacity(deployment, model_capacity_profile) or 0)
-            for model in models.get("catalog", [])
+            for model in deployable_catalog
             if model.get("name") == "gpt-5.2"
             for deployment in model.get("deployments", [])
             if deployment.get("region") == location

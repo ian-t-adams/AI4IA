@@ -100,6 +100,112 @@ procedure: [greenfield standup §5](runbooks/greenfield-standup.md#5-select-envi
 | Subscription token | `naming.subscriptionToken` (default `slurmfactory`) | Every model deployment: `{model}-<token>-<region>-<sku>`. Must match between Bicep (creates the deployments) and the runtime catalog (routes to them) — a single edit + `scripts/gen-model-catalog.py` keeps them in sync. |
 | Foundry token | `naming.foundryToken` (default `aiforia`) | Foundry accounts/projects (`mf-<token>-<env>-<region>`) and the computed toolbox MCP URL. |
 
+Each model's optional `provisioningEnabled` catalog Boolean defaults to `true`;
+`false` excludes that row from both the main-stack and separate Claude-target
+model deployment templates, independently of `runtimeEnabled`. Omission preserves
+existing catalog behavior. A default-off staged candidate must explicitly set
+**both** `provisioningEnabled: false` and `runtimeEnabled: false` until its scope
+is approved. Provisioning opt-out alone does not disable runtime and can be
+intentional for an externally managed deployment. Only an absent property takes
+the legacy default: explicit null and other non-Booleans are rejected by catalog
+validation and cause Bicep evaluation to fail even if that validation is bypassed.
+The primary-region Content Understanding completion and embedding deployments
+remain required by unconditional infrastructure outputs even when document
+understanding is disabled; preflight rejects opting either required row out.
+This is a desired-template
+opt-out, not deletion: the current incremental deployment mode does not delete an
+already-deployed resource when it is omitted. Physical cleanup requires a separate
+reviewed, operator-approved operation.
+
+All availability profiles omit a dual-disabled candidate from offering and
+capacity admission only after complete successful regional inventory proves
+absence. Unknown inventory and missing runtime-on/provisioning-off deployments
+remain blocking. Video categories remain rejected by gateway generation; this
+staging contract does not establish a video transport or enable a route.
+
+Maximum/quota-reduction sync planning likewise omits only proven optional
+absence. It explicitly refuses **every present provisioning-disabled catalog
+deployment**, before projecting away native identity evidence or writing a plan
+or catalog. This refusal applies to dry-run and `--apply`; retained capacity
+planning is unsupported, not an imagined reduction/increase or freed quota.
+Required missing deployments and malformed/continued inventories also refuse.
+Provisioning-on/runtime-off and legacy rows retain their ordinary planning.
+
+Capacity evidence retains both flag intentions and reports a conclusively absent
+optional deployment as `absent`, not an incomplete catalog inventory. Its usage
+remains unknown, never measured zero; incomplete sources or usage still prevent
+a complete measurement report. Pool accounting preserves observed counter usage,
+actual retained allocations and outside/unattributed allocation. Production
+recommendations hold provisioning-disabled pools with an explicit unsupported
+code and no proposed budget, rather than predicting non-reconciling changes.
+These are source/offline contracts, not activation or live inventory evidence.
+
+Production availability preflight requires successful terminal inventory for all
+catalog regions before excluding an absent dual-disabled source candidate.
+An absent candidate may lack production metadata and causes no offering or quota
+request of its own. Runtime-on/provisioning-off deployments remain required.
+Present provisioning-disabled rows require reviewed production capacity/bounds,
+exact scoped deployment ID, canonical account name, model/version/SKU, Succeeded
+state and `NoAutoUpgrade` (plus an exact router subset when applicable). Missing,
+duplicate, continued, failed or mismatched evidence refuses admission.
+The pool calculation preserves each such deployment's proven **actual** positive
+integer allocation within its reviewed bounds; it never substitutes a smaller
+selected capacity for a reduction the template will not execute. Outside
+allocation and all reserve components remain included. This conservative pool
+accounting does not reconcile a retained deployment to its selected capacity.
+Across baseline, production and maximum, preflight also rejects a present
+provisioning-disabled deployment whose proven positive integer capacity differs
+from the selected profile's exact postprovision evidence. Unknown expected or
+actual capacity is blocking, not an inferred historical allocation. Provisioned
+rows retain their existing addition/reconciliation behavior.
+
+An account-list response is not proof of absence if target candidate names,
+kinds or locations are malformed, or prior endpoint output conflicts with
+owned-looking account candidates. Such evidence is unavailable, not an empty
+regional deployment inventory. A successful complete empty account list can
+still establish optional absence; it does not establish freed quota.
+
+The source-target postprovision gate consumes additive version-1 evidence in
+`AZURE_EXPECTED_MODEL_DEPLOYMENTS`: exact account IDs and catalog-derived
+deployment identity, required/optional status, selected capacity and upgrade
+policy. The existing `deploymentNames` projection is unchanged. Legacy outputs
+without versioned fields retain their strict names/state gate; partial or invalid
+versioned evidence cannot fall back to it. Only dual-disabled source rows are
+optional. Runtime-on/provisioning-off rows remain required, as do
+provisioning-on/runtime-off rows. A successful complete inventory can establish
+optional absence for that observation, never deletion or freed quota. Every
+present row must match its exact account/resource ID, model format/name/version,
+SKU, positive integer capacity, Succeeded state and `NoAutoUpgrade` policy.
+Unknown resources, duplicate identities, failed/continued inventories and missing
+or mismatched evidence fail closed.
+
+Verification capacity uses the selected profile, never an observed value as its
+own expectation. For an optional production row lacking a configured allocation,
+the output carries explicit null without evaluating strict production selection.
+Such a row may be absent, but a retained deployment fails verification until
+reviewed expected capacity is available. There is no baseline/zero fallback or
+inference of its historical allocation. Required production rows still fail
+evaluation without production metadata. Resource construction and the existing
+deployment set are unchanged; this metadata does not deploy retained resources
+or reconcile their capacity.
+
+The separate external-Claude target binding verifier distinguishes the two:
+only a row with both flags explicitly false may be absent from a successful,
+complete target inventory. A present optional row must still match its exact
+account/deployment ID, model/version, SKU/capacity, Succeeded state and upgrade
+policy; catalog capacities must be positive integers, never Booleans or coerced
+values, even when the standalone verifier reads raw JSON without schema validation.
+Required rows and unexpected resources still fail closed. Runtime-on,
+provisioning-off externally managed rows remain required. Incomplete/failed
+inventory is never absence evidence. The returned count includes every verified
+present deployment, including optional retained rows, and does not establish
+freed quota. A configured binding with zero observed deployments reports that
+verified count, not a disabled binding. An entirely
+optional catalog is not a new-target provisioning plan; that preflight refuses
+before reads. This bounded verification change does not resolve the shared
+availability, evidence or capacity blockers above, nor make
+unsupported video categories routable.
+
 ## Feature flags and prerequisites
 
 A flag is set one of two ways, and they are not interchangeable.

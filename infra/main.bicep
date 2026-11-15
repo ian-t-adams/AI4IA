@@ -2,8 +2,8 @@
 // wires all application, data, gateway, observability, and feature modules.
 targetScope = 'subscription'
 
-import { selectedCapacity } from './capacity.bicep'
-import { deploymentTarget, deploymentRouting, deploymentNameBase } from './model-targets.bicep'
+import { selectedCapacity, verificationCapacity } from './capacity.bicep'
+import { deploymentTarget, deploymentProvisioningEnabled, deploymentRuntimeEnabled, deploymentRouting, deploymentNameBase } from './model-targets.bicep'
 
 @minLength(3)
 @maxLength(20)
@@ -438,7 +438,8 @@ var effectiveSearchLocation = empty(searchLocation) ? location : searchLocation
 var models = loadJsonContent('models.json')
 var skuShort = models.naming.skuShort
 var catalog = models.catalog
-var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'source' && model.format != 'Anthropic')
+// Evaluate both typed flags even when only provisioning selects resource construction.
+var deployableCatalog = filter(catalog, model => deploymentTarget(model) == 'source' && model.format != 'Anthropic' && [deploymentProvisioningEnabled(model), deploymentRuntimeEnabled(model)][0])
 // azd substitutes environment values into main.parameters.json without JSON
 // escaping, so the JSON-valued settings arrive as UTF-8 base64 transports derived
 // from the raw operator variables (scripts/_json_transport.py). Decode them here;
@@ -475,6 +476,18 @@ var modelDeploymentsByRegion = [for r in regionList: flatten(map(deployableCatal
   sku: d.sku
   capacity: selectedCapacity(d, modelCapacityProfile)
   routing: deploymentRouting(m)
+})))]
+
+// Verification includes retained identities, never additional resource construction.
+// Unknown optional production capacity must not evaluate the strict selection.
+// Constructing both Boolean elements validates both flags without OR short-circuiting.
+var modelEvidenceByRegion = [for r in regionList: flatten(map(filter(catalog, m => deploymentTarget(m) == 'source' && m.format != 'Anthropic'), m => map(filter(m.deployments, d => d.region == r.name), d => {
+  name: '${deploymentNameBase(m)}-${subscriptionToken}-${r.name}-${skuShort[d.sku]}'
+  required: contains([deploymentProvisioningEnabled(m), deploymentRuntimeEnabled(m)], true)
+  model: { format: m.format, name: m.name, version: d.version }
+  sku: d.sku
+  capacity: verificationCapacity(d, modelCapacityProfile, contains([deploymentProvisioningEnabled(m), deploymentRuntimeEnabled(m)], true))
+  versionUpgradeOption: 'NoAutoUpgrade'
 })))]
 
 var uniqueSuffix = uniqueString(subscription().id, environmentName)
@@ -1243,6 +1256,9 @@ output AZURE_EXPECTED_MODEL_DEPLOYMENTS array = [for (r, i) in regionList: {
   region: r.name
   accountName: foundry[i].outputs.accountName
   deploymentNames: map(modelDeploymentsByRegion[i], d => d.deploymentName)
+  verificationVersion: 1
+  accountId: resourceId(subscription().subscriptionId, resourceGroupName, 'Microsoft.CognitiveServices/accounts', foundry[i].outputs.accountName)
+  deploymentEvidence: modelEvidenceByRegion[i]
 }]
 // Explicit primary-region facts for the postprovision CU data-plane PATCH. The
 // script consumes these outputs verbatim; it never chooses a region or rebuilds a

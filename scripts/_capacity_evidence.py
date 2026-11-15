@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import UUID
 
-from _model_targets import model_target
+from _model_targets import model_target, provisioning_enabled, runtime_enabled
 
 ROOT = Path(__file__).resolve().parents[1]
 ARM = "https://management.azure.com"
@@ -191,6 +191,12 @@ class Deployment:
     maximum: int | None
     declared_pool: str | None
     target: str = "source"
+    provisioning: bool = True
+    runtime: bool = True
+
+    @property
+    def required(self) -> bool:
+        return self.provisioning or self.runtime
 
     def public(self) -> dict:
         return {
@@ -200,6 +206,8 @@ class Deployment:
             "poolAuthority": "unverified_catalog_declaration",
             "declaredAt": None,
             **({"deploymentTarget": self.target} if self.target != "source" else {}),
+            **({"provisioningEnabled": False} if not self.provisioning else {}),
+            **({"runtimeEnabled": False} if not self.runtime else {}),
         }
 
 
@@ -244,6 +252,10 @@ def load_catalog(path: Path) -> Catalog:
             target = model_target(entry)
         except ValueError:
             raise EvidenceError("unsupported_catalog_target") from None
+        try:
+            provisioning, runtime = provisioning_enabled(entry), runtime_enabled(entry)
+        except ValueError:
+            raise EvidenceError("invalid_catalog_intent") from None
         model_name, model_format = token(entry.get("name")), provider_format(entry.get("format"))
         for item in array(entry.get("deployments"), MAX_DEPLOYMENTS):
             item = object_value(item)
@@ -266,7 +278,7 @@ def load_catalog(path: Path) -> Catalog:
             maximum = number(item["maxCapacity"]) if "maxCapacity" in item else None
             deployments.append(Deployment(
                 name, region, Model(model_format, model_name, version, sku),
-                number(item.get("capacity")), maximum, pool, target,
+                number(item.get("capacity")), maximum, pool, target, provisioning, runtime,
             ))
     if not deployments or len(deployments) > MAX_DEPLOYMENTS:
         raise EvidenceError("deployment_limit_exceeded")
@@ -1112,6 +1124,11 @@ def pool_rollups(
         for deployment in expected:
             mapped.add((deployment.region, deployment.name))
             live = [row for row in inventories.get(deployment.region, []) if row["name"] == deployment.name]
+            if (
+                not live and not deployment.required and deployment.target == "source"
+                and sources.get(f"deployments:{deployment.region}", {}).get("status") == "available"
+            ):
+                continue
             if len(live) != 1:
                 codes.add("missing_pool_deployment")
                 continue
@@ -1159,6 +1176,11 @@ def pool_rollups(
         })
     unmapped = [
         {"region": d.region, "name": d.name} for d in catalog.deployments if (d.region, d.name) not in mapped
+        and not (
+            not d.required and d.target == "source"
+            and sources.get(f"deployments:{d.region}", {}).get("status") == "available"
+            and not any(row["name"] == d.name for row in inventories.get(d.region, []))
+        )
     ]
     codes = set()
     if evidence_error:
@@ -1400,7 +1422,11 @@ def collect(
     measurement_codes = set()
     if any(source["status"] != "available" for source in sources.values()):
         measurement_codes.add("incomplete_sources")
-    if any(row["inventoryStatus"] != "matched" for row in declarations):
+    if any(
+        row["inventoryStatus"] != "matched"
+        and not (row["inventoryStatus"] == "absent" and not deployment.required)
+        for deployment, row in zip(catalog.deployments, declarations, strict=True)
+    ):
         measurement_codes.add("incomplete_catalog_inventory")
     if any(value["status"] != "measured" for row in declarations for value in row["usage"].values()):
         measurement_codes.add("incomplete_usage")

@@ -7,8 +7,10 @@ queries the selected subscription's live deployments, quota counters, and
 existing deployment. Bicep selects that value only when
 ``AI4IA_MODEL_CAPACITY_PROFILE=maximum``.
 
-Pool scope is inferred from Azure's own numbers rather than a publisher
-allowlist:
+Legacy pool selection uses the existing numerical rules below. They do not prove
+pool ownership or outside/all-version membership. Planning refuses contradictory
+or nonzero unattributed usage, multiple versions sharing one counter, and
+missing/malformed/continued quota or platform evidence instead of guessing:
 
 * Global pools satisfy ``current across all regions + available == limit``.
 * Regional pools satisfy ``current in region + available == limit``.
@@ -16,6 +18,7 @@ allowlist:
 
 ``--reduce-to-quota`` repairs recorded pools after a quota decrease without
 increasing any deployment, changing pool membership, or going below a baseline.
+Even an apparently healthy recorded pool must pass the same evidence checks.
 The command is read-only unless ``--apply`` is supplied.
 """
 
@@ -29,13 +32,12 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _model_naming import deployment_name
-from _model_targets import model_target, source_catalog
+from _model_targets import declared_capacity_pool, model_target, provisioning_enabled, runtime_enabled, source_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_FILE = ROOT / "infra" / "models.json"
@@ -46,23 +48,36 @@ def _az_executable() -> str:
 
 
 def _az_json(*args: str) -> Any:
-    result = subprocess.run(
-        [_az_executable(), *args, "-o", "json"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    operation = next((label for prefix, label in (
+        (("account", "show"), "account show"),
+        (("cognitiveservices", "account", "deployment", "list"), "deployment inventory"),
+        (("cognitiveservices", "account", "list"), "account inventory"),
+        (("cognitiveservices", "usage", "list"), "quota usage"),
+        (("rest", "--method", "GET"), "platform capacity read"),
+    ) if args[:len(prefix)] == prefix), "unrecognized read")
+    if "--location" in args:
+        index = args.index("--location") + 1
+        region = args[index] if index < len(args) else ""
+        operation += f" in {region}" if re.fullmatch(r"[a-z][a-z0-9]{0,62}", region, flags=re.ASCII) else " in unknown region"
+    try:
+        result = subprocess.run(
+            [_az_executable(), *args, "-o", "json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        raise RuntimeError(f"Azure CLI {operation} failed (OSError); untrusted error detail withheld.") from None
     if result.returncode != 0:
         raise RuntimeError(
-            f"Azure CLI failed: az {' '.join(args)}\n"
-            f"{result.stderr.strip() or 'No error detail was returned.'}"
+            f"Azure CLI {operation} failed (nonzero exit status); untrusted error detail withheld."
         )
     try:
         return json.loads(result.stdout or "null")
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"Azure CLI returned invalid JSON for az {' '.join(args)}: {exc.msg}"
+            f"Azure CLI {operation} returned invalid JSON: {exc.msg}"
         ) from exc
 
 
@@ -76,34 +91,56 @@ def _quota_keys(sku: str, model: str) -> list[str]:
     return list(dict.fromkeys(f"{sku_key}|{_normal(candidate)}" for candidate in candidates))
 
 
-def index_quota(raw: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def index_quota(raw: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise TypeError("Complete quota inventory is required.")
     index: dict[str, dict[str, Any]] = {}
     for item in raw:
-        counter = str((item.get("name") or {}).get("value") or "")
+        if not isinstance(item, dict) or not isinstance(item.get("name"), dict):
+            raise TypeError("Invalid quota counter identity.")
+        counter = item["name"].get("value")
+        if not isinstance(counter, str) or not counter or counter != counter.strip():
+            raise ValueError("Invalid quota counter identity.")
         if counter.count(".") < 2:
             continue
         _publisher, _, remainder = counter.partition(".")
         sku, _, model = remainder.partition(".")
         if not sku or not model:
             continue
+        if any(type(item.get(field)) is not int or item[field] < 0 for field in ("currentValue", "limit")):
+            raise ValueError(f"{counter}: quota currentValue and limit must be known nonnegative integers.")
         entry = {
             "counter": counter,
-            "current": int(float(item.get("currentValue") or 0)),
-            "limit": int(float(item.get("limit") or 0)),
+            "current": item["currentValue"],
+            "limit": item["limit"],
         }
         for key in _quota_keys(sku, model):
-            index.setdefault(key, entry)
+            if key in index:
+                raise ValueError(f"{counter}: duplicate or aliased quota counter evidence.")
+            index[key] = entry
     return index
 
 
 def _platform_index(raw: dict[str, Any]) -> dict[tuple[str, str], int]:
+    if not isinstance(raw, dict) or set(raw) - {"value"} or not isinstance(raw.get("value"), list):
+        raise ValueError("Complete platform capacity inventory is required.")
     indexed: dict[tuple[str, str], int] = {}
-    for item in raw.get("value") or []:
-        properties = item.get("properties") or {}
-        region = _normal(item.get("location"))
-        sku = str(properties.get("skuName") or "")
-        if region and sku:
-            indexed[(region, sku.casefold())] = int(properties.get("availableCapacity") or 0)
+    for item in raw["value"]:
+        if not isinstance(item, dict) or not isinstance(item.get("properties"), dict):
+            raise TypeError("Invalid platform capacity evidence.")
+        properties = item["properties"]
+        location, sku = item.get("location"), properties.get("skuName")
+        available = properties.get("availableCapacity")
+        if (
+            not isinstance(location, str) or not location.strip()
+            or not isinstance(sku, str) or not sku.strip() or sku != sku.strip()
+            or type(available) is not int or available < 0
+        ):
+            raise ValueError("Platform identity and nonnegative integer capacity must be explicit.")
+        key = _normal(location), sku.casefold()
+        if key in indexed:
+            raise ValueError("Duplicate platform capacity identity.")
+        indexed[key] = available
     return indexed
 
 
@@ -137,13 +174,65 @@ def _balanced_allocate(
     }
 
 
+def planning_catalog(models: dict[str, Any], live: dict[str, dict[str, int]]) -> dict[str, Any]:
+    """Only complete absence may omit staged rows; unmanaged retained planning refuses."""
+    catalog = []
+    for model in models["catalog"]:
+        provisioning, runtime = provisioning_enabled(model), runtime_enabled(model)
+        if model_target(model) != "source":
+            catalog.append(model)
+            continue
+        deployments = []
+        for deployment in model["deployments"]:
+            declared_capacity_pool(deployment, models["regions"])
+            region = deployment["region"]
+            if region not in live or not isinstance(live[region], dict):
+                raise ValueError(f"{region}: complete deployment inventory is unavailable.")
+            name = deployment_name(models, model["name"], deployment)
+            present = any(key.casefold() == name.casefold() for key in live[region])
+            if present and not provisioning:
+                raise ValueError(f"{name}: retained provisioning-disabled capacity planning is unsupported; no changes recorded.")
+            if name not in live[region]:
+                if provisioning or runtime:
+                    raise ValueError(f"{name}: required externally managed or provisioned deployment is absent.")
+                continue
+            if type(live[region][name]) is not int or live[region][name] <= 0:
+                raise ValueError(f"{name}: live allocation must be a positive integer.")
+            deployments.append(deployment)
+        catalog.append({**model, "deployments": deployments})
+    return {**models, "catalog": catalog}
+
+
+def _validate_counter_versions(
+    models: dict[str, Any], quotas: dict[str, dict[str, dict[str, Any]]],
+) -> None:
+    members: dict[str, set[tuple[str, str, str, str]]] = defaultdict(set)
+    for model in models["catalog"]:
+        if model_target(model) != "source":
+            continue
+        for deployment in model["deployments"]:
+            for key in _quota_keys(deployment["sku"], model["name"]):
+                counter = quotas.get(deployment["region"], {}).get(key)
+                if counter is not None:
+                    _publisher, counter_sku, counter_model = counter["counter"].split(".", 2)
+                    for alias in _quota_keys(counter_sku, counter_model):
+                        members[alias].add((
+                            model["format"], model["name"], deployment["version"], deployment["sku"],
+                        ))
+                    break
+    if any(len(identities) != 1 for identities in members.values()):
+        raise ValueError("Multiple model/version identities share a quota counter; planning is unsupported.")
+
+
 def reduce_capacity_to_quota(
     models: dict[str, Any],
     live_by_region: dict[str, dict[str, int]],
     quota_by_region: dict[str, list[dict[str, Any]]],
 ) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str, str], str], list[str]]:
     """Reduce only over-limit recorded pools; retain outside allocation and baselines."""
+    models = planning_catalog(models, live_by_region)
     quotas = {region: index_quota(rows) for region, rows in quota_by_region.items()}
+    _validate_counter_versions(models, quotas)
     plan: dict[tuple[str, str, str], int] = {}
     pools: dict[tuple[str, str, str], str] = {}
     diagnostics: list[str] = []
@@ -167,12 +256,10 @@ def reduce_capacity_to_quota(
                 if counter is None:
                     raise ValueError(f"{model['name']} ({sku}, {pool}): quota evidence is missing.")
                 observed.append(counter)
-            if len({(row["counter"], row["limit"], row["current"]) for row in observed}) != 1:
+            if len({(row["counter"].casefold(), row["limit"], row["current"]) for row in observed}) != 1:
                 raise ValueError(f"{model['name']} ({sku}, {pool}): quota replicas disagree.")
             counter = observed[0]
             recorded = [int(deployment.get("maxCapacity", deployment["capacity"])) for deployment in deployments]
-            if sum(recorded) <= counter["limit"]:
-                continue
             if pool != "global" and pool not in {
                 f"region:{deployment['region']}" for deployment in deployments
             } | {
@@ -189,7 +276,14 @@ def reduce_capacity_to_quota(
                 current.append(value)
             if counter["current"] < sum(current):
                 raise ValueError(f"{model['name']} ({sku}, {pool}): quota usage contradicts live allocation.")
-            outside = counter["current"] - sum(current)
+            if counter["current"] != sum(current):
+                raise ValueError(
+                    f"{model['name']} ({sku}, {pool}): outside allocation or shared-counter membership "
+                    "is unproven; no changes recorded."
+                )
+            outside = 0
+            if sum(recorded) <= counter["limit"]:
+                continue
             target = counter["limit"] - outside
             baselines = [int(deployment["capacity"]) for deployment in deployments]
             if target < sum(baselines):
@@ -226,10 +320,12 @@ def build_capacity_plan(
     list[str],
 ]:
     """Return maximum capacities for live deployments plus diagnostics."""
+    models = planning_catalog(models, live_by_region)
     quotas = {
         region: index_quota(raw)
         for region, raw in quota_by_region.items()
     }
+    _validate_counter_versions(models, quotas)
     regions = models["regions"]
     active: list[dict[str, Any]] = []
     diagnostics: list[str] = []
@@ -355,6 +451,16 @@ def build_capacity_plan(
                 )
             limit = limits.pop()
             current_total = sum(int(entry["current"]) for entry in members)
+            counters = {(entry["counter"].casefold(), entry["quotaCurrent"]) for entry in members}
+            if len(counters) != 1:
+                raise ValueError(f"{model} ({sku}, {scope}): quota replicas disagree.")
+            if next(iter(counters))[1] != current_total:
+                raise ValueError(
+                    f"{model} ({sku}, {scope}): outside allocation or shared-counter membership "
+                    "is unproven or contradictory; no changes recorded."
+                )
+            if current_total > limit:
+                raise ValueError(f"{model} ({sku}, {scope}): live allocation exceeds quota; maximum planning refuses.")
             target_total = min(
                 limit,
                 current_total
@@ -383,10 +489,18 @@ def build_capacity_plan(
 def _collect_live(
     models: dict[str, Any], resource_group: str, environment_name: str, subscription_id: str
 ) -> dict[str, dict[str, int]]:
+    for model in models["catalog"]:
+        provisioning_enabled(model)
+        runtime_enabled(model)
     accounts = _az_json(
         "cognitiveservices", "account", "list", "--resource-group", resource_group,
         "--subscription", subscription_id,
     )
+    if not isinstance(accounts, list) or any(
+        not isinstance(row, dict) or not isinstance(row.get("name"), str) or not row["name"].strip()
+        for row in accounts
+    ):
+        raise ValueError("Complete, valid account inventory is required.")
     foundry_token = models["naming"]["foundryToken"]
     live: dict[str, dict[str, int]] = {}
     for region in models["regions"]:
@@ -394,15 +508,25 @@ def _collect_live(
         matches = [
             account
             for account in accounts
-            if str(account.get("kind") or "").casefold() == "aiservices"
-            and _normal(account.get("location")) == _normal(region)
-            and str(account.get("name") or "").casefold().startswith(prefix)
+            if account["name"].casefold().startswith(prefix)
         ]
+        if not matches and not any(
+            provisioning_enabled(model) or runtime_enabled(model)
+            for model in models["catalog"] for d in model["deployments"] if d["region"] == region
+        ):
+            live[region] = {}
+            continue
         if len(matches) != 1:
             raise RuntimeError(
                 f"Expected one Foundry account for {region} in {resource_group}; "
                 f"found {len(matches)}."
             )
+        if (
+            not isinstance(matches[0].get("kind"), str) or matches[0]["kind"].casefold() != "aiservices"
+            or not isinstance(matches[0].get("location"), str)
+            or re.sub(r"\s+", "", matches[0]["location"].casefold()) != region
+        ):
+            raise ValueError("Candidate account kind/location is invalid.")
         deployments = _az_json(
             "cognitiveservices",
             "account",
@@ -414,10 +538,52 @@ def _collect_live(
             matches[0]["name"],
             "--subscription", subscription_id,
         )
-        live[region] = {
-            str(item["name"]): int((item.get("sku") or {}).get("capacity") or 0)
-            for item in deployments
-        }
+        if not isinstance(deployments, list):
+            raise ValueError("Complete deployment inventory is required.")
+        observed: dict[str, int] = {}
+        for item in deployments:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+                raise ValueError("Invalid deployment identity.")
+            name = item["name"]
+            if name.casefold() in {key.casefold() for key in observed}:
+                raise ValueError("Duplicate deployment identity.")
+            # Refuse before projecting away identity/type evidence, even for malformed retained rows.
+            if any(
+                not provisioning_enabled(model) and deployment_name(models, model["name"], d).casefold() == name.casefold()
+                for model in models["catalog"] for d in model["deployments"] if d["region"] == region
+            ):
+                raise ValueError("Retained provisioning-disabled deployment planning is unsupported.")
+            expected = [
+                (model, d) for model in models["catalog"] for d in model["deployments"]
+                if d["region"] == region and deployment_name(models, model["name"], d) == name
+            ]
+            if len(expected) != 1:
+                raise ValueError("Unknown or ambiguous deployment allocation; planning is unsupported.")
+            model, deployment = expected[0]
+            expected_id = (
+                f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/"
+                f"Microsoft.CognitiveServices/accounts/{matches[0]['name']}/deployments/{name}"
+            )
+            properties = item.get("properties")
+            native_model = properties.get("model") if isinstance(properties, dict) else None
+            resource_id = item.get("id")
+            if (
+                not isinstance(resource_id, str) or resource_id.casefold() != expected_id.casefold()
+                or not isinstance(properties, dict)
+                or not isinstance(native_model, dict)
+                or any(native_model.get(field) != value for field, value in (
+                    ("format", model["format"]), ("name", model["name"]), ("version", deployment["version"]),
+                ))
+                or properties.get("provisioningState") != "Succeeded"
+                or not isinstance(item.get("sku"), dict) or item["sku"].get("name") != deployment["sku"]
+            ):
+                raise ValueError("Deployment identity/model/SKU/state does not prove its quota allocation.")
+            sku = item.get("sku")
+            value = sku.get("capacity") if isinstance(sku, dict) else None
+            if type(value) is not int or value <= 0:
+                raise ValueError("Live deployment capacity must be a positive integer.")
+            observed[name] = value
+        live[region] = observed
     return live
 
 
@@ -469,6 +635,9 @@ def main() -> int:
     args = parser.parse_args()
 
     models = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
+    for model in models["catalog"]:
+        provisioning_enabled(model)
+        runtime_enabled(model)
     external = [model for model in models["catalog"] if model_target(model) != "source"]
     if external and args.apply and os.environ.get("AI4IA_CLAUDE_ENABLED", "").lower() == "true":
         raise SystemExit(
@@ -484,6 +653,7 @@ def main() -> int:
 
     source = source_catalog(models)
     live = _collect_live(source, args.resource_group, args.environment_name, subscription_id)
+    planned_models = planning_catalog(models, live)
     active_names = {name for deployments in live.values() for name in deployments}
     quota = {
         region: _az_json(
@@ -493,10 +663,10 @@ def main() -> int:
         for region in models["regions"]
     }
     if args.reduce_to_quota:
-        plan, pools, diagnostics = reduce_capacity_to_quota(models, live, quota)
+        plan, pools, diagnostics = reduce_capacity_to_quota(planned_models, live, quota)
     else:
         platform = _collect_platform(subscription_id, source, active_names)
-        plan, pools, diagnostics = build_capacity_plan(models, live, quota, platform)
+        plan, pools, diagnostics = build_capacity_plan(planned_models, live, quota, platform)
 
     baseline_total = 0
     maximum_total = 0
