@@ -62,7 +62,7 @@
 # Production warning reports prompted the review, but the audit did not
 # establish that Python 3.14 caused those warnings.
 # ---------------------------------------------------------------------------
-FROM python:3.12-alpine@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS base
+FROM python:3.15-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd AS base
 
 # Preserve native C++ wheel dependencies and the system TZif workflow contract.
 # Upgrade the base's fixable krb5-libs findings without deleting its APK inventory.
