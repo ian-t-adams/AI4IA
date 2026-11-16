@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import threading
+import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -163,7 +164,7 @@ def fake_build(app, rev, *, resource_id, stage, service, suffix="", api_image=""
 def passing_smoke(*_args):
     return {"phase": "complete", "base": "c" * 64, "calls": [
         {"deployment": d, "api": api, "status": 200, "shared": True, "host": True}
-        for d in release.DEPLOYMENTS for api in ("chat", "responses")]}
+        for d, api in release.CANARY_APIS.items()]}
 
 
 def passing_web_probe(*_args):
@@ -636,7 +637,7 @@ class StageTests(ReleaseFlowBase):
             runner.run("c3-api")
         self.assertTrue(arm.revisions[R0]["properties"]["active"])
         self.assertEqual(receipt["serving"], receipt["candidate"])
-        self.assertEqual(len(receipt["smoke"]["calls"]), 8)
+        self.assertEqual(len(receipt["smoke"]["calls"]), 4)
 
 
 class RollbackTests(ReleaseFlowBase):
@@ -1407,15 +1408,27 @@ class WebProbeTests(unittest.TestCase):
 
 
 class SmokeTests(unittest.TestCase):
-    def test_pass_requires_all_eight_shared_successes(self):
+    def test_pass_requires_exactly_four_pinned_shared_successes(self):
         self.assertTrue(release.smoke_passed(passing_smoke()))
-        for index, field, value in ((0, "status", 429), (5, "host", False), (7, "shared", False)):
+        for index, field, value in (
+            (0, "status", 429), (1, "host", False), (3, "shared", False),
+            (0, "api", "responses"), (0, "deployment", "other"),
+        ):
             result = passing_smoke()
             result["calls"][index][field] = value
             with self.subTest(field=field):
                 self.assertFalse(release.smoke_passed(result))
         result = passing_smoke()
         result["calls"].pop()
+        self.assertFalse(release.smoke_passed(result))
+        result = passing_smoke()
+        result["calls"].append(copy.deepcopy(result["calls"][0]))
+        self.assertFalse(release.smoke_passed(result))
+        result = passing_smoke()
+        result["calls"][1] = copy.deepcopy(result["calls"][0])
+        self.assertFalse(release.smoke_passed(result))
+        result = passing_smoke()
+        result["base"] = None
         self.assertFalse(release.smoke_passed(result))
 
     def test_sanitize_drops_unexpected_content(self):
@@ -1425,8 +1438,136 @@ class SmokeTests(unittest.TestCase):
         result["phase"] = "secret text"
         clean = release.sanitize_smoke(result)
         self.assertNotIn("model said", json.dumps(clean))
+        self.assertNotIn("other", json.dumps(clean))
         self.assertIsNone(clean["phase"])
-        self.assertEqual(len(clean["calls"]), 8)
+        self.assertEqual(len(clean["calls"]), 5)
+        self.assertEqual(clean["calls"][-1], {})
+
+    def test_run_smoke_preserves_invalid_rows_as_redacted_failures(self):
+        unknown = {
+            "deployment": "unexpected", "api": "responses", "status": 200,
+            "shared": True, "host": True, "detail": "private content",
+        }
+        cases = (
+            ([], True), ([unknown], False), (["private content"], False),
+            ([unknown] * 9, False),
+        )
+        diag = {"marker_seen": True}
+        for extras, expected in cases:
+            with self.subTest(extras=len(extras), expected=expected):
+                raw = passing_smoke()
+                raw["calls"].extend(copy.deepcopy(extras))
+                with mock.patch.object(release, "run_exec", return_value=(raw, diag)):
+                    result = release.run_smoke(None, "unused", "unused")
+                self.assertEqual(release.smoke_passed(result), expected)
+                self.assertEqual(result["phase"], "complete")
+                self.assertEqual(result["exec"], diag)
+                self.assertEqual(result["calls"][:4], passing_smoke()["calls"])
+                self.assertLessEqual(len(result["calls"]), 8)
+                self.assertNotIn("unexpected", json.dumps(result))
+                self.assertNotIn("private content", json.dumps(result))
+        raw = passing_smoke()
+        raw["phase"] = "calls"
+        raw["calls"] = [raw["calls"][0], unknown, None]
+        with mock.patch.object(release, "run_exec", return_value=(raw, diag)):
+            result = release.run_smoke(None, "unused", "unused")
+        self.assertFalse(release.smoke_passed(result))
+        self.assertEqual(result["phase"], "calls")
+        self.assertEqual(result["calls"], [passing_smoke()["calls"][0], {}, {}])
+        self.assertEqual(result["exec"], diag)
+
+    def run_program(self, models, deployments=release.DEPLOYMENTS):
+        calls = []
+        settings = types.SimpleNamespace(
+            shared_gateway_enabled=True, chat_pilot_isolation_enabled=False,
+            shared_gateway_deployment_set=frozenset(deployments),
+            model_catalog_path="unused", data_residency="US", claude_runtime_enabled=False,
+            gateway_timeout_seconds=1,
+        )
+        settings.model_copy = lambda **_kwargs: settings
+
+        class FakeHttp:
+            def __init__(self, **kwargs):
+                self.hook = kwargs["event_hooks"]["response"][0]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+        class FakeGateway:
+            def __init__(self, _settings, *, http_client):
+                self.http = http_client
+                self._shared_manifest = types.SimpleNamespace(base_url="https://gateway.invalid")
+
+            async def _shared_request(self):
+                return None, "https://gateway.invalid"
+
+            async def complete(self, **kwargs):
+                calls.append(kwargs)
+                await self._shared_request()
+                response = types.SimpleNamespace(request=types.SimpleNamespace(
+                    url=types.SimpleNamespace(host="gateway.invalid")))
+                await self.http.hook(response)
+
+            async def close(self):
+                pass
+
+        def module(name, **attributes):
+            value = types.ModuleType(name)
+            value.__dict__.update(attributes)
+            return value
+
+        modules = {
+            "httpx": module("httpx", AsyncClient=FakeHttp),
+            "ai4ia_api.catalog": module(
+                "ai4ia_api.catalog", load_catalog=lambda *_args: types.SimpleNamespace(models=models)),
+            "ai4ia_api.config": module("ai4ia_api.config", get_settings=lambda: settings),
+            "ai4ia_api.gateway.client": module(
+                "ai4ia_api.gateway.client", ModelGatewayClient=FakeGateway,
+                ModelGatewayError=RuntimeError),
+        }
+        with (mock.patch.dict("sys.modules", modules), mock.patch("sys.stdout") as output,
+              mock.patch("logging.disable")):
+            exec(compile(release.SMOKE_PROGRAM, "<smoke>", "exec"), {})  # noqa: S102 - repository-owned program, fake imports only
+        marked = output.write.call_args[0][0]
+        return json.loads(marked.split(release.SMOKE_MARK)[1]), calls
+
+    def test_program_calls_only_pinned_api_and_refuses_catalog_drift_before_calls(self):
+        models = [types.SimpleNamespace(api="chat", options=[
+            types.SimpleNamespace(deploymentName=deployment, sku=release.CANARY_SKUS[deployment])])
+            for deployment in release.DEPLOYMENTS]
+        result, calls = self.run_program(models)
+        self.assertTrue(release.smoke_passed(result))
+        self.assertEqual([(call["deployment"], call["api"]) for call in calls],
+                         list(release.CANARY_APIS.items()))
+        self.assertEqual([call["shared_gateway_sku"] for call in calls],
+                         list(release.CANARY_SKUS.values()))
+        for drift in ("api", "missing", "unknown", "sku", "extra-sku"):
+            changed = copy.deepcopy(models)
+            if drift == "api":
+                changed[-1].api = "responses"
+            elif drift == "missing":
+                changed.pop()
+            elif drift == "unknown":
+                changed[-1].options[0].deploymentName = "unknown"
+            elif drift == "sku":
+                changed[-1].options[0].sku = "wrong"
+            else:
+                extra = copy.deepcopy(changed[-1].options[0])
+                extra.sku = "wrong"
+                changed[-1].options.append(extra)
+            with self.subTest(drift=drift):
+                result, calls = self.run_program(changed)
+                self.assertEqual(result["phase"], "catalog")
+                self.assertEqual(calls, [])
+                self.assertFalse(release.smoke_passed(result))
+        for deployments in (release.DEPLOYMENTS[:-1], (*release.DEPLOYMENTS, "unknown")):
+            with self.subTest(deployments=deployments):
+                result, calls = self.run_program(models, deployments)
+                self.assertEqual(result["phase"], "config")
+                self.assertEqual(calls, [])
 
     def test_shell_lines_stay_below_tty_line_limit(self):
         lines = release.shell_lines(release.SMOKE_PROGRAM)

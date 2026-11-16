@@ -60,6 +60,13 @@ DEPLOYMENTS = (
     "gpt-5.4-mini-slurmfactory-swedencentral-dz",
     "gpt-5.4-mini-slurmfactory-swedencentral-glbl",
 )
+CANARY_APIS = dict.fromkeys(DEPLOYMENTS, "chat")
+CANARY_SKUS = {
+    "gpt-5.4-mini-slurmfactory-eastus2-dz": "DataZoneStandard",
+    "gpt-5.4-mini-slurmfactory-eastus2-glbl": "GlobalStandard",
+    "gpt-5.4-mini-slurmfactory-swedencentral-dz": "DataZoneStandard",
+    "gpt-5.4-mini-slurmfactory-swedencentral-glbl": "GlobalStandard",
+}
 DEPLOYMENTS_BYTES = ",".join(DEPLOYMENTS).encode("ascii")
 DEPLOYMENTS_SHA256 = hashlib.sha256(DEPLOYMENTS_BYTES).hexdigest()
 MANIFEST_SHA256 = "94c2edf581b40a2677f3f90fad76eb2fc957478e5969c5007132d35040e72cb5"
@@ -673,7 +680,9 @@ def template_matches(actual: Any, expected: Any) -> bool:
 SMOKE_PROGRAM = r'''
 import asyncio, hashlib, json, logging, sys
 logging.disable(logging.CRITICAL)
-EXPECTED = frozenset(__DEPLOYMENTS__)
+EXPECTED_APIS = __CANARY_APIS__
+EXPECTED_SKUS = __CANARY_SKUS__
+EXPECTED = frozenset(EXPECTED_APIS)
 MARK = "AI4IA_SMOKE" + "_RESULT="
 
 async def run():
@@ -695,8 +704,10 @@ async def run():
         for model in catalog.models:
             for option in model.options:
                 if option.deploymentName in EXPECTED:
+                    if model.api != EXPECTED_APIS[option.deploymentName]:
+                        return out
                     skus.setdefault(option.deploymentName, set()).add(option.sku)
-        if set(skus) != EXPECTED or any(len(v) != 1 for v in skus.values()):
+        if skus != {deployment: {sku} for deployment, sku in EXPECTED_SKUS.items()}:
             return out
         # Operator canary: there is no end user, so per-user quota/policy
         # accounting is not engaged. Route, identity and manifest are unchanged.
@@ -724,28 +735,28 @@ async def run():
             out["phase"] = "calls"
             try:
                 for deployment in sorted(EXPECTED):
-                    for api in ("chat", "responses"):
-                        seen.clear()
-                        shared.clear()
+                    api = EXPECTED_APIS[deployment]
+                    seen.clear()
+                    shared.clear()
+                    status = None
+                    try:
+                        await gateway.complete(
+                            deployment=deployment,
+                            messages=[{"role": "user", "content": "Reply with OK."}],
+                            api=api, shared_gateway_eligible=True,
+                            shared_gateway_sku=next(iter(skus[deployment])),
+                        )
+                        status = 200
+                    except ModelGatewayError as exc:
+                        code = getattr(exc, "status_code", None)
+                        status = code if type(code) is int and 100 <= code <= 599 else None
+                    except Exception:
                         status = None
-                        try:
-                            await gateway.complete(
-                                deployment=deployment,
-                                messages=[{"role": "user", "content": "Reply with OK."}],
-                                api=api, shared_gateway_eligible=True,
-                                shared_gateway_sku=next(iter(skus[deployment])),
-                            )
-                            status = 200
-                        except ModelGatewayError as exc:
-                            code = getattr(exc, "status_code", None)
-                            status = code if type(code) is int and 100 <= code <= 599 else None
-                        except Exception:
-                            status = None
-                        out["calls"].append({
-                            "deployment": deployment, "api": api, "status": status,
-                            "shared": shared == [True],
-                            "host": bool(seen) and all(h == base for h in seen),
-                        })
+                    out["calls"].append({
+                        "deployment": deployment, "api": api, "status": status,
+                        "shared": shared == [True],
+                        "host": bool(seen) and all(h == base for h in seen),
+                    })
             finally:
                 await gateway.close()
         out["phase"] = "complete"
@@ -756,14 +767,14 @@ async def run():
 result = asyncio.run(run())
 sys.stdout.write("\n" + MARK + json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
 sys.stdout.flush()
-'''.replace("__DEPLOYMENTS__", repr(list(DEPLOYMENTS)))
+'''.replace("__CANARY_APIS__", repr(CANARY_APIS)).replace("__CANARY_SKUS__", repr(CANARY_SKUS))
 
 
 def smoke_passed(result: Any) -> bool:
     if not isinstance(result, dict) or result.get("phase") != "complete":
         return False
     calls = result.get("calls")
-    expected = {(d, api) for d in DEPLOYMENTS for api in ("chat", "responses")}
+    expected = set(CANARY_APIS.items())
     if not isinstance(calls, list) or len(calls) != len(expected):
         return False
     got = set()
@@ -782,6 +793,7 @@ def sanitize_smoke(result: Any) -> dict:
     calls = []
     for call in result.get("calls") or []:
         if not isinstance(call, dict) or call.get("deployment") not in DEPLOYMENTS:
+            calls.append({})
             continue
         status = call.get("status")
         calls.append({
