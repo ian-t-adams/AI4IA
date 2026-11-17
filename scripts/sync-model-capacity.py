@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
+from _external_model_deployments import load_external_model_deployments
 from _model_naming import deployment_name
 from _model_targets import declared_capacity_pool, model_target, provisioning_enabled, runtime_enabled, source_catalog
 
@@ -489,6 +490,7 @@ def build_capacity_plan(
 def _collect_live(
     models: dict[str, Any], resource_group: str, environment_name: str, subscription_id: str
 ) -> dict[str, dict[str, int]]:
+    external_deployments = load_external_model_deployments()
     for model in models["catalog"]:
         provisioning_enabled(model)
         runtime_enabled(model)
@@ -527,6 +529,22 @@ def _collect_live(
             or re.sub(r"\s+", "", matches[0]["location"].casefold()) != region
         ):
             raise ValueError("Candidate account kind/location is invalid.")
+        account_id = (
+            f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/"
+            f"Microsoft.CognitiveServices/accounts/{matches[0]['name']}"
+        )
+        external_by_name = {
+            entry["deploymentName"].casefold(): entry
+            for entry in external_deployments
+            if entry["accountId"].casefold() == account_id.casefold()
+        }
+        catalog_names = {
+            deployment_name(models, model["name"], deployment).casefold()
+            for model in models["catalog"] for deployment in model["deployments"]
+            if deployment["region"] == region
+        }
+        if catalog_names.intersection(external_by_name):
+            raise ValueError("External declaration conflicts with catalog deployment inventory.")
         deployments = _az_json(
             "cognitiveservices",
             "account",
@@ -541,12 +559,38 @@ def _collect_live(
         if not isinstance(deployments, list):
             raise ValueError("Complete deployment inventory is required.")
         observed: dict[str, int] = {}
+        seen_names: set[str] = set()
+        matched_external: set[str] = set()
         for item in deployments:
             if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
                 raise ValueError("Invalid deployment identity.")
             name = item["name"]
-            if name.casefold() in {key.casefold() for key in observed}:
+            folded_name = name.casefold()
+            if folded_name in seen_names:
                 raise ValueError("Duplicate deployment identity.")
+            seen_names.add(folded_name)
+            external = external_by_name.get(folded_name)
+            if external is not None:
+                properties = item.get("properties")
+                native_model = properties.get("model") if isinstance(properties, dict) else None
+                sku = item.get("sku")
+                expected_id = f"{account_id}/deployments/{external['deploymentName']}"
+                if (
+                    name != external["deploymentName"]
+                    or not isinstance(item.get("id"), str)
+                    or item["id"].casefold() != expected_id.casefold()
+                    or not isinstance(native_model, dict)
+                    or any(native_model.get(field) != value for field, value in (
+                        ("format", external["modelFormat"]),
+                        ("name", external["modelName"]),
+                        ("version", external["modelVersion"]),
+                    ))
+                    or not isinstance(sku, dict)
+                    or sku.get("name") != external["sku"]
+                ):
+                    raise ValueError("External deployment identity/model/SKU does not match its exact declaration.")
+                matched_external.add(folded_name)
+                continue
             # Refuse before projecting away identity/type evidence, even for malformed retained rows.
             if any(
                 not provisioning_enabled(model) and deployment_name(models, model["name"], d).casefold() == name.casefold()
@@ -583,6 +627,11 @@ def _collect_live(
             if type(value) is not int or value <= 0:
                 raise ValueError("Live deployment capacity must be a positive integer.")
             observed[name] = value
+        if matched_external != set(external_by_name):
+            missing = sorted(set(external_by_name) - matched_external)
+            raise ValueError(
+                "Declared external deployment inventory is missing: " + ", ".join(missing)
+            )
         live[region] = observed
     return live
 

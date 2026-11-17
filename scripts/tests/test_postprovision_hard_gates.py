@@ -3,16 +3,19 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts._external_model_deployments import load_external_model_deployments
 from scripts.tests._postprovision import _ps_literal, _run_pwsh
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "postprovision.ps1"
+EXTERNAL_MANIFEST = REPO / "scripts" / "external-model-deployments.json"
 
 
 def _run_model(
@@ -22,6 +25,7 @@ def _run_model(
     deployments: list[dict[str, object]] | None = None,
     inventory: dict | None = None,
     fail_inventory: bool = False,
+    external_manifest_path: str | Path | None = None,
 ) -> dict[str, object]:
     values: dict[str, str | None] = {
         "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps(
@@ -61,6 +65,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile(
   {_ps_literal(str(SCRIPT))}, [ref]$tokens, [ref]$errors
 )
 if ($errors.Count -gt 0) {{ throw ($errors | Out-String) }}
+$script:ExternalModelDeploymentsPath = {_ps_literal(str(external_manifest_path or EXTERNAL_MANIFEST))}
 $fn = $ast.Find({{
   param($node)
   $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -97,6 +102,31 @@ Test-ModelDeployment
   ConvertTo-Json -Depth 8 -Compress
 """
     return _run_pwsh(command, cwd=REPO)
+
+
+def _run_model_with_external(
+    *,
+    target: dict[str, object],
+    external_declarations: list[dict[str, str]],
+    deployments: list[dict[str, object]],
+) -> dict[str, object]:
+    account_id = str(target["accountId"])
+    parts = account_id.split("/")
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "external-model-deployments.json"
+        path.write_text(
+            json.dumps({"schemaVersion": 1, "deployments": external_declarations}),
+            encoding="utf-8",
+        )
+        return _run_model(
+            overrides={
+                "AZURE_EXPECTED_MODEL_DEPLOYMENTS": json.dumps([target]),
+                "AZURE_SUBSCRIPTION_ID": parts[2],
+                "AZURE_RESOURCE_GROUP": parts[4],
+            },
+            deployments=deployments,
+            external_manifest_path=path,
+        )
 
 
 def _run_topology(overrides: dict[str, str | None] | None = None) -> dict[str, object]:
@@ -564,6 +594,113 @@ class ModelDeploymentHardGateTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["status"], "FAIL")
         self.assertIn("unexpected stale deployment", payload["results"][0]["detail"])
         self.assertIn("removed-from-catalog", payload["results"][0]["detail"])
+
+    def test_exact_fleet_owned_deployment_is_reported_without_catalog_allocation(self) -> None:
+        target, catalog_actual = self.evidence_fixture()
+        external = load_external_model_deployments()[0]
+        account_id = external["accountId"]
+        parts = account_id.split("/")
+        target.update(
+            accountName=parts[-1],
+            accountId=account_id,
+        )
+        catalog_actual["id"] = f"{account_id}/deployments/{catalog_actual['name']}"
+        external_actual = {
+            "id": f"{account_id}/deployments/{external['deploymentName']}",
+            "name": external["deploymentName"],
+            "sku": {"name": external["sku"], "capacity": 2},
+            "properties": {
+                "model": {
+                    "format": external["modelFormat"],
+                    "name": external["modelName"],
+                    "version": external["modelVersion"],
+                },
+                "provisioningState": "Succeeded",
+            },
+        }
+        payload = _run_model_with_external(
+            target=target,
+            external_declarations=[external],
+            deployments=[catalog_actual, external_actual],
+        )
+        by_name = {row["name"]: row for row in payload["results"]}
+        self.assertEqual(by_name[f"model-deployments/{parts[-1]}"]["status"], "PASS")
+        self.assertIn("1 catalog deployment", by_name[f"model-deployments/{parts[-1]}"]["detail"])
+        self.assertEqual(
+            by_name[f"model-deployments/{parts[-1]}/external/{external['deploymentName']}"]["status"],
+            "INFO",
+        )
+
+    def test_declared_fleet_owned_identity_mismatch_or_absence_fails(self) -> None:
+        target, catalog_actual = self.evidence_fixture()
+        external = load_external_model_deployments()[0]
+        account_id = external["accountId"]
+        parts = account_id.split("/")
+        target.update(accountName=parts[-1], accountId=account_id)
+        catalog_actual["id"] = f"{account_id}/deployments/{catalog_actual['name']}"
+        expected = {
+            "id": f"{account_id}/deployments/{external['deploymentName']}",
+            "name": external["deploymentName"],
+            "sku": {"name": external["sku"], "capacity": 2},
+            "properties": {
+                "model": {
+                    "format": external["modelFormat"],
+                    "name": external["modelName"],
+                    "version": external["modelVersion"],
+                },
+                "provisioningState": "Succeeded",
+            },
+        }
+        for field in ("format", "name", "version"):
+            bad = deepcopy(expected)
+            bad["properties"]["model"][field] = "mismatch"
+            with self.subTest(field=field):
+                payload = _run_model_with_external(
+                    target=target,
+                    external_declarations=[external],
+                    deployments=[catalog_actual, bad],
+                )
+                self.assertEqual(payload["results"][0]["status"], "FAIL")
+        bad_id = deepcopy(expected)
+        bad_id["id"] = bad_id["id"].replace("/accounts/", "/wrong/")
+        payload = _run_model_with_external(
+            target=target,
+            external_declarations=[external],
+            deployments=[catalog_actual, bad_id],
+        )
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        bad_sku = deepcopy(expected)
+        bad_sku["sku"]["name"] = "Standard"
+        payload = _run_model_with_external(
+            target=target,
+            external_declarations=[external],
+            deployments=[catalog_actual, bad_sku],
+        )
+        self.assertEqual(payload["results"][0]["status"], "FAIL")
+        missing = _run_model_with_external(
+            target=target,
+            external_declarations=[external],
+            deployments=[catalog_actual],
+        )
+        self.assertEqual(missing["results"][0]["status"], "FAIL")
+        self.assertIn(external["deploymentName"], missing["results"][0]["detail"])
+
+    def test_external_manifest_rejects_wildcards_and_prefixes_at_load(self) -> None:
+        template = deepcopy(load_external_model_deployments()[0])
+        for name in ("fal-*", "fal-ltx-"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                template["deploymentName"] = name
+                path = Path(directory) / "external-model-deployments.json"
+                path.write_text(
+                    json.dumps({"schemaVersion": 1, "deployments": [template]}),
+                    encoding="utf-8",
+                )
+                payload = _run_model(
+                    external_manifest_path=path,
+                )
+                self.assertEqual(payload["results"][0]["status"], "FAIL")
+                self.assertIn("exact literal identities", payload["results"][0]["detail"])
+                self.assertIsNone(payload["captured"])
 
 
 @unittest.skipUnless(os.name == "nt", "Windows PowerShell 5.1 requires Windows")

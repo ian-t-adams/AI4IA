@@ -179,6 +179,14 @@ SKU, positive integer capacity, Succeeded state and `NoAutoUpgrade` policy.
 Unknown resources, duplicate identities, failed/continued inventories and missing
 or mismatched evidence fail closed.
 
+The separate checked-in `scripts/external-model-deployments.json` declares only
+fleet-owned live rows outside that catalog. Its exact account ARM ID, deployment
+name, model format/name/version and SKU must match the complete live inventory;
+patterns, prefixes, extra fields, missing rows and mismatches fail closed.
+Matching declarations are reported as `INFO` and are excluded from Bicep,
+catalog inventory and AI4IA capacity planning. `sync-model-capacity.py` checks
+the same declarations and does not project them into its allocation plan.
+
 Verification capacity uses the selected profile, never an observed value as its
 own expectation. For an optional production row lacking a configured allocation,
 the output carries explicit null without evaluating strict production selection.

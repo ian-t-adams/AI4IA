@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "deployments": [
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "fal-ltx-2.5-fast",
+      "modelFormat": "fal.ai",
+      "modelName": "Fal-LTX-2.5-Fast",
+      "modelVersion": "2026-11-02",
+      "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "fal-ltx-2.5-pro",
+      "modelFormat": "fal.ai",
+      "modelName": "Fal-LTX-2.5-Pro",
+      "modelVersion": "2026-11-02",
+      "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "fal-minimax-h3-max",
+      "modelFormat": "fal.ai",
+      "modelName": "Fal-MiniMax-H3-Max",
+      "modelVersion": "2026-11-02",
+      "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "fal-minimax-h3-max-turbo",
+      "modelFormat": "fal.ai",
+      "modelName": "Fal-MiniMax-H3-Max-Turbo",
+      "modelVersion": "2026-11-02",
+      "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "fal-kling-v3-pro-dz",
+      "modelFormat": "fal.ai",
+      "modelName": "Fal-Kling-V3-Pro",
+      "modelVersion": "2026-11-02",
+      "sku": "DataZoneStandard"
+    }
+  ]
+}
