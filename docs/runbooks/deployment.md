@@ -675,6 +675,10 @@ is reported as `INFO` and is not included in Bicep, catalog inventory or
 AI4IA capacity planning. Missing or mismatched declarations and every
 undeclared deployment still fail. `sync-model-capacity.py` applies the same
 identity check and excludes declared rows from its catalog allocation projection.
+Both checks require complete inventory of every declared account within the exact
+current subscription/resource-group scope; omitting an account from target
+selection cannot bypass its mandatory declarations. Declarations in other
+subscriptions or resource groups do not require inventory in the current run.
 
 Capture, rollout, and rollback confirmation bind an exact, scoped revision read
 to app reads on both sides. In `Single` mode the selected revision is

@@ -95,6 +95,8 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    only, never Bicep/catalog inventory or AI4IA allocation. Undeclared, missing
    or mismatched rows still fail; do not add retired Sora or restore video
    generation through this list.
+   Every declared account in the exact current subscription/resource-group scope
+   must be completely inventoried, even when catalog target selection omits it.
    Unknown optional production capacity stays null and refuses a present row,
    never baseline/zero/free quota. Production preflight requires terminal
    inventory before optional absence and keeps provisioning-disabled retained

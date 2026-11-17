@@ -685,6 +685,28 @@ class ModelDeploymentHardGateTests(unittest.TestCase):
         self.assertEqual(missing["results"][0]["status"], "FAIL")
         self.assertIn(external["deploymentName"], missing["results"][0]["detail"])
 
+    def test_declared_account_must_be_inventoried_only_in_its_exact_scope(self) -> None:
+        parts = load_external_model_deployments()[0]["accountId"].split("/")
+        for subscription, resource_group, must_fail in (
+            (parts[2], parts[4], True),
+            (parts[2].upper(), parts[4].upper(), True),
+            ("00000000-0000-0000-0000-000000000000", parts[4], False),
+            (parts[2], parts[4] + "-other", False),
+        ):
+            with self.subTest(subscription=subscription, resource_group=resource_group):
+                payload = _run_model(overrides={
+                    "AZURE_SUBSCRIPTION_ID": subscription,
+                    "AZURE_RESOURCE_GROUP": resource_group,
+                })
+                self.assertIn("/accounts/mf-example-sweden/deployments?", payload["captured"]["uri"])
+                failures = [row for row in payload["results"] if row["status"] == "FAIL"]
+                if must_fail:
+                    self.assertTrue(failures)
+                    self.assertIn("declared external account was not completely inventoried", failures[0]["detail"])
+                else:
+                    self.assertFalse(failures)
+                    self.assertEqual(payload["results"][0]["status"], "PASS")
+
     def test_external_manifest_rejects_wildcards_and_prefixes_at_load(self) -> None:
         template = deepcopy(load_external_model_deployments()[0])
         for name in ("fal-*", "fal-ltx-"):

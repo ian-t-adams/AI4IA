@@ -271,14 +271,18 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate identity"):
                 load_external_model_deployments(path)
 
-    def _live_inventory(self, *, extra_name: str | None = None, mismatch: bool = False):
+    def _live_inventory(
+        self, *, extra_name: str | None = None, mismatch: bool = False,
+        subscription: str = "e852113b-6cb5-441c-ac68-26cff884e479",
+        resource_group: str = "rg-ai4ia-slurmfactory",
+    ):
         models = _models()
         models["naming"]["foundryToken"] = "aiforia"
         account_name = "mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o"
         other_account = "mf-aiforia-slurmfactory-swedencentral-abcdefghijklm"
         account_id = (
-            "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/"
-            f"resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/{account_name}"
+            f"/subscriptions/{subscription}/resourceGroups/{resource_group}/"
+            f"providers/Microsoft.CognitiveServices/accounts/{account_name}"
         )
         declarations = capacity.load_external_model_deployments()
         east_expected_name = capacity.deployment_name(
@@ -291,8 +295,8 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
         def catalog_row(account: str, name: str, region: str) -> dict:
             return {
                 "id": (
-                    f"/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/"
-                    f"resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/"
+                    f"/subscriptions/{subscription}/"
+                    f"resourceGroups/{resource_group}/providers/Microsoft.CognitiveServices/"
                     f"accounts/{account}/deployments/{name}"
                 ),
                 "name": name,
@@ -352,6 +356,57 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
                     models, "rg-ai4ia-slurmfactory", "slurmfactory",
                     "e852113b-6cb5-441c-ac68-26cff884e479",
                 )
+
+    def test_declared_account_must_be_completely_inventoried(self):
+        for discovered in (True, False):
+            with self.subTest(discovered=discovered):
+                models, reads, _ = self._live_inventory()
+                models["regions"].pop("eastus2")
+                models["catalog"][0]["deployments"].pop(0)
+                reads.pop(1)
+                if not discovered:
+                    reads[0].pop(0)
+                with (
+                    patch.object(capacity, "_az_json", side_effect=reads) as query,
+                    self.assertRaisesRegex(ValueError, "declared external account was not completely inventoried"),
+                ):
+                    capacity._collect_live(
+                        models, "rg-ai4ia-slurmfactory", "slurmfactory",
+                        "e852113b-6cb5-441c-ac68-26cff884e479",
+                    )
+                self.assertEqual(query.call_count, 2)
+
+    def test_missing_declared_fal_row_refuses(self):
+        models, reads, declarations = self._live_inventory()
+        reads[1].pop(1)
+        with (
+            patch.object(capacity, "_az_json", side_effect=reads),
+            self.assertRaisesRegex(ValueError, declarations[0]["deploymentName"]),
+        ):
+            capacity._collect_live(
+                models, "rg-ai4ia-slurmfactory", "slurmfactory",
+                "e852113b-6cb5-441c-ac68-26cff884e479",
+            )
+
+    def test_unrelated_scope_does_not_require_declared_account(self):
+        for subscription, resource_group in (
+            ("00000000-0000-0000-0000-000000000000", "rg-ai4ia-slurmfactory"),
+            ("e852113b-6cb5-441c-ac68-26cff884e479", "rg-ai4ia-slurmfactory-other"),
+        ):
+            with self.subTest(subscription=subscription, resource_group=resource_group):
+                models, reads, _ = self._live_inventory(
+                    subscription=subscription, resource_group=resource_group,
+                )
+                models["regions"].pop("eastus2")
+                models["catalog"][0]["deployments"].pop(0)
+                reads.pop(1)
+                reads[0].pop(0)
+                with patch.object(capacity, "_az_json", side_effect=reads) as query:
+                    live = capacity._collect_live(
+                        models, resource_group, "slurmfactory", subscription,
+                    )
+                self.assertEqual(live, {"swedencentral": {"model-a-sub-swedencentral-glbl": 50}})
+                self.assertEqual(query.call_count, 2)
 
 
 class SyncStagedMainTests(unittest.TestCase):

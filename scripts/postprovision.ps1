@@ -393,6 +393,7 @@ function Test-ModelDeployment {
   }
   $headers = @{ Authorization = "Bearer $token" }
   $accounts = @{}
+  $inventoriedAccounts = @{}
   foreach ($target in $targets) {
     if ($target -isnot [pscustomobject]) {
       Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'invalid account inventory record'
@@ -513,6 +514,7 @@ function Test-ModelDeployment {
       Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'invalid or duplicate deployment inventory'
       continue
     }
+    $inventoriedAccounts[$accountId] = $true
     if ($hasEvidence) {
       $failed = $false
       $catalogMatched = 0
@@ -641,6 +643,14 @@ function Test-ModelDeployment {
       continue
     }
     Add-Result -Name "model-deployments/$account" -Status 'PASS' -Detail "$($expectedNames.Count) expected deployment(s) Succeeded"
+  }
+  foreach ($entry in $externalDeclarations) {
+    $parts = $entry.accountId.Split('/')
+    if ($parts[2] -ieq $subId -and $parts[4] -ieq $rg -and
+        -not $inventoriedAccounts.ContainsKey($entry.accountId)) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'declared external account was not completely inventoried'
+      return
+    }
   }
 }
 

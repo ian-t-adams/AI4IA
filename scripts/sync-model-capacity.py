@@ -505,6 +505,7 @@ def _collect_live(
         raise ValueError("Complete, valid account inventory is required.")
     foundry_token = models["naming"]["foundryToken"]
     live: dict[str, dict[str, int]] = {}
+    inventoried_accounts: set[str] = set()
     for region in models["regions"]:
         prefix = f"mf-{foundry_token}-{environment_name}-{region}-".casefold()
         matches = [
@@ -633,6 +634,15 @@ def _collect_live(
                 "Declared external deployment inventory is missing: " + ", ".join(missing)
             )
         live[region] = observed
+        inventoried_accounts.add(account_id.casefold())
+    required_external_accounts = {
+        entry["accountId"].casefold()
+        for entry in external_deployments
+        if entry["accountId"].split("/")[2].casefold() == subscription_id.casefold()
+        and entry["accountId"].split("/")[4].casefold() == resource_group.casefold()
+    }
+    if required_external_accounts - inventoried_accounts:
+        raise ValueError("A declared external account was not completely inventoried.")
     return live
 
 
