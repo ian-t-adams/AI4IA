@@ -40,6 +40,22 @@
       "modelName": "Fal-Kling-V3-Pro",
       "modelVersion": "2026-11-02",
       "sku": "DataZoneStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "gpt-6.1-sol",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6.1-sol",
+      "modelVersion": "2026-09-29",
+      "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "gpt-6-sol",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6-sol",
+      "modelVersion": "2026-09-22",
+      "sku": "GlobalStandard"
     }
   ]
 }

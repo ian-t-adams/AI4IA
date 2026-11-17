@@ -679,6 +679,12 @@ Both checks require complete inventory of every declared account within the exac
 current subscription/resource-group scope; omitting an account from target
 selection cannot bypass its mandatory declarations. Declarations in other
 subscriptions or resource groups do not require inventory in the current run.
+The fleet-owned declarations include the Fal deployments and the exact
+`gpt-6.1-sol` (`2026-09-29`) and `gpt-6-sol` (`2026-09-22`) OpenAI
+GlobalStandard deployments in the eastus2 account. This is inventory recognition
+only, not AI4IA model exposure or capacity allocation. Sora deployments
+remain undeclared and would still fail this gate if present; this declaration
+does not authorize their deletion or restore video generation.
 
 Capture, rollout, and rollback confirmation bind an exact, scoped revision read
 to app reads on both sides. In `Single` mode the selected revision is
