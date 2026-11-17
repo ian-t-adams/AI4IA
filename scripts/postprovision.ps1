@@ -63,6 +63,8 @@ param(
   [switch]$RequireApiHealth = ([string]::Equals($env:AI4IA_SMOKE_REQUIRE_API_HEALTH, 'true', [System.StringComparison]::OrdinalIgnoreCase))
 )
 
+$script:ExternalModelDeploymentsPath = Join-Path $PSScriptRoot 'external-model-deployments.json'
+
 $ErrorActionPreference = 'Stop'
 # PS 5.1 can default to TLS 1.0; ARM requires 1.2+. No-op on pwsh 7.
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { Write-Verbose "TLS 1.2 enforcement skipped (pwsh 7 already secure): $($_.Exception.Message)" }
@@ -73,11 +75,11 @@ $script:Results = [System.Collections.Generic.List[object]]::new()
 function Add-Result {
   param(
     [Parameter(Mandatory)][string]$Name,
-    [Parameter(Mandatory)][ValidateSet('PASS', 'FAIL', 'WARN', 'SKIP')][string]$Status,
+    [Parameter(Mandatory)][ValidateSet('PASS', 'FAIL', 'WARN', 'SKIP', 'INFO')][string]$Status,
     [string]$Detail = ''
   )
   $script:Results.Add([pscustomobject]@{ Name = $Name; Status = $Status; Detail = $Detail })
-  $color = switch ($Status) { 'PASS' { 'Green' } 'FAIL' { 'Red' } 'WARN' { 'Yellow' } default { 'DarkGray' } }
+  $color = switch ($Status) { 'PASS' { 'Green' } 'FAIL' { 'Red' } 'WARN' { 'Yellow' } 'INFO' { 'Cyan' } default { 'DarkGray' } }
   $suffix = if ($Detail) { " - $Detail" } else { '' }
   Write-Host ("  [{0}] {1}{2}" -f $Status, $Name, $suffix) -ForegroundColor $color
 }
@@ -342,6 +344,48 @@ function Test-ModelDeployment {
     Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'required output(s) AZURE_SUBSCRIPTION_ID / AZURE_RESOURCE_GROUP not set'
     return
   }
+  try {
+    $manifest = Get-Content -LiteralPath $script:ExternalModelDeploymentsPath -Raw | ConvertFrom-Json
+  } catch {
+    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'external deployment declaration file is missing or invalid JSON'
+    return
+  }
+  $manifestFields = @('schemaVersion', 'deployments')
+  if ($manifest -isnot [pscustomobject] -or
+      @($manifest.PSObject.Properties.Name | Where-Object { $_ -cnotin $manifestFields }).Count -gt 0 -or
+      @($manifest.PSObject.Properties.Name).Count -ne $manifestFields.Count -or
+      ($manifest.schemaVersion -isnot [int] -and $manifest.schemaVersion -isnot [long]) -or
+      $manifest.schemaVersion -ne 1 -or
+      $manifest.deployments -isnot [array]) {
+    Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'external deployment declaration file has an unsupported shape'
+    return
+  }
+  $externalFields = @('accountId', 'deploymentName', 'modelFormat', 'modelName', 'modelVersion', 'sku')
+  $externalDeclarations = @()
+  $externalIdentities = @{}
+  $exactIdentifierPattern = '^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$'
+  $accountIdPattern = '^/subscriptions/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/resourceGroups/[A-Za-z0-9][A-Za-z0-9._()-]*[A-Za-z0-9]/providers/Microsoft\.CognitiveServices/accounts/[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$'
+  foreach ($entry in $manifest.deployments) {
+    if ($entry -isnot [pscustomobject] -or
+        @($entry.PSObject.Properties.Name | Where-Object { $_ -cnotin $externalFields }).Count -gt 0 -or
+        @($entry.PSObject.Properties.Name).Count -ne $externalFields.Count -or
+        $entry.accountId -isnot [string] -or $entry.accountId -notmatch $accountIdPattern -or
+        $entry.deploymentName -isnot [string] -or $entry.deploymentName -notmatch $exactIdentifierPattern -or
+        $entry.modelFormat -isnot [string] -or $entry.modelFormat -notmatch $exactIdentifierPattern -or
+        $entry.modelName -isnot [string] -or $entry.modelName -notmatch $exactIdentifierPattern -or
+        $entry.modelVersion -isnot [string] -or $entry.modelVersion -notmatch $exactIdentifierPattern -or
+        $entry.sku -isnot [string] -or $entry.sku -notmatch $exactIdentifierPattern) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'external deployment declaration must contain exact literal identities only'
+      return
+    }
+    $identity = "$($entry.accountId.ToLowerInvariant())/$($entry.deploymentName.ToLowerInvariant())"
+    if ($externalIdentities.ContainsKey($identity)) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'external deployment declaration contains a duplicate identity'
+      return
+    }
+    $externalIdentities[$identity] = $true
+    $externalDeclarations += $entry
+  }
   $token = Get-MgmtToken
   if (-not $token) {
     Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'no ARM token from azd or Azure CLI; cannot verify required deployments'
@@ -349,6 +393,7 @@ function Test-ModelDeployment {
   }
   $headers = @{ Authorization = "Bearer $token" }
   $accounts = @{}
+  $inventoriedAccounts = @{}
   foreach ($target in $targets) {
     if ($target -isnot [pscustomobject]) {
       Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'invalid account inventory record'
@@ -367,6 +412,17 @@ function Test-ModelDeployment {
     }
     $accounts[$account] = $true
     $accountId = "/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.CognitiveServices/accounts/$account"
+    $accountExternal = @($externalDeclarations | Where-Object { $_.accountId -ieq $accountId })
+    $externalByName = @{}
+    foreach ($item in $accountExternal) {
+      if ($externalByName.ContainsKey($item.deploymentName)) {
+        Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'external declaration conflicts with expected deployment inventory'
+        $externalByName = $null
+        break
+      }
+      $externalByName[$item.deploymentName] = $item
+    }
+    if ($null -eq $externalByName) { continue }
     if ($hasEvidence) {
       try {
         if ($target.verificationVersion -cne 1 -or
@@ -410,6 +466,16 @@ function Test-ModelDeployment {
       Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'versioned model inventory evidence missing version'
       continue
     }
+    if ($hasEvidence) {
+      foreach ($item in $accountExternal) {
+        if ($evidence.ContainsKey($item.deploymentName)) {
+          Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'external declaration conflicts with expected deployment inventory'
+          $externalByName = $null
+          break
+        }
+      }
+      if ($null -eq $externalByName) { continue }
+    }
     $expectedNames = @($target.deploymentNames | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
     if ([string]::IsNullOrWhiteSpace($account) -or (-not $hasEvidence -and $expectedNames.Count -eq 0)) {
       Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'expected deployment record is missing accountName or deploymentNames'
@@ -448,12 +514,40 @@ function Test-ModelDeployment {
       Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'invalid or duplicate deployment inventory'
       continue
     }
+    $inventoriedAccounts[$accountId] = $true
     if ($hasEvidence) {
       $failed = $false
+      $catalogMatched = 0
+      $externalFailureDetail = $null
       foreach ($name in $byName.Keys) {
-        if (-not $evidence.ContainsKey($name)) { $failed = $true; break }
-        $item = $evidence[$name]
         $actual = $byName[$name]
+        if ($evidence.ContainsKey($name)) {
+          $item = $evidence[$name]
+          $catalogMatched++
+        } elseif ($externalByName.ContainsKey($name)) {
+          $item = $externalByName[$name]
+          if ($actual.name -cne $item.deploymentName -or
+              $actual.id -isnot [string] -or
+              $actual.id -ine "$accountId/deployments/$($item.deploymentName)" -or
+              $actual.properties.model.format -isnot [string] -or
+              $actual.properties.model.name -isnot [string] -or
+              $actual.properties.model.version -isnot [string] -or
+              $actual.sku.name -isnot [string] -or
+              $actual.properties.model.format -cne $item.modelFormat -or
+              $actual.properties.model.name -cne $item.modelName -or
+              $actual.properties.model.version -cne $item.modelVersion -or
+              $actual.sku.name -cne $item.sku) {
+            $failed = $true
+            $externalFailureDetail = "mismatched declared external deployment: $($item.deploymentName)"
+            break
+          }
+          Add-Result -Name "model-deployments/$account/external/$($item.deploymentName)" -Status 'INFO' -Detail 'exact fleet-owned identity verified; excluded from catalog and AI4IA allocation'
+          continue
+        } else {
+          $failed = $true
+          $externalFailureDetail = 'unexpected undeclared deployment'
+          break
+        }
         if ($null -eq $item.capacity -or
             $actual.name -cne $item.name -or
             $actual.id -isnot [string] -or $actual.id -ine "$accountId/deployments/$($item.name)" -or
@@ -477,20 +571,55 @@ function Test-ModelDeployment {
       foreach ($item in $evidence.Values) {
         if ($item.required -and -not $byName.ContainsKey($item.name)) { $failed = $true }
       }
+      foreach ($item in $accountExternal) {
+        if (-not $byName.ContainsKey($item.deploymentName)) {
+          $failed = $true
+          $externalFailureDetail = "missing declared external deployment: $($item.deploymentName)"
+        }
+      }
       if ($failed) {
-        Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail 'missing, unexpected or mismatched exact deployment evidence (unknown capacity cannot authorize retained allocation)'
+        $detail = 'missing, unexpected or mismatched exact deployment evidence (unknown capacity cannot authorize retained allocation)'
+        if ($externalFailureDetail) { $detail = "$detail; $externalFailureDetail" }
+        Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail $detail
       } else {
-        Add-Result -Name "model-deployments/$account" -Status 'PASS' -Detail "$($byName.Count) exact deployment(s) verified; omission is not deletion or freed quota"
+        Add-Result -Name "model-deployments/$account" -Status 'PASS' -Detail "$catalogMatched catalog deployment(s) verified; omission is not deletion or freed quota"
       }
       continue
     }
     $missing = @($expectedNames | Where-Object { -not $byName.ContainsKey($_.ToLowerInvariant()) })
     $expectedKeys = @($expectedNames | ForEach-Object { $_.ToLowerInvariant() })
+    foreach ($item in $accountExternal) {
+      if (-not $byName.ContainsKey($item.deploymentName)) {
+        Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail "missing declared external deployment: $($item.deploymentName)"
+        $externalByName = $null
+        break
+      }
+      $actual = $byName[$item.deploymentName]
+      if ($actual.name -cne $item.deploymentName -or
+          $actual.id -isnot [string] -or
+          $actual.id -ine "$accountId/deployments/$($item.deploymentName)" -or
+          $actual.properties.model.format -isnot [string] -or
+          $actual.properties.model.name -isnot [string] -or
+          $actual.properties.model.version -isnot [string] -or
+          $actual.sku.name -isnot [string] -or
+          $actual.properties.model.format -cne $item.modelFormat -or
+          $actual.properties.model.name -cne $item.modelName -or
+          $actual.properties.model.version -cne $item.modelVersion -or
+          $actual.sku.name -cne $item.sku) {
+        Add-Result -Name "model-deployments/$account" -Status 'FAIL' -Detail "mismatched declared external deployment: $($item.deploymentName)"
+        $externalByName = $null
+        break
+      }
+      Add-Result -Name "model-deployments/$account/external/$($item.deploymentName)" -Status 'INFO' -Detail 'exact fleet-owned identity verified; excluded from catalog and AI4IA allocation'
+    }
+    if ($null -eq $externalByName) { continue }
     $unexpected = @(
       $deployments |
         Where-Object {
           $name = "$($_.name)".Trim()
-          -not [string]::IsNullOrWhiteSpace($name) -and $expectedKeys -notcontains $name.ToLowerInvariant()
+          -not [string]::IsNullOrWhiteSpace($name) -and
+          $expectedKeys -notcontains $name.ToLowerInvariant() -and
+          -not $externalByName.ContainsKey($name)
         } |
         ForEach-Object { "$($_.name)" }
     )
@@ -514,6 +643,14 @@ function Test-ModelDeployment {
       continue
     }
     Add-Result -Name "model-deployments/$account" -Status 'PASS' -Detail "$($expectedNames.Count) expected deployment(s) Succeeded"
+  }
+  foreach ($entry in $externalDeclarations) {
+    $parts = $entry.accountId.Split('/')
+    if ($parts[2] -ieq $subId -and $parts[4] -ieq $rg -and
+        -not $inventoriedAccounts.ContainsKey($entry.accountId)) {
+      Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'declared external account was not completely inventoried'
+      return
+    }
   }
 }
 
@@ -903,10 +1040,11 @@ foreach ($check in $checks) {
 $pass = @($script:Results | Where-Object { $_.Status -eq 'PASS' }).Count
 $warn = @($script:Results | Where-Object { $_.Status -eq 'WARN' }).Count
 $skip = @($script:Results | Where-Object { $_.Status -eq 'SKIP' }).Count
+$info = @($script:Results | Where-Object { $_.Status -eq 'INFO' }).Count
 $fail = @($script:Results | Where-Object { $_.Status -eq 'FAIL' }).Count
 
 Write-Host ''
-Write-Host ("== Summary: {0} PASS, {1} WARN, {2} SKIP, {3} FAIL ==" -f $pass, $warn, $skip, $fail) -ForegroundColor Cyan
+Write-Host ("== Summary: {0} PASS, {1} INFO, {2} WARN, {3} SKIP, {4} FAIL ==" -f $pass, $info, $warn, $skip, $fail) -ForegroundColor Cyan
 
 if ($fail -gt 0) {
   Write-Host 'Smoke tests FAILED: a provisioned resource that should exist is missing or unhealthy.' -ForegroundColor Red

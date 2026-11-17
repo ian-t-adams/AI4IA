@@ -18,6 +18,7 @@ from scripts.tests._loader import load_script
 from scripts.tests._production_fixture import SUBSCRIPTION, production_document
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from _external_model_deployments import load_external_model_deployments
 import _capacity_evidence as evidence
 import _production_capacity as production
 
@@ -231,6 +232,181 @@ class CapacityAllocationTests(unittest.TestCase):
                 _quota("GlobalStandard", current=99, limit=1000),
                 _platform("GlobalStandard", east=901, sweden=901),
             )
+
+
+class ExternalDeploymentInventoryTests(unittest.TestCase):
+    def test_external_manifest_is_literal_exact_and_unique(self):
+        declarations = load_external_model_deployments()
+        self.assertEqual(len(declarations), 5)
+        self.assertEqual(len({
+            (row["accountId"].casefold(), row["deploymentName"].casefold())
+            for row in declarations
+        }), 5)
+
+    def test_external_manifest_rejects_wildcards_and_prefixes(self):
+        template = load_external_model_deployments()[0]
+        for invalid_name in ("fal-*", "fal-ltx-"):
+            with self.subTest(name=invalid_name), tempfile.TemporaryDirectory() as directory:
+                row = {**template, "deploymentName": invalid_name}
+                path = Path(directory) / "manifest.json"
+                path.write_text(
+                    json.dumps({"schemaVersion": 1, "deployments": [row]}),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "literal exact identifier"):
+                    load_external_model_deployments(path)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            extra = {**template, "deploymentNamePrefix": "fal-"}
+            path.write_text(
+                json.dumps({"schemaVersion": 1, "deployments": [extra]}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unsupported shape"):
+                load_external_model_deployments(path)
+            path.write_text(
+                json.dumps({"schemaVersion": 1, "deployments": [template, template]}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate identity"):
+                load_external_model_deployments(path)
+
+    def _live_inventory(
+        self, *, extra_name: str | None = None, mismatch: bool = False,
+        subscription: str = "e852113b-6cb5-441c-ac68-26cff884e479",
+        resource_group: str = "rg-ai4ia-slurmfactory",
+    ):
+        models = _models()
+        models["naming"]["foundryToken"] = "aiforia"
+        account_name = "mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o"
+        other_account = "mf-aiforia-slurmfactory-swedencentral-abcdefghijklm"
+        account_id = (
+            f"/subscriptions/{subscription}/resourceGroups/{resource_group}/"
+            f"providers/Microsoft.CognitiveServices/accounts/{account_name}"
+        )
+        declarations = capacity.load_external_model_deployments()
+        east_expected_name = capacity.deployment_name(
+            models, "model-a", models["catalog"][0]["deployments"][0],
+        )
+        sweden_expected_name = capacity.deployment_name(
+            models, "model-a", models["catalog"][0]["deployments"][1],
+        )
+
+        def catalog_row(account: str, name: str, region: str) -> dict:
+            return {
+                "id": (
+                    f"/subscriptions/{subscription}/"
+                    f"resourceGroups/{resource_group}/providers/Microsoft.CognitiveServices/"
+                    f"accounts/{account}/deployments/{name}"
+                ),
+                "name": name,
+                "sku": {"name": "GlobalStandard", "capacity": 50},
+                "properties": {
+                    "model": {"format": "OpenAI", "name": "model-a", "version": "1"},
+                    "provisioningState": "Succeeded",
+                },
+            }
+
+        external_rows = []
+        for index, declaration in enumerate(declarations):
+            external_rows.append({
+                "id": f"{account_id}/deployments/{declaration['deploymentName']}",
+                "name": declaration["deploymentName"],
+                "sku": {"name": declaration["sku"], "capacity": 2},
+                "properties": {
+                    "model": {
+                        "format": "mismatch" if mismatch and index == 0 else declaration["modelFormat"],
+                        "name": declaration["modelName"],
+                        "version": declaration["modelVersion"],
+                    },
+                    "provisioningState": "Succeeded",
+                },
+            })
+        east_rows = [catalog_row(account_name, east_expected_name, "eastus2"), *external_rows]
+        if extra_name is not None:
+            extra = catalog_row(account_name, extra_name, "eastus2")
+            extra["properties"]["model"]["name"] = "unlisted-model"
+            east_rows.append(extra)
+        accounts = [
+            {"name": account_name, "kind": "AIServices", "location": "eastus2"},
+            {"name": other_account, "kind": "AIServices", "location": "swedencentral"},
+        ]
+        reads = [accounts, east_rows, [catalog_row(other_account, sweden_expected_name, "swedencentral")]]
+        return models, reads, declarations
+
+    def test_exact_external_row_is_validated_but_not_projected_as_ai4ia_allocation(self):
+        models, reads, declarations = self._live_inventory()
+        with patch.object(capacity, "_az_json", side_effect=reads):
+            live = capacity._collect_live(
+                models, "rg-ai4ia-slurmfactory", "slurmfactory",
+                "e852113b-6cb5-441c-ac68-26cff884e479",
+            )
+        self.assertEqual(set(live["eastus2"]), {"model-a-sub-eastus2-glbl"})
+        self.assertTrue(all(row["deploymentName"] not in live["eastus2"] for row in declarations))
+
+    def test_external_mismatch_and_undeclared_row_still_refuse(self):
+        for mismatch, extra_name in ((True, None), (False, "unlisted-extra")):
+            models, reads, _ = self._live_inventory(mismatch=mismatch, extra_name=extra_name)
+            with (
+                self.subTest(mismatch=mismatch, extra_name=extra_name),
+                patch.object(capacity, "_az_json", side_effect=reads),
+                self.assertRaisesRegex(ValueError, "External deployment|Unknown or ambiguous"),
+            ):
+                capacity._collect_live(
+                    models, "rg-ai4ia-slurmfactory", "slurmfactory",
+                    "e852113b-6cb5-441c-ac68-26cff884e479",
+                )
+
+    def test_declared_account_must_be_completely_inventoried(self):
+        for discovered in (True, False):
+            with self.subTest(discovered=discovered):
+                models, reads, _ = self._live_inventory()
+                models["regions"].pop("eastus2")
+                models["catalog"][0]["deployments"].pop(0)
+                reads.pop(1)
+                if not discovered:
+                    reads[0].pop(0)
+                with (
+                    patch.object(capacity, "_az_json", side_effect=reads) as query,
+                    self.assertRaisesRegex(ValueError, "declared external account was not completely inventoried"),
+                ):
+                    capacity._collect_live(
+                        models, "rg-ai4ia-slurmfactory", "slurmfactory",
+                        "e852113b-6cb5-441c-ac68-26cff884e479",
+                    )
+                self.assertEqual(query.call_count, 2)
+
+    def test_missing_declared_fal_row_refuses(self):
+        models, reads, declarations = self._live_inventory()
+        reads[1].pop(1)
+        with (
+            patch.object(capacity, "_az_json", side_effect=reads),
+            self.assertRaisesRegex(ValueError, declarations[0]["deploymentName"]),
+        ):
+            capacity._collect_live(
+                models, "rg-ai4ia-slurmfactory", "slurmfactory",
+                "e852113b-6cb5-441c-ac68-26cff884e479",
+            )
+
+    def test_unrelated_scope_does_not_require_declared_account(self):
+        for subscription, resource_group in (
+            ("00000000-0000-0000-0000-000000000000", "rg-ai4ia-slurmfactory"),
+            ("e852113b-6cb5-441c-ac68-26cff884e479", "rg-ai4ia-slurmfactory-other"),
+        ):
+            with self.subTest(subscription=subscription, resource_group=resource_group):
+                models, reads, _ = self._live_inventory(
+                    subscription=subscription, resource_group=resource_group,
+                )
+                models["regions"].pop("eastus2")
+                models["catalog"][0]["deployments"].pop(0)
+                reads.pop(1)
+                reads[0].pop(0)
+                with patch.object(capacity, "_az_json", side_effect=reads) as query:
+                    live = capacity._collect_live(
+                        models, resource_group, "slurmfactory", subscription,
+                    )
+                self.assertEqual(live, {"swedencentral": {"model-a-sub-swedencentral-glbl": 50}})
+                self.assertEqual(query.call_count, 2)
 
 
 class SyncStagedMainTests(unittest.TestCase):

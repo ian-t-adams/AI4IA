@@ -665,6 +665,21 @@ pre-provision revisions. A manual workflow run that skips provision does not
 roll back for a build/preflight failure that touched no app. Deploy and
 verification failures still roll back.
 
+The separate `azure.yaml` postprovision model-deployment hard gate requires the
+complete live inventory to equal the catalog-derived Bicep output, except for
+the exact fleet-owned rows declared in
+[`scripts/external-model-deployments.json`](../../scripts/external-model-deployments.json).
+Each declaration is bound to an exact account ARM ID, deployment name, model
+format/name/version and SKU; wildcard/prefix forms are rejected. A matching row
+is reported as `INFO` and is not included in Bicep, catalog inventory or
+AI4IA capacity planning. Missing or mismatched declarations and every
+undeclared deployment still fail. `sync-model-capacity.py` applies the same
+identity check and excludes declared rows from its catalog allocation projection.
+Both checks require complete inventory of every declared account within the exact
+current subscription/resource-group scope; omitting an account from target
+selection cannot bypass its mandatory declarations. Declarations in other
+subscriptions or resource groups do not require inventory in the current run.
+
 Capture, rollout, and rollback confirmation bind an exact, scoped revision read
 to app reads on both sides. In `Single` mode the selected revision is
 `latestReadyRevisionName`, never the latest-created fallback; in `Multiple` mode

@@ -87,6 +87,16 @@ FastAPI relay → APIM path because SimpleL7Proxy does not support WebSockets.
    The source postprovision output retains legacy names
    and adds versioned exact-identity/capacity evidence: only dual-disabled rows
    may be absent after complete inventory; retained rows still verify exactly.
+   `scripts/external-model-deployments.json` is a separate, exact-identity
+   declaration for fleet-owned deployments only. The postprovision hard gate
+   and `sync-model-capacity.py` require the full account ARM ID, literal
+   deployment name, model format/name/version and SKU to match; wildcard,
+   prefix and extra-field declarations refuse. Matching rows are informational
+   only, never Bicep/catalog inventory or AI4IA allocation. Undeclared, missing
+   or mismatched rows still fail; do not add retired Sora or restore video
+   generation through this list.
+   Every declared account in the exact current subscription/resource-group scope
+   must be completely inventoried, even when catalog target selection omits it.
    Unknown optional production capacity stays null and refuses a present row,
    never baseline/zero/free quota. Production preflight requires terminal
    inventory before optional absence and keeps provisioning-disabled retained
