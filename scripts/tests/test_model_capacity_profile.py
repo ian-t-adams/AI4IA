@@ -237,11 +237,11 @@ class CapacityAllocationTests(unittest.TestCase):
 class ExternalDeploymentInventoryTests(unittest.TestCase):
     def test_external_manifest_is_literal_exact_and_unique(self):
         declarations = load_external_model_deployments()
-        self.assertEqual(len(declarations), 5)
+        self.assertEqual(len(declarations), 7)
         self.assertEqual(len({
             (row["accountId"].casefold(), row["deploymentName"].casefold())
             for row in declarations
-        }), 5)
+        }), 7)
 
     def test_external_manifest_rejects_wildcards_and_prefixes(self):
         template = load_external_model_deployments()[0]
@@ -375,6 +375,30 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
                         "e852113b-6cb5-441c-ac68-26cff884e479",
                     )
                 self.assertEqual(query.call_count, 2)
+
+    def test_openai_external_identity_mismatch_or_absence_refuses(self):
+        declarations = load_external_model_deployments()
+        for index, declaration in enumerate(declarations):
+            if declaration["modelFormat"] != "OpenAI":
+                continue
+            for field in ("format", "name", "version", "sku", "missing"):
+                with self.subTest(deployment=declaration["deploymentName"], field=field):
+                    models, reads, _ = self._live_inventory()
+                    row = reads[1][index + 1]
+                    if field == "missing":
+                        reads[1].pop(index + 1)
+                    elif field == "sku":
+                        row["sku"]["name"] = "Standard"
+                    else:
+                        row["properties"]["model"][field] = "mismatch"
+                    with (
+                        patch.object(capacity, "_az_json", side_effect=reads),
+                        self.assertRaisesRegex(ValueError, "External deployment|inventory is missing"),
+                    ):
+                        capacity._collect_live(
+                            models, "rg-ai4ia-slurmfactory", "slurmfactory",
+                            "e852113b-6cb5-441c-ac68-26cff884e479",
+                        )
 
     def test_missing_declared_fal_row_refuses(self):
         models, reads, declarations = self._live_inventory()

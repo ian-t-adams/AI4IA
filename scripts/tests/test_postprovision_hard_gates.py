@@ -596,8 +596,12 @@ class ModelDeploymentHardGateTests(unittest.TestCase):
         self.assertIn("removed-from-catalog", payload["results"][0]["detail"])
 
     def test_exact_fleet_owned_deployment_is_reported_without_catalog_allocation(self) -> None:
+        for external in load_external_model_deployments():
+            with self.subTest(deployment=external["deploymentName"]):
+                self._assert_exact_fleet_owned_deployment(external)
+
+    def _assert_exact_fleet_owned_deployment(self, external: dict[str, str]) -> None:
         target, catalog_actual = self.evidence_fixture()
-        external = load_external_model_deployments()[0]
         account_id = external["accountId"]
         parts = account_id.split("/")
         target.update(
@@ -632,8 +636,12 @@ class ModelDeploymentHardGateTests(unittest.TestCase):
         )
 
     def test_declared_fleet_owned_identity_mismatch_or_absence_fails(self) -> None:
+        for external in load_external_model_deployments():
+            with self.subTest(deployment=external["deploymentName"]):
+                self._assert_fleet_owned_mismatch_or_absence_fails(external)
+
+    def _assert_fleet_owned_mismatch_or_absence_fails(self, external: dict[str, str]) -> None:
         target, catalog_actual = self.evidence_fixture()
-        external = load_external_model_deployments()[0]
         account_id = external["accountId"]
         parts = account_id.split("/")
         target.update(accountName=parts[-1], accountId=account_id)
