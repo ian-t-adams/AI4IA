@@ -13,9 +13,11 @@ import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 from scripts.tests._loader import load_script
+from scripts.tests.test_hosted_gateway_release import passing_c4_smoke, release
 
 ROOT = Path(__file__).resolve().parents[2]
 CUTOVER = load_script("gateway_cutover", ROOT / "scripts" / "prepare-gateway-cutover.py")
@@ -218,6 +220,167 @@ def revision_inventory(names, *, observed_at=None, active_name="api--r0"):
             for name in names
         ],
     }
+
+
+class C4ProgramTests(unittest.TestCase):
+    def run_program(self, *, status=200, missing_done=False, changed_model=False,
+                    retry=False, cap=None, selected=None, request_model=None):
+        import httpx
+        from ai4ia_api.catalog import ModelCatalog
+        from ai4ia_api.config import Settings
+        from ai4ia_api.gateway.client import ModelGatewayClient
+
+        deployments = selected or release.C4_DEPLOYMENTS
+        manifest, _ = synthetic_c3_inputs()
+        doc = json.loads(manifest)
+        doc["models"] = {
+            d: {"kind": "deployment-name", "operations": ["/chat/completions"],
+                "targets": [{"deployment": d, "sku": release.C4_SKUS[d]}]}
+            for d in release.C4_DEPLOYMENTS}
+        manifest = json.dumps(doc)
+        settings = Settings(
+            _env_file=None, env="prod", auth_provider="entra", AZURE_CLIENT_ID=API_CLIENT_ID,
+            shared_gateway_enabled=True, shared_gateway_activation_manifest=manifest,
+            shared_gateway_deployments=",".join(deployments),
+            model_gateway_url="https://legacy.invalid", model_gateway_auth_mode="none")
+        catalog = ModelCatalog.model_validate({"models": [
+            {"id": d.split("-slurmfactory")[0], "displayName": "Synthetic", "category": "chat",
+             "format": "OpenAI", "api": "chat", "reasoningEffort": ["none"],
+             "options": [{"deploymentName": d, "region": d.rsplit("-", 2)[1],
+                          "sku": release.C4_SKUS[d]}]} for d in deployments]})
+        requests = []
+        real_async_client = httpx.AsyncClient
+
+        def respond(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            model = "native-selected-model-not-the-deployment-alias"
+            if status != 200:
+                return httpx.Response(status, json={"error": {"message": "synthetic"}})
+            if body.get("stream"):
+                event = {"model": model, "choices": [{"index": 0,
+                         "delta": {"content": "OK"}, "finish_reason": "stop"}]}
+                text = "data: " + json.dumps(event) + "\n\n"
+                if not missing_done:
+                    text += "data: [DONE]\n\n"
+                return httpx.Response(200, headers={"content-type": "text/event-stream",
+                                                  "x-S7P-ID": "correlation-only"},
+                                      text=text)
+            return httpx.Response(200, headers={"x-ms-region": "untrusted-region",
+                                               "x-deployment": "not-route-evidence"},
+                                  json={"model": model, "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}]})
+
+        def http_factory(**kwargs):
+            return real_async_client(**kwargs, transport=httpx.MockTransport(respond))
+
+        async def token(_scope):
+            return "synthetic"
+
+        def gateway_factory(*args, **kwargs):
+            client = ModelGatewayClient(*args, **kwargs, shared_gateway_token_provider=token)
+            original = client.complete
+
+            async def complete(**call):
+                result = await original(**call)
+                if retry:
+                    await original(**call)
+                if changed_model:
+                    result["model"] = "rewritten"
+                return result
+
+            client.complete = complete
+            if request_model is not None:
+                original_shared = client._shared_request
+
+                async def shared(*a, **k):
+                    request, url = await original_shared(*a, **k)
+                    request.json["model"] = request_model
+                    return request, url
+
+                client._shared_request = shared
+            return client
+
+        with (mock.patch("httpx.AsyncClient", http_factory),
+              mock.patch("ai4ia_api.config.get_settings", return_value=settings),
+              mock.patch("ai4ia_api.catalog.load_catalog", return_value=catalog),
+              mock.patch("ai4ia_api.gateway.client.ModelGatewayClient", gateway_factory),
+              mock.patch.object(release, "MANIFEST_SHA256", hashlib.sha256(manifest.encode()).hexdigest()),
+              mock.patch.object(release, "C4_MAX_REQUESTS_PER_ROUTE",
+                                release.C4_MAX_REQUESTS_PER_ROUTE if cap is None else cap),
+              mock.patch("sys.stdout") as output, mock.patch("logging.disable")):
+            program = release.c4_smoke_program(deployments)
+            exec(compile(program, "<c4-smoke>", "exec"), {})  # noqa: S102 - offline program with MockTransport
+        result = json.loads(output.write.call_args[0][0].split(release.C4_SMOKE_MARK)[1])
+        return result, requests
+
+    def test_normal_client_completes_and_streams_all_22_with_same_response_identity(self):
+        result, calls = self.run_program()
+        self.assertTrue(release.c4_smoke_passed(result, release.C4_DEPLOYMENTS), result)
+        self.assertEqual(len(calls), 44)
+        self.assertEqual([c["model"] for c in calls],
+                         [d for d in release.C4_DEPLOYMENTS for _ in range(2)])
+        self.assertTrue(all(c.get("max_completion_tokens", c.get("max_tokens"))
+                            == release.C4_MAX_OUTPUT_TOKENS for c in calls))
+        clean = release.sanitize_c4_smoke(result, release.C4_DEPLOYMENTS)
+        self.assertTrue(all(c["backend_identity"] == "unavailable" and c["usage"] is None
+                            for c in clean["calls"]))
+        self.assertNotIn("native-selected", json.dumps(clean))
+        self.assertNotIn("correlation-only", json.dumps(clean))
+
+    def test_failure_stops_immediately_without_retry_or_fallback(self):
+        for kwargs, expected_calls in (({"status": 429}, 1), ({"status": 400}, 1),
+                                       ({"missing_done": True}, 2),
+                                       ({"changed_model": True}, 1),
+                                       ({"request_model": "wrong-route"}, 0)):
+            with self.subTest(kwargs=kwargs):
+                result, calls = self.run_program(**kwargs)
+                self.assertFalse(release.c4_smoke_passed(result, release.C4_DEPLOYMENTS))
+                self.assertEqual(len(calls), expected_calls)
+                self.assertLessEqual(len(result["calls"]), 2)
+
+    def test_per_route_cap_and_per_mode_no_replay_are_enforced_before_transport(self):
+        # Same normal-client fixture: only the allowed route request budget changes.
+        under, calls = self.run_program(cap=2)
+        self.assertTrue(release.c4_smoke_passed(under, release.C4_DEPLOYMENTS))
+        self.assertEqual(len(calls), 44)
+        over, calls = self.run_program(cap=1)
+        self.assertFalse(release.c4_smoke_passed(over, release.C4_DEPLOYMENTS))
+        self.assertEqual(len(calls), 1)
+        retried, calls = self.run_program(retry=True)
+        self.assertFalse(release.c4_smoke_passed(retried, release.C4_DEPLOYMENTS))
+        self.assertEqual(len(calls), 1)
+
+    def test_explicit_subset_still_requires_both_paths_and_rejects_bad_rows(self):
+        selected = tuple(d for d in release.C4_DEPLOYMENTS if not d.startswith("gpt-5.2-"))
+        result, calls = self.run_program(selected=selected)
+        self.assertTrue(release.c4_smoke_passed(result, selected))
+        self.assertEqual(len(calls), 2 * len(selected))
+        result["calls"].append({"deployment": "private-unexpected", "mode": "stream"})
+        clean = release.sanitize_c4_smoke(result, selected)
+        self.assertFalse(release.c4_smoke_passed(clean, selected))
+        self.assertEqual(clean["calls"][-1], {})
+        self.assertNotIn("private-unexpected", json.dumps(clean))
+
+    def test_all_44_results_are_required_and_private_values_never_reach_receipts(self):
+        full = passing_c4_smoke()
+        self.assertTrue(release.c4_smoke_passed(full, release.C4_DEPLOYMENTS))
+        for index in range(44):
+            broken = copy.deepcopy(full)
+            broken["calls"][index]["model_unchanged"] = False
+            with self.subTest(index=index):
+                self.assertFalse(release.c4_smoke_passed(broken, release.C4_DEPLOYMENTS))
+        for mutation in ("duplicate", "missing", "extra"):
+            broken = copy.deepcopy(full)
+            if mutation == "duplicate":
+                broken["calls"][-1] = broken["calls"][0]
+            elif mutation == "missing":
+                broken["calls"].pop()
+            else:
+                broken["calls"].append({})
+            with self.subTest(mutation=mutation):
+                clean = release.sanitize_c4_smoke(broken, release.C4_DEPLOYMENTS)
+                self.assertFalse(release.c4_smoke_passed(clean, release.C4_DEPLOYMENTS))
 
 
 class C4BuilderTests(unittest.TestCase):

@@ -2742,15 +2742,22 @@ Run the stages in this order, stopping at the first failure: `c1-web`,
   deactivates only its unpromoted candidate under the fresh-state guard.
   C3 stays at 100%; R1 is retained. There is no flag or receipt override.
 
-  The distinct **`rollback-c4-api`** recovery accepts only a qualified active C4
-  serving revision and the exact still-active, healthy C3 with its image,
-  selector, allowlist and manifest pins. It writes one traffic PATCH to C3 100%,
+  The distinct **`rollback-c4-api`** recovery accepts only a serving C4 with its
+  pinned identity/configuration and the exact still-active, healthy C3 with its
+  image, selector, allowlist and manifest pins. It compares protected templates
+  before the write, allowing only C4's reviewed opt-in delta and suffix. The
+  serving C4 need not be healthy: an unhealthy C4 still needs emergency rollback.
+  It writes one traffic PATCH to C3 100%,
   verifies traffic and C3 health again, and never replays an uncertain write.
   It does not deactivate C3, R1 or the rolled-back C4. Legacy `rollback-api`
   continues to accept gateway-off release targets only; it cannot select C3.
-  **`deactivate-api`** can then deactivate a reviewed untrafficked lane candidate
-  while qualified C3 or a released gateway-off revision serves 100%. It refuses
-  C3, R1, the serving revision, non-lane names and protected-template drift.
+  **`deactivate-api`** can then deactivate only a pinned, untrafficked C4 candidate
+  whose name binds the same reviewed source SHA prefix, while exact qualified
+  C3 serves 100%. It refuses every C2/C3 candidate, C4 candidates from another
+  source, R1, the serving revision and protected-template drift. The prefix is
+  not an authenticated creation receipt: recovery is deliberately limited to
+  the reviewed source and exact candidate configuration, not arbitrary old work.
+  If main has moved, a separate reviewed recovery decision is required.
   Deactivation never deletes a revision. A fresh `c4-api` dispatch uses a new
   candidate suffix and repeats every guard and probe; it does not replay the old
   candidate's work. Promotion requires a separately reviewed adequate
@@ -2768,8 +2775,8 @@ Run the stages in this order, stopping at the first failure: `c1-web`,
   python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage c4-api --rollback-revision ca-api-private-slurmfactory--c3-d6f03ff-82642864
   # Separately reviewed recovery, only if a qualified C4 is actually serving:
   python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage rollback-c4-api --rollback-revision ca-api-private-slurmfactory--c3-d6f03ff-82642864
-  # After readback of C3 100%, explicitly name the untrafficked candidate:
-  python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage deactivate-api --rollback-revision "<untrafficked-lane-candidate>"
+  # Same reviewed source only; after readback of C3 100%, name its untrafficked C4:
+  python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage deactivate-api --rollback-revision "<untrafficked-c4-candidate>"
   ```
 
   `stream-probe-api` remains restricted to the original four-mini C3 serving

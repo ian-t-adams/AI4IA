@@ -712,13 +712,18 @@ def gateway_off_release(revision: dict) -> bool:
 
 def gateway_on_release(revision: dict) -> bool:
     """Only the exact retained C3 revision is a gateway-on recovery target."""
+    return (revision.get("name") == C3_REVISION and ready(revision)
+            and gateway_on_template(revision, DEPLOYMENTS_BYTES.decode()))
+
+
+def gateway_on_template(revision: dict, deployments: str) -> bool:
+    """Pinned identity/configuration only; a broken serving C4 may need rollback."""
     containers = ((revision.get("properties") or {}).get("template") or {}).get("containers") or []
     manifest = env_value(revision, "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST")
-    return (revision.get("name") == C3_REVISION and ready(revision)
-            and len(containers) == 1 and containers[0].get("name") == "api"
+    return (len(containers) == 1 and containers[0].get("name") == "api"
             and containers[0].get("image") == IMAGES["api"]
             and env_value(revision, "AI4IA_SHARED_GATEWAY_ENABLED") == "true"
-            and env_value(revision, "AI4IA_SHARED_GATEWAY_DEPLOYMENTS") == DEPLOYMENTS_BYTES.decode()
+            and env_value(revision, "AI4IA_SHARED_GATEWAY_DEPLOYMENTS") == deployments
             and env_value(revision, "AI4IA_CHAT_PILOT_ISOLATION_ENABLED") in (None, "false")
             and isinstance(manifest, str) and len(manifest.encode("utf-8")) == MANIFEST_SIZE
             and hashlib.sha256(manifest.encode("utf-8")).hexdigest() == MANIFEST_SHA256)
@@ -2009,16 +2014,22 @@ class Release:
         target = self.arm.get(f"{app_id}/revisions/{C3_REVISION}", phase="read")
         if not gateway_on_release(target):
             raise Refused("rollback-target")
+        if serving != C3_REVISION and not cutover().stale_template_diff_ok(
+                target["properties"]["template"], current["properties"]["template"], serving):
+            raise Refused("rollback-target")
         if serving == C3_REVISION:
             self.step("rollback-noop", revision=C3_REVISION)
             return
         self.gate.require()
         self.gate.require_fresh()
+        target_now = self.arm.get(f"{app_id}/revisions/{C3_REVISION}", phase="reread")
+        serving_now = self.arm.get(f"{app_id}/revisions/{serving}", phase="reread")
         if (projection(self.arm.get(app_id, phase="reread")) != projection(app)
-                or not gateway_on_release(self.arm.get(
-                    f"{app_id}/revisions/{C3_REVISION}", phase="reread"))
-                or not self.c4_candidate(self.arm.get(
-                    f"{app_id}/revisions/{serving}", phase="reread"), app["name"])):
+                or not gateway_on_release(target_now)
+                or not self.c4_candidate(serving_now, app["name"])
+                or not template_matches(target_now["properties"]["template"], target["properties"]["template"])
+                or not cutover().stale_template_diff_ok(
+                    target_now["properties"]["template"], serving_now["properties"]["template"], serving)):
             raise Refused("rollback-target")
         self.step("rollback-c4", write="PATCH", revision=C3_REVISION)
         self.arm.write("PATCH", app_id, {"location": app["location"], "properties": {
@@ -2044,15 +2055,7 @@ class Release:
         if (selected != sorted(set(selected)) or not set(DEPLOYMENTS) < set(selected)
                 or not set(selected) <= set(C4_DEPLOYMENTS)):
             return False
-        # Qualify the unchanged protected C3 shape after removing only C4's opt-in delta.
-        from copy import deepcopy
-
-        prior = deepcopy(rev)
-        prior["name"] = C3_REVISION
-        for item in prior["properties"]["template"]["containers"][0]["env"]:
-            if item.get("name") == "AI4IA_SHARED_GATEWAY_DEPLOYMENTS":
-                item["value"] = DEPLOYMENTS_BYTES.decode()
-        return gateway_on_release(prior)
+        return gateway_on_template(rev, value)
 
     def recover_deactivate(self, target: str) -> None:
         app_id = APPS["api"]
@@ -2066,9 +2069,10 @@ class Release:
         candidate = self.arm.get(f"{app_id}/revisions/{target}", phase="read")
         if (app["properties"]["configuration"].get("activeRevisionsMode") != "Multiple"
                 or target in (serving, R1_REVISION, C3_REVISION)
-                or not cutover().stale_candidate_name(app["name"], target)
+                or not self.c4_candidate(candidate, app["name"])
+                or not target.startswith(app["name"] + "--c4-" + self.env["GITHUB_SHA"][:7] + "-")
                 or not traffic_is(app, serving) or traffic_references(app, target)
-                or not (gateway_off_release(rev) or gateway_on_release(rev))
+                or not gateway_on_release(rev)
                 or not cutover().stale_template_diff_ok(
                     rev["properties"]["template"], candidate["properties"]["template"], target)):
             raise Refused("deactivate-target")
