@@ -2703,12 +2703,84 @@ Run the stages in this order, stopping at the first failure: `c1-web`,
   exactly the four `gpt-5.4-mini` opt-in deployments. It promotes the new
   revision only after the smoke below passes. The C2 revision stays active as
   the immediate rollback.
+- **C4 (source-only, promotion blocked)** requires the exact retained C3 revision
+  `ca-api-private-slurmfactory--c3-d6f03ff-82642864`, the released API image,
+  selector `true`, the byte-exact four-mini allowlist and the existing manifest.
+  R1 `ca-api-private-slurmfactory--c2-019c61c-53282221` must remain active,
+  gateway-off and untrafficked. C4 widens only the deployment CSV: the sorted
+  22-row Stage A set comprises four rows each for `gpt-5.4-mini`, `gpt-5.4`,
+  `gpt-5-mini` and `model-router`, and three each for `gpt-5.2` and
+  `gpt-5.4-nano` (no Sweden DataZone row for those last two). The manifest
+  (`94c2edf581b40a2677f3f90fad76eb2fc957478e5969c5007132d35040e72cb5`,
+  24,569 bytes) and sidecar
+  (`f73a55378dbe418e92ca4ea3d0bc8e30ef6ae09778f3aebddc3525e5b571ecc4`,
+  120,445 bytes) are unchanged; every inventory row must resolve through that
+  pinned manifest. The exact CSV digest is derived by the source and retained
+  in the receipt.
+
+  At 0% traffic, each included row must pass one `ModelGatewayClient.complete()`
+  and one normal `ModelGatewayClient.stream()` call. All these catalog rows use
+  the ordinary streaming UI (`app/web/src/lib/api.ts` sends `stream: true`;
+  `routers/_chat_streaming.py` calls `gateway.stream`). This is why the full
+  set requires 44 calls, not because every possible provider supports streaming.
+  Each call uses a fixed synthetic prompt, a bounded output limit, one
+  application request per mode and at most two per deployment. The exec deadline
+  scales with the selected set. Any failure stops the sequence without retry,
+  fallback or automatic narrowing. Optional `--c4-exclude-deployments` is an
+  explicitly reviewed, sorted, unique CSV drawn only from the 18 additions;
+  it never removes a C3 row. Reported exclusions are not qualified routes.
+
+  Native response `model` is compared in memory with the same response surfaced
+  by the normal app client, including model-router; only booleans are retained.
+  This proves app passthrough, not which backend served it. `x-S7P-ID` is retained
+  only as a presence boolean, never route identity. **No trusted per-request
+  backend deployment/account/region evidence is available.** Receipts explicitly
+  say `backend_identity: "unavailable"` and usage remains null/unverified.
+  Configured bindings, provider headers and aggregate metric counts cannot prove
+  absence of regional substitution or balanced route swaps. Consequently C4
+  unconditionally refuses promotion, even after 44 successful calls, then
+  deactivates only its unpromoted candidate under the fresh-state guard.
+  C3 stays at 100%; R1 is retained. There is no flag or receipt override.
+
+  The distinct **`rollback-c4-api`** recovery accepts only a qualified active C4
+  serving revision and the exact still-active, healthy C3 with its image,
+  selector, allowlist and manifest pins. It writes one traffic PATCH to C3 100%,
+  verifies traffic and C3 health again, and never replays an uncertain write.
+  It does not deactivate C3, R1 or the rolled-back C4. Legacy `rollback-api`
+  continues to accept gateway-off release targets only; it cannot select C3.
+  **`deactivate-api`** can then deactivate a reviewed untrafficked lane candidate
+  while qualified C3 or a released gateway-off revision serves 100%. It refuses
+  C3, R1, the serving revision, non-lane names and protected-template drift.
+  Deactivation never deletes a revision. A fresh `c4-api` dispatch uses a new
+  candidate suffix and repeats every guard and probe; it does not replay the old
+  candidate's work. Promotion requires a separately reviewed adequate
+  same-request route-evidence design; no metrics-only acceptance is implemented.
+
+  These are operator commands for a separately approved run, **not an
+  authorization to dispatch**. Pin the wrapper to the exact reviewed main
+  commit and verify its bytes before using it. `$ReviewedSha` must be the full
+  40-character commit matching the dispatched main head; never substitute an
+  unreviewed newer head. The existing wrapper holds only the release gate and
+  clears it after the bound run:
+
+  ```powershell
+  $ReviewedSha = "<full-reviewed-main-sha>"
+  python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage c4-api --rollback-revision ca-api-private-slurmfactory--c3-d6f03ff-82642864
+  # Separately reviewed recovery, only if a qualified C4 is actually serving:
+  python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage rollback-c4-api --rollback-revision ca-api-private-slurmfactory--c3-d6f03ff-82642864
+  # After readback of C3 100%, explicitly name the untrafficked candidate:
+  python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage deactivate-api --rollback-revision "<untrafficked-lane-candidate>"
+  ```
+
+  `stream-probe-api` remains restricted to the original four-mini C3 serving
+  shape; C4's separate candidate smoke covers its own complete/stream set.
 
 The `production` secrets `AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST` and
-`AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64` are passed only to `c3-api`.
+`AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64` are passed only to `c3-api` and
+`c4-api`.
 Both are size- and SHA-256-checked, and the sidecar is decompressed with a
 bound. The receipt records only their hashes. Payloads are built by the
-reviewed C1/C2/C3 helper, including the API catalog's C3 validation.
+reviewed C1/C2/C3/C4 helper, including the API catalog's shared-gateway validation.
 
 The R0 app/revision guard and candidate/restore `template_matches` checks share
 one comparison-only compatibility rule. They tolerate absent/null/empty dictionary

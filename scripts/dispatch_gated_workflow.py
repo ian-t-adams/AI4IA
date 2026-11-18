@@ -41,8 +41,9 @@ WORKFLOWS = {
     "hosted-web-one-read.yml": "AI4IA_HOSTED_WEB_READ_ENABLED",
     "hosted-gateway-permissions-read.yml": "AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED",
 }
-STAGES = ("c1-web", "c2-web", "c1-api", "c2-api", "c3-api", "rollback-api", "stream-probe-api")
-ROLLBACK_STAGES = ("rollback-api", "stream-probe-api")
+STAGES = ("c1-web", "c2-web", "c1-api", "c2-api", "c3-api", "c4-api",
+          "rollback-api", "rollback-c4-api", "deactivate-api", "stream-probe-api")
+ROLLBACK_STAGES = ("rollback-api", "rollback-c4-api", "deactivate-api", "c4-api", "stream-probe-api")
 READ_KINDS = ("shared-permissions", "web-state")
 REVISION = re.compile(r"[a-z0-9][a-z0-9-]{0,62}--[a-z0-9-]{1,80}")
 
@@ -76,12 +77,19 @@ def default_gh(args: Sequence[str], *, timeout: float = GH_TIMEOUT_SECONDS) -> s
 
 def dispatch_inputs(workflow: str, reviewed_sha: str, stage: str | None,
                     rollback_revision: str | None, read_kind: str | None = None,
-                    probe_revision: str | None = None) -> list[str]:
+                    probe_revision: str | None = None, c4_exclude_deployments: str | None = None) -> list[str]:
     if workflow not in WORKFLOWS:
         raise DispatchError("workflow is not an allowlisted gated workflow")
     if not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
         raise DispatchError("reviewed SHA must be 40 lowercase hex characters")
     fields = ["-f", "admit=true", "-f", f"reviewed_sha={reviewed_sha}"]
+    if c4_exclude_deployments:
+        rows = c4_exclude_deployments.split(",")
+        if (workflow != "hosted-gateway-release.yml" or stage != "c4-api"
+                or rows != sorted(set(rows)) or len(c4_exclude_deployments) > 4096
+                or any(not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,127}", row) for row in rows)):
+            raise DispatchError("C4 exclusions require a sorted unique deployment CSV on c4-api")
+        fields += ["-f", f"c4_exclude_deployments={c4_exclude_deployments}"]
     if read_kind is not None:
         if workflow != "hosted-gateway-permissions-read.yml" or read_kind not in READ_KINDS:
             raise DispatchError("read kind requires the fixed gateway inspection workflow")
@@ -95,7 +103,7 @@ def dispatch_inputs(workflow: str, reviewed_sha: str, stage: str | None,
                 raise DispatchError(f"{stage} requires one named rollback revision")
             fields += ["-f", f"rollback_revision={rollback_revision}"]
         elif rollback_revision:
-            raise DispatchError("rollback revision is accepted only for rollback-api/stream-probe-api")
+            raise DispatchError("rollback revision is not accepted for this stage")
         if stage == "stream-probe-api":
             if (not probe_revision or not REVISION.fullmatch(probe_revision)
                     or probe_revision == rollback_revision):
@@ -154,11 +162,13 @@ def runs(gh: Gh, repo: str, workflow: str) -> list[dict]:
 
 def dispatch(workflow: str, reviewed_sha: str, stage: str | None = None,
              rollback_revision: str | None = None, *, read_kind: str | None = None,
-             probe_revision: str | None = None, repo: str = REPOSITORY, gh: Gh = default_gh,
+             probe_revision: str | None = None, c4_exclude_deployments: str | None = None,
+             repo: str = REPOSITORY, gh: Gh = default_gh,
              sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
              bind_seconds: float = 120, timeout_seconds: float = 3600, poll_seconds: float = 15,
              log: Callable[[str], None] = lambda message: print(message, file=sys.stderr)) -> dict:
-    fields = dispatch_inputs(workflow, reviewed_sha, stage, rollback_revision, read_kind, probe_revision)
+    fields = dispatch_inputs(workflow, reviewed_sha, stage, rollback_revision, read_kind,
+                             probe_revision, c4_exclude_deployments)
     gate = WORKFLOWS[workflow]
     held = present_gates(gh, repo)
     if held:
@@ -233,6 +243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--stage", choices=STAGES)
     parser.add_argument("--rollback-revision")
     parser.add_argument("--probe-revision")
+    parser.add_argument("--c4-exclude-deployments")
     parser.add_argument("--read-kind", choices=READ_KINDS)
     parser.add_argument("--repo", default=REPOSITORY)
     parser.add_argument("--timeout", type=float, default=3600)
@@ -243,6 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _sigterm)
     try:
         result = dispatch(args.workflow, args.reviewed_sha, args.stage, args.rollback_revision,
+                          c4_exclude_deployments=args.c4_exclude_deployments,
                           read_kind=args.read_kind, probe_revision=args.probe_revision, repo=args.repo, timeout_seconds=args.timeout,
                           gh=lambda gh_args: default_gh(gh_args, timeout=args.gh_timeout))
     except DispatchError as error:

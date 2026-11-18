@@ -220,6 +220,81 @@ def revision_inventory(names, *, observed_at=None, active_name="api--r0"):
     }
 
 
+class C4BuilderTests(unittest.TestCase):
+    def build(self, *, drift=None, exclude=False):
+        manifest_bytes, sidecar = synthetic_c3_inputs()
+        manifest = json.loads(manifest_bytes)
+        manifest["models"]["example-second-deployment"] = {
+            "kind": "deployment-name", "operations": ["/chat/completions"],
+            "targets": [{"deployment": "example-second-deployment", "sku": "GlobalStandard"}]}
+        manifest_bytes = json.dumps(manifest).encode()
+        patches = pin_synthetic_c3_inputs(manifest_bytes, sidecar)
+        with tempfile.TemporaryDirectory() as directory, patches[0], patches[1], \
+                synthetic_runtime_catalog(directory):
+            catalog = json.loads(runtime_catalog._PACKAGED.read_text())
+            second = copy.deepcopy(catalog["models"][0])
+            second["id"] = "example-second-model"
+            second["options"][0]["deploymentName"] = "example-second-deployment"
+            catalog["models"].append(second)
+            runtime_catalog._PACKAGED.write_text(json.dumps(catalog))
+            app, revision = c3_snapshot()
+            items = revision["properties"]["template"]["containers"][0]["env"]
+            for item in items:
+                if item["name"] == CUTOVER.C3_SELECTOR:
+                    item["value"] = "true"
+            items.extend([
+                {"name": CUTOVER.C3_DEPLOYMENTS, "value": C3_DEPLOYMENTS.decode()},
+                {"name": CUTOVER.C3_MANIFEST, "value": manifest_bytes.decode()}])
+            app["properties"]["template"] = copy.deepcopy(revision["properties"]["template"])
+            before = copy.deepcopy(revision)
+            selected = C3_DEPLOYMENTS if exclude else C3_DEPLOYMENTS + b",example-second-deployment"
+            args = dict(
+                resource_id=app["id"], stage="C4", suffix="c4-aaaaaaa-123",
+                existing_revisions=revision_inventory(["api--r0"]),
+                manifest_bytes=manifest_bytes, classification_sidecar_bytes=sidecar,
+                deployments_bytes=selected, deployments_sha256=hashlib.sha256(selected).hexdigest(),
+                prior_deployments_bytes=C3_DEPLOYMENTS,
+                prior_deployments_sha256=hashlib.sha256(C3_DEPLOYMENTS).hexdigest())
+            if drift in ("selector", "prior", "manifest", "duplicate"):
+                name = {"selector": CUTOVER.C3_SELECTOR, "prior": CUTOVER.C3_DEPLOYMENTS,
+                        "manifest": CUTOVER.C3_MANIFEST, "duplicate": CUTOVER.C3_SELECTOR}[drift]
+                item = next(item for item in items if item["name"] == name)
+                if drift == "duplicate":
+                    items.append(copy.deepcopy(item))
+                else:
+                    item["value"] += " "
+                app["properties"]["template"] = copy.deepcopy(revision["properties"]["template"])
+            elif drift == "unresolved":
+                args["deployments_bytes"] += b",unresolved"
+                args["deployments_sha256"] = hashlib.sha256(args["deployments_bytes"]).hexdigest()
+            elif drift == "prior-hash":
+                args["prior_deployments_sha256"] = "0" * 64
+            elif drift == "protected":
+                app["properties"]["template"]["scale"]["minReplicas"] = 2
+            result = CUTOVER.build_payload(app, revision, **args)
+            return result, before, revision
+
+    def test_widen_changes_only_allowlist_and_suffix_and_preserves_input(self):
+        result, before, after = self.build()
+        self.assertEqual(before, after)
+        expected = CUTOVER.writable_template_projection(before["properties"]["template"])
+        expected["revisionSuffix"] = "c4-aaaaaaa-123"
+        for item in expected["containers"][0]["env"]:
+            if item["name"] == CUTOVER.C3_DEPLOYMENTS:
+                item["value"] = "example-chat-deployment,example-second-deployment"
+        self.assertEqual(result["properties"]["template"], expected)
+        self.assertEqual(result["properties"]["configuration"]["ingress"]["traffic"],
+                         [{"revisionName": "api--r0", "weight": 100}])
+
+    def test_refuses_prior_pin_drift_unresolved_and_non_widening(self):
+        for drift in ("selector", "prior", "manifest", "duplicate", "unresolved",
+                      "prior-hash", "protected"):
+            with self.subTest(drift=drift), self.assertRaises(ValueError):
+                self.build(drift=drift)
+        with self.assertRaises(ValueError):
+            self.build(exclude=True)
+
+
 class CutoverTests(unittest.TestCase):
     def build(self, app, revision, **kwargs):
         return CUTOVER.build_payload(app, revision, resource_id=app["id"], **kwargs)

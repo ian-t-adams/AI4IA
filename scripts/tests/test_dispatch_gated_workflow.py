@@ -202,6 +202,31 @@ class DispatchWrapperTests(unittest.TestCase):
             self.assertIn(field, dispatched)
         self.assertEqual(gh.variables, {})
 
+    def test_c4_and_recovery_forward_explicit_targets_and_exclusions(self):
+        for stage in ("c4-api", "rollback-c4-api", "deactivate-api"):
+            gh = FakeGh(polls=1)
+            extra = {"c4_exclude_deployments": "gpt-5.2-slurmfactory-eastus2-dz"} if stage == "c4-api" else {}
+            run(gh, WORKFLOW, SHA, stage, "ca-api--c3-reviewed", **extra)
+            dispatched = next(c for c in gh.calls if c[:2] == ["workflow", "run"])
+            self.assertIn(f"stage={stage}", dispatched)
+            self.assertIn("rollback_revision=ca-api--c3-reviewed", dispatched)
+            if extra:
+                self.assertIn("c4_exclude_deployments=" + extra["c4_exclude_deployments"], dispatched)
+            self.assertEqual(gh.variables, {})
+
+    def test_c4_refusals_precede_any_gh_call(self):
+        for stage, target, exclude in (
+            ("c4-api", None, None), ("rollback-c4-api", None, None),
+            ("deactivate-api", "../target", None),
+            ("c4-api", "ca-api--c3-reviewed", "b,a"),
+            ("c4-api", "ca-api--c3-reviewed", "a,a"),
+            ("rollback-api", "ca-api--r1", "a"),
+        ):
+            gh = FakeGh()
+            with self.subTest(stage=stage, exclude=exclude), self.assertRaises(WRAPPER.DispatchError):
+                run(gh, WORKFLOW, SHA, stage, target, c4_exclude_deployments=exclude)
+            self.assertEqual(gh.calls, [])
+
     def test_one_read_uses_its_own_gate(self):
         gh = FakeGh(polls=1)
         result = run(gh, "hosted-web-one-read.yml", SHA)

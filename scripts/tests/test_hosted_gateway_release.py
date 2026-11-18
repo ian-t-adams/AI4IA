@@ -216,6 +216,438 @@ class AdmissionTests(unittest.TestCase):
         self.assertLessEqual(len(APP + "--" + suffix), 64)
 
 
+def passing_c4_smoke(*_args):
+    deployments = _args[-1] if _args else release.C4_DEPLOYMENTS
+    return {"phase": "complete", "base": "c" * 64, "calls": [
+        {"deployment": d, "mode": mode, "status": 200, "shared": True, "host": True,
+         "route": True, "model_unchanged": True, "done": True,
+         "backend_identity": "unavailable", "usage": None}
+        for d in deployments for mode in ("complete", "stream")]}
+
+
+class C4FlowTests(unittest.TestCase):
+    MANIFEST = '{"synthetic":"manifest"}'
+
+    def setUp(self):
+        data = self.MANIFEST.encode()
+        p = mock.patch.multiple(release, MANIFEST_SIZE=len(data),
+                                MANIFEST_SHA256=hashlib.sha256(data).hexdigest())
+        p.start()
+        self.addCleanup(p.stop)
+
+    def serving(self):
+        items = [
+            {"name": "AZURE_CLIENT_ID", "value": "a" * 36},
+            {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "true"},
+            {"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": release.DEPLOYMENTS_BYTES.decode()},
+            {"name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST", "value": self.MANIFEST},
+        ]
+        arm = FakeArm(image=release.IMAGES["api"], extra_env=items)
+        rev = arm.revisions.pop(R0)
+        rev["name"] = release.C3_REVISION
+        rev["id"] = release.APPS["api"] + "/revisions/" + release.C3_REVISION
+        arm.revisions[release.C3_REVISION] = rev
+        arm.revisions[release.R1_REVISION] = arm.revision(
+            release.R1_REVISION, release.IMAGES["api"], [])
+        arm.app["properties"].update(latestRevisionName=release.C3_REVISION,
+                                     latestReadyRevisionName=release.C3_REVISION)
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": release.C3_REVISION, "weight": 100}]
+        return arm
+
+    def runner(self, arm, smoke=passing_c4_smoke, **overrides):
+        values = env(AI4IA_RELEASE_STAGE="c4-api", AI4IA_ROLLBACK_REVISION=release.C3_REVISION,
+                     **overrides)
+        receipt = {"steps": []}
+        return release.Release(arm, values, receipt, now=lambda: NOW, c4_smoke=smoke), receipt
+
+    def build(self, app, rev, **kwargs):
+        template = copy.deepcopy(rev["properties"]["template"])
+        template["revisionSuffix"] = kwargs["suffix"]
+        for item in template["containers"][0]["env"]:
+            if item["name"] == "AI4IA_SHARED_GATEWAY_DEPLOYMENTS":
+                item["value"] = kwargs["deployments_bytes"].decode()
+        return {"location": app["location"], "properties": {
+            "configuration": {"ingress": {"traffic": [
+                {"revisionName": rev["name"], "weight": 100}]}}, "template": template}}
+
+    def inputs(self):
+        return dict(manifest_bytes=b"m", classification_sidecar_bytes=b"s",
+                    deployments_bytes=release.C4_DEPLOYMENTS_BYTES,
+                    deployments_sha256=release.C4_DEPLOYMENTS_SHA256,
+                    prior_deployments_bytes=release.DEPLOYMENTS_BYTES,
+                    prior_deployments_sha256=release.DEPLOYMENTS_SHA256)
+
+    def test_exact_c3_shape_refuses_every_pin_drift(self):
+        arm = self.serving()
+        rev = arm.revisions[release.C3_REVISION]
+        self.assertTrue(release.gateway_on_release(rev))
+        for field in ("name", "image", "active", "selector", "deployments", "manifest", "duplicate", "pilot"):
+            changed = copy.deepcopy(rev)
+            container = changed["properties"]["template"]["containers"][0]
+            if field == "name":
+                changed["name"] = APP + "--c3-other"
+            elif field == "image":
+                container["image"] = OLD_IMAGE
+            elif field == "active":
+                changed["properties"]["active"] = False
+            elif field == "duplicate":
+                container["env"].append(copy.deepcopy(container["env"][1]))
+            elif field == "pilot":
+                container["env"].append({"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "true"})
+            else:
+                index = {"selector": 1, "deployments": 2, "manifest": 3}[field]
+                container["env"][index]["value"] += " "
+            with self.subTest(field=field):
+                self.assertFalse(release.gateway_on_release(changed))
+
+    def test_c4_admission_and_explicit_exclusions(self):
+        values = env(AI4IA_RELEASE_STAGE="c4-api", AI4IA_ROLLBACK_REVISION=release.C3_REVISION)
+        self.assertEqual(release.validate_environment(values), "c4-api")
+        self.assertEqual(len(release.c4_deployments(values)), 22)
+        addition = sorted(set(release.C4_DEPLOYMENTS) - set(release.DEPLOYMENTS))[0]
+        values["AI4IA_C4_EXCLUDE_DEPLOYMENTS"] = addition
+        self.assertNotIn(addition, release.c4_deployments(values))
+        for bad in (release.DEPLOYMENTS[0], "unknown", addition + "," + addition, addition + ","):
+            with self.subTest(bad=bad), self.assertRaises(release.Refused):
+                release.c4_deployments({**values, "AI4IA_C4_EXCLUDE_DEPLOYMENTS": bad})
+        for target in ("", release.R1_REVISION, APP + "--c3-other"):
+            with self.subTest(target=target), self.assertRaises(release.Refused):
+                release.validate_environment({**values, "AI4IA_ROLLBACK_REVISION": target})
+
+    def test_c4_smokes_at_zero_and_cannot_promote_even_with_all_successes(self):
+        for failure in ("none", "partial", "exception"):
+            arm = self.serving()
+            r1 = copy.deepcopy(arm.revisions[release.R1_REVISION])
+            seen = []
+
+            def smoke(_arm, _app, revision, deployments):
+                self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+                self.assertNotEqual(revision, release.C3_REVISION)
+                seen.extend(deployments)
+                if failure == "exception":
+                    raise release.Refused("smoke-disconnected")
+                result = passing_c4_smoke(deployments)
+                if failure == "partial":
+                    result["calls"].pop()
+                return result
+
+            runner, receipt = self.runner(arm, smoke=smoke)
+            with mock.patch.object(release, "build_payload", self.build), \
+                    self.subTest(failure=failure), self.assertRaises(release.Refused) as refused:
+                runner.create_and_promote("api", "C4", **self.inputs())
+            self.assertEqual(refused.exception.phase, {
+                "none": "c4-backend-identity-unavailable", "partial": "smoke",
+                "exception": "smoke-disconnected"}[failure])
+            self.assertEqual(seen, list(release.C4_DEPLOYMENTS))
+            self.assertEqual([r[3] for r in arm.requests], ["create", "deactivate-unpromoted"])
+            self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+            self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+            self.assertEqual(arm.revisions[release.R1_REVISION], r1)
+            self.assertTrue(release.gateway_on_release(arm.revisions[release.C3_REVISION]))
+
+    def test_c4_requires_healthy_untrafficked_r1_before_any_write(self):
+        for drift in ("r1", "r0", "traffic"):
+            arm = self.serving()
+            if drift == "r1":
+                arm.revisions[release.R1_REVISION]["properties"]["active"] = False
+            elif drift == "r0":
+                arm.revisions[release.C3_REVISION]["properties"]["template"]["containers"][0]["image"] = OLD_IMAGE
+            else:
+                arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+                    {"revisionName": release.R1_REVISION, "weight": 100}]
+            runner, _ = self.runner(arm)
+            with mock.patch.object(release, "build_payload", self.build), \
+                    self.subTest(drift=drift), self.assertRaises(release.Refused):
+                runner.create_and_promote("api", "C4", **self.inputs())
+            self.assertEqual(arm.writes, 0)
+
+    def test_run_validates_all_manifest_rows_including_excluded_before_create(self):
+        addition = sorted(set(release.C4_DEPLOYMENTS) - set(release.DEPLOYMENTS))[0]
+        for missing in (None, addition):
+            arm = self.serving()
+            runner, _ = self.runner(arm, AI4IA_C4_EXCLUDE_DEPLOYMENTS=addition)
+            manifest = types.SimpleNamespace(resolve_shared_model_key=mock.Mock(
+                side_effect=lambda d, *_a: None if d == missing else d))
+            builder = release.cutover()
+            with (mock.patch.object(release, "cutover", return_value=builder),
+                  mock.patch.object(builder, "load_c3_contract", return_value=("", manifest)),
+                  mock.patch.object(release, "load_manifest", return_value=b"m"),
+                  mock.patch.object(release, "load_sidecar", return_value=b"s"),
+                  mock.patch.object(runner, "create_and_promote") as create):
+                if missing:
+                    with self.assertRaisesRegex(release.Refused, "c4-manifest-inventory"):
+                        runner.run("c4-api")
+                    create.assert_not_called()
+                else:
+                    runner.run("c4-api")
+                    create.assert_called_once()
+                    self.assertNotIn(addition, create.call_args.kwargs["deployments_bytes"].decode().split(","))
+                    self.assertEqual(manifest.resolve_shared_model_key.call_count, 22)
+            self.assertEqual(arm.writes, 0)
+
+
+class C4ProgramTests(unittest.TestCase):
+    def run_program(self, *, status=200, missing_done=False, changed_model=False,
+                    retry=False, cap=None, selected=None, request_model=None):
+        from scripts.tests.test_gateway_cutover import API_CLIENT_ID, synthetic_c3_inputs
+
+        import httpx
+        from ai4ia_api.catalog import ModelCatalog
+        from ai4ia_api.config import Settings
+        from ai4ia_api.gateway.client import ModelGatewayClient
+
+        deployments = selected or release.C4_DEPLOYMENTS
+        manifest, _ = synthetic_c3_inputs()
+        doc = json.loads(manifest)
+        doc["models"] = {
+            d: {"kind": "deployment-name", "operations": ["/chat/completions"],
+                "targets": [{"deployment": d, "sku": release.C4_SKUS[d]}]}
+            for d in release.C4_DEPLOYMENTS}
+        manifest = json.dumps(doc)
+        settings = Settings(
+            _env_file=None, env="prod", auth_provider="entra", AZURE_CLIENT_ID=API_CLIENT_ID,
+            shared_gateway_enabled=True, shared_gateway_activation_manifest=manifest,
+            shared_gateway_deployments=",".join(deployments),
+            model_gateway_url="https://legacy.invalid", model_gateway_auth_mode="none")
+        catalog = ModelCatalog.model_validate({"models": [
+            {"id": d.split("-slurmfactory")[0], "displayName": "Synthetic", "category": "chat",
+             "format": "OpenAI", "api": "chat", "reasoningEffort": ["none"],
+             "options": [{"deploymentName": d, "region": d.rsplit("-", 2)[1],
+                          "sku": release.C4_SKUS[d]}]} for d in deployments]})
+        requests = []
+        real_async_client = httpx.AsyncClient
+
+        def respond(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            model = "native-selected-model-not-the-deployment-alias"
+            if status != 200:
+                return httpx.Response(status, json={"error": {"message": "synthetic"}})
+            if body.get("stream"):
+                event = {"model": model, "choices": [{"index": 0,
+                         "delta": {"content": "OK"}, "finish_reason": "stop"}]}
+                text = "data: " + json.dumps(event) + "\n\n"
+                if not missing_done:
+                    text += "data: [DONE]\n\n"
+                return httpx.Response(200, headers={"content-type": "text/event-stream",
+                                                  "x-S7P-ID": "correlation-only"},
+                                      text=text)
+            return httpx.Response(200, headers={"x-ms-region": "untrusted-region",
+                                               "x-deployment": "not-route-evidence"},
+                                  json={"model": model, "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}]})
+
+        def http_factory(**kwargs):
+            return real_async_client(**kwargs, transport=httpx.MockTransport(respond))
+
+        async def token(_scope):
+            return "synthetic"
+
+        def gateway_factory(*args, **kwargs):
+            client = ModelGatewayClient(*args, **kwargs, shared_gateway_token_provider=token)
+            original = client.complete
+
+            async def complete(**call):
+                result = await original(**call)
+                if retry:
+                    await original(**call)
+                if changed_model:
+                    result["model"] = "rewritten"
+                return result
+
+            client.complete = complete
+            if request_model is not None:
+                original_shared = client._shared_request
+
+                async def shared(*a, **k):
+                    request, url = await original_shared(*a, **k)
+                    request.json["model"] = request_model
+                    return request, url
+
+                client._shared_request = shared
+            return client
+
+        with (mock.patch("httpx.AsyncClient", http_factory),
+              mock.patch("ai4ia_api.config.get_settings", return_value=settings),
+              mock.patch("ai4ia_api.catalog.load_catalog", return_value=catalog),
+              mock.patch("ai4ia_api.gateway.client.ModelGatewayClient", gateway_factory),
+              mock.patch.object(release, "MANIFEST_SHA256", hashlib.sha256(manifest.encode()).hexdigest()),
+              mock.patch.object(release, "C4_MAX_REQUESTS_PER_ROUTE",
+                                release.C4_MAX_REQUESTS_PER_ROUTE if cap is None else cap),
+              mock.patch("sys.stdout") as output, mock.patch("logging.disable")):
+            program = release.c4_smoke_program(deployments)
+            exec(compile(program, "<c4-smoke>", "exec"), {})  # noqa: S102 - offline program with MockTransport
+        result = json.loads(output.write.call_args[0][0].split(release.C4_SMOKE_MARK)[1])
+        return result, requests
+
+    def test_normal_client_completes_and_streams_all_22_with_same_response_identity(self):
+        result, calls = self.run_program()
+        self.assertTrue(release.c4_smoke_passed(result, release.C4_DEPLOYMENTS), result)
+        self.assertEqual(len(calls), 44)
+        self.assertEqual([c["model"] for c in calls],
+                         [d for d in release.C4_DEPLOYMENTS for _ in range(2)])
+        self.assertTrue(all(c.get("max_completion_tokens", c.get("max_tokens"))
+                            == release.C4_MAX_OUTPUT_TOKENS for c in calls))
+        clean = release.sanitize_c4_smoke(result, release.C4_DEPLOYMENTS)
+        self.assertTrue(all(c["backend_identity"] == "unavailable" and c["usage"] is None
+                            for c in clean["calls"]))
+        self.assertNotIn("native-selected", json.dumps(clean))
+        self.assertNotIn("correlation-only", json.dumps(clean))
+
+    def test_failure_stops_immediately_without_retry_or_fallback(self):
+        for kwargs, expected_calls in (({"status": 429}, 1), ({"status": 400}, 1),
+                                       ({"missing_done": True}, 2),
+                                       ({"changed_model": True}, 1),
+                                       ({"request_model": "wrong-route"}, 0)):
+            with self.subTest(kwargs=kwargs):
+                result, calls = self.run_program(**kwargs)
+                self.assertFalse(release.c4_smoke_passed(result, release.C4_DEPLOYMENTS))
+                self.assertEqual(len(calls), expected_calls)
+                self.assertLessEqual(len(result["calls"]), 2)
+
+    def test_per_route_cap_and_per_mode_no_replay_are_enforced_before_transport(self):
+        # Same normal-client fixture: only the allowed route request budget changes.
+        under, calls = self.run_program(cap=2)
+        self.assertTrue(release.c4_smoke_passed(under, release.C4_DEPLOYMENTS))
+        self.assertEqual(len(calls), 44)
+        over, calls = self.run_program(cap=1)
+        self.assertFalse(release.c4_smoke_passed(over, release.C4_DEPLOYMENTS))
+        self.assertEqual(len(calls), 1)
+        retried, calls = self.run_program(retry=True)
+        self.assertFalse(release.c4_smoke_passed(retried, release.C4_DEPLOYMENTS))
+        self.assertEqual(len(calls), 1)
+
+    def test_explicit_subset_still_requires_both_paths_and_rejects_bad_rows(self):
+        selected = tuple(d for d in release.C4_DEPLOYMENTS if not d.startswith("gpt-5.2-"))
+        result, calls = self.run_program(selected=selected)
+        self.assertTrue(release.c4_smoke_passed(result, selected))
+        self.assertEqual(len(calls), 2 * len(selected))
+        result["calls"].append({"deployment": "private-unexpected", "mode": "stream"})
+        clean = release.sanitize_c4_smoke(result, selected)
+        self.assertFalse(release.c4_smoke_passed(clean, selected))
+        self.assertEqual(clean["calls"][-1], {})
+        self.assertNotIn("private-unexpected", json.dumps(clean))
+
+    def test_all_44_results_are_required_and_private_values_never_reach_receipts(self):
+        full = passing_c4_smoke()
+        self.assertTrue(release.c4_smoke_passed(full, release.C4_DEPLOYMENTS))
+        for index in range(44):
+            broken = copy.deepcopy(full)
+            broken["calls"][index]["model_unchanged"] = False
+            with self.subTest(index=index):
+                self.assertFalse(release.c4_smoke_passed(broken, release.C4_DEPLOYMENTS))
+        for mutation in ("duplicate", "missing", "extra"):
+            broken = copy.deepcopy(full)
+            if mutation == "duplicate":
+                broken["calls"][-1] = broken["calls"][0]
+            elif mutation == "missing":
+                broken["calls"].pop()
+            else:
+                broken["calls"].append({})
+            with self.subTest(mutation=mutation):
+                clean = release.sanitize_c4_smoke(broken, release.C4_DEPLOYMENTS)
+                self.assertFalse(release.c4_smoke_passed(clean, release.C4_DEPLOYMENTS))
+
+
+class C4RecoveryTests(unittest.TestCase):
+    MANIFEST = C4FlowTests.MANIFEST
+    setUp = C4FlowTests.setUp
+    serving = C4FlowTests.serving
+    runner = C4FlowTests.runner
+    build = C4FlowTests.build
+    inputs = C4FlowTests.inputs
+
+    def candidate(self, arm):
+        name = APP + "--c4-aaaaaaa-1234"
+        rev = copy.deepcopy(arm.revisions[release.C3_REVISION])
+        rev.update(name=name, id=release.APPS["api"] + "/revisions/" + name)
+        for item in rev["properties"]["template"]["containers"][0]["env"]:
+            if item["name"] == "AI4IA_SHARED_GATEWAY_DEPLOYMENTS":
+                item["value"] = release.C4_DEPLOYMENTS_BYTES.decode()
+        arm.revisions[name] = rev
+        arm.app["properties"]["template"] = copy.deepcopy(rev["properties"]["template"])
+        arm.app["properties"].update(latestRevisionName=name, latestReadyRevisionName=name)
+        return name
+
+    def test_distinct_c4_rollback_to_active_c3_and_readback(self):
+        arm = self.serving()
+        candidate = self.candidate(arm)
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": candidate, "weight": 100}]
+        runner, receipt = self.runner(arm)
+        runner.run("rollback-c4-api")
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        self.assertTrue(release.gateway_on_release(arm.revisions[release.C3_REVISION]))
+        self.assertTrue(arm.revisions[candidate]["properties"]["active"])
+        self.assertEqual([r[3] for r in arm.requests], ["rollback-c4"])
+        self.assertEqual(receipt["serving"], release.C3_REVISION)
+        # The old gateway-off rollback stage cannot accidentally authorize C3.
+        with self.assertRaisesRegex(release.Refused, "rollback-target"):
+            runner.rollback(release.C3_REVISION)
+
+    def test_c4_rollback_refuses_bad_target_and_never_replays_uncertain_write(self):
+        for failure in ("unhealthy", "manifest", "unknown-write", "readback"):
+            arm = self.serving()
+            candidate = self.candidate(arm)
+            arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+                {"revisionName": candidate, "weight": 100}]
+            if failure == "unhealthy":
+                arm.revisions[release.C3_REVISION]["properties"]["healthState"] = "Unhealthy"
+            if failure == "manifest":
+                arm.revisions[release.C3_REVISION]["properties"]["template"]["containers"][0]["env"][-1]["value"] += " "
+            if failure == "unknown-write":
+                arm.fail["rollback-c4"] = release.Uncertain("rollback-c4")
+            if failure == "readback":
+                original = arm.get
+
+                def bad_readback(path, *args, **kwargs):
+                    result = original(path, *args, **kwargs)
+                    if path == release.APPS["api"] and kwargs.get("phase") == "readback":
+                        result["properties"]["configuration"]["ingress"]["traffic"] = []
+                    return result
+
+                arm.get = bad_readback
+            runner, _ = self.runner(arm)
+            with self.subTest(failure=failure), self.assertRaises(release.Refused):
+                runner.run("rollback-c4-api")
+            self.assertEqual(arm.writes, int(failure in ("unknown-write", "readback")))
+
+    def test_deactivate_then_fresh_c4_run_smokes_again_without_replay(self):
+        arm = self.serving()
+        candidate = self.candidate(arm)
+        runner, _ = self.runner(arm)
+        # Active stale latest cannot be reused by a new C4 run.
+        with self.assertRaises(release.Refused):
+            runner.snapshot("api", "C4")
+        runner.recover_deactivate(candidate)
+        self.assertFalse(arm.revisions[candidate]["properties"]["active"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        # A fresh run builds a new candidate and must repeat the entire smoke.
+        seen = []
+
+        def smoke(*args):
+            seen.extend(args[-1])
+            return passing_c4_smoke(*args)
+
+        runner, receipt = self.runner(arm, smoke=smoke)
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.Refused, "c4-backend-identity-unavailable"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        self.assertNotEqual(receipt["candidate"], candidate)
+        self.assertEqual(len(seen), 22)
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+
+    def test_deactivate_refuses_serving_protected_non_lane_and_drift(self):
+        for bad in (release.C3_REVISION, release.R1_REVISION, APP + "--azd-123"):
+            arm = self.serving()
+            arm.revisions.setdefault(bad, arm.revision(bad, release.IMAGES["api"], []))
+            runner, _ = self.runner(arm)
+            with self.subTest(bad=bad), self.assertRaises(release.Refused):
+                runner.recover_deactivate(bad)
+            self.assertEqual(arm.writes, 0)
+
+
 class InputTests(unittest.TestCase):
     def test_sidecar_decodes_exact_bounded_bytes(self):
         data = b'{"x":1}' * 10

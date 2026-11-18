@@ -14,14 +14,18 @@ on:
       stage:
         description: "Exactly one release stage"
         type: choice
-        options: [c1-web, c2-web, c1-api, c2-api, c3-api, rollback-api, stream-probe-api]
+        options: [c1-web, c2-web, c1-api, c2-api, c3-api, c4-api, rollback-api, rollback-c4-api, deactivate-api, stream-probe-api]
         required: true
       rollback_revision:
-        description: "rollback-api / stream-probe-api: named active gateway-off API revision (R1)"
+        description: "Recovery target; c4-api / rollback-c4-api: exact C3; deactivate-api: untrafficked candidate"
         type: string
         default: ""
       probe_revision:
         description: "stream-probe-api only: named serving C3 API revision (no app writes; paid inference)"
+        type: string
+        default: ""
+      c4_exclude_deployments:
+        description: "c4-api only: reviewed sorted CSV exclusions from the 18 additions; never removes C3 rows"
         type: string
         default: ""
 
@@ -83,6 +87,7 @@ jobs:
       AI4IA_RELEASE_STAGE: ${{ inputs.stage }}
       AI4IA_ROLLBACK_REVISION: ${{ inputs.rollback_revision }}
       AI4IA_PROBE_REVISION: ${{ inputs.probe_revision }}
+      AI4IA_C4_EXCLUDE_DEPLOYMENTS: ${{ inputs.c4_exclude_deployments }}
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
@@ -118,8 +123,8 @@ jobs:
       - name: Apply one stage
         shell: bash
         env:
-          AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST: ${{ inputs.stage == 'c3-api' && secrets.AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST || '' }}
-          AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64: ${{ inputs.stage == 'c3-api' && secrets.AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64 || '' }}
+          AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST: ${{ (inputs.stage == 'c3-api' || inputs.stage == 'c4-api') && secrets.AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST || '' }}
+          AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64: ${{ (inputs.stage == 'c3-api' || inputs.stage == 'c4-api') && secrets.AI4IA_SHARED_GATEWAY_BINDING_SIDECAR_GZIP_B64 || '' }}
         run: |
           set -euo pipefail
           VENV="$RUNNER_TEMP/release-venv/bin/python"

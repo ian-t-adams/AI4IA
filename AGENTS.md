@@ -784,6 +784,13 @@ validation alone is not classification. It starts from C2's R1-OFF baseline,
 adds the selector, a hash-bound reviewed `--deployments` list and the manifest
 literal, and must pass the API shared-gateway validators; never hardcode the
 deployment list.
+The hosted lane's C4 source widens only the pinned C3 deployment CSV, retaining
+the exact manifest/sidecar, C3 and R1. Its bounded normal-client complete/stream
+smoke is not per-request backend-identity proof: promotion unconditionally
+refuses pending a separately reviewed evidence design, without an override.
+Aggregate provider metrics and correlation headers are not route identity.
+`rollback-c4-api` restores only the exact qualified active C3; `deactivate-api`
+accepts only untrafficked lane candidates for a fresh guarded run, never C3/R1.
 Snapshots and payloads may contain sensitive environment values: never log,
 commit, or place them in chat or the shared repository. The CLI rejects files
 inside the repository, but that does not establish restricted ACLs or secure
