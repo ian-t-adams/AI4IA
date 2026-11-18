@@ -56,6 +56,54 @@
       "modelName": "gpt-6-sol",
       "modelVersion": "2026-09-22",
       "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-swedencentral-vypvgrncoed2o",
+      "deploymentName": "gpt-6.2-astra",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6.2-astra",
+      "modelVersion": "2026-11-17",
+      "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-swedencentral-vypvgrncoed2o",
+      "deploymentName": "gpt-6.2-astra-dz",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6.2-astra",
+      "modelVersion": "2026-11-17",
+      "sku": "DataZoneStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-swedencentral-vypvgrncoed2o",
+      "deploymentName": "gpt-6.2-sol",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6.2-sol",
+      "modelVersion": "2026-11-17",
+      "sku": "GlobalStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-swedencentral-vypvgrncoed2o",
+      "deploymentName": "gpt-6.2-sol-dz",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6.2-sol",
+      "modelVersion": "2026-11-17",
+      "sku": "DataZoneStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-westus-vypvgrncoed2o",
+      "deploymentName": "gpt-6.2-astra-dz",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6.2-astra",
+      "modelVersion": "2026-11-17",
+      "sku": "DataZoneStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-westus-vypvgrncoed2o",
+      "deploymentName": "gpt-6.2-sol-dz",
+      "modelFormat": "OpenAI",
+      "modelName": "gpt-6.2-sol",
+      "modelVersion": "2026-11-17",
+      "sku": "DataZoneStandard"
     }
   ]
 }
