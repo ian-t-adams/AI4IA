@@ -237,11 +237,32 @@ class CapacityAllocationTests(unittest.TestCase):
 class ExternalDeploymentInventoryTests(unittest.TestCase):
     def test_external_manifest_is_literal_exact_and_unique(self):
         declarations = load_external_model_deployments()
-        self.assertEqual(len(declarations), 7)
+        self.assertEqual(len(declarations), 13)
         self.assertEqual(len({
             (row["accountId"].casefold(), row["deploymentName"].casefold())
             for row in declarations
-        }), 7)
+        }), 13)
+        self.assertEqual(
+            {
+                row["deploymentName"]
+                for row in declarations
+                if row["deploymentName"].startswith("gpt-6.2-")
+            },
+            {
+                "gpt-6.2-astra",
+                "gpt-6.2-astra-dz",
+                "gpt-6.2-sol",
+                "gpt-6.2-sol-dz",
+            },
+        )
+        for deployment_name in ("gpt-6.2-astra-dz", "gpt-6.2-sol-dz"):
+            with self.subTest(deployment=deployment_name):
+                matches = [
+                    row for row in declarations
+                    if row["deploymentName"] == deployment_name
+                ]
+                self.assertEqual(len(matches), 2)
+                self.assertNotEqual(matches[0]["accountId"], matches[1]["accountId"])
 
     def test_external_manifest_rejects_wildcards_and_prefixes(self):
         template = load_external_model_deployments()[0]
@@ -278,12 +299,15 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
     ):
         models = _models()
         models["naming"]["foundryToken"] = "aiforia"
+        models["regions"]["westus"] = {"dataZone": "US", "primary": True}
         account_name = "mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o"
-        other_account = "mf-aiforia-slurmfactory-swedencentral-abcdefghijklm"
-        account_id = (
-            f"/subscriptions/{subscription}/resourceGroups/{resource_group}/"
-            f"providers/Microsoft.CognitiveServices/accounts/{account_name}"
-        )
+        sweden_account = "mf-aiforia-slurmfactory-swedencentral-vypvgrncoed2o"
+        westus_account = "mf-aiforia-slurmfactory-westus-vypvgrncoed2o"
+        account_regions = {
+            account_name: "eastus2",
+            sweden_account: "swedencentral",
+            westus_account: "westus",
+        }
         declarations = capacity.load_external_model_deployments()
         east_expected_name = capacity.deployment_name(
             models, "model-a", models["catalog"][0]["deployments"][0],
@@ -291,6 +315,10 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
         sweden_expected_name = capacity.deployment_name(
             models, "model-a", models["catalog"][0]["deployments"][1],
         )
+        deployment_rows = {
+            account: []
+            for account in account_regions
+        }
 
         def catalog_row(account: str, name: str, region: str) -> dict:
             return {
@@ -309,29 +337,57 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
 
         external_rows = []
         for index, declaration in enumerate(declarations):
+            declaration_parts = declaration["accountId"].split("/")
+            declaration_account = declaration_parts[-1]
+            if (
+                declaration_parts[2].casefold() != subscription.casefold()
+                or declaration_parts[4].casefold() != resource_group.casefold()
+            ):
+                continue
             external_rows.append({
-                "id": f"{account_id}/deployments/{declaration['deploymentName']}",
-                "name": declaration["deploymentName"],
-                "sku": {"name": declaration["sku"], "capacity": 2},
-                "properties": {
-                    "model": {
-                        "format": "mismatch" if mismatch and index == 0 else declaration["modelFormat"],
-                        "name": declaration["modelName"],
-                        "version": declaration["modelVersion"],
+                "account": declaration_account,
+                "row": {
+                    "id": (
+                        f"/subscriptions/{subscription}/resourceGroups/{resource_group}/"
+                        "providers/Microsoft.CognitiveServices/accounts/"
+                        f"{declaration_account}/deployments/{declaration['deploymentName']}"
+                    ),
+                    "name": declaration["deploymentName"],
+                    "sku": {"name": declaration["sku"], "capacity": 2},
+                    "properties": {
+                        "model": {
+                            "format": "mismatch" if mismatch and index == 0 else declaration["modelFormat"],
+                            "name": declaration["modelName"],
+                            "version": declaration["modelVersion"],
+                        },
+                        "provisioningState": "Succeeded",
                     },
-                    "provisioningState": "Succeeded",
                 },
             })
-        east_rows = [catalog_row(account_name, east_expected_name, "eastus2"), *external_rows]
+        deployment_rows[account_name].append(
+            catalog_row(account_name, east_expected_name, "eastus2")
+        )
+        deployment_rows[sweden_account].append(
+            catalog_row(sweden_account, sweden_expected_name, "swedencentral")
+        )
+        for external_row in external_rows:
+            deployment_rows[external_row["account"]].append(external_row["row"])
         if extra_name is not None:
             extra = catalog_row(account_name, extra_name, "eastus2")
             extra["properties"]["model"]["name"] = "unlisted-model"
-            east_rows.append(extra)
+            deployment_rows[account_name].append(extra)
         accounts = [
             {"name": account_name, "kind": "AIServices", "location": "eastus2"},
-            {"name": other_account, "kind": "AIServices", "location": "swedencentral"},
+            {"name": sweden_account, "kind": "AIServices", "location": "swedencentral"},
+            {"name": westus_account, "kind": "AIServices", "location": "westus"},
         ]
-        reads = [accounts, east_rows, [catalog_row(other_account, sweden_expected_name, "swedencentral")]]
+        reads = [accounts] + [
+            deployment_rows[next(
+                account for account, account_region in account_regions.items()
+                if account_region == region
+            )]
+            for region in models["regions"]
+        ]
         return models, reads, declarations
 
     def test_exact_external_row_is_validated_but_not_projected_as_ai4ia_allocation(self):
@@ -342,7 +398,13 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
                 "e852113b-6cb5-441c-ac68-26cff884e479",
             )
         self.assertEqual(set(live["eastus2"]), {"model-a-sub-eastus2-glbl"})
-        self.assertTrue(all(row["deploymentName"] not in live["eastus2"] for row in declarations))
+        self.assertTrue(
+            all(
+                row["deploymentName"] not in region
+                for region in live.values()
+                for row in declarations
+            )
+        )
 
     def test_external_mismatch_and_undeclared_row_still_refuse(self):
         for mismatch, extra_name in ((True, None), (False, "unlisted-extra")):
@@ -374,23 +436,37 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
                         models, "rg-ai4ia-slurmfactory", "slurmfactory",
                         "e852113b-6cb5-441c-ac68-26cff884e479",
                     )
-                self.assertEqual(query.call_count, 2)
+                self.assertEqual(query.call_count, 3)
 
     def test_openai_external_identity_mismatch_or_absence_refuses(self):
         declarations = load_external_model_deployments()
-        for index, declaration in enumerate(declarations):
+        for declaration in declarations:
             if declaration["modelFormat"] != "OpenAI":
                 continue
             for field in ("format", "name", "version", "sku", "missing"):
                 with self.subTest(deployment=declaration["deploymentName"], field=field):
                     models, reads, _ = self._live_inventory()
-                    row = reads[1][index + 1]
+                    expected_id = (
+                        f"{declaration['accountId']}/deployments/"
+                        f"{declaration['deploymentName']}"
+                    )
+                    rows = next(
+                        rows for rows in reads[1:]
+                        if any(
+                            item["id"].casefold() == expected_id.casefold()
+                            for item in rows
+                        )
+                    )
+                    row_index = next(
+                        index for index, item in enumerate(rows)
+                        if item["id"].casefold() == expected_id.casefold()
+                    )
                     if field == "missing":
-                        reads[1].pop(index + 1)
+                        rows.pop(row_index)
                     elif field == "sku":
-                        row["sku"]["name"] = "Standard"
+                        rows[row_index]["sku"]["name"] = "Standard"
                     else:
-                        row["properties"]["model"][field] = "mismatch"
+                        rows[row_index]["properties"]["model"][field] = "mismatch"
                     with (
                         patch.object(capacity, "_az_json", side_effect=reads),
                         self.assertRaisesRegex(ValueError, "External deployment|inventory is missing"),
@@ -429,8 +505,14 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
                     live = capacity._collect_live(
                         models, resource_group, "slurmfactory", subscription,
                     )
-                self.assertEqual(live, {"swedencentral": {"model-a-sub-swedencentral-glbl": 50}})
-                self.assertEqual(query.call_count, 2)
+                self.assertEqual(
+                    live,
+                    {
+                        "swedencentral": {"model-a-sub-swedencentral-glbl": 50},
+                        "westus": {},
+                    },
+                )
+                self.assertEqual(query.call_count, 3)
 
 
 class SyncStagedMainTests(unittest.TestCase):
