@@ -41,7 +41,8 @@ WORKFLOWS = {
     "hosted-web-one-read.yml": "AI4IA_HOSTED_WEB_READ_ENABLED",
     "hosted-gateway-permissions-read.yml": "AI4IA_GATEWAY_PERMISSIONS_READ_ENABLED",
 }
-STAGES = ("c1-web", "c2-web", "c1-api", "c2-api", "c3-api", "rollback-api")
+STAGES = ("c1-web", "c2-web", "c1-api", "c2-api", "c3-api", "rollback-api", "stream-probe-api")
+ROLLBACK_STAGES = ("rollback-api", "stream-probe-api")
 READ_KINDS = ("shared-permissions", "web-state")
 REVISION = re.compile(r"[a-z0-9][a-z0-9-]{0,62}--[a-z0-9-]{1,80}")
 
@@ -74,7 +75,8 @@ def default_gh(args: Sequence[str], *, timeout: float = GH_TIMEOUT_SECONDS) -> s
 
 
 def dispatch_inputs(workflow: str, reviewed_sha: str, stage: str | None,
-                    rollback_revision: str | None, read_kind: str | None = None) -> list[str]:
+                    rollback_revision: str | None, read_kind: str | None = None,
+                    probe_revision: str | None = None) -> list[str]:
     if workflow not in WORKFLOWS:
         raise DispatchError("workflow is not an allowlisted gated workflow")
     if not re.fullmatch(r"[0-9a-f]{40}", reviewed_sha):
@@ -88,13 +90,20 @@ def dispatch_inputs(workflow: str, reviewed_sha: str, stage: str | None,
         if stage not in STAGES:
             raise DispatchError("gateway release requires exactly one known stage")
         fields += ["-f", f"stage={stage}"]
-        if stage == "rollback-api":
+        if stage in ROLLBACK_STAGES:
             if not rollback_revision or not REVISION.fullmatch(rollback_revision):
-                raise DispatchError("rollback-api requires one named revision")
+                raise DispatchError(f"{stage} requires one named rollback revision")
             fields += ["-f", f"rollback_revision={rollback_revision}"]
         elif rollback_revision:
-            raise DispatchError("rollback revision is accepted only for rollback-api")
-    elif stage or rollback_revision:
+            raise DispatchError("rollback revision is accepted only for rollback-api/stream-probe-api")
+        if stage == "stream-probe-api":
+            if (not probe_revision or not REVISION.fullmatch(probe_revision)
+                    or probe_revision == rollback_revision):
+                raise DispatchError("stream-probe-api requires one named probe revision distinct from R1")
+            fields += ["-f", f"probe_revision={probe_revision}"]
+        elif probe_revision:
+            raise DispatchError("probe revision is accepted only for stream-probe-api")
+    elif stage or rollback_revision or probe_revision:
         raise DispatchError("the one-read workflow accepts no stage inputs")
     return fields
 
@@ -145,11 +154,11 @@ def runs(gh: Gh, repo: str, workflow: str) -> list[dict]:
 
 def dispatch(workflow: str, reviewed_sha: str, stage: str | None = None,
              rollback_revision: str | None = None, *, read_kind: str | None = None,
-             repo: str = REPOSITORY, gh: Gh = default_gh,
+             probe_revision: str | None = None, repo: str = REPOSITORY, gh: Gh = default_gh,
              sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
              bind_seconds: float = 120, timeout_seconds: float = 3600, poll_seconds: float = 15,
              log: Callable[[str], None] = lambda message: print(message, file=sys.stderr)) -> dict:
-    fields = dispatch_inputs(workflow, reviewed_sha, stage, rollback_revision, read_kind)
+    fields = dispatch_inputs(workflow, reviewed_sha, stage, rollback_revision, read_kind, probe_revision)
     gate = WORKFLOWS[workflow]
     held = present_gates(gh, repo)
     if held:
@@ -223,6 +232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--reviewed-sha", required=True)
     parser.add_argument("--stage", choices=STAGES)
     parser.add_argument("--rollback-revision")
+    parser.add_argument("--probe-revision")
     parser.add_argument("--read-kind", choices=READ_KINDS)
     parser.add_argument("--repo", default=REPOSITORY)
     parser.add_argument("--timeout", type=float, default=3600)
@@ -233,7 +243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _sigterm)
     try:
         result = dispatch(args.workflow, args.reviewed_sha, args.stage, args.rollback_revision,
-                          read_kind=args.read_kind, repo=args.repo, timeout_seconds=args.timeout,
+                          read_kind=args.read_kind, probe_revision=args.probe_revision, repo=args.repo, timeout_seconds=args.timeout,
                           gh=lambda gh_args: default_gh(gh_args, timeout=args.gh_timeout))
     except DispatchError as error:
         bound = f" (bound run {error.run_id} may still be running)" if error.run_id else ""

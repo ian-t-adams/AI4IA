@@ -8,6 +8,12 @@ One dispatch applies one stage to production through scoped ARM requests:
   c3-api            R2 = R1-OFF + shared gateway selector/opt-in/manifest at 0%,
                     in-revision smoke, promote; R1 stays active as the rollback.
   rollback-api      move traffic back to a named, active, gateway-off bc58 revision.
+  stream-probe-api  NO app writes. Admits only when traffic is 100% on the named C3
+                    revision (exact image/opt-in/manifest) and the named R1 is active,
+                    gateway-off and untrafficked, then runs at most four streamed
+                    gpt-5.4-mini calls in-revision, stopping on the first failure. Not
+                    read-only: exec needs POST getAuthToken by the write-capable release
+                    identity, and each call is paid inference.
 
 Never sends configuration.secrets, never deletes, never replays an uncertain
 write, and never moves traffic back to a pre-release API revision automatically.
@@ -89,7 +95,7 @@ TOKEN_HOST = "login.microsoftonline.com"
 AUDIENCE = "api://AzureADTokenExchange"
 SUBJECT = f"repo:{REPOSITORY}:environment:production"
 MAX_BODY = 4 * 1024 * 1024
-STAGES = ("c1-web", "c1-api", "c2-web", "c2-api", "c3-api", "rollback-api")
+STAGES = ("c1-web", "c1-api", "c2-web", "c2-api", "c3-api", "rollback-api", "stream-probe-api")
 SMOKE_MARK = "AI4IA_SMOKE" + "_RESULT="
 WEB_PROBE_MARK = "AI4IA_WEB" + "_PROBE_RESULT="
 # webBuildId() (app/web/build-id.mjs) of the exact bc58f551 app/web tree that built IMAGES["web"].
@@ -283,7 +289,9 @@ def validate_environment(env: dict[str, str]) -> str:
     if stage not in STAGES:
         raise Refused("admission")
     rollback = env.get("AI4IA_ROLLBACK_REVISION", "")
-    if (stage == "rollback-api") != bool(rollback):
+    if (stage in ("rollback-api", "stream-probe-api")) != bool(rollback):
+        raise Refused("admission")
+    if (stage == "stream-probe-api") != bool(env.get("AI4IA_PROBE_REVISION", "")):
         raise Refused("admission")
     denied = {
         "http_proxy", "https_proxy", "all_proxy", "no_proxy", "requests_ca_bundle",
@@ -812,6 +820,205 @@ def sanitize_smoke(result: Any) -> dict:
     }
 
 
+# Streamed four-mini probe. The raw SSE is read here, not through ModelGatewayClient.stream,
+# because the client drops usage while the manifest says terminal usage is unverified; the
+# manifest and user accounting are unchanged. _shared_request still supplies the manifest
+# model key, base URL and managed-identity token, and refuses stream if the manifest
+# disables it (before any POST). Output cap: max_completion_tokens is the gpt-5 family's
+# output field (it bounds visible + reasoning tokens) and reasoning_effort "none" is in the
+# catalog's gpt-5.4-mini list, so 16 tokens is enough for "OK" with no hidden reasoning.
+PROBE_MARK = "AI4IA_STREAM_PROBE_RESULT="
+PROBE_MAX_COMPLETION_TOKENS = 16
+PROBE_BODY = {
+    "messages": [{"role": "user", "content": "Reply with OK."}],
+    "max_completion_tokens": PROBE_MAX_COMPLETION_TOKENS,
+    "reasoning_effort": "none",
+    "stream": True,
+    "stream_options": {"include_usage": True},
+}
+PROBE_CALL_TIMEOUT = 30
+PROBE_MAX_BYTES = 65536
+PROBE_PHASES = ("settings", "config", "client", "calls", "complete")
+PROBE_USAGE = ("verified", "missing", "invalid", "unknown")
+PROBE_FINISH = ("stop", "length")
+
+STREAM_PROBE_PROGRAM = r'''
+import asyncio, copy, hashlib, json, logging, sys
+logging.disable(logging.CRITICAL)
+EXPECTED_SKUS = __CANARY_SKUS__
+EXPECTED = frozenset(EXPECTED_SKUS)
+MANIFEST_SHA256 = __MANIFEST_SHA256__
+BODY = __PROBE_BODY__
+CAP = __PROBE_CAP__
+TIMEOUT = __PROBE_TIMEOUT__
+MAX_BYTES = __PROBE_MAX_BYTES__
+MARK = "AI4IA_STREAM_PROBE" + "_RESULT="
+
+def counts(usage):
+    keys = ("prompt_tokens", "completion_tokens", "total_tokens")
+    if not isinstance(usage, dict) or any(type(usage.get(k)) is not int or usage[k] < 0 for k in keys):
+        return None
+    details = usage.get("completion_tokens_details")
+    reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    return {"prompt": usage["prompt_tokens"], "completion": usage["completion_tokens"],
+            "total": usage["total_tokens"],
+            "reasoning": reasoning if type(reasoning) is int and reasoning >= 0 else None}
+
+async def probe(http, gateway, GatewayRequest, deployment, base, row):
+    request, url = await gateway._shared_request(
+        GatewayRequest(url="", headers={}, json=copy.deepcopy(BODY)),
+        deployment=deployment, api="chat", eligible=True, sku=EXPECTED_SKUS[deployment])
+    if url is None or request.json.get("max_completion_tokens") != CAP:
+        return
+    row["posted"] = True
+    row["usage"] = "unknown"
+    seen = 0
+    async with http.stream("POST", request.url, headers=request.headers, json=request.json,
+                           follow_redirects=False) as response:
+        row["status"] = response.status_code
+        row["host"] = response.url.host == base
+        row["sse"] = response.headers.get("content-type", "").split(";")[0].strip() == "text/event-stream"
+        if response.status_code != 200 or not row["host"] or not row["sse"]:
+            return
+        usage = []
+        async for line in response.aiter_lines():
+            seen += len(line) + 1
+            if seen > MAX_BYTES:
+                return
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                row["done"] = True
+                break
+            row["events"] += 1
+            event = json.loads(data)
+            if event.get("usage") is not None:
+                usage.append(counts(event["usage"]))
+            for choice in event.get("choices") or []:
+                reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+                if reason is not None:
+                    row["finish"] = reason
+        if not row["done"]:
+            return
+        if not usage:
+            row["usage"] = "missing"
+            return
+        got = usage[0]
+        if (len(usage) != 1 or got is None or got["total"] != got["prompt"] + got["completion"]
+                or got["completion"] > CAP):
+            row["usage"] = "invalid"
+            return
+        row.update(prompt=got["prompt"], completion=got["completion"], total=got["total"],
+                   reasoning=got["reasoning"], usage="verified")
+
+async def run():
+    out = {"phase": "settings", "calls": [], "base": None, "terminal_usage_flag": None}
+    try:
+        from urllib.parse import urlsplit
+        import httpx
+        from ai4ia_api.config import get_settings
+        from ai4ia_api.gateway.client import GatewayRequest, ModelGatewayClient
+        s = get_settings()
+        manifest = s.shared_gateway_activation_manifest
+        if (not s.shared_gateway_enabled or s.chat_pilot_isolation_enabled
+                or s.shared_gateway_deployment_set != EXPECTED or not isinstance(manifest, str)
+                or hashlib.sha256(manifest.encode("utf-8")).hexdigest() != MANIFEST_SHA256):
+            out["phase"] = "config"
+            return out
+        out["phase"] = "client"
+        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False,
+                                     follow_redirects=False) as http:
+            gateway = ModelGatewayClient(s, http_client=http)
+            try:
+                contract = gateway._shared_manifest
+                base = urlsplit(contract.base_url).hostname
+                out["base"] = hashlib.sha256(base.encode()).hexdigest()
+                out["terminal_usage_flag"] = contract.terminal_usage_verified is True
+                out["phase"] = "calls"
+                for deployment in sorted(EXPECTED):
+                    row = {"deployment": deployment, "posted": False, "status": None,
+                           "host": False, "sse": False, "done": False, "events": 0,
+                           "finish": None, "usage": "unknown", "prompt": None,
+                           "completion": None, "total": None, "reasoning": None}
+                    out["calls"].append(row)
+                    try:
+                        await asyncio.wait_for(
+                            probe(http, gateway, GatewayRequest, deployment, base, row),
+                            TIMEOUT + 5)
+                    except BaseException:
+                        pass  # cancelled/timed out/unparseable: usage stays "unknown"
+                    if row["usage"] != "verified":
+                        return out
+            finally:
+                await gateway.close()
+        out["phase"] = "complete"
+    except Exception:
+        pass
+    return out
+
+result = asyncio.run(run())
+sys.stdout.write("\n" + MARK + json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
+sys.stdout.flush()
+'''.replace("__CANARY_SKUS__", repr(CANARY_SKUS)).replace(
+    "__MANIFEST_SHA256__", repr(MANIFEST_SHA256)).replace(
+    "__PROBE_BODY__", repr(PROBE_BODY)).replace(
+    "__PROBE_CAP__", repr(PROBE_MAX_COMPLETION_TOKENS)).replace(
+    "__PROBE_TIMEOUT__", repr(PROBE_CALL_TIMEOUT)).replace(
+    "__PROBE_MAX_BYTES__", repr(PROBE_MAX_BYTES))
+
+
+def _count(value: Any) -> int | None:
+    return value if type(value) is int and 0 <= value <= 10_000_000 else None
+
+
+def sanitize_stream_probe(result: Any) -> dict:
+    """Scalars only: no content, headers, hosts or tokens. Unknown stays None/"unknown"."""
+    if not isinstance(result, dict):
+        result = {}
+    calls = []
+    for call in (result.get("calls") or [])[:len(DEPLOYMENTS)]:
+        if not isinstance(call, dict) or call.get("deployment") not in DEPLOYMENTS:
+            calls.append({})
+            continue
+        status = call.get("status")
+        calls.append({
+            "deployment": call["deployment"],
+            "posted": call.get("posted") is True,
+            "status": status if type(status) is int and 100 <= status <= 599 else None,
+            "host": call.get("host") is True,
+            "sse": call.get("sse") is True,
+            "done": call.get("done") is True,
+            "events": _count(call.get("events")),
+            "finish": call.get("finish") if call.get("finish") in PROBE_FINISH else None,
+            "usage": call.get("usage") if call.get("usage") in PROBE_USAGE else "unknown",
+            **{k: _count(call.get(k)) for k in ("prompt", "completion", "total", "reasoning")},
+        })
+    phase, base, flag = result.get("phase"), result.get("base"), result.get("terminal_usage_flag")
+    return {
+        "phase": phase if phase in PROBE_PHASES else None,
+        "base": base if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{64}", base) else None,
+        "terminal_usage_flag": flag if isinstance(flag, bool) else None,
+        "calls": calls,
+    }
+
+
+def stream_probe_passed(result: Any) -> bool:
+    if not isinstance(result, dict) or result.get("phase") != "complete":
+        return False
+    calls = result.get("calls")
+    if not isinstance(calls, list) or [c.get("deployment") for c in calls if isinstance(c, dict)] != sorted(DEPLOYMENTS):
+        return False
+    return isinstance(result.get("base"), str) and all(
+        c.get("posted") is True and c.get("status") == 200 and c.get("host") is True
+        and c.get("sse") is True and c.get("done") is True and c.get("usage") == "verified"
+        and isinstance(c.get("total"), int) and isinstance(c.get("completion"), int)
+        and isinstance(c.get("prompt"), int)
+        and c["completion"] <= PROBE_MAX_COMPLETION_TOKENS
+        and c["total"] == c["prompt"] + c["completion"]
+        for c in calls)
+
+
 # Content-free web candidate probes: the candidate's own /build-id and its configured
 # API's /health/ready. One request each, no redirects/cookies/auth/user content.
 # Neither proves authenticated chat.
@@ -1144,6 +1351,14 @@ def run_smoke(arm: Arm, app_id: str, revision: str, connect=None, clock=time.mon
     return {**sanitize_smoke(result), "exec": diag}
 
 
+def run_stream_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic,
+                     sleep=time.sleep) -> dict:
+    result, diag = run_exec(arm, app_id, revision, "api", shell_lines(STREAM_PROBE_PROGRAM),
+                            PROBE_MARK, 4 * (PROBE_CALL_TIMEOUT + 5) + 60, connect=connect,
+                            clock=clock, sleep=sleep)
+    return {**sanitize_stream_probe(result), "exec": diag}
+
+
 def run_web_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic,
                   sleep=time.sleep) -> dict:
     lines = shell_lines(WEB_PROBE_PROGRAM, runner=NODE_RUNNER)
@@ -1226,9 +1441,11 @@ def _run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[
 
 class Release:
     def __init__(self, arm: Arm, env: dict[str, str], receipt: dict, gate: DtsGate | None = None,
-                 now=lambda: datetime.now(UTC), smoke=run_smoke, web_probe=run_web_probe):
+                 now=lambda: datetime.now(UTC), smoke=run_smoke, web_probe=run_web_probe,
+                 stream_probe=run_stream_probe):
         self.arm, self.env, self.receipt, self.now, self.smoke = arm, env, receipt, now, smoke
         self.web_probe = web_probe
+        self.stream_probe_runner = stream_probe
         self.gate = gate or DtsGate(arm, now=now)
 
     def step(self, name: str, **fields: Any) -> None:
@@ -1478,6 +1695,59 @@ class Release:
         self.receipt["serving"] = target
         self.step("rolled-back", revision=target)
 
+    def probe_bindings(self, app: dict, probe: str, r1: str) -> dict:
+        """Exact C3 serving + R1 rollback bindings; booleans only, nothing copied from env."""
+        app_id = APPS["api"]
+        name = re.escape(str(app.get("name", "")))
+        if (probe == r1 or not app.get("name")
+                or not all(re.fullmatch(name + r"--[a-z0-9-]{1,40}", n) for n in (probe, r1))):
+            raise Refused("probe-bindings")
+        rev = self.arm.get(f"{app_id}/revisions/{probe}", phase="probe-read")
+        back = self.arm.get(f"{app_id}/revisions/{r1}", phase="probe-read")
+        containers = ((rev.get("properties") or {}).get("template") or {}).get("containers") or []
+        manifest = env_value(rev, "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST")
+        manifest = manifest.encode("utf-8") if isinstance(manifest, str) else b""
+        return {
+            "mode": ((app.get("properties") or {}).get("configuration") or {}).get(
+                "activeRevisionsMode") == "Multiple",
+            "traffic": traffic_is(app, probe),
+            "ready": ready(rev),
+            "image": len(containers) == 1 and containers[0].get("image") == IMAGES["api"],
+            "gateway": env_value(rev, "AI4IA_SHARED_GATEWAY_ENABLED") == "true",
+            "deployments": env_value(rev, "AI4IA_SHARED_GATEWAY_DEPLOYMENTS") == DEPLOYMENTS_BYTES.decode(),
+            "manifest": (len(manifest) == MANIFEST_SIZE
+                         and hashlib.sha256(manifest).hexdigest() == MANIFEST_SHA256),
+            "pilot_off": env_value(rev, "AI4IA_CHAT_PILOT_ISOLATION_ENABLED") in (None, "false"),
+            "r1_gateway_off": gateway_off_release(back),
+            "r1_active": (back.get("properties") or {}).get("active") is True,
+        }
+
+    def stream_probe(self, probe: str, r1: str) -> None:
+        app_id = APPS["api"]
+        app = self.arm.get(app_id, phase="probe-read")
+        bindings = self.probe_bindings(app, probe, r1)
+        self.step("probe-bindings", revision=probe, rollback=r1, **bindings)
+        if not all(bindings.values()):
+            raise Refused("probe-bindings")
+        again = self.arm.get(app_id, phase="probe-reread")
+        if projection(again) != projection(app) or not all(self.probe_bindings(again, probe, r1).values()):
+            raise Refused("probe-bindings")
+        # Exec is not read-only: POST getAuthToken by this (write-capable) identity, then up to
+        # four paid gpt-5.4-mini calls from the serving replica. No ARM write is ever sent.
+        self.step("probe-exec", revision=probe, control_plane="POST getAuthToken",
+                  max_calls=len(DEPLOYMENTS), max_completion_tokens=PROBE_MAX_COMPLETION_TOKENS)
+        writes = self.arm.writes
+        result = self.stream_probe_runner(self.arm, app_id, probe)
+        self.receipt["stream_probe"] = result
+        after = self.arm.get(app_id, phase="probe-readback")
+        unchanged = projection(after) == projection(app) and traffic_is(after, probe)
+        self.step("probe-readback", traffic_unchanged=unchanged, writes=self.arm.writes - writes)
+        if self.arm.writes != writes or not unchanged:
+            raise Refused("probe-readback")
+        if not stream_probe_passed(result):
+            raise Refused("stream-probe")
+        self.step("probe-passed", revision=probe)
+
     def run(self, stage: str) -> None:
         if stage in ("c1-web", "c1-api"):
             self.c1(stage[3:])
@@ -1496,6 +1766,8 @@ class Release:
                 deployments_bytes=DEPLOYMENTS_BYTES, deployments_sha256=DEPLOYMENTS_SHA256)
         elif stage == "rollback-api":
             self.rollback(self.env["AI4IA_ROLLBACK_REVISION"])
+        elif stage == "stream-probe-api":
+            self.stream_probe(self.env["AI4IA_PROBE_REVISION"], self.env["AI4IA_ROLLBACK_REVISION"])
         else:
             raise Refused("admission")
 

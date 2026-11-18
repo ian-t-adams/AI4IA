@@ -691,6 +691,304 @@ class RollbackTests(ReleaseFlowBase):
         self.assertEqual(arm.writes, 0)
 
 
+class StreamProbeTests(ReleaseFlowBase):
+    C3 = APP + "--c3-probe"
+    MANIFEST = '{"fake":"manifest"}'
+
+    def setUp(self):
+        super().setUp()
+        data = self.MANIFEST.encode()
+        p = mock.patch.multiple(release, MANIFEST_SIZE=len(data),
+                                MANIFEST_SHA256=hashlib.sha256(data).hexdigest())
+        p.start()
+        self.addCleanup(p.stop)
+
+    def c3_env(self, **changes):
+        values = {"AI4IA_SHARED_GATEWAY_ENABLED": "true",
+                  "AI4IA_SHARED_GATEWAY_DEPLOYMENTS": release.DEPLOYMENTS_BYTES.decode(),
+                  "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST": self.MANIFEST, **changes}
+        return [{"name": k, "value": v} for k, v in values.items() if v is not None]
+
+    def serving(self, c3_env=None, image=None):
+        arm = FakeArm(image=release.IMAGES["api"])
+        arm.revisions[self.C3] = arm.revision(self.C3, image or release.IMAGES["api"],
+                                              self.c3_env() if c3_env is None else c3_env)
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": self.C3, "weight": 100}]
+        return arm
+
+    def probe(self, arm, result=None, probe=None, r1=R0):
+        seen = []
+
+        def runner(*args):
+            seen.append(args)
+            return passing_stream_probe() if result is None else result
+
+        receipt = {"steps": []}
+        values = env(AI4IA_RELEASE_STAGE="stream-probe-api", AI4IA_ROLLBACK_REVISION=r1,
+                     AI4IA_PROBE_REVISION=probe or self.C3)
+        rel = release.Release(arm, values, receipt, now=lambda: NOW, smoke=None, web_probe=None,
+                              stream_probe=runner)
+        return rel, receipt, seen
+
+    def test_admission_requires_both_named_revisions(self):
+        stage = {"AI4IA_RELEASE_STAGE": "stream-probe-api"}
+        self.assertEqual(release.validate_environment(env(**stage, AI4IA_ROLLBACK_REVISION=R0,
+                                                          AI4IA_PROBE_REVISION=self.C3)),
+                         "stream-probe-api")
+        for case in ({**stage, "AI4IA_ROLLBACK_REVISION": R0}, {**stage, "AI4IA_PROBE_REVISION": self.C3},
+                     {"AI4IA_RELEASE_STAGE": "rollback-api", "AI4IA_ROLLBACK_REVISION": R0,
+                      "AI4IA_PROBE_REVISION": self.C3}):
+            with self.subTest(case=case), self.assertRaises(release.Refused):
+                release.validate_environment(env(**case))
+
+    def test_passes_with_exact_bindings_and_sends_no_writes(self):
+        arm = self.serving()
+        rel, receipt, seen = self.probe(arm)
+        rel.run("stream-probe-api")
+        self.assertEqual(arm.writes, 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][1:], (release.APPS["api"], self.C3))
+        self.assertTrue(release.stream_probe_passed(receipt["stream_probe"]))
+        steps = {s["step"]: s for s in receipt["steps"]}
+        self.assertEqual(steps["probe-exec"]["control_plane"], "POST getAuthToken")
+        self.assertEqual(steps["probe-readback"]["writes"], 0)
+        self.assertNotIn(self.MANIFEST, json.dumps(receipt))
+
+    def test_refuses_any_binding_drift_before_exec(self):
+        manifest_bad = self.c3_env(AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST=self.MANIFEST + " ")
+        cases = {
+            "manifest": {"c3_env": manifest_bad},
+            "deployments": {"c3_env": self.c3_env(AI4IA_SHARED_GATEWAY_DEPLOYMENTS="x")},
+            "gateway-off": {"c3_env": self.c3_env(AI4IA_SHARED_GATEWAY_ENABLED="false")},
+            "pilot": {"c3_env": self.c3_env(AI4IA_CHAT_PILOT_ISOLATION_ENABLED="true")},
+            "image": {"image": OLD_IMAGE},
+        }
+        for name, kwargs in cases.items():
+            arm = self.serving(**kwargs)
+            rel, _, seen = self.probe(arm)
+            with self.subTest(name=name), self.assertRaisesRegex(release.Refused, "probe-bindings"):
+                rel.run("stream-probe-api")
+            self.assertEqual((seen, arm.writes), ([], 0))
+
+        def split(arm):
+            arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+                {"revisionName": self.C3, "weight": 90}, {"revisionName": R0, "weight": 10}]
+
+        def single(arm):
+            arm.app["properties"]["configuration"]["activeRevisionsMode"] = "Single"
+
+        def r1_inactive(arm):
+            arm.revisions[R0]["properties"]["active"] = False
+
+        def r1_gateway_on(arm):
+            arm.revisions[R0]["properties"]["template"]["containers"][0]["env"] = self.c3_env()
+
+        def unready(arm):
+            arm.unready.add(self.C3)
+
+        for mutate in (split, single, r1_inactive, r1_gateway_on, unready):
+            arm = self.serving()
+            mutate(arm)
+            rel, _, seen = self.probe(arm)
+            with self.subTest(case=mutate.__name__), self.assertRaisesRegex(release.Refused, "probe-bindings"):
+                rel.run("stream-probe-api")
+            self.assertEqual((seen, arm.writes), ([], 0))
+        for probe, r1 in ((R0, R0), ("other--x", R0), (self.C3, "../x")):
+            arm = self.serving()
+            rel, _, seen = self.probe(arm, probe=probe, r1=r1)
+            with self.subTest(probe=probe, r1=r1), self.assertRaisesRegex(release.Refused, "probe-bindings"):
+                rel.run("stream-probe-api")
+            self.assertEqual(seen, [])
+            self.assertFalse(any(c[1].endswith("/x") for c in arm.calls))
+
+    def test_failed_or_unknown_probe_refuses_without_writes(self):
+        missing = passing_stream_probe()
+        missing["phase"] = "calls"
+        missing["calls"] = missing["calls"][:1]
+        missing["calls"][0].update(usage="missing", prompt=None, completion=None, total=None)
+        for result in (missing, {"phase": "calls", "calls": []}, {}):
+            arm = self.serving()
+            rel, receipt, _ = self.probe(arm, result=result)
+            with self.assertRaisesRegex(release.Refused, "stream-probe"):
+                rel.run("stream-probe-api")
+            self.assertEqual(arm.writes, 0)
+            self.assertIn("stream_probe", receipt)
+
+
+def passing_stream_probe(*_args):
+    return {"phase": "complete", "base": "c" * 64, "terminal_usage_flag": False, "calls": [
+        {"deployment": d, "posted": True, "status": 200, "host": True, "sse": True, "done": True,
+         "events": 3, "finish": "stop", "usage": "verified", "prompt": 10, "completion": 2,
+         "total": 12, "reasoning": 0}
+        for d in sorted(release.DEPLOYMENTS)]}
+
+
+class StreamProbeProgramTests(unittest.TestCase):
+    MANIFEST = '{"fake":"manifest"}'
+
+    def test_pass_and_sanitize(self):
+        self.assertTrue(release.stream_probe_passed(release.sanitize_stream_probe(passing_stream_probe())))
+        for field, value in (("usage", "missing"), ("completion", 17), ("total", 13), ("done", False),
+                             ("sse", False), ("status", 500), ("prompt", None)):
+            result = passing_stream_probe()
+            result["calls"][2][field] = value
+            with self.subTest(field=field):
+                self.assertFalse(release.stream_probe_passed(release.sanitize_stream_probe(result)))
+        dirty = passing_stream_probe()
+        dirty["calls"][0].update(content="model text", headers={"Authorization": "Bearer x"},
+                                 usage="weird", finish="secret")
+        dirty["calls"] += copy.deepcopy(dirty["calls"])
+        dirty["base"] = "gateway.example"
+        clean = release.sanitize_stream_probe(dirty)
+        text = json.dumps(clean)
+        for leaked in ("model text", "Bearer", "secret", "gateway.example"):
+            self.assertNotIn(leaked, text)
+        self.assertEqual(len(clean["calls"]), 4)
+        self.assertEqual((clean["calls"][0]["usage"], clean["base"]), ("unknown", None))
+
+    def run_program(self, streams, *, streaming_enabled=True, manifest=None):
+        posts = []
+        settings = types.SimpleNamespace(
+            shared_gateway_enabled=True, chat_pilot_isolation_enabled=False,
+            shared_gateway_deployment_set=frozenset(release.DEPLOYMENTS),
+            shared_gateway_activation_manifest=self.MANIFEST if manifest is None else manifest)
+
+        class Request:
+            def __init__(self, url, headers, json):
+                self.url, self.headers, self.json = url, headers, json
+
+        class Response:
+            def __init__(self, status, lines, host="gateway.invalid", ctype="text/event-stream"):
+                self.status_code, self.lines = status, lines
+                self.url = types.SimpleNamespace(host=host)
+                self.headers = {"content-type": ctype}
+
+            async def aiter_lines(self):
+                for line in self.lines:
+                    if isinstance(line, BaseException):
+                        raise line
+                    yield line
+
+        class Stream:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, *_args):
+                pass
+
+        class FakeHttp:
+            def __init__(self, **kwargs):
+                posts.append(("client", kwargs))
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            def stream(self, method, url, *, headers, json, follow_redirects):
+                posts.append((method, url, copy.deepcopy(json), follow_redirects))
+                return Stream(Response(*streams.pop(0)))
+
+        class FakeGateway:
+            def __init__(self, _settings, *, http_client):
+                self._shared_manifest = types.SimpleNamespace(
+                    base_url="https://gateway.invalid", terminal_usage_verified=False)
+
+            async def _shared_request(self, req, *, deployment, api, eligible, sku):
+                assert (api, eligible, sku) == ("chat", True, release.CANARY_SKUS[deployment])
+                if not streaming_enabled:
+                    raise RuntimeError("Streaming is not enabled")
+                return (Request("https://gateway.invalid/chat/completions", {"Authorization": "Bearer t"},
+                                {**req.json, "model": "alias-" + deployment}),
+                        "https://gateway.invalid")
+
+            async def close(self):
+                pass
+
+        def module(name, **attributes):
+            value = types.ModuleType(name)
+            value.__dict__.update(attributes)
+            return value
+
+        modules = {
+            "httpx": module("httpx", AsyncClient=FakeHttp),
+            "ai4ia_api.config": module("ai4ia_api.config", get_settings=lambda: settings),
+            "ai4ia_api.gateway.client": module(
+                "ai4ia_api.gateway.client", ModelGatewayClient=FakeGateway, GatewayRequest=Request),
+        }
+        program = release.STREAM_PROBE_PROGRAM.replace(
+            repr(release.MANIFEST_SHA256), repr(hashlib.sha256(self.MANIFEST.encode()).hexdigest()))
+        with (mock.patch.dict("sys.modules", modules), mock.patch("sys.stdout") as output,
+              mock.patch("logging.disable")):
+            exec(compile(program, "<stream-probe>", "exec"), {})  # noqa: S102 - repository-owned program, fake imports only
+        marked = output.write.call_args[0][0]
+        return json.loads(marked.split(release.PROBE_MARK)[1]), posts
+
+    @staticmethod
+    def good(completion=2):
+        usage = {"prompt_tokens": 10, "completion_tokens": completion, "total_tokens": 10 + completion,
+                 "completion_tokens_details": {"reasoning_tokens": 0}}
+        return (200, ['data: {"choices":[{"delta":{"content":"OK"},"finish_reason":null}]}', "",
+                      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}', "",
+                      "data: " + json.dumps({"choices": [], "usage": usage}), "", "data: [DONE]"])
+
+    def test_four_capped_streams_with_terminal_usage_pass(self):
+        result, posts = self.run_program([self.good() for _ in range(4)])
+        self.assertTrue(release.stream_probe_passed(release.sanitize_stream_probe(result)))
+        client = posts.pop(0)[1]
+        self.assertEqual((client["trust_env"], client["follow_redirects"]), (False, False))
+        self.assertEqual(len(posts), 4)
+        for (method, url, body, redirects), deployment in zip(posts, sorted(release.DEPLOYMENTS), strict=True):
+            self.assertEqual((method, url, redirects), ("POST", "https://gateway.invalid/chat/completions", False))
+            self.assertEqual(body, {**release.PROBE_BODY, "model": "alias-" + deployment})
+        self.assertEqual(release.PROBE_BODY["max_completion_tokens"], 16)
+        self.assertEqual(release.PROBE_BODY["reasoning_effort"], "none")
+        self.assertNotIn("OK", json.dumps(result))
+
+    def test_stops_at_first_failure_and_reports_unknown(self):
+        no_usage = (200, ['data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}',
+                          "data: [DONE]"])
+        cut = (200, ['data: {"choices":[]}', asyncio_cancelled()])
+        cases = {
+            "missing-usage": ([self.good(), no_usage, self.good()], "missing", 2),
+            "cancelled": ([cut, self.good()], "unknown", 1),
+            "no-done": ([(200, ['data: {"choices":[]}'])], "unknown", 1),
+            "over-cap": ([self.good(completion=17)], "invalid", 1),
+            "http-500": ([(500, [])], "unknown", 1),
+            "not-sse": ([(200, [], "gateway.invalid", "application/json")], "unknown", 1),
+            "redirected-host": ([(200, [], "elsewhere.invalid")], "unknown", 1),
+        }
+        for name, (streams, usage, count) in cases.items():
+            with self.subTest(name=name):
+                result, posts = self.run_program(list(streams))
+                self.assertEqual(len(posts) - 1, count)
+                self.assertEqual(result["phase"], "calls")
+                self.assertEqual(result["calls"][-1]["usage"], usage)
+                self.assertFalse(release.stream_probe_passed(release.sanitize_stream_probe(result)))
+
+    def test_refuses_before_any_post(self):
+        result, posts = self.run_program([], streaming_enabled=False)
+        self.assertEqual((len(posts), result["phase"], result["calls"][0]["posted"]), (1, "calls", False))
+        result, posts = self.run_program([], manifest=self.MANIFEST + " ")
+        self.assertEqual((posts, result["phase"]), ([], "config"))
+
+    def test_program_compiles_and_survives_shell_transport(self):
+        compile(release.STREAM_PROBE_PROGRAM, "<stream-probe>", "exec")
+        lines = release.shell_lines(release.STREAM_PROBE_PROGRAM)
+        self.assertTrue(all(len(line) < 1024 for line in lines))
+        self.assertEqual(posix_assembled_program(lines), release.STREAM_PROBE_PROGRAM)
+
+
+def asyncio_cancelled():
+    import asyncio
+    return asyncio.CancelledError()
+
+
 class CutoverIntegrationTests(unittest.TestCase):
     def execute_c1(self, arm):
         arm.app["properties"]["configuration"]["activeRevisionsMode"] = "Single"

@@ -179,11 +179,28 @@ class DispatchWrapperTests(unittest.TestCase):
             (WORKFLOW, "C" * 40, "c2-web"), (WORKFLOW, SHA, "c4-api"), (WORKFLOW, SHA, None),
             ("other.yml", SHA, "c2-web"), ("hosted-web-one-read.yml", SHA, "c2-web"),
             (WORKFLOW, SHA, "rollback-api"), (WORKFLOW, SHA, "c2-api", "ca-api--r1"),
+            (WORKFLOW, SHA, "stream-probe-api", "ca-api--r1"),
         ):
             gh = FakeGh()
             with self.subTest(args=args), self.assertRaises(WRAPPER.DispatchError):
                 run(gh, *args)
             self.assertEqual(gh.calls, [])
+        for args, probe in (((WORKFLOW, SHA, "stream-probe-api"), "ca-api--c3"),
+                            ((WORKFLOW, SHA, "stream-probe-api", "ca-api--r1"), "ca-api--r1"),
+                            ((WORKFLOW, SHA, "stream-probe-api", "ca-api--r1"), "../x"),
+                            ((WORKFLOW, SHA, "rollback-api", "ca-api--r1"), "ca-api--c3")):
+            gh = FakeGh()
+            with self.subTest(args=args, probe=probe), self.assertRaises(WRAPPER.DispatchError):
+                run(gh, *args, probe_revision=probe)
+            self.assertEqual(gh.calls, [])
+
+    def test_stream_probe_dispatches_both_named_revisions(self):
+        gh = FakeGh(polls=1)
+        run(gh, WORKFLOW, SHA, "stream-probe-api", "ca-api--r1", probe_revision="ca-api--c3")
+        dispatched = next(c for c in gh.calls if c[:2] == ["workflow", "run"])
+        for field in ("stage=stream-probe-api", "rollback_revision=ca-api--r1", "probe_revision=ca-api--c3"):
+            self.assertIn(field, dispatched)
+        self.assertEqual(gh.variables, {})
 
     def test_one_read_uses_its_own_gate(self):
         gh = FakeGh(polls=1)
