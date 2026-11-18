@@ -14,10 +14,14 @@ on:
       stage:
         description: "Exactly one release stage"
         type: choice
-        options: [c1-web, c2-web, c1-api, c2-api, c3-api, rollback-api]
+        options: [c1-web, c2-web, c1-api, c2-api, c3-api, rollback-api, stream-probe-api]
         required: true
       rollback_revision:
-        description: "rollback-api only: named active gateway-off API revision"
+        description: "rollback-api / stream-probe-api: named active gateway-off API revision (R1)"
+        type: string
+        default: ""
+      probe_revision:
+        description: "stream-probe-api only: named serving C3 API revision (no app writes; paid inference)"
         type: string
         default: ""
 
@@ -78,6 +82,7 @@ jobs:
       AI4IA_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
       AI4IA_RELEASE_STAGE: ${{ inputs.stage }}
       AI4IA_ROLLBACK_REVISION: ${{ inputs.rollback_revision }}
+      AI4IA_PROBE_REVISION: ${{ inputs.probe_revision }}
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
