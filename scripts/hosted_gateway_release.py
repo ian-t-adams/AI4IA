@@ -7,6 +7,10 @@ One dispatch applies one stage to production through scoped ARM requests:
                     /build-id and configured-API /health/ready probes), promote, deactivate R0.
   c3-api            R2 = R1-OFF + shared gateway selector/opt-in/manifest at 0%,
                     in-revision smoke, promote; R1 stays active as the rollback.
+  c4-api            widen exact C3 to the reviewed Stage A set at 0%, complete +
+                    stream probes; promotion refuses pending qualified evidence.
+  rollback-c4-api   shift a qualified C4 to exact active C3 and verify readback.
+  deactivate-api    deactivate only an untrafficked lane candidate for a fresh run.
   rollback-api      move traffic back to a named, active, gateway-off bc58 revision.
   stream-probe-api  NO app writes. Admits only when traffic is 100% on the named C3
                     revision (exact image/opt-in/manifest) and the named R1 is active,
@@ -33,10 +37,12 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import ssl
 import sys
 import time
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -75,6 +81,19 @@ CANARY_SKUS = {
 }
 DEPLOYMENTS_BYTES = ",".join(DEPLOYMENTS).encode("ascii")
 DEPLOYMENTS_SHA256 = hashlib.sha256(DEPLOYMENTS_BYTES).hexdigest()
+C3_REVISION = "ca-api-private-slurmfactory--c3-d6f03ff-82642864"
+R1_REVISION = "ca-api-private-slurmfactory--c2-019c61c-53282221"
+# Exact reviewed Stage A inventory, not runtime catalog defaults.
+C4_DEPLOYMENTS = tuple(sorted(
+    f"{model}-slurmfactory-{region}-{sku}"
+    for model in ("gpt-5.4-mini", "gpt-5.4", "gpt-5.2", "gpt-5.4-nano", "gpt-5-mini", "model-router")
+    for region in ("eastus2", "swedencentral")
+    for sku in ("dz", "glbl")
+    if not (model in ("gpt-5.2", "gpt-5.4-nano") and region == "swedencentral" and sku == "dz")
+))
+C4_DEPLOYMENTS_BYTES = ",".join(C4_DEPLOYMENTS).encode("ascii")
+C4_DEPLOYMENTS_SHA256 = hashlib.sha256(C4_DEPLOYMENTS_BYTES).hexdigest()
+C4_SKUS = {d: "DataZoneStandard" if d.endswith("-dz") else "GlobalStandard" for d in C4_DEPLOYMENTS}
 MANIFEST_SHA256 = "94c2edf581b40a2677f3f90fad76eb2fc957478e5969c5007132d35040e72cb5"
 MANIFEST_SIZE = 24569
 SIDECAR_SHA256 = "f73a55378dbe418e92ca4ea3d0bc8e30ef6ae09778f3aebddc3525e5b571ecc4"
@@ -95,7 +114,8 @@ TOKEN_HOST = "login.microsoftonline.com"
 AUDIENCE = "api://AzureADTokenExchange"
 SUBJECT = f"repo:{REPOSITORY}:environment:production"
 MAX_BODY = 4 * 1024 * 1024
-STAGES = ("c1-web", "c1-api", "c2-web", "c2-api", "c3-api", "rollback-api", "stream-probe-api")
+STAGES = ("c1-web", "c1-api", "c2-web", "c2-api", "c3-api", "c4-api",
+          "rollback-api", "rollback-c4-api", "deactivate-api", "stream-probe-api")
 SMOKE_MARK = "AI4IA_SMOKE" + "_RESULT="
 WEB_PROBE_MARK = "AI4IA_WEB" + "_PROBE_RESULT="
 # webBuildId() (app/web/build-id.mjs) of the exact bc58f551 app/web tree that built IMAGES["web"].
@@ -114,6 +134,37 @@ class Refused(Exception):
 
 class Uncertain(Refused):
     """A write whose outcome is unknown. Reconcile by reading; never replay."""
+
+
+class C4DeadlineExpired(BaseException):
+    """Cannot be swallowed by transport/probe Exception handlers."""
+
+
+class C4Budget:
+    WORK_SECONDS = 75 * 60
+    CLEANUP_SECONDS = 15 * 60
+
+    def __init__(self):
+        self.phase = "c4-work-deadline"
+
+    def __enter__(self):
+        if (not hasattr(signal, "setitimer") or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)):
+            raise Refused("c4-budget-unavailable")
+        self.previous = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, self.expire)
+        signal.setitimer(signal.ITIMER_REAL, self.WORK_SECONDS)
+        return self
+
+    def expire(self, *_args):
+        raise C4DeadlineExpired(self.phase)
+
+    def cleanup(self):
+        self.phase = "c4-cleanup-deadline"
+        signal.setitimer(signal.ITIMER_REAL, self.CLEANUP_SECONDS)
+
+    def __exit__(self, *_args):
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, self.previous)
 
 
 def _load(name: str, path: Path):
@@ -289,8 +340,15 @@ def validate_environment(env: dict[str, str]) -> str:
     if stage not in STAGES:
         raise Refused("admission")
     rollback = env.get("AI4IA_ROLLBACK_REVISION", "")
-    if (stage in ("rollback-api", "stream-probe-api")) != bool(rollback):
+    if (stage in ("rollback-api", "rollback-c4-api", "deactivate-api", "c4-api",
+                  "stream-probe-api")) != bool(rollback):
         raise Refused("admission")
+    if stage in ("c4-api", "rollback-c4-api") and rollback != C3_REVISION:
+        raise Refused("admission")
+    if env.get("AI4IA_C4_EXCLUDE_DEPLOYMENTS", "") and stage != "c4-api":
+        raise Refused("admission")
+    if stage == "c4-api":
+        c4_deployments(env)
     if (stage == "stream-probe-api") != bool(env.get("AI4IA_PROBE_REVISION", "")):
         raise Refused("admission")
     denied = {
@@ -300,6 +358,18 @@ def validate_environment(env: dict[str, str]) -> str:
     if any(k.lower() in denied and value for k, value in env.items()):
         raise Refused("environment")
     return stage
+
+
+def c4_deployments(env: dict[str, str]) -> tuple[str, ...]:
+    raw = env.get("AI4IA_C4_EXCLUDE_DEPLOYMENTS", "")
+    excluded = raw.split(",") if raw else []
+    if (excluded != sorted(set(excluded))
+            or not set(excluded) <= set(C4_DEPLOYMENTS) - set(DEPLOYMENTS)):
+        raise Refused("c4-exclusions")
+    selected = tuple(d for d in C4_DEPLOYMENTS if d not in excluded)
+    if set(selected) == set(DEPLOYMENTS):
+        raise Refused("c4-exclusions")
+    return selected
 
 
 def candidate_suffix(stage: str, sha: str, run_id: str) -> str:
@@ -479,6 +549,8 @@ class Arm:
         self.writes += 1
         try:
             status, headers, _ = self._call(method, self.url(path), body, phase=phase)
+        except C4DeadlineExpired:
+            raise Uncertain(phase + "-deadline") from None
         except Refused as e:
             raise Uncertain(phase, e.status) from None
         except (OSError, http.client.HTTPException):
@@ -489,7 +561,10 @@ class Arm:
             raise Uncertain(phase, status)
         poll = headers.get("azure-asyncoperation") or (headers.get("location") if status == 202 else None)
         if poll:
-            self._poll(poll, timeout, phase)
+            try:
+                self._poll(poll, timeout, phase)
+            except C4DeadlineExpired:
+                raise Uncertain(phase + "-deadline") from None
 
     def _poll(self, url: str, timeout: float, phase: str) -> None:
         try:
@@ -673,6 +748,25 @@ def gateway_off_release(revision: dict) -> bool:
             and env_value(revision, "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST") is None)
 
 
+def gateway_on_release(revision: dict) -> bool:
+    """Only the exact retained C3 revision is a gateway-on recovery target."""
+    return (revision.get("name") == C3_REVISION and ready(revision)
+            and gateway_on_template(revision, DEPLOYMENTS_BYTES.decode()))
+
+
+def gateway_on_template(revision: dict, deployments: str) -> bool:
+    """Pinned identity/configuration only; a broken serving C4 may need rollback."""
+    containers = ((revision.get("properties") or {}).get("template") or {}).get("containers") or []
+    manifest = env_value(revision, "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST")
+    return (len(containers) == 1 and containers[0].get("name") == "api"
+            and containers[0].get("image") == IMAGES["api"]
+            and env_value(revision, "AI4IA_SHARED_GATEWAY_ENABLED") == "true"
+            and env_value(revision, "AI4IA_SHARED_GATEWAY_DEPLOYMENTS") == deployments
+            and env_value(revision, "AI4IA_CHAT_PILOT_ISOLATION_ENABLED") in (None, "false")
+            and isinstance(manifest, str) and len(manifest.encode("utf-8")) == MANIFEST_SIZE
+            and hashlib.sha256(manifest.encode("utf-8")).hexdigest() == MANIFEST_SHA256)
+
+
 def template_matches(actual: Any, expected: Any) -> bool:
     if not isinstance(actual, dict) or not isinstance(expected, dict):
         return False
@@ -818,6 +912,212 @@ def sanitize_smoke(result: Any) -> dict:
         "base": base if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{64}", base) else None,
         "calls": calls[:8],
     }
+
+
+# The gateway exposes configured bindings, not observed backend identity.
+# No override: trusted same-request backend evidence requires a separate design.
+C4_CALL_TIMEOUT = 35
+C4_MAX_OUTPUT_TOKENS = 128
+C4_MAX_REQUESTS_PER_ROUTE = 2
+C4_SMOKE_MARK = "AI4IA_C4_SMOKE_RESULT="
+C4_SMOKE_PROGRAM = r'''
+import asyncio, hashlib, json, logging, sys
+logging.disable(logging.CRITICAL)
+EXPECTED_SKUS = __SKUS__
+TIMEOUT = __TIMEOUT__
+CAP = __CAP__
+REQUEST_CAP = __REQUEST_CAP__
+MANIFEST_SHA = __MANIFEST_SHA__
+MARK = "AI4IA_C4_SMOKE_RESULT="
+
+async def run():
+    out = {"phase": "config", "calls": [], "base": None, "usage": None}
+    try:
+        from urllib.parse import urlsplit
+        import httpx
+        from ai4ia_api.catalog import load_catalog
+        from ai4ia_api.config import get_settings
+        from ai4ia_api.gateway.client import ModelGatewayClient
+        s = get_settings()
+        if (not s.shared_gateway_enabled
+                or s.chat_pilot_isolation_enabled
+                or s.shared_gateway_deployment_set != frozenset(EXPECTED_SKUS)
+                or hashlib.sha256(s.shared_gateway_activation_manifest.encode()).hexdigest() != MANIFEST_SHA):
+            return out
+        catalog = load_catalog(s.model_catalog_path, s.data_residency, s.claude_runtime_enabled)
+        profiles = {}
+        for model in catalog.models:
+            for option in model.options:
+                if option.deploymentName in EXPECTED_SKUS:
+                    if (model.api != "chat" or not model.runtimeEnabled
+                            or option.sku != EXPECTED_SKUS[option.deploymentName]
+                            or option.deploymentName in profiles):
+                        return out
+                    profiles[option.deploymentName] = model
+        if set(profiles) != set(EXPECTED_SKUS):
+            return out
+        s = s.model_copy(update={"hard_quota_enabled": False, "group_policy_enabled": False})
+        active = {}
+        sent = {}
+        native_models = []
+        seen = []
+
+        async def before(request):
+            deployment = active["deployment"]
+            sent[deployment] = sent.get(deployment, 0) + 1
+            active["sent"] += 1
+            body = json.loads(request.content)
+            if (sent[deployment] > REQUEST_CAP or active["sent"] > 1 or request.method != "POST"
+                    or request.url.host != base or request.url.path != path
+                    or body.get("max_completion_tokens", body.get("max_tokens")) != CAP
+                    or body.get("model") != active["model_key"]):
+                raise ValueError("request refused")
+
+        async def after(response):
+            seen.append(response)
+            if response.status_code != 200 or response.url.host != base:
+                raise ValueError("route evidence refused")
+            if active["mode"] == "complete":
+                await response.aread()
+                native_models.append(response.json().get("model"))
+            else:
+                original_lines = response.aiter_lines
+                async def lines():
+                    async for line in original_lines():
+                        if line.startswith("data:") and line[5:].strip() != "[DONE]":
+                            event = json.loads(line[5:])
+                            if event.get("model") is not None:
+                                native_models.append(event["model"])
+                        yield line
+                response.aiter_lines = lines
+
+        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, follow_redirects=False,
+                event_hooks={"request": [before], "response": [after]}) as http:
+            gateway = ModelGatewayClient(s, http_client=http)
+            try:
+                manifest = gateway._shared_manifest
+                if manifest.terminal_usage_verified:
+                    return out
+                base = urlsplit(manifest.base_url).hostname
+                path = urlsplit(manifest.base_url).path.rstrip("/") + "/chat/completions"
+                out["base"] = hashlib.sha256(base.encode()).hexdigest()
+                out["phase"] = "calls"
+                for deployment in sorted(EXPECTED_SKUS):
+                    model = profiles[deployment]
+                    params = {"max_tokens": CAP}
+                    efforts = model.reasoningEffortOptions
+                    if efforts:
+                        params["reasoning_effort"] = "none" if "none" in efforts else efforts[0]
+                    for mode in ("complete", "stream"):
+                        row = {"deployment": deployment, "mode": mode, "status": None,
+                               "shared": False, "host": False, "route": False,
+                               "model_unchanged": False, "done": False, "usage": None,
+                               "correlation_present": False, "backend_identity": "unavailable"}
+                        out["calls"].append(row)
+                        model_key = manifest.resolve_shared_model_key(
+                            deployment, EXPECTED_SKUS[deployment], "/chat/completions")
+                        if model_key is None:
+                            return out
+                        active.update(deployment=deployment, mode=mode, model_key=model_key, sent=0)
+                        native_models.clear()
+                        seen.clear()
+                        delivered = []
+                        shared = []
+                        original = gateway._shared_request
+                        async def observed(*args, **kwargs):
+                            request, url = await original(*args, **kwargs)
+                            shared.append(url is not None)
+                            return request, url
+                        gateway._shared_request = observed
+                        try:
+                            kwargs = dict(deployment=deployment, api="chat", params=params,
+                                messages=[{"role": "user", "content": "Reply with OK."}],
+                                shared_gateway_eligible=True, shared_gateway_sku=EXPECTED_SKUS[deployment])
+                            if mode == "complete":
+                                result = await asyncio.wait_for(gateway.complete(**kwargs), TIMEOUT)
+                                delivered.append(result.get("model"))
+                                row["done"] = True
+                            else:
+                                async def consume():
+                                    async for chunk in gateway.stream(**kwargs):
+                                        if chunk.raw and not chunk.done:
+                                            event = json.loads(chunk.raw)
+                                            if event.get("error"):
+                                                raise ValueError("stream error")
+                                            if event.get("model") is not None:
+                                                delivered.append(event["model"])
+                                        if chunk.done:
+                                            row["done"] = True
+                                await asyncio.wait_for(consume(), TIMEOUT)
+                            row.update(status=200 if len(seen) == 1 else None,
+                                shared=shared == [True], host=len(seen) == 1,
+                                route=len(seen) == 1,
+                                correlation_present=len(seen) == 1 and bool(seen[0].headers.get("x-S7P-ID")),
+                                model_unchanged=bool(native_models) and delivered == native_models
+                                    and all(isinstance(m, str) and m for m in native_models))
+                        except Exception:
+                            return out
+                        finally:
+                            gateway._shared_request = original
+                        if not (row["status"] == 200 and all(row[k] for k in (
+                                "shared", "host", "route", "model_unchanged", "done"))):
+                            return out
+            finally:
+                await gateway.close()
+        out["phase"] = "complete"
+    except Exception:
+        pass
+    return out
+
+result = asyncio.run(run())
+sys.stdout.write("\n" + MARK + json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
+sys.stdout.flush()
+'''
+
+
+def c4_smoke_program(deployments: tuple[str, ...]) -> str:
+    program = C4_SMOKE_PROGRAM
+    for key, value in {
+        "SKUS": {d: C4_SKUS[d] for d in deployments},
+        "TIMEOUT": C4_CALL_TIMEOUT, "CAP": C4_MAX_OUTPUT_TOKENS,
+        "REQUEST_CAP": C4_MAX_REQUESTS_PER_ROUTE, "MANIFEST_SHA": MANIFEST_SHA256,
+    }.items():
+        program = program.replace("__" + key + "__", repr(value))
+    return program
+
+
+def sanitize_c4_smoke(result: Any, deployments: tuple[str, ...]) -> dict:
+    if not isinstance(result, dict):
+        result = {}
+    calls = result.get("calls")
+    clean = []
+    for row in (calls if isinstance(calls, list) else [])[:2 * len(deployments) + 1]:
+        if (not isinstance(row, dict) or row.get("deployment") not in deployments
+                or row.get("mode") not in ("complete", "stream")):
+            clean.append({})
+            continue
+        clean.append({
+            "deployment": row["deployment"], "mode": row["mode"],
+            "status": 200 if type(row.get("status")) is int and row["status"] == 200 else None,
+            **{key: row.get(key) is True for key in ("shared", "host", "route", "model_unchanged", "done")},
+            "usage": None, "correlation_present": row.get("correlation_present") is True,
+            "backend_identity": "unavailable",
+        })
+    base = result.get("base")
+    return {"phase": result.get("phase") if result.get("phase") in ("config", "calls", "complete") else None,
+            "base": base if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{64}", base) else None,
+            "calls": clean, "usage": None}
+
+
+def c4_smoke_passed(result: Any, deployments: tuple[str, ...]) -> bool:
+    if not isinstance(result, dict) or result.get("phase") != "complete" or not result.get("base"):
+        return False
+    calls = result.get("calls")
+    return (isinstance(calls, list) and len(calls) == 2 * len(deployments)
+            and [(c.get("deployment"), c.get("mode")) for c in calls if isinstance(c, dict)]
+            == [(d, mode) for d in deployments for mode in ("complete", "stream")]
+            and all(c.get("status") == 200 and all(c.get(k) is True for k in (
+                "shared", "host", "route", "model_unchanged", "done")) for c in calls))
 
 
 # Streamed four-mini probe. The raw SSE is read here, not through ModelGatewayClient.stream,
@@ -1359,6 +1659,13 @@ def run_stream_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=t
     return {**sanitize_stream_probe(result), "exec": diag}
 
 
+def run_c4_smoke(arm: Arm, app_id: str, revision: str, deployments: tuple[str, ...]) -> dict:
+    result, diag = run_exec(
+        arm, app_id, revision, "api", shell_lines(c4_smoke_program(deployments)),
+        C4_SMOKE_MARK, 2 * len(deployments) * C4_CALL_TIMEOUT + 120)
+    return {**sanitize_c4_smoke(result, deployments), "exec": diag}
+
+
 def run_web_probe(arm: Arm, app_id: str, revision: str, connect=None, clock=time.monotonic,
                   sleep=time.sleep) -> dict:
     lines = shell_lines(WEB_PROBE_PROGRAM, runner=NODE_RUNNER)
@@ -1442,10 +1749,12 @@ def _run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[
 class Release:
     def __init__(self, arm: Arm, env: dict[str, str], receipt: dict, gate: DtsGate | None = None,
                  now=lambda: datetime.now(UTC), smoke=run_smoke, web_probe=run_web_probe,
-                 stream_probe=run_stream_probe):
+                 stream_probe=run_stream_probe, c4_smoke=run_c4_smoke, budget: C4Budget | None = None):
         self.arm, self.env, self.receipt, self.now, self.smoke = arm, env, receipt, now, smoke
         self.web_probe = web_probe
         self.stream_probe_runner = stream_probe
+        self.c4_smoke = c4_smoke
+        self.budget = budget
         self.gate = gate or DtsGate(arm, now=now)
 
     def step(self, name: str, **fields: Any) -> None:
@@ -1465,7 +1774,7 @@ class Release:
         if not isinstance(latest, str):
             raise Refused("read")
         r0 = latest
-        if stage in ("C2", "C3"):
+        if stage in ("C2", "C3", "C4"):
             rules = ((props.get("configuration") or {}).get("ingress") or {}).get("traffic")
             if (isinstance(rules, list) and len(rules) == 1 and isinstance(rules[0], dict)
                     and rules[0].get("weight") == 100 and rules[0].get("latestRevision") is not True
@@ -1547,6 +1856,8 @@ class Release:
         r0 = rev["name"]
         candidate = app["name"] + "--" + suffix
         self.receipt.update(r0=r0, candidate=candidate)
+        if stage == "C4":
+            self.require_c4_baseline(app, rev)
         self.gate.require()
         self.step("dts-gate", observed=self.gate.observed.isoformat())
         if stale is not None:
@@ -1575,6 +1886,16 @@ class Release:
                 if not smoke_passed(result):
                     raise Refused("smoke")
                 self.step("smoke-passed", calls=len(result["calls"]))
+            if stage == "C4":
+                deployments = c4_deployments(self.env)
+                result = self.c4_smoke(self.arm, app_id, candidate, deployments)
+                self.receipt["smoke"] = sanitize_c4_smoke(result, deployments)
+                if not c4_smoke_passed(self.receipt["smoke"], deployments):
+                    raise Refused("smoke")
+                self.step("smoke-passed", calls=len(result["calls"]), usage=None)
+                # The pinned gateway exposes no trusted per-request deployment/region.
+                # Successful configured routing and model passthrough cannot prove it.
+                raise Refused("c4-backend-identity-unavailable")
             if service == "web":
                 probe = self.web_probe(self.arm, app_id, candidate)
                 self.receipt["web_probe"] = probe
@@ -1592,10 +1913,15 @@ class Release:
                     or not template_matches((candidate_rev.get("properties") or {}).get("template"),
                                             desired_template)):
                 raise Refused("concurrent-change")
+            if stage == "C4":
+                self.require_c4_baseline(current, self.arm.get(
+                    f"{app_id}/revisions/{r0}", phase="reread"))
         except Uncertain:
             raise
-        except Exception:  # Cleanup is guarded; the original failure is re-raised.
+        except (Exception, C4DeadlineExpired):  # Cleanup is guarded; re-raise the original failure.
             try:
+                if self.budget is not None:
+                    self.budget.cleanup()
                 self.deactivate(service, candidate, "deactivate-unpromoted", r0)
             except Uncertain:
                 raise
@@ -1617,7 +1943,9 @@ class Release:
             # Only a qualified target is restored automatically: the gateway-off release
             # for C3, or the unchanged healthy web R0 before any API rollout. Pre-release
             # API R0 could reactivate retired work and is never restored blindly.
-            if stage == "C3":
+            if stage == "C4":
+                qualify = gateway_on_release
+            elif stage == "C3":
                 qualify = gateway_off_release
             elif service == "web":
                 r0_template = (rev.get("properties") or {}).get("template")
@@ -1695,6 +2023,110 @@ class Release:
         self.receipt["serving"] = target
         self.step("rolled-back", revision=target)
 
+    def require_c4_baseline(self, app: dict, rev: dict) -> None:
+        back = self.arm.get(f"{APPS['api']}/revisions/{R1_REVISION}", phase="reread")
+        facts = {
+            "r0_shape_ok": gateway_on_release(rev),
+            "r0_traffic": traffic_is(app, C3_REVISION),
+            "r1_gateway_off": gateway_off_release(back),
+            "r1_untrafficked": not traffic_references(app, R1_REVISION),
+        }
+        self.step("c4-baseline", r0=C3_REVISION, r1=R1_REVISION, **facts)
+        if not all(facts.values()):
+            raise Refused("c4-baseline")
+        self.receipt.update(prior_deployments_sha256=DEPLOYMENTS_SHA256,
+                            new_deployments_sha256=hashlib.sha256(
+                                ",".join(c4_deployments(self.env)).encode("ascii")).hexdigest(),
+                            excluded=[d for d in C4_DEPLOYMENTS if d not in c4_deployments(self.env)],
+                            rollback=C3_REVISION, r1=R1_REVISION, usage=None)
+
+    def rollback_c4(self) -> None:
+        app_id = APPS["api"]
+        app = self.arm.get(app_id, phase="read")
+        rules = app["properties"]["configuration"]["ingress"]["traffic"]
+        if (app["properties"]["configuration"].get("activeRevisionsMode") != "Multiple"
+                or not isinstance(rules, list) or len(rules) != 1
+                or rules[0] != {"revisionName": rules[0].get("revisionName"), "weight": 100}):
+            raise Refused("rollback-target")
+        serving = rules[0].get("revisionName")
+        current = self.arm.get(f"{app_id}/revisions/{serving}", phase="read")
+        if serving != C3_REVISION and not self.c4_candidate(current, app["name"]):
+            raise Refused("rollback-target")
+        target = self.arm.get(f"{app_id}/revisions/{C3_REVISION}", phase="read")
+        if not gateway_on_release(target):
+            raise Refused("rollback-target")
+        if serving != C3_REVISION and not cutover().stale_template_diff_ok(
+                target["properties"]["template"], current["properties"]["template"], serving):
+            raise Refused("rollback-target")
+        if serving == C3_REVISION:
+            self.step("rollback-noop", revision=C3_REVISION)
+            return
+        self.gate.require()
+        self.gate.require_fresh()
+        target_now = self.arm.get(f"{app_id}/revisions/{C3_REVISION}", phase="reread")
+        serving_now = self.arm.get(f"{app_id}/revisions/{serving}", phase="reread")
+        if (projection(self.arm.get(app_id, phase="reread")) != projection(app)
+                or not gateway_on_release(target_now)
+                or not self.c4_candidate(serving_now, app["name"])
+                or not template_matches(target_now["properties"]["template"], target["properties"]["template"])
+                or not cutover().stale_template_diff_ok(
+                    target_now["properties"]["template"], serving_now["properties"]["template"], serving)):
+            raise Refused("rollback-target")
+        self.step("rollback-c4", write="PATCH", revision=C3_REVISION)
+        self.arm.write("PATCH", app_id, {"location": app["location"], "properties": {
+            "configuration": {"ingress": {"traffic": [{"revisionName": C3_REVISION, "weight": 100}]}}}},
+            phase="rollback-c4")
+        if (not traffic_is(self.arm.get(app_id, phase="readback"), C3_REVISION)
+                or not gateway_on_release(self.arm.get(
+                    f"{app_id}/revisions/{C3_REVISION}", phase="readback"))):
+            raise Uncertain("rollback-readback")
+        self.receipt["serving"] = C3_REVISION
+        self.step("rolled-back", revision=C3_REVISION)
+
+    @staticmethod
+    def c4_candidate(rev: dict, app_name: str) -> bool:
+        name = rev.get("name")
+        if (not isinstance(name, str) or re.fullmatch(
+                re.escape(app_name) + r"--c4-[0-9a-f]{7}-[0-9]{1,8}", name) is None):
+            return False
+        value = env_value(rev, "AI4IA_SHARED_GATEWAY_DEPLOYMENTS")
+        if not isinstance(value, str):
+            return False
+        selected = value.split(",")
+        if (selected != sorted(set(selected)) or not set(DEPLOYMENTS) < set(selected)
+                or not set(selected) <= set(C4_DEPLOYMENTS)):
+            return False
+        return gateway_on_template(rev, value)
+
+    def recover_deactivate(self, target: str) -> None:
+        app_id = APPS["api"]
+        app = self.arm.get(app_id, phase="read")
+        rules = app["properties"]["configuration"]["ingress"]["traffic"]
+        if (not isinstance(rules, list) or len(rules) != 1
+                or not isinstance(rules[0], dict) or not isinstance(rules[0].get("revisionName"), str)):
+            raise Refused("deactivate-target")
+        serving = rules[0]["revisionName"]
+        rev = self.arm.get(f"{app_id}/revisions/{serving}", phase="read")
+        candidate = self.arm.get(f"{app_id}/revisions/{target}", phase="read")
+        if (app["properties"]["configuration"].get("activeRevisionsMode") != "Multiple"
+                or target in (serving, R1_REVISION, C3_REVISION)
+                or not self.c4_candidate(candidate, app["name"])
+                or not target.startswith(app["name"] + "--c4-" + self.env["GITHUB_SHA"][:7] + "-")
+                or not traffic_is(app, serving) or traffic_references(app, target)
+                or not gateway_on_release(rev)
+                or not cutover().stale_template_diff_ok(
+                    rev["properties"]["template"], candidate["properties"]["template"], target)):
+            raise Refused("deactivate-target")
+        self.gate.require()
+        self.gate.require_fresh()
+        latest_serving = self.arm.get(f"{app_id}/revisions/{serving}", phase="reread")
+        latest_candidate = self.arm.get(f"{app_id}/revisions/{target}", phase="reread")
+        if (projection(self.arm.get(app_id, phase="reread")) != projection(app)
+                or latest_candidate != candidate or latest_serving != rev):
+            raise Refused("deactivate-target")
+        self.deactivate("api", target, "deactivate-recovery", serving)
+        self.receipt["serving"] = serving
+
     def probe_bindings(self, app: dict, probe: str, r1: str) -> dict:
         """Exact C3 serving + R1 rollback bindings; booleans only, nothing copied from env."""
         app_id = APPS["api"]
@@ -1764,8 +2196,28 @@ class Release:
                 "api", "C3", manifest_bytes=load_manifest(self.env),
                 classification_sidecar_bytes=load_sidecar(self.env),
                 deployments_bytes=DEPLOYMENTS_BYTES, deployments_sha256=DEPLOYMENTS_SHA256)
+        elif stage == "c4-api":
+            _, baseline, _ = self.snapshot("api", "C4")
+            if not gateway_on_release(baseline):
+                raise Refused("c4-baseline")
+            identity = env_value(baseline, "AZURE_CLIENT_ID")
+            _, manifest = cutover().load_c3_contract(
+                load_manifest(self.env), load_sidecar(self.env), identity)
+            if any(manifest.resolve_shared_model_key(d, C4_SKUS[d], "/chat/completions") is None
+                   for d in C4_DEPLOYMENTS):
+                raise Refused("c4-manifest-inventory")
+            selected = ",".join(c4_deployments(self.env)).encode("ascii")
+            self.create_and_promote(
+                "api", "C4", manifest_bytes=load_manifest(self.env),
+                classification_sidecar_bytes=load_sidecar(self.env),
+                deployments_bytes=selected, deployments_sha256=hashlib.sha256(selected).hexdigest(),
+                prior_deployments_bytes=DEPLOYMENTS_BYTES, prior_deployments_sha256=DEPLOYMENTS_SHA256)
         elif stage == "rollback-api":
             self.rollback(self.env["AI4IA_ROLLBACK_REVISION"])
+        elif stage == "rollback-c4-api":
+            self.rollback_c4()
+        elif stage == "deactivate-api":
+            self.recover_deactivate(self.env["AI4IA_ROLLBACK_REVISION"])
         elif stage == "stream-probe-api":
             self.stream_probe(self.env["AI4IA_PROBE_REVISION"], self.env["AI4IA_ROLLBACK_REVISION"])
         else:
@@ -1835,14 +2287,17 @@ def execute(env: dict[str, str], *, token_source=acquire_arm_token, arm_class=Ar
         stage = validate_environment(env)
         receipt.update(stage=stage, sha=env["GITHUB_SHA"], run=env["GITHUB_RUN_ID"],
                        deployments_sha256=DEPLOYMENTS_SHA256)
-        if stage == "c3-api":
+        if stage in ("c3-api", "c4-api"):
             receipt.update(manifest_sha256=hashlib.sha256(load_manifest(env)).hexdigest(),
                            sidecar_sha256=hashlib.sha256(load_sidecar(env)).hexdigest())
         receipt["phase"] = "credential"
-        arm = arm_class(token_source(env, time.time()))
-        receipt["phase"] = "stage"
-        Release(arm, env, receipt, now=now).run(stage)
+        with C4Budget() if stage == "c4-api" else nullcontext() as budget:
+            arm = arm_class(token_source(env, time.time()))
+            receipt["phase"] = "stage"
+            Release(arm, env, receipt, now=now, budget=budget).run(stage)
         receipt.update(outcome="complete", phase="complete")
+    except C4DeadlineExpired as e:
+        receipt.update(outcome="uncertain", phase=str(e))
     except Uncertain as e:
         receipt.update(outcome="uncertain", phase=e.phase, status=e.status)
         receipt["reconciled"] = reconcile(arm, receipt.get("stage"))

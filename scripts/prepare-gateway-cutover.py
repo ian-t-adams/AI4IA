@@ -220,9 +220,9 @@ STALE_C3_ENV = frozenset({C3_SELECTOR, C3_DEPLOYMENTS, C3_MANIFEST})
 
 
 def stale_candidate_name(app_name: str, name: object) -> bool:
-    """Only the release lane's own C2/C3 candidate names (candidate_suffix form)."""
+    """Only the release lane's own C2/C3/C4 candidate names (candidate_suffix form)."""
     return isinstance(name, str) and re.fullmatch(
-        re.escape(app_name) + r"--c[23]-[0-9a-f]{7}-[0-9]{1,8}", name) is not None
+        re.escape(app_name) + r"--c[234]-[0-9a-f]{7}-[0-9]{1,8}", name) is not None
 
 
 def stale_template_diff_ok(
@@ -230,7 +230,7 @@ def stale_template_diff_ok(
 ) -> bool:
     """A stale lane candidate may differ from R0 only in what its own stage changes.
 
-    ``--c2-`` names: containers[0].image. ``--c3-`` names: the three C3 env entries.
+    C2: image. C3: its three env entries. C4: only the deployment allowlist.
     Everything else must be compatible under compare_r0_templates.
     """
     left = writable_template_projection(r0_template)
@@ -240,7 +240,7 @@ def stale_template_diff_ok(
             or len(left_containers) != 1 or len(right_containers) != 1
             or not isinstance(left_containers[0], dict) or not isinstance(right_containers[0], dict)):
         return False
-    stage = re.search(r"--(c[23])-[0-9a-f]{7}-[0-9]{1,8}$", stale_name)
+    stage = re.search(r"--(c[234])-[0-9a-f]{7}-[0-9]{1,8}$", stale_name)
     if stage is None:
         return False
     if stage[1] == "c2":
@@ -256,8 +256,9 @@ def stale_template_diff_ok(
                     not isinstance(item, dict) or not isinstance(item.get("name"), str)
                     for item in env):
                 return False
+            ignored = {C3_DEPLOYMENTS} if stage[1] == "c4" else STALE_C3_ENV
             container["env"] = [
-                item for item in env if item["name"].upper() not in STALE_C3_ENV]
+                item for item in env if item["name"].upper() not in ignored]
     return bool(compare_r0_templates(left, right)["compatible"])
 
 
@@ -427,6 +428,8 @@ def build_payload(
     classification_sidecar_bytes: bytes | None = None,
     deployments_bytes: bytes | None = None,
     deployments_sha256: str | None = None,
+    prior_deployments_bytes: bytes | None = None,
+    prior_deployments_sha256: str | None = None,
     stale_latest: str | None = None,
     stale_template: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -436,11 +439,11 @@ def build_payload(
     as latestRevisionName by an earlier unpromoted run; ``stale_template`` is its
     revision template. The default None keeps the strict latest == R0 rule.
     """
-    if stage not in ("C1", "C2", "C3"):
-        raise ValueError("stage must be C1, C2 or C3")
+    if stage not in ("C1", "C2", "C3", "C4"):
+        raise ValueError("stage must be C1, C2, C3 or C4")
     if (stale_latest is None) != (stale_template is None):
         raise ValueError("stale latest requires both its name and its revision template")
-    if stale_latest is not None and stage not in ("C2", "C3"):
+    if stale_latest is not None and stage not in ("C2", "C3", "C4"):
         raise ValueError("stale latest is accepted only for C2/C3")
     if (
         service not in ("api", "web")
@@ -448,11 +451,13 @@ def build_payload(
         or service == "web" and stage not in ("C1", "C2")
     ):
         raise ValueError("web service supports only C1 and C2 staging")
-    if stage != "C3" and (
+    if stage not in ("C3", "C4") and (
         manifest_bytes is not None or classification_sidecar_bytes is not None
         or deployments_bytes is not None or deployments_sha256 is not None
     ):
         raise ValueError("manifest inputs are accepted only for C3")
+    if stage != "C4" and (prior_deployments_bytes is not None or prior_deployments_sha256 is not None):
+        raise ValueError("prior deployment inputs are accepted only for C4")
     if (
         re.fullmatch(
             r"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[^/]+"
@@ -553,7 +558,7 @@ def build_payload(
             raise ValueError(f"{name} must be absent or a literal false value")
 
     template["revisionSuffix"] = suffix
-    if stage == "C3":
+    if stage in ("C3", "C4"):
         if (
             api_image or web_image or existing_revisions is None
             or manifest_bytes is None or classification_sidecar_bytes is None
@@ -582,15 +587,30 @@ def build_payload(
             raise ValueError("C3 requires one literal API managed identity client ID")
         # R1-OFF is C2's unchanged output: selector absent or literal false, and no
         # opt-in list or manifest reference yet.
-        require_disabled(C3_SELECTOR)
+        if stage == "C3":
+            require_disabled(C3_SELECTOR)
+        else:
+            if prior_deployments_bytes is None or prior_deployments_sha256 is None:
+                raise ValueError("C4 requires reviewed prior deployment bytes")
+            prior = load_c3_deployments(prior_deployments_bytes, prior_deployments_sha256)
+            expected_prior = {
+                C3_SELECTOR: "true", C3_DEPLOYMENTS: prior,
+                C3_MANIFEST: manifest_bytes.decode("utf-8"),
+            }
+            if any(by_name.get(key) != {"name": key, "value": value}
+                   for key, value in expected_prior.items()):
+                raise ValueError("C4 requires the exact gateway-on prior baseline")
+            if not set(prior.split(",")) < set(load_c3_deployments(
+                    deployments_bytes, deployments_sha256).split(",")):
+                raise ValueError("C4 must strictly widen the prior deployment set")
         pilot = by_name.get("AI4IA_CHAT_PILOT_ISOLATION_ENABLED")
         if pilot is not None and (
             set(pilot) != {"name", "value"} or pilot["value"] != "false"
         ):
             raise ValueError("C3 requires chat pilot isolation to remain disabled")
-        if any(
+        if stage == "C3" and (any(
             name.upper() in (C3_DEPLOYMENTS, C3_MANIFEST) for name in names
-        ) or any(item.get("secretRef") == C3_MANIFEST_SECRET for item in env):
+        ) or any(item.get("secretRef") == C3_MANIFEST_SECRET for item in env)):
             raise ValueError(
                 "C3 requires the R1-OFF baseline without a deployment opt-in list "
                 "or manifest reference"
@@ -604,8 +624,12 @@ def build_payload(
             env[names.index(C3_SELECTOR)] = selector
         else:
             env.append(selector)
-        env.append({"name": C3_DEPLOYMENTS, "value": deployments})
-        env.append({"name": C3_MANIFEST, "value": raw_manifest})
+        for key, value in ((C3_DEPLOYMENTS, deployments), (C3_MANIFEST, raw_manifest)):
+            item = {"name": key, "value": value}
+            if key in by_name:
+                env[names.index(key)] = item
+            else:
+                env.append(item)
         validate_c3_runtime(env, contract_module)
         template["containers"][0]["env"] = env
         payload["properties"]["template"] = template

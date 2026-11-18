@@ -216,6 +216,374 @@ class AdmissionTests(unittest.TestCase):
         self.assertLessEqual(len(APP + "--" + suffix), 64)
 
 
+def passing_c4_smoke(*_args):
+    deployments = _args[-1] if _args else release.C4_DEPLOYMENTS
+    return {"phase": "complete", "base": "c" * 64, "calls": [
+        {"deployment": d, "mode": mode, "status": 200, "shared": True, "host": True,
+         "route": True, "model_unchanged": True, "done": True,
+         "backend_identity": "unavailable", "usage": None}
+        for d in deployments for mode in ("complete", "stream")]}
+
+
+class C4FlowTests(unittest.TestCase):
+    MANIFEST = '{"synthetic":"manifest"}'
+
+    def setUp(self):
+        data = self.MANIFEST.encode()
+        p = mock.patch.multiple(release, MANIFEST_SIZE=len(data),
+                                MANIFEST_SHA256=hashlib.sha256(data).hexdigest())
+        p.start()
+        self.addCleanup(p.stop)
+
+    def serving(self):
+        items = [
+            {"name": "AZURE_CLIENT_ID", "value": "a" * 36},
+            {"name": "AI4IA_SHARED_GATEWAY_ENABLED", "value": "true"},
+            {"name": "AI4IA_SHARED_GATEWAY_DEPLOYMENTS", "value": release.DEPLOYMENTS_BYTES.decode()},
+            {"name": "AI4IA_SHARED_GATEWAY_ACTIVATION_MANIFEST", "value": self.MANIFEST},
+        ]
+        arm = FakeArm(image=release.IMAGES["api"], extra_env=items)
+        rev = arm.revisions.pop(R0)
+        rev["name"] = release.C3_REVISION
+        rev["id"] = release.APPS["api"] + "/revisions/" + release.C3_REVISION
+        arm.revisions[release.C3_REVISION] = rev
+        arm.revisions[release.R1_REVISION] = arm.revision(
+            release.R1_REVISION, release.IMAGES["api"], [])
+        arm.app["properties"].update(latestRevisionName=release.C3_REVISION,
+                                     latestReadyRevisionName=release.C3_REVISION)
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": release.C3_REVISION, "weight": 100}]
+        return arm
+
+    def runner(self, arm, smoke=passing_c4_smoke, **overrides):
+        values = env(AI4IA_RELEASE_STAGE="c4-api", AI4IA_ROLLBACK_REVISION=release.C3_REVISION,
+                     **overrides)
+        receipt = {"steps": []}
+        return release.Release(arm, values, receipt, now=lambda: NOW, c4_smoke=smoke), receipt
+
+    def build(self, app, rev, **kwargs):
+        template = copy.deepcopy(rev["properties"]["template"])
+        template["revisionSuffix"] = kwargs["suffix"]
+        for item in template["containers"][0]["env"]:
+            if item["name"] == "AI4IA_SHARED_GATEWAY_DEPLOYMENTS":
+                item["value"] = kwargs["deployments_bytes"].decode()
+        return {"location": app["location"], "properties": {
+            "configuration": {"ingress": {"traffic": [
+                {"revisionName": rev["name"], "weight": 100}]}}, "template": template}}
+
+    def inputs(self):
+        return dict(manifest_bytes=b"m", classification_sidecar_bytes=b"s",
+                    deployments_bytes=release.C4_DEPLOYMENTS_BYTES,
+                    deployments_sha256=release.C4_DEPLOYMENTS_SHA256,
+                    prior_deployments_bytes=release.DEPLOYMENTS_BYTES,
+                    prior_deployments_sha256=release.DEPLOYMENTS_SHA256)
+
+    def test_exact_c3_shape_refuses_every_pin_drift(self):
+        arm = self.serving()
+        rev = arm.revisions[release.C3_REVISION]
+        self.assertTrue(release.gateway_on_release(rev))
+        for field in ("name", "image", "active", "selector", "deployments", "manifest", "duplicate", "pilot"):
+            changed = copy.deepcopy(rev)
+            container = changed["properties"]["template"]["containers"][0]
+            if field == "name":
+                changed["name"] = APP + "--c3-other"
+            elif field == "image":
+                container["image"] = OLD_IMAGE
+            elif field == "active":
+                changed["properties"]["active"] = False
+            elif field == "duplicate":
+                container["env"].append(copy.deepcopy(container["env"][1]))
+            elif field == "pilot":
+                container["env"].append({"name": "AI4IA_CHAT_PILOT_ISOLATION_ENABLED", "value": "true"})
+            else:
+                index = {"selector": 1, "deployments": 2, "manifest": 3}[field]
+                container["env"][index]["value"] += " "
+            with self.subTest(field=field):
+                self.assertFalse(release.gateway_on_release(changed))
+
+    def test_c4_admission_and_explicit_exclusions(self):
+        values = env(AI4IA_RELEASE_STAGE="c4-api", AI4IA_ROLLBACK_REVISION=release.C3_REVISION)
+        self.assertEqual(release.validate_environment(values), "c4-api")
+        self.assertEqual(len(release.c4_deployments(values)), 22)
+        addition = sorted(set(release.C4_DEPLOYMENTS) - set(release.DEPLOYMENTS))[0]
+        values["AI4IA_C4_EXCLUDE_DEPLOYMENTS"] = addition
+        self.assertNotIn(addition, release.c4_deployments(values))
+        for bad in (release.DEPLOYMENTS[0], "unknown", addition + "," + addition, addition + ","):
+            with self.subTest(bad=bad), self.assertRaises(release.Refused):
+                release.c4_deployments({**values, "AI4IA_C4_EXCLUDE_DEPLOYMENTS": bad})
+        for target in ("", release.R1_REVISION, APP + "--c3-other"):
+            with self.subTest(target=target), self.assertRaises(release.Refused):
+                release.validate_environment({**values, "AI4IA_ROLLBACK_REVISION": target})
+
+    def test_c4_smokes_at_zero_and_cannot_promote_even_with_all_successes(self):
+        for failure in ("none", "partial", "exception"):
+            arm = self.serving()
+            r1 = copy.deepcopy(arm.revisions[release.R1_REVISION])
+            seen = []
+
+            def smoke(_arm, _app, revision, deployments):
+                self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+                self.assertNotEqual(revision, release.C3_REVISION)
+                seen.extend(deployments)
+                if failure == "exception":
+                    raise release.Refused("smoke-disconnected")
+                result = passing_c4_smoke(deployments)
+                if failure == "partial":
+                    result["calls"].pop()
+                return result
+
+            runner, receipt = self.runner(arm, smoke=smoke)
+            with mock.patch.object(release, "build_payload", self.build), \
+                    self.subTest(failure=failure), self.assertRaises(release.Refused) as refused:
+                runner.create_and_promote("api", "C4", **self.inputs())
+            self.assertEqual(refused.exception.phase, {
+                "none": "c4-backend-identity-unavailable", "partial": "smoke",
+                "exception": "smoke-disconnected"}[failure])
+            self.assertEqual(seen, list(release.C4_DEPLOYMENTS))
+            self.assertEqual([r[3] for r in arm.requests], ["create", "deactivate-unpromoted"])
+            self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+            self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+            self.assertEqual(arm.revisions[release.R1_REVISION], r1)
+            self.assertTrue(release.gateway_on_release(arm.revisions[release.C3_REVISION]))
+
+    def test_c4_requires_healthy_untrafficked_r1_before_any_write(self):
+        for drift in ("r1", "r0", "traffic"):
+            arm = self.serving()
+            if drift == "r1":
+                arm.revisions[release.R1_REVISION]["properties"]["active"] = False
+            elif drift == "r0":
+                arm.revisions[release.C3_REVISION]["properties"]["template"]["containers"][0]["image"] = OLD_IMAGE
+            else:
+                arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+                    {"revisionName": release.R1_REVISION, "weight": 100}]
+            runner, _ = self.runner(arm)
+            with mock.patch.object(release, "build_payload", self.build), \
+                    self.subTest(drift=drift), self.assertRaises(release.Refused):
+                runner.create_and_promote("api", "C4", **self.inputs())
+            self.assertEqual(arm.writes, 0)
+
+    def test_run_validates_all_manifest_rows_including_excluded_before_create(self):
+        addition = sorted(set(release.C4_DEPLOYMENTS) - set(release.DEPLOYMENTS))[0]
+        for missing in (None, addition):
+            arm = self.serving()
+            runner, _ = self.runner(arm, AI4IA_C4_EXCLUDE_DEPLOYMENTS=addition)
+            manifest = types.SimpleNamespace(resolve_shared_model_key=mock.Mock(
+                side_effect=lambda d, *_a: None if d == missing else d))
+            builder = release.cutover()
+            with (mock.patch.object(release, "cutover", return_value=builder),
+                  mock.patch.object(builder, "load_c3_contract", return_value=("", manifest)),
+                  mock.patch.object(release, "load_manifest", return_value=b"m"),
+                  mock.patch.object(release, "load_sidecar", return_value=b"s"),
+                  mock.patch.object(runner, "create_and_promote") as create):
+                if missing:
+                    with self.assertRaisesRegex(release.Refused, "c4-manifest-inventory"):
+                        runner.run("c4-api")
+                    create.assert_not_called()
+                else:
+                    runner.run("c4-api")
+                    create.assert_called_once()
+                    self.assertNotIn(addition, create.call_args.kwargs["deployments_bytes"].decode().split(","))
+                    self.assertEqual(manifest.resolve_shared_model_key.call_count, 22)
+            self.assertEqual(arm.writes, 0)
+
+
+
+
+class C4RecoveryTests(unittest.TestCase):
+    MANIFEST = C4FlowTests.MANIFEST
+    setUp = C4FlowTests.setUp
+    serving = C4FlowTests.serving
+    runner = C4FlowTests.runner
+    build = C4FlowTests.build
+    inputs = C4FlowTests.inputs
+
+    def test_work_deadline_reserves_cleanup_without_moving_c3_traffic(self):
+        arm = self.serving()
+
+        def expire(*_args):
+            raise release.C4DeadlineExpired("c4-work-deadline")
+
+        runner, receipt = self.runner(arm, smoke=expire)
+        runner.budget = mock.Mock()
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.C4DeadlineExpired, "c4-work-deadline"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        runner.budget.cleanup.assert_called_once_with()
+        self.assertEqual([r[3] for r in arm.requests], ["create", "deactivate-unpromoted"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+
+    def test_deadline_during_uncertain_create_does_not_authorize_cleanup(self):
+        arm = self.serving()
+        arm.fail["create"] = release.Uncertain("create-deadline")
+        runner, _ = self.runner(arm)
+        runner.budget = mock.Mock()
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.Uncertain, "create-deadline"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        runner.budget.cleanup.assert_not_called()
+        self.assertEqual([r[3] for r in arm.requests], ["create"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+
+    def test_cleanup_deadline_never_replays_or_moves_traffic(self):
+        arm = self.serving()
+        arm.fail["deactivate-unpromoted"] = release.C4DeadlineExpired("c4-cleanup-deadline")
+        runner, receipt = self.runner(arm)
+        runner.budget = mock.Mock()
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.C4DeadlineExpired, "c4-cleanup-deadline"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        self.assertEqual([r[3] for r in arm.requests], ["create", "deactivate-unpromoted"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        self.assertTrue(arm.revisions[receipt["candidate"]]["properties"]["active"])
+
+    def candidate(self, arm):
+        name = APP + "--c4-aaaaaaa-1234"
+        rev = copy.deepcopy(arm.revisions[release.C3_REVISION])
+        rev.update(name=name, id=release.APPS["api"] + "/revisions/" + name)
+        for item in rev["properties"]["template"]["containers"][0]["env"]:
+            if item["name"] == "AI4IA_SHARED_GATEWAY_DEPLOYMENTS":
+                item["value"] = release.C4_DEPLOYMENTS_BYTES.decode()
+        arm.revisions[name] = rev
+        arm.app["properties"]["template"] = copy.deepcopy(rev["properties"]["template"])
+        arm.app["properties"].update(latestRevisionName=name, latestReadyRevisionName=name)
+        return name
+
+    def test_distinct_c4_rollback_to_active_c3_and_readback(self):
+        arm = self.serving()
+        candidate = self.candidate(arm)
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": candidate, "weight": 100}]
+        runner, receipt = self.runner(arm)
+        runner.run("rollback-c4-api")
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        self.assertTrue(release.gateway_on_release(arm.revisions[release.C3_REVISION]))
+        self.assertTrue(arm.revisions[candidate]["properties"]["active"])
+        self.assertEqual([r[3] for r in arm.requests], ["rollback-c4"])
+        self.assertEqual(receipt["serving"], release.C3_REVISION)
+        # The old gateway-off rollback stage cannot accidentally authorize C3.
+        with self.assertRaisesRegex(release.Refused, "rollback-target"):
+            runner.rollback(release.C3_REVISION)
+
+    def test_unhealthy_serving_c4_rolls_back_to_healthy_exact_c3(self):
+        arm = self.serving()
+        candidate = self.candidate(arm)
+        arm.revisions[candidate]["properties"].update(healthState="Unhealthy", runningState="Failed", replicas=0)
+        arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": candidate, "weight": 100}]
+        runner, receipt = self.runner(arm)
+        runner.run("rollback-c4-api")
+        self.assertEqual([r[3] for r in arm.requests], ["rollback-c4"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        self.assertTrue(release.gateway_on_release(arm.revisions[release.C3_REVISION]))
+        self.assertEqual(receipt["serving"], release.C3_REVISION)
+        self.assertIn(("GET", release.APPS["api"] + "/revisions/" + release.C3_REVISION, "readback"), arm.calls)
+
+    def test_rollback_refuses_protected_c4_template_drift_including_final_reread(self):
+        for field in ("scale", "other-env", "probes", "late-scale"):
+            arm = self.serving()
+            candidate = self.candidate(arm)
+            arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+                {"revisionName": candidate, "weight": 100}]
+            template = arm.revisions[candidate]["properties"]["template"]
+            if field == "scale":
+                template["scale"] = {"minReplicas": 4}
+            elif field == "other-env":
+                template["containers"][0]["env"].append({"name": "UNRELATED", "value": "changed"})
+            elif field == "probes":
+                template["containers"][0]["probes"] = [{"type": "Liveness"}]
+            else:
+                original = arm.get
+
+                def late_drift(path, *args, **kwargs):
+                    result = original(path, *args, **kwargs)
+                    if path.endswith("/" + candidate) and kwargs.get("phase") == "reread":
+                        result["properties"]["template"]["scale"] = {"minReplicas": 4}
+                    return result
+
+                arm.get = late_drift
+            runner, _ = self.runner(arm)
+            with self.subTest(field=field), self.assertRaisesRegex(release.Refused, "rollback-target"):
+                runner.run("rollback-c4-api")
+            self.assertEqual(arm.writes, 0)
+            self.assertTrue(release.traffic_is(arm.app, candidate))
+
+    def test_c4_rollback_refuses_bad_target_and_never_replays_uncertain_write(self):
+        for failure in ("unhealthy", "manifest", "unknown-write", "readback"):
+            arm = self.serving()
+            candidate = self.candidate(arm)
+            arm.app["properties"]["configuration"]["ingress"]["traffic"] = [
+                {"revisionName": candidate, "weight": 100}]
+            if failure == "unhealthy":
+                arm.revisions[release.C3_REVISION]["properties"]["healthState"] = "Unhealthy"
+            if failure == "manifest":
+                arm.revisions[release.C3_REVISION]["properties"]["template"]["containers"][0]["env"][-1]["value"] += " "
+            if failure == "unknown-write":
+                arm.fail["rollback-c4"] = release.Uncertain("rollback-c4")
+            if failure == "readback":
+                original = arm.get
+
+                def bad_readback(path, *args, **kwargs):
+                    result = original(path, *args, **kwargs)
+                    if path == release.APPS["api"] and kwargs.get("phase") == "readback":
+                        result["properties"]["configuration"]["ingress"]["traffic"] = []
+                    return result
+
+                arm.get = bad_readback
+            runner, _ = self.runner(arm)
+            with self.subTest(failure=failure), self.assertRaises(release.Refused):
+                runner.run("rollback-c4-api")
+            self.assertEqual(arm.writes, int(failure in ("unknown-write", "readback")))
+
+    def test_deactivate_then_fresh_c4_run_smokes_again_without_replay(self):
+        arm = self.serving()
+        candidate = self.candidate(arm)
+        runner, _ = self.runner(arm)
+        # Active stale latest cannot be reused by a new C4 run.
+        with self.assertRaises(release.Refused):
+            runner.snapshot("api", "C4")
+        runner.recover_deactivate(candidate)
+        self.assertFalse(arm.revisions[candidate]["properties"]["active"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        # A fresh run builds a new candidate and must repeat the entire smoke.
+        seen = []
+
+        def smoke(*args):
+            seen.extend(args[-1])
+            return passing_c4_smoke(*args)
+
+        runner, receipt = self.runner(arm, smoke=smoke)
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.Refused, "c4-backend-identity-unavailable"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        self.assertNotEqual(receipt["candidate"], candidate)
+        self.assertEqual(len(seen), 22)
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+
+    def test_deactivate_refuses_serving_protected_non_lane_and_drift(self):
+        for bad in (release.C3_REVISION, release.R1_REVISION, APP + "--azd-123"):
+            arm = self.serving()
+            arm.revisions.setdefault(bad, arm.revision(bad, release.IMAGES["api"], []))
+            runner, _ = self.runner(arm)
+            with self.subTest(bad=bad), self.assertRaises(release.Refused):
+                runner.recover_deactivate(bad)
+            self.assertEqual(arm.writes, 0)
+
+    def test_deactivate_refuses_preexisting_c2_c3_and_other_source_c4(self):
+        for suffix in ("c2-aaaaaaa-1234", "c3-aaaaaaa-1234", "c4-bbbbbbb-1234"):
+            arm = self.serving()
+            original = self.candidate(arm)
+            name = APP + "--" + suffix
+            rev = arm.revisions.pop(original)
+            rev.update(name=name, id=release.APPS["api"] + "/revisions/" + name)
+            arm.revisions[name] = rev
+            runner, _ = self.runner(arm)
+            with self.subTest(suffix=suffix), self.assertRaisesRegex(release.Refused, "deactivate-target"):
+                runner.recover_deactivate(name)
+            self.assertEqual(arm.writes, 0)
+            self.assertTrue(arm.revisions[name]["properties"]["active"])
+
+
 class InputTests(unittest.TestCase):
     def test_sidecar_decodes_exact_bounded_bytes(self):
         data = b'{"x":1}' * 10
@@ -291,6 +659,22 @@ class DtsGateTests(unittest.TestCase):
 
 
 class ArmWriteTests(unittest.TestCase):
+    def test_deadline_during_send_or_poll_is_uncertain_without_replay(self):
+        for during_poll in (False, True):
+            calls = []
+
+            def http(method, url, **_kwargs):
+                calls.append(method)
+                if method == "PATCH" and during_poll:
+                    return 202, {"azure-asyncoperation": "https://management.azure.com/op"}, b""
+                raise release.C4DeadlineExpired("c4-work-deadline")
+
+            arm = release.Arm("t", http=http, sleep=lambda _s: None, clock=lambda: 0)
+            with self.subTest(during_poll=during_poll), self.assertRaisesRegex(
+                    release.Uncertain, "create-deadline"):
+                arm.write("PATCH", release.APPS["api"], {}, phase="create")
+            self.assertEqual(calls, ["PATCH", "GET"] if during_poll else ["PATCH"])
+
     def arm(self, result):
         calls = []
 
@@ -336,6 +720,63 @@ class ArmWriteTests(unittest.TestCase):
         with self.assertRaises(release.Uncertain):
             arm.write("PATCH", release.APPS["api"], {})
         self.assertEqual(calls, ["PATCH", "GET"])
+
+
+class C4BudgetTests(unittest.TestCase):
+    def test_native_deadlines_or_explicitly_unsupported_platform(self):
+        if not hasattr(release.signal, "setitimer"):
+            with self.assertRaisesRegex(release.Refused, "c4-budget-unavailable"):
+                with release.C4Budget():
+                    self.fail("unsupported platform entered the mutation budget")
+            return
+        with (mock.patch.object(release.C4Budget, "WORK_SECONDS", 0.02),
+              mock.patch.object(release.C4Budget, "CLEANUP_SECONDS", 0.02)):
+            with release.C4Budget() as budget:
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-work-deadline"):
+                    release.time.sleep(1)
+                budget.cleanup()
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-cleanup-deadline"):
+                    release.time.sleep(1)
+
+    def test_work_and_cleanup_alarms_are_distinct_and_always_restored(self):
+        signals = types.SimpleNamespace(
+            ITIMER_REAL=0, SIGALRM=14, getitimer=mock.Mock(return_value=(0.0, 0.0)),
+            getsignal=mock.Mock(return_value="previous"), signal=mock.Mock(), setitimer=mock.Mock())
+        with mock.patch.object(release, "signal", signals):
+            with release.C4Budget() as budget:
+                handler = signals.signal.call_args.args[1]
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-work-deadline"):
+                    handler()
+                budget.cleanup()
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-cleanup-deadline"):
+                    handler()
+            self.assertEqual(signals.setitimer.call_args_list, [
+                mock.call(0, release.C4Budget.WORK_SECONDS),
+                mock.call(0, release.C4Budget.CLEANUP_SECONDS), mock.call(0, 0)])
+            self.assertEqual(signals.signal.call_args, mock.call(14, "previous"))
+
+    def test_missing_deadline_support_refuses_before_credentials_or_mutation(self):
+        token = mock.Mock()
+        with (mock.patch.object(release, "signal", types.SimpleNamespace()),
+              mock.patch.object(release, "load_manifest", return_value=b"manifest"),
+              mock.patch.object(release, "load_sidecar", return_value=b"sidecar")):
+            receipt = release.execute(env(AI4IA_RELEASE_STAGE="c4-api",
+                                          AI4IA_ROLLBACK_REVISION=release.C3_REVISION),
+                                      token_source=token)
+        self.assertEqual(receipt["phase"], "c4-budget-unavailable")
+        self.assertEqual(receipt["writes"], 0)
+        token.assert_not_called()
+
+    def test_work_cleanup_step_job_and_holder_budgets_are_ordered(self):
+        text = (ROOT / ".github" / "workflows" / "hosted-gateway-release.yml").read_text()
+        budgets = [int(value) for value in re.findall(
+            r"timeout-minutes: \$\{\{ inputs.stage == 'c4-api' && (\d+) \|\| 60 \}\}", text)]
+        job, checkout, python, install, apply, upload = budgets
+        self.assertLess(release.C4Budget.WORK_SECONDS + release.C4Budget.CLEANUP_SECONDS, apply * 60)
+        self.assertLess(checkout + python + install + apply + upload, job)
+        wrapper = release._load("c4_budget_wrapper", ROOT / "scripts" / "dispatch_gated_workflow.py")
+        self.assertEqual(job, wrapper.C4_JOB_MINUTES)
+        self.assertLess(job * 60 + wrapper.GH_TIMEOUT_SECONDS, wrapper.C4_TIMEOUT_SECONDS)
 
 
 class StageTests(ReleaseFlowBase):
