@@ -21,7 +21,7 @@ class FakeGh:
     """Repository variables plus one workflow's runs; the dispatched run completes after N views."""
 
     def __init__(self, *, polls=3, variables=None, runs=None, new_runs=1, head=SHA,
-                 fail=(), sticky_gate=False, interrupt=(), timeouts=None):
+                 fail=(), sticky_gate=False, interrupt=(), timeouts=None, queued_views=0):
         self.variables = dict(variables or {})
         self.runs = list(runs or [{"databaseId": 1, "headSha": SHA, "event": "workflow_dispatch",
                                    "status": "completed", "createdAt": "x"}])
@@ -30,6 +30,7 @@ class FakeGh:
         self.calls, self.gate_during_views, self.views = [], [], 0
         # key -> number of "timed out" failures, injected only once our gate has been set.
         self.timeouts = dict(timeouts or {})
+        self.queued_views = queued_views
 
     def __call__(self, args):
         args = list(args)
@@ -67,6 +68,8 @@ class FakeGh:
             done = self.views >= self.polls
             return json.dumps({"databaseId": run_id, "headSha": self.head,
                                "status": "completed" if done else "in_progress",
+                               "jobs": [{"name": "release", "status":
+                                         "queued" if self.views <= self.queued_views else "in_progress"}],
                                "conclusion": "success" if done else ""})
         raise AssertionError(args)
 
@@ -226,6 +229,53 @@ class DispatchWrapperTests(unittest.TestCase):
             with self.subTest(stage=stage, exclude=exclude), self.assertRaises(WRAPPER.DispatchError):
                 run(gh, WORKFLOW, SHA, stage, target, c4_exclude_deployments=exclude)
             self.assertEqual(gh.calls, [])
+
+    def test_c4_queue_and_approval_do_not_consume_release_execution_budget(self):
+        gh = FakeGh(polls=6, queued_views=4)
+        result = run(gh, WORKFLOW, SHA, "c4-api", "ca-api--c3-reviewed", poll_seconds=3000)
+        self.assertTrue(result["gate_absent"])
+        self.assertEqual(gh.gate_during_views, ["true"] * 6)
+        self.assertTrue(all(c[-1].endswith(",jobs") for c in gh.calls if c[:2] == ["run", "view"]))
+
+    def test_c4_requires_adequate_finite_timeout_before_any_gate_write(self):
+        for seconds in (3600, WRAPPER.C4_TIMEOUT_SECONDS - 1, float("nan"), float("inf")):
+            gh = FakeGh()
+            with self.subTest(seconds=seconds), self.assertRaises(WRAPPER.DispatchError):
+                run(gh, WORKFLOW, SHA, "c4-api", "ca-api--c3-reviewed", timeout_seconds=seconds)
+            self.assertEqual(gh.calls, [])
+
+    def test_c4_execution_timeout_remains_bounded_without_cancel_or_replay(self):
+        gh = FakeGh(polls=100)
+        with self.assertRaisesRegex(WRAPPER.DispatchError, "timeout") as caught:
+            run(gh, WORKFLOW, SHA, "c4-api", "ca-api--c3-reviewed",
+                poll_seconds=WRAPPER.C4_TIMEOUT_SECONDS)
+        self.assertEqual(caught.exception.run_id, 43735149163)
+        self.assertEqual(gh.variables, {})
+        self.assertEqual(sum(c[:2] == ["workflow", "run"] for c in gh.calls), 1)
+        self.assertFalse(any(c[:2] == ["run", "cancel"] for c in gh.calls))
+
+    def test_c4_queue_timeout_is_separate_and_job_evidence_is_required(self):
+        queued = FakeGh(polls=100, queued_views=100)
+        with self.assertRaisesRegex(WRAPPER.DispatchError, "timeout"):
+            run(queued, WORKFLOW, SHA, "c4-api", "ca-api--c3-reviewed",
+                poll_seconds=WRAPPER.C4_QUEUE_SECONDS)
+        self.assertEqual(queued.views, 2)
+        self.assertEqual(queued.variables, {})
+        for jobs in (None, [{"name": "release", "status": "unknown"}],
+                     [{"name": "release"}] * 2, ["invalid"]):
+            gh = FakeGh(polls=100)
+
+            def unavailable(args):
+                result = gh(args)
+                if list(args[:2]) == ["run", "view"]:
+                    value = json.loads(result)
+                    value["jobs"] = jobs
+                    return json.dumps(value)
+                return result
+
+            with self.subTest(jobs=jobs), self.assertRaisesRegex(WRAPPER.DispatchError, "job status"):
+                run(unavailable, WORKFLOW, SHA, "c4-api", "ca-api--c3-reviewed")
+            self.assertEqual(gh.variables, {})
 
     def test_one_read_uses_its_own_gate(self):
         gh = FakeGh(polls=1)

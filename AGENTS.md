@@ -793,6 +793,10 @@ Aggregate provider metrics and correlation headers are not route identity.
 C4, after protected-template comparison. `deactivate-api` accepts only pinned
 untrafficked C4 candidates from the same reviewed source while C3 serves 100%,
 never C2/C3/R1 or other-source revisions.
+C4 reserves 15 minutes for guarded cleanup after its 75-minute work deadline;
+its job/step and wrapper budgets must preserve that reserve. Queue/approval
+waiting is separate from the wrapper's release-job execution timer. A deadline
+during an uncertain write never authorizes replay or speculative cleanup.
 Snapshots and payloads may contain sensitive environment values: never log,
 commit, or place them in chat or the shared repository. The CLI rejects files
 inside the repository, but that does not establish restricted ACLs or secure

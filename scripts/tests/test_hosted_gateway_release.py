@@ -397,6 +397,46 @@ class C4RecoveryTests(unittest.TestCase):
     build = C4FlowTests.build
     inputs = C4FlowTests.inputs
 
+    def test_work_deadline_reserves_cleanup_without_moving_c3_traffic(self):
+        arm = self.serving()
+
+        def expire(*_args):
+            raise release.C4DeadlineExpired("c4-work-deadline")
+
+        runner, receipt = self.runner(arm, smoke=expire)
+        runner.budget = mock.Mock()
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.C4DeadlineExpired, "c4-work-deadline"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        runner.budget.cleanup.assert_called_once_with()
+        self.assertEqual([r[3] for r in arm.requests], ["create", "deactivate-unpromoted"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        self.assertFalse(arm.revisions[receipt["candidate"]]["properties"]["active"])
+
+    def test_deadline_during_uncertain_create_does_not_authorize_cleanup(self):
+        arm = self.serving()
+        arm.fail["create"] = release.Uncertain("create-deadline")
+        runner, _ = self.runner(arm)
+        runner.budget = mock.Mock()
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.Uncertain, "create-deadline"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        runner.budget.cleanup.assert_not_called()
+        self.assertEqual([r[3] for r in arm.requests], ["create"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+
+    def test_cleanup_deadline_never_replays_or_moves_traffic(self):
+        arm = self.serving()
+        arm.fail["deactivate-unpromoted"] = release.C4DeadlineExpired("c4-cleanup-deadline")
+        runner, receipt = self.runner(arm)
+        runner.budget = mock.Mock()
+        with mock.patch.object(release, "build_payload", self.build), \
+                self.assertRaisesRegex(release.C4DeadlineExpired, "c4-cleanup-deadline"):
+            runner.create_and_promote("api", "C4", **self.inputs())
+        self.assertEqual([r[3] for r in arm.requests], ["create", "deactivate-unpromoted"])
+        self.assertTrue(release.traffic_is(arm.app, release.C3_REVISION))
+        self.assertTrue(arm.revisions[receipt["candidate"]]["properties"]["active"])
+
     def candidate(self, arm):
         name = APP + "--c4-aaaaaaa-1234"
         rev = copy.deepcopy(arm.revisions[release.C3_REVISION])
@@ -619,6 +659,22 @@ class DtsGateTests(unittest.TestCase):
 
 
 class ArmWriteTests(unittest.TestCase):
+    def test_deadline_during_send_or_poll_is_uncertain_without_replay(self):
+        for during_poll in (False, True):
+            calls = []
+
+            def http(method, url, **_kwargs):
+                calls.append(method)
+                if method == "PATCH" and during_poll:
+                    return 202, {"azure-asyncoperation": "https://management.azure.com/op"}, b""
+                raise release.C4DeadlineExpired("c4-work-deadline")
+
+            arm = release.Arm("t", http=http, sleep=lambda _s: None, clock=lambda: 0)
+            with self.subTest(during_poll=during_poll), self.assertRaisesRegex(
+                    release.Uncertain, "create-deadline"):
+                arm.write("PATCH", release.APPS["api"], {}, phase="create")
+            self.assertEqual(calls, ["PATCH", "GET"] if during_poll else ["PATCH"])
+
     def arm(self, result):
         calls = []
 
@@ -664,6 +720,63 @@ class ArmWriteTests(unittest.TestCase):
         with self.assertRaises(release.Uncertain):
             arm.write("PATCH", release.APPS["api"], {})
         self.assertEqual(calls, ["PATCH", "GET"])
+
+
+class C4BudgetTests(unittest.TestCase):
+    def test_native_deadlines_or_explicitly_unsupported_platform(self):
+        if not hasattr(release.signal, "setitimer"):
+            with self.assertRaisesRegex(release.Refused, "c4-budget-unavailable"):
+                with release.C4Budget():
+                    self.fail("unsupported platform entered the mutation budget")
+            return
+        with (mock.patch.object(release.C4Budget, "WORK_SECONDS", 0.02),
+              mock.patch.object(release.C4Budget, "CLEANUP_SECONDS", 0.02)):
+            with release.C4Budget() as budget:
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-work-deadline"):
+                    release.time.sleep(1)
+                budget.cleanup()
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-cleanup-deadline"):
+                    release.time.sleep(1)
+
+    def test_work_and_cleanup_alarms_are_distinct_and_always_restored(self):
+        signals = types.SimpleNamespace(
+            ITIMER_REAL=0, SIGALRM=14, getitimer=mock.Mock(return_value=(0.0, 0.0)),
+            getsignal=mock.Mock(return_value="previous"), signal=mock.Mock(), setitimer=mock.Mock())
+        with mock.patch.object(release, "signal", signals):
+            with release.C4Budget() as budget:
+                handler = signals.signal.call_args.args[1]
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-work-deadline"):
+                    handler()
+                budget.cleanup()
+                with self.assertRaisesRegex(release.C4DeadlineExpired, "c4-cleanup-deadline"):
+                    handler()
+            self.assertEqual(signals.setitimer.call_args_list, [
+                mock.call(0, release.C4Budget.WORK_SECONDS),
+                mock.call(0, release.C4Budget.CLEANUP_SECONDS), mock.call(0, 0)])
+            self.assertEqual(signals.signal.call_args, mock.call(14, "previous"))
+
+    def test_missing_deadline_support_refuses_before_credentials_or_mutation(self):
+        token = mock.Mock()
+        with (mock.patch.object(release, "signal", types.SimpleNamespace()),
+              mock.patch.object(release, "load_manifest", return_value=b"manifest"),
+              mock.patch.object(release, "load_sidecar", return_value=b"sidecar")):
+            receipt = release.execute(env(AI4IA_RELEASE_STAGE="c4-api",
+                                          AI4IA_ROLLBACK_REVISION=release.C3_REVISION),
+                                      token_source=token)
+        self.assertEqual(receipt["phase"], "c4-budget-unavailable")
+        self.assertEqual(receipt["writes"], 0)
+        token.assert_not_called()
+
+    def test_work_cleanup_step_job_and_holder_budgets_are_ordered(self):
+        text = (ROOT / ".github" / "workflows" / "hosted-gateway-release.yml").read_text()
+        budgets = [int(value) for value in re.findall(
+            r"timeout-minutes: \$\{\{ inputs.stage == 'c4-api' && (\d+) \|\| 60 \}\}", text)]
+        job, checkout, python, install, apply, upload = budgets
+        self.assertLess(release.C4Budget.WORK_SECONDS + release.C4Budget.CLEANUP_SECONDS, apply * 60)
+        self.assertLess(checkout + python + install + apply + upload, job)
+        wrapper = release._load("c4_budget_wrapper", ROOT / "scripts" / "dispatch_gated_workflow.py")
+        self.assertEqual(job, wrapper.C4_JOB_MINUTES)
+        self.assertLess(job * 60 + wrapper.GH_TIMEOUT_SECONDS, wrapper.C4_TIMEOUT_SECONDS)
 
 
 class StageTests(ReleaseFlowBase):

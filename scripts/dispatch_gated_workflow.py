@@ -19,6 +19,10 @@ gate after a timeout, error or interrupt does NOT prove the dispatched run stopp
 ID is logged and reported so the operator can inspect it. There are no added retries beyond the
 bounded cleanup, no auto-cancel and no new credentials.
 
+C4 has a separate 24-hour queue/approval bound. Its execution timer starts only
+when the exact release job starts, defaults to 180 minutes and refuses shorter
+values. Other stages retain their 3600-second timeout from run binding.
+
 It never touches AI4IA_DEPLOYMENT_ENABLED or any other variable, secret or setting. Uses the
 caller's existing ``gh`` login; no tokens are read or printed.
 """
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 import signal
@@ -49,6 +54,9 @@ REVISION = re.compile(r"[a-z0-9][a-z0-9-]{0,62}--[a-z0-9-]{1,80}")
 
 
 GH_TIMEOUT_SECONDS = 60.0
+C4_JOB_MINUTES = 150
+C4_TIMEOUT_SECONDS = 180 * 60
+C4_QUEUE_SECONDS = 24 * 60 * 60
 
 
 class DispatchError(RuntimeError):
@@ -165,10 +173,16 @@ def dispatch(workflow: str, reviewed_sha: str, stage: str | None = None,
              probe_revision: str | None = None, c4_exclude_deployments: str | None = None,
              repo: str = REPOSITORY, gh: Gh = default_gh,
              sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
-             bind_seconds: float = 120, timeout_seconds: float = 3600, poll_seconds: float = 15,
+             bind_seconds: float = 120, timeout_seconds: float | None = None, poll_seconds: float = 15,
              log: Callable[[str], None] = lambda message: print(message, file=sys.stderr)) -> dict:
     fields = dispatch_inputs(workflow, reviewed_sha, stage, rollback_revision, read_kind,
                              probe_revision, c4_exclude_deployments)
+    c4 = workflow == "hosted-gateway-release.yml" and stage == "c4-api"
+    if timeout_seconds is None:
+        timeout_seconds = C4_TIMEOUT_SECONDS if c4 else 3600
+    if (not math.isfinite(timeout_seconds) or timeout_seconds <= 0
+            or c4 and timeout_seconds < C4_TIMEOUT_SECONDS):
+        raise DispatchError("C4 requires at least 10800 seconds; other timeouts must be positive and finite")
     gate = WORKFLOWS[workflow]
     held = present_gates(gh, repo)
     if held:
@@ -180,7 +194,7 @@ def dispatch(workflow: str, reviewed_sha: str, stage: str | None = None,
     result: dict = {"workflow": workflow, "run_id": None, "status": None, "conclusion": None}
     try:
         _hold_gate_for_one_run(gh, repo, workflow, gate, fields, reviewed_sha, seen, result,
-                               sleep, clock, bind_seconds, timeout_seconds, poll_seconds, log)
+                               sleep, clock, bind_seconds, timeout_seconds, poll_seconds, log, c4)
     except BaseException as error:
         if result["run_id"] is not None:
             log(f"stopped holding bound run {result['run_id']}; gate deletion does not stop it - "
@@ -197,7 +211,7 @@ def dispatch(workflow: str, reviewed_sha: str, stage: str | None = None,
 def _hold_gate_for_one_run(gh: Gh, repo: str, workflow: str, gate: str, fields: list[str],
                            reviewed_sha: str, seen: set, result: dict, sleep, clock,
                            bind_seconds: float, timeout_seconds: float, poll_seconds: float,
-                           log: Callable[[str], None]) -> None:
+                           log: Callable[[str], None], c4: bool = False) -> None:
     gh(["variable", "set", gate, "-R", repo, "--body", "true"])
     log(f"{gate} set for one dispatch")
     gh(["workflow", "run", workflow, "-R", repo, "--ref", "main", *fields])
@@ -217,16 +231,32 @@ def _hold_gate_for_one_run(gh: Gh, repo: str, workflow: str, gate: str, fields: 
         sleep(5)
     result["run_id"] = run_id
     log(f"bound to run {run_id}")
-    deadline = clock() + timeout_seconds
+    deadline = clock() + (C4_QUEUE_SECONDS if c4 else timeout_seconds)
+    release_started = False
     while True:
         view = json.loads(gh(["run", "view", str(run_id), "-R", repo,
-                              "--json", "databaseId,status,conclusion,headSha"]))
+                              "--json", "databaseId,status,conclusion,headSha" + (",jobs" if c4 else "")]))
         if view.get("databaseId") != run_id or view.get("headSha") != reviewed_sha:
             raise DispatchError("run view did not return the bound run")
         result["status"] = view.get("status")
         if view.get("status") == "completed":
             result["conclusion"] = view.get("conclusion")
             break
+        if c4:
+            jobs = view.get("jobs")
+            if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+                raise DispatchError("C4 release job status is unavailable")
+            release = [job for job in jobs if job.get("name") == "release"]
+            if len(release) > 1 or release_started and not release:
+                raise DispatchError("C4 release job status is ambiguous")
+            if release:
+                status = release[0].get("status")
+                if status not in ("queued", "waiting", "pending", "in_progress", "completed"):
+                    raise DispatchError("C4 release job status is unavailable")
+                if not release_started and status in ("in_progress", "completed"):
+                    release_started = True
+                    deadline = clock() + timeout_seconds
+                    log("C4 release job started; execution budget begins after queue/approval")
         if clock() >= deadline:
             raise DispatchError("bound run did not complete before the timeout")
         sleep(poll_seconds)
@@ -246,7 +276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--c4-exclude-deployments")
     parser.add_argument("--read-kind", choices=READ_KINDS)
     parser.add_argument("--repo", default=REPOSITORY)
-    parser.add_argument("--timeout", type=float, default=3600)
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="C4: >=10800s from release job start; others: 3600s from binding")
     parser.add_argument("--gh-timeout", type=float, default=GH_TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     if not 0 < args.gh_timeout <= 300:

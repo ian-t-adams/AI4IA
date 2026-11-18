@@ -2742,6 +2742,27 @@ Run the stages in this order, stopping at the first failure: `c1-web`,
   deactivates only its unpromoted candidate under the fresh-state guard.
   C3 stays at 100%; R1 is retained. There is no flag or receipt override.
 
+  **C4 time budgets:** the component estimates (600s create polling + 900s
+  readiness + 1660s full probe + 600s cleanup polling = 3760s) are not a hard
+  elapsed bound: transport inactivity timeouts, inventory, DTS checks and
+  readbacks add time. The Linux runner therefore arms an independent 75-minute
+  process work deadline before credentials/preflight, with a separate 15-minute
+  guarded-cleanup reserve after a known failure. The apply step has 100 minutes;
+  checkout/setup/install/upload have 5/5/15/5-minute caps, totaling at most 130
+  minutes, inside C4's 150-minute job. Other stages keep their 60-minute job.
+  Unsupported deadline facilities refuse before credentials or writes.
+
+  The wrapper's C4 default/minimum execution budget is 10800 seconds (180
+  minutes), beginning when the exact `release` job starts, not when the workflow
+  is bound. Queue/approval waiting has a separate 24-hour bound. Shorter or
+  nonfinite budgets, or missing job-status evidence, refuse; there is no
+  automatic cancellation or redispatch. Other stages retain the 3600-second
+  default. A deadline during a write/poll is **uncertain**, never replayed or
+  followed by speculative cleanup. Reserved time permits a guarded cleanup
+  attempt, not guaranteed physical deactivation: transport/auth/state uncertainty
+  or a cleanup deadline can leave the untrafficked candidate for operator review.
+  These limits do not renew credentials or grant additional authority.
+
   The distinct **`rollback-c4-api`** recovery accepts only a serving C4 with its
   pinned identity/configuration and the exact still-active, healthy C3 with its
   image, selector, allowlist and manifest pins. It compares protected templates
@@ -2772,7 +2793,7 @@ Run the stages in this order, stopping at the first failure: `c1-web`,
 
   ```powershell
   $ReviewedSha = "<full-reviewed-main-sha>"
-  python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage c4-api --rollback-revision ca-api-private-slurmfactory--c3-d6f03ff-82642864
+  python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage c4-api --rollback-revision ca-api-private-slurmfactory--c3-d6f03ff-82642864 --timeout 10800
   # Separately reviewed recovery, only if a qualified C4 is actually serving:
   python scripts\dispatch_gated_workflow.py --workflow hosted-gateway-release.yml --reviewed-sha $ReviewedSha --stage rollback-c4-api --rollback-revision ca-api-private-slurmfactory--c3-d6f03ff-82642864
   # Same reviewed source only; after readback of C3 100%, name its untrafficked C4:

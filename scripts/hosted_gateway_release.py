@@ -37,10 +37,12 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import ssl
 import sys
 import time
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -132,6 +134,37 @@ class Refused(Exception):
 
 class Uncertain(Refused):
     """A write whose outcome is unknown. Reconcile by reading; never replay."""
+
+
+class C4DeadlineExpired(BaseException):
+    """Cannot be swallowed by transport/probe Exception handlers."""
+
+
+class C4Budget:
+    WORK_SECONDS = 75 * 60
+    CLEANUP_SECONDS = 15 * 60
+
+    def __init__(self):
+        self.phase = "c4-work-deadline"
+
+    def __enter__(self):
+        if (not hasattr(signal, "setitimer") or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)):
+            raise Refused("c4-budget-unavailable")
+        self.previous = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, self.expire)
+        signal.setitimer(signal.ITIMER_REAL, self.WORK_SECONDS)
+        return self
+
+    def expire(self, *_args):
+        raise C4DeadlineExpired(self.phase)
+
+    def cleanup(self):
+        self.phase = "c4-cleanup-deadline"
+        signal.setitimer(signal.ITIMER_REAL, self.CLEANUP_SECONDS)
+
+    def __exit__(self, *_args):
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, self.previous)
 
 
 def _load(name: str, path: Path):
@@ -516,6 +549,8 @@ class Arm:
         self.writes += 1
         try:
             status, headers, _ = self._call(method, self.url(path), body, phase=phase)
+        except C4DeadlineExpired:
+            raise Uncertain(phase + "-deadline") from None
         except Refused as e:
             raise Uncertain(phase, e.status) from None
         except (OSError, http.client.HTTPException):
@@ -526,7 +561,10 @@ class Arm:
             raise Uncertain(phase, status)
         poll = headers.get("azure-asyncoperation") or (headers.get("location") if status == 202 else None)
         if poll:
-            self._poll(poll, timeout, phase)
+            try:
+                self._poll(poll, timeout, phase)
+            except C4DeadlineExpired:
+                raise Uncertain(phase + "-deadline") from None
 
     def _poll(self, url: str, timeout: float, phase: str) -> None:
         try:
@@ -1711,11 +1749,12 @@ def _run_exec(arm: Arm, app_id: str, revision: str, container: str, lines: list[
 class Release:
     def __init__(self, arm: Arm, env: dict[str, str], receipt: dict, gate: DtsGate | None = None,
                  now=lambda: datetime.now(UTC), smoke=run_smoke, web_probe=run_web_probe,
-                 stream_probe=run_stream_probe, c4_smoke=run_c4_smoke):
+                 stream_probe=run_stream_probe, c4_smoke=run_c4_smoke, budget: C4Budget | None = None):
         self.arm, self.env, self.receipt, self.now, self.smoke = arm, env, receipt, now, smoke
         self.web_probe = web_probe
         self.stream_probe_runner = stream_probe
         self.c4_smoke = c4_smoke
+        self.budget = budget
         self.gate = gate or DtsGate(arm, now=now)
 
     def step(self, name: str, **fields: Any) -> None:
@@ -1879,8 +1918,10 @@ class Release:
                     f"{app_id}/revisions/{r0}", phase="reread"))
         except Uncertain:
             raise
-        except Exception:  # Cleanup is guarded; the original failure is re-raised.
+        except (Exception, C4DeadlineExpired):  # Cleanup is guarded; re-raise the original failure.
             try:
+                if self.budget is not None:
+                    self.budget.cleanup()
                 self.deactivate(service, candidate, "deactivate-unpromoted", r0)
             except Uncertain:
                 raise
@@ -2250,10 +2291,13 @@ def execute(env: dict[str, str], *, token_source=acquire_arm_token, arm_class=Ar
             receipt.update(manifest_sha256=hashlib.sha256(load_manifest(env)).hexdigest(),
                            sidecar_sha256=hashlib.sha256(load_sidecar(env)).hexdigest())
         receipt["phase"] = "credential"
-        arm = arm_class(token_source(env, time.time()))
-        receipt["phase"] = "stage"
-        Release(arm, env, receipt, now=now).run(stage)
+        with C4Budget() if stage == "c4-api" else nullcontext() as budget:
+            arm = arm_class(token_source(env, time.time()))
+            receipt["phase"] = "stage"
+            Release(arm, env, receipt, now=now, budget=budget).run(stage)
         receipt.update(outcome="complete", phase="complete")
+    except C4DeadlineExpired as e:
+        receipt.update(outcome="uncertain", phase=str(e))
     except Uncertain as e:
         receipt.update(outcome="uncertain", phase=e.phase, status=e.status)
         receipt["reconciled"] = reconcile(arm, receipt.get("stage"))
