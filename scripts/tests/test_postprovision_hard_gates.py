@@ -750,7 +750,7 @@ class ModelDeploymentHardGateTests(unittest.TestCase):
                     self.assertEqual(payload["results"][0]["status"], "FAIL")
                     self.assertIn("exact literal identities", payload["results"][0]["detail"])
                     self.assertIsNone(payload["captured"])
-        for value in ("2", "X", "1*", ""):
+        for value in ("2", "X", "1*", "1\n", ""):
             with self.subTest(field="modelVersion", value=value), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "external-model-deployments.json"
                 path.write_text(

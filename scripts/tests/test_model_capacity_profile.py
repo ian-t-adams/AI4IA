@@ -287,7 +287,7 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "literal exact identifier"):
                     load_external_model_deployments(path)
-        for invalid_version in ("", "*", "1*", "1-", "2", "X"):
+        for invalid_version in ("", "*", "1*", "1-", "1\n", "2", "X"):
             with self.subTest(version=invalid_version), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "manifest.json"
                 path.write_text(

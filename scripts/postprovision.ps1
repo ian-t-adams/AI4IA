@@ -364,7 +364,7 @@ function Test-ModelDeployment {
   $externalDeclarations = @()
   $externalIdentities = @{}
   $exactIdentifierPattern = '^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$'
-  $exactVersionPattern = '^(1|[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9])$'
+  $exactVersionPattern = '^(1|[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9])\z'
   $accountIdPattern = '^/subscriptions/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/resourceGroups/[A-Za-z0-9][A-Za-z0-9._()-]*[A-Za-z0-9]/providers/Microsoft\.CognitiveServices/accounts/[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$'
   foreach ($entry in $manifest.deployments) {
     if ($entry -isnot [pscustomobject] -or
