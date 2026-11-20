@@ -3,6 +3,14 @@
   "deployments": [
     {
       "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
+      "deploymentName": "decision-1-1-slurmfactory-eastus2-dz",
+      "modelFormat": "Microsoft",
+      "modelName": "Microsoft-Decision-1.1",
+      "modelVersion": "1",
+      "sku": "DataZoneStandard"
+    },
+    {
+      "accountId": "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o",
       "deploymentName": "fal-ltx-2.5-fast",
       "modelFormat": "fal.ai",
       "modelName": "Fal-LTX-2.5-Fast",

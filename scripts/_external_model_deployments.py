@@ -12,6 +12,7 @@ FIELDS = frozenset({
     "accountId", "deploymentName", "modelFormat", "modelName", "modelVersion", "sku",
 })
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]\Z", re.ASCII)
+_VERSION = re.compile(r"(?:1|[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9])\Z", re.ASCII)
 _RESOURCE_GROUP = re.compile(r"[A-Za-z0-9][A-Za-z0-9._()-]*[A-Za-z0-9]\Z", re.ASCII)
 _SUBSCRIPTION = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z",
@@ -36,7 +37,8 @@ def _validate_account_id(value: Any) -> str:
 
 
 def _validate_identifier(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
+    pattern = _VERSION if field == "modelVersion" else _IDENTIFIER
+    if not isinstance(value, str) or not pattern.fullmatch(value):
         raise ValueError(f"External deployment {field} must be a literal exact identifier.")
     return value
 
