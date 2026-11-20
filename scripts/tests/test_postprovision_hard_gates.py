@@ -732,6 +732,38 @@ class ModelDeploymentHardGateTests(unittest.TestCase):
                 self.assertIn("exact literal identities", payload["results"][0]["detail"])
                 self.assertIsNone(payload["captured"])
 
+    def test_external_single_character_is_only_valid_for_model_version(self) -> None:
+        decision = next(
+            row for row in load_external_model_deployments()
+            if row["modelName"] == "Microsoft-Decision-1.1"
+        )
+        self._assert_exact_fleet_owned_deployment(decision)
+        for field in ("deploymentName", "modelFormat", "modelName", "sku"):
+            for value in ("X", "x*"):
+                with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "external-model-deployments.json"
+                    path.write_text(
+                        json.dumps({"schemaVersion": 1, "deployments": [{**decision, field: value}]}),
+                        encoding="utf-8",
+                    )
+                    payload = _run_model(external_manifest_path=path)
+                    self.assertEqual(payload["results"][0]["status"], "FAIL")
+                    self.assertIn("exact literal identities", payload["results"][0]["detail"])
+                    self.assertIsNone(payload["captured"])
+        for value in ("2", "X", "1*", ""):
+            with self.subTest(field="modelVersion", value=value), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "external-model-deployments.json"
+                path.write_text(
+                    json.dumps({"schemaVersion": 1, "deployments": [
+                        {**decision, "modelVersion": value},
+                    ]}),
+                    encoding="utf-8",
+                )
+                payload = _run_model(external_manifest_path=path)
+                self.assertEqual(payload["results"][0]["status"], "FAIL")
+                self.assertIn("exact literal identities", payload["results"][0]["detail"])
+                self.assertIsNone(payload["captured"])
+
 
 @unittest.skipUnless(os.name == "nt", "Windows PowerShell 5.1 requires Windows")
 class WindowsPowerShell51ModelDeploymentTests(ModelDeploymentHardGateTests):
