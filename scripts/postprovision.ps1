@@ -364,6 +364,7 @@ function Test-ModelDeployment {
   $externalDeclarations = @()
   $externalIdentities = @{}
   $exactIdentifierPattern = '^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$'
+  $exactVersionPattern = '^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
   $accountIdPattern = '^/subscriptions/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/resourceGroups/[A-Za-z0-9][A-Za-z0-9._()-]*[A-Za-z0-9]/providers/Microsoft\.CognitiveServices/accounts/[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$'
   foreach ($entry in $manifest.deployments) {
     if ($entry -isnot [pscustomobject] -or
@@ -373,7 +374,7 @@ function Test-ModelDeployment {
         $entry.deploymentName -isnot [string] -or $entry.deploymentName -notmatch $exactIdentifierPattern -or
         $entry.modelFormat -isnot [string] -or $entry.modelFormat -notmatch $exactIdentifierPattern -or
         $entry.modelName -isnot [string] -or $entry.modelName -notmatch $exactIdentifierPattern -or
-        $entry.modelVersion -isnot [string] -or $entry.modelVersion -notmatch $exactIdentifierPattern -or
+        $entry.modelVersion -isnot [string] -or $entry.modelVersion -notmatch $exactVersionPattern -or
         $entry.sku -isnot [string] -or $entry.sku -notmatch $exactIdentifierPattern) {
       Add-Result -Name 'model-deployments' -Status 'FAIL' -Detail 'external deployment declaration must contain exact literal identities only'
       return

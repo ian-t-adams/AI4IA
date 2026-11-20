@@ -237,11 +237,22 @@ class CapacityAllocationTests(unittest.TestCase):
 class ExternalDeploymentInventoryTests(unittest.TestCase):
     def test_external_manifest_is_literal_exact_and_unique(self):
         declarations = load_external_model_deployments()
-        self.assertEqual(len(declarations), 13)
+        self.assertEqual(len(declarations), 14)
         self.assertEqual(len({
             (row["accountId"].casefold(), row["deploymentName"].casefold())
             for row in declarations
-        }), 13)
+        }), 14)
+        decision = [row for row in declarations if row["modelName"] == "Microsoft-Decision-1.1"]
+        self.assertEqual(decision, [{
+            "accountId": (
+                "/subscriptions/e852113b-6cb5-441c-ac68-26cff884e479/"
+                "resourceGroups/rg-ai4ia-slurmfactory/providers/Microsoft.CognitiveServices/"
+                "accounts/mf-aiforia-slurmfactory-eastus2-vypvgrncoed2o"
+            ),
+            "deploymentName": "decision-1-1-slurmfactory-eastus2-dz",
+            "modelFormat": "Microsoft", "modelName": "Microsoft-Decision-1.1",
+            "modelVersion": "1", "sku": "DataZoneStandard",
+        }])
         self.assertEqual(
             {
                 row["deploymentName"]
@@ -272,6 +283,17 @@ class ExternalDeploymentInventoryTests(unittest.TestCase):
                 path = Path(directory) / "manifest.json"
                 path.write_text(
                     json.dumps({"schemaVersion": 1, "deployments": [row]}),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "literal exact identifier"):
+                    load_external_model_deployments(path)
+        for invalid_version in ("", "*", "1*", "1-"):
+            with self.subTest(version=invalid_version), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "manifest.json"
+                path.write_text(
+                    json.dumps({"schemaVersion": 1, "deployments": [
+                        {**template, "modelVersion": invalid_version},
+                    ]}),
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(ValueError, "literal exact identifier"):
