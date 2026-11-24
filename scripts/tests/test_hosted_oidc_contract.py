@@ -120,7 +120,7 @@ class HostedContractTests(unittest.TestCase):
         script = step["run"]
         self.assertIn("scripts.hosted_oidc_requirements", script)
         self.assertIn("--require-hashes --only-binary=:all:", script)
-        self.assertIn('azure.identity.__version__=="1.26.0"', script)
+        self.assertIn('azure.identity.__version__=="1.27.0"', script)
         self.assertIn("scripts/tests/test_hosted_oidc_read.py", script)
         self.assertIn("scripts/tests/test_hosted_oidc_contract.py", script)
         self.assertNotIn("id-token", step.get("permissions", {}))
